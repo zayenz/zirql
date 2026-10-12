@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 14
+- Total: 15
 - Ready: 2
-- Blocked: 4
+- Blocked: 5
 - Done: 8
 
 | ID | Task | State | Blocked by |
@@ -13,7 +13,7 @@
 | [base-002](tasks/002-run-zincite-read-only-pipelines-through-zirql.md) | Run Zincite read-only pipelines through Zirql | done | base-001, base-011 |
 | [base-003](tasks/003-run-zirium-operation-queries-and-typed-builders-through-zirq.md) | Run Zirium operation queries and typed builders through Zirql | done | base-001, base-012 |
 | [base-004](tasks/004-share-query-programs-bindings-and-nested-structured-reports.md) | Share query programs, bindings and nested structured reports | done | base-002, base-003, base-013, base-014 |
-| [base-005](tasks/005-build-zincite-positional-reports-with-the-shared-comprehensi.md) | Build Zincite positional reports with the shared comprehension evaluator | ready | base-004 |
+| [base-005](tasks/005-build-zincite-positional-reports-with-the-shared-comprehensi.md) | Build Zincite positional reports with the shared comprehension evaluator | blocked | base-004, base-015 |
 | [base-006](tasks/006-add-natural-zirium-comprehensions-over-projected-query-resul.md) | Add natural Zirium comprehensions over projected query results | blocked | base-005 |
 | [base-007](tasks/007-construct-enum-aware-keyed-and-multidimensional-zincite-repo.md) | Construct enum-aware keyed and multidimensional Zincite reports | blocked | base-005 |
 | [base-008](tasks/008-use-shared-comprehensions-for-atomic-zincite-data-constructi.md) | Use shared comprehensions for atomic Zincite data construction | blocked | base-007 |
@@ -23,3 +23,4 @@
 | [base-012](tasks/012-support-zirium-work-charges-and-prepare-zirql-0-1-0-alpha-1.md) | Support Zirium work charges and prepare Zirql 0.1.0-alpha.1 | done | — |
 | [base-013](tasks/013-add-the-native-program-runtime-prerequisite-for-host-integra.md) | Add the native program runtime prerequisite for host integration | done | — |
 | [base-014](tasks/014-preserve-flat-native-set-sequencing-and-publish-the-compatib.md) | Preserve flat native set sequencing and publish the compatible runtime | done | base-013 |
+| [base-015](tasks/015-deliver-the-bounded-positional-value-evaluator-and-usable-pr.md) | Deliver the bounded positional value evaluator and usable prerelease | ready | — |

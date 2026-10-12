@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "normal"
-blocked_by = ["base-004"]
+blocked_by = ["base-004", "base-015"]
 +++
 # Build Zincite positional reports with the shared comprehension evaluator
 
