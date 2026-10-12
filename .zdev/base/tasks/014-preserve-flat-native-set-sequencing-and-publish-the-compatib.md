@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-014"
 key = "flat-native-set-sequencing"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -26,13 +26,24 @@ Retain /private/tmp/zirql004-plan.json. Zirium's existing query_dsl flat_composi
 
 ## Done when
 
-- [ ] A focused native borrowed-selection control runs at least 200 left-associated set operands without consuming recursive nesting solely for flat composition, preserving left-to-right operand observations and independent current input.
-- [ ] Flat-set preflight and execution retain one context, immutable bindings and aggregate budget; actual grouped/nested selectors retain the supported nesting ceiling, resource refusals retain locations, and legacy host work accounting remains unchanged.
-- [ ] Existing native program and pipeline controls, formatting, Clippy, tests including doctests, and clean locked package pass before independent verification and completion.
-- [ ] The complete verified source revision and a fresh registry prerelease are published under approved authority; package/checksum and exact-version resolution expose the compatible program runner for consumer source/package pins. Alpha.2 is not overwritten and the reservation stays yanked.
+- [x] A focused native borrowed-selection control runs at least 200 left-associated set operands without consuming recursive nesting solely for flat composition, preserving left-to-right operand observations and independent current input.
+- [x] Flat-set preflight and execution retain one context, immutable bindings and aggregate budget; actual grouped/nested selectors retain the supported nesting ceiling, resource refusals retain locations, and legacy host work accounting remains unchanged.
+- [x] Existing native program and pipeline controls, formatting, Clippy, tests including doctests, and clean locked package pass before independent verification and completion.
+- [x] The complete verified source revision and a fresh registry prerelease are published under approved authority; package/checksum and exact-version resolution expose the compatible program runner for consumer source/package pins. Alpha.2 is not overwritten and the reservation stays yanked.
 
 ## Validation
 
 - Reuse tests/native_programs.rs for one focused borrowed-selection flat-chain control and existing nesting/budget/emission controls; no host test matrix or persistent counters.
 - Run git diff --check;zdev check base --format json;cargo fmt --all -- --check;cargo clippy --workspace --all-targets -- -D warnings;cargo test --workspace;cargo package --locked. Independent verifier checks the complete child before completion/commit and approved fresh-prerelease publication.
 - Verify registry package/checksum and exact-version native API resolution; after the child commit/publication, resume parent consumer implementation with its exact retained plan and external WIP attribution.
+
+## Result
+
+Implemented and independently verified iterative flat native set sequencing. Core source/package candidate is ready for the approved clean prerelease publication; consumer adoption remains in base-004.
+
+Validation:
+
+- Fresh independent PASS at W860efc1ce49ba9fa; five source paths reviewed, no findings or source writes, snapshot comparison equal.
+- 201-operand borrowed selection regression failed before repair and passes after it; independent accounting/right-nesting controls preserve legacy and program thresholds and locations.
+- Formatting, warning-free Clippy, workspace tests including doctests, Rust 1.88 locked checks, diff and zdev checks, and actual locked candidate package verification all passed.
+- Candidate package has 13 byte-matching files, alpha.3, Rust 1.88, edition 2024, MIT OR Apache-2.0 and no dependencies. Clean source/package/dry-run and registry publication evidence will follow before parent resumption.

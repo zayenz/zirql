@@ -338,15 +338,34 @@ where
                     }
                     Ok(value)
                 }
-                ExpressionKind::Set {
-                    operator,
-                    left,
-                    right,
-                } => {
-                    let left_input = host.copy_value(&input, context, budget, &left.range)?;
-                    let left = run_expression(left, host, left_input, context, bindings, budget)?;
-                    let right = run_expression(right, host, input, context, bindings, budget)?;
-                    host.combine(operator, left, right, context, budget, &expression.range)
+                ExpressionKind::Set { .. } => {
+                    // Consecutive left operands are flat sequencing. Retain each
+                    // right input as in recursive evaluation, including copy order.
+                    let mut pending = Vec::new();
+                    let mut operand = expression;
+                    let mut input = input;
+                    while let ExpressionKind::Set {
+                        operator,
+                        left,
+                        right,
+                    } = &operand.value
+                    {
+                        if !pending.is_empty() {
+                            budget
+                                .charge_program_work(1, Location::Query(operand.range.clone()))?;
+                        }
+                        let left_input = host.copy_value(&input, context, budget, &left.range)?;
+                        pending.push((operator, right, input, &operand.range));
+                        operand = left;
+                        input = left_input;
+                    }
+                    let mut value =
+                        run_expression(operand, host, input, context, bindings, budget)?;
+                    while let Some((operator, right, input, range)) = pending.pop() {
+                        let right = run_expression(right, host, input, context, bindings, budget)?;
+                        value = host.combine(operator, value, right, context, budget, range)?;
+                    }
+                    Ok(value)
                 }
                 ExpressionKind::Record(fields) => {
                     let units = fields.len().checked_add(1).ok_or_else(|| {
@@ -442,9 +461,18 @@ fn validate_expression<S, O, E>(
                 }
                 pending.push((input, depth, calls));
             }
-            ExpressionKind::Set { left, right, .. } => {
-                pending.push((right, depth, calls));
-                pending.push((left, depth, calls));
+            ExpressionKind::Set { .. } => {
+                let mut operand = expression;
+                while let ExpressionKind::Set { left, right, .. } = &operand.value {
+                    budget.check_evaluation_depth(
+                        depth,
+                        calls,
+                        Location::Query(operand.range.clone()),
+                    )?;
+                    pending.push((right, depth, calls));
+                    operand = left;
+                }
+                pending.push((operand, depth, calls));
             }
             ExpressionKind::Record(fields) => {
                 pending.extend(fields.iter().rev().map(|(_, field)| (field, depth, calls)));

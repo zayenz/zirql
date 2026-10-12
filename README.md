@@ -178,6 +178,9 @@ reserve their names. `Bindings::get(name, range)` exposes read-only native looku
 Expressions support current `Input`, `Binding`, `Group`, `Sequence` of typed
 stages/emitters, binary `Set` and ordered `Record` fields. Group passes current
 input. Set evaluates left before right; record fields run in written order.
+Consecutive left-associated set operators run iteratively. Each operand receives
+independent current input; grouping and right-nested sets retain their nesting
+limits.
 Independent operands receive charged native input copies, with original input
 moved into the final operand. The host chooses set identity/order and constructs
 its native record from the evaluated field vector. No native value needs `Clone`,
@@ -276,8 +279,9 @@ before known allocations. Result exhaustion fails the request without truncation
 
 Program budgets charge one work unit per visited expression, plus copied binding
 name and record-label bytes. Input/Binding/Sequence wrappers add no logical
-nesting; Group/Set/Record each add one active level. Opaque nested selectors and
-pipeline predicates share the same remaining allowance and active call cap.
+nesting; Group/Record and each set chain add one active level. Consecutive
+left-associated Set nodes share that level; grouped and right-nested sets add
+levels. Opaque nested selectors and pipeline predicates share the same remaining allowance and active call cap.
 Success and failure restore active depth/call state and retain spent work/results.
 
 Read the [base brief](.zdev/base/brief.md) for the integration order and testing

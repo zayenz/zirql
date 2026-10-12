@@ -243,13 +243,22 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
     fn combine(
         &self,
         _operator: &(),
-        _left: Self::Value,
-        _right: Self::Value,
+        left: Self::Value,
+        right: Self::Value,
         _context: &mut SourceContext<'a>,
-        _budget: &mut Budget,
+        budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
-        Err(QueryError::query(range.clone(), "source host has no set operator").into())
+        let (SourceValue::Words(mut left), SourceValue::Words(right)) = (left, right) else {
+            return Err(QueryError::query(range.clone(), "expected source selections").into());
+        };
+        for word in right {
+            if !left.contains(&word) {
+                budget.check_items(left.len() + 1, Location::Query(range.clone()))?;
+                left.push(word);
+            }
+        }
+        Ok(SourceValue::Words(left))
     }
 
     fn construct_record(
@@ -600,6 +609,100 @@ fn borrowed_program_restores_native_bindings_and_relative_input_with_one_context
         .unwrap(),
         SourceValue::Count(3)
     );
+}
+
+#[test]
+fn borrowed_flat_sets_keep_operand_order_and_independent_input() {
+    let source = String::from("βeta alpha apple");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: Vec::new(),
+    };
+    let operand = |index: usize| {
+        let (prefix, emitter) = if index.is_multiple_of(2) {
+            ("β", "beta")
+        } else {
+            ("a", "a")
+        };
+        sequence(
+            at(ExpressionKind::Input, index * 4),
+            vec![
+                at(
+                    ExpressionStep::Stage(SourceStage::Prefix(prefix)),
+                    index * 4 + 1,
+                ),
+                at(
+                    ExpressionStep::Stage(SourceStage::Pipeline(
+                        Pipeline::new(
+                            vec![at(
+                                Stage::Filter(at(PredicateKind::Leaf(()), index * 4 + 2)),
+                                index * 4 + 2,
+                            )],
+                            index * 4 + 2..index * 4 + 3,
+                            16,
+                        )
+                        .unwrap(),
+                    )),
+                    index * 4 + 2,
+                ),
+                emit(emitter, EmissionPolicy::PassThrough, index * 4 + 3),
+            ],
+        )
+    };
+    let mut expression = operand(0);
+    for index in 1..=200 {
+        expression = at(
+            ExpressionKind::Set {
+                operator: (),
+                left: Box::new(expression),
+                right: Box::new(operand(index)),
+            },
+            1_000 + index,
+        );
+    }
+    let program = Program::new(vec![bind("combined", 2_000, expression)], 0..2_001);
+    let mut budget = Budget::for_program(ProgramLimits {
+        nesting: 3,
+        ..limits()
+    });
+    let input = source_input(&source, &mut budget);
+    let bindings = evaluate_program(
+        &program,
+        &SourceHost,
+        input,
+        &mut context,
+        Bindings::default(),
+        &mut budget,
+    )
+    .unwrap();
+    let SourceValue::Words(words) = bindings.get("combined", 2_000..2_001).unwrap() else {
+        panic!("expected native selections")
+    };
+    assert_eq!(
+        words.iter().map(|word| word.text).collect::<Vec<_>>(),
+        ["βeta", "alpha", "apple"]
+    );
+    assert_eq!(words[0].text.as_ptr(), source.as_ptr());
+    assert_eq!(context.emissions.len(), 201);
+    for (index, (emitter, value)) in context.emissions.iter().enumerate() {
+        let SourceValue::Words(words) = value else {
+            panic!("expected native selections")
+        };
+        if index.is_multiple_of(2) {
+            assert_eq!(*emitter, "beta");
+            assert_eq!(
+                words.iter().map(|word| word.text).collect::<Vec<_>>(),
+                ["βeta"]
+            );
+        } else {
+            assert_eq!(*emitter, "a");
+            assert_eq!(
+                words.iter().map(|word| word.text).collect::<Vec<_>>(),
+                ["alpha", "apple"]
+            );
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
