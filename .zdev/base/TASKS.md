@@ -2,10 +2,20 @@
 
 # Tasks: base
 
-- Total: 0
-- Ready: 0
-- Blocked: 0
+- Total: 10
+- Ready: 1
+- Blocked: 9
 - Done: 0
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
+| [base-001](tasks/001-run-bounded-native-pipelines-with-two-small-host-examples.md) | Run bounded native pipelines with two small host examples | ready | — |
+| [base-002](tasks/002-run-zincite-read-only-pipelines-through-zirql.md) | Run Zincite read-only pipelines through Zirql | blocked | base-001 |
+| [base-003](tasks/003-run-zirium-operation-queries-and-typed-builders-through-zirq.md) | Run Zirium operation queries and typed builders through Zirql | blocked | base-001 |
+| [base-004](tasks/004-share-query-programs-bindings-and-nested-structured-reports.md) | Share query programs, bindings and nested structured reports | blocked | base-002, base-003 |
+| [base-005](tasks/005-build-zincite-positional-reports-with-the-shared-comprehensi.md) | Build Zincite positional reports with the shared comprehension evaluator | blocked | base-004 |
+| [base-006](tasks/006-add-natural-zirium-comprehensions-over-projected-query-resul.md) | Add natural Zirium comprehensions over projected query results | blocked | base-005 |
+| [base-007](tasks/007-construct-enum-aware-keyed-and-multidimensional-zincite-repo.md) | Construct enum-aware keyed and multidimensional Zincite reports | blocked | base-005 |
+| [base-008](tasks/008-use-shared-comprehensions-for-atomic-zincite-data-constructi.md) | Use shared comprehensions for atomic Zincite data construction | blocked | base-007 |
+| [base-009](tasks/009-complete-zirium-diff-fixed-point-and-live-edit-integration.md) | Complete Zirium diff, fixed-point and live-edit integration | blocked | base-004 |
+| [base-010](tasks/010-finish-adoption-and-measure-multi-feature-report-reuse.md) | Finish adoption and measure multi-feature report reuse | blocked | base-006, base-008, base-009 |
