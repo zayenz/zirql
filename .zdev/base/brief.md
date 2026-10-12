@@ -35,9 +35,9 @@ Confirmed on 2026-10-12:
 - Track zdev project records; the `base` area follows `main`.
 - Use `git-make-initial-commit` for the empty initial commit and `init` tag.
 
-The design and task split below are proposed for exact bundle approval.
-Repository setup and planning do not authorize implementation or the outstanding
-Zincite data-edit contract choices.
+The user approved the exact ten-task bundle and authorized an implementation
+goal on 2026-10-12. The outstanding Zincite data-edit contract choices retain
+their attended gate.
 
 ## Architectural direction
 
@@ -183,6 +183,12 @@ task. Read each repository's guidance and establish its Git baseline first.
 Keep consumer commits separately reviewable and record their identifiers in
 the task result; do not treat changes in one repo as a commit in another.
 
+The user authorized coordination with the ongoing chat `zincite base zdev
+implementation` (`01a0eebe-3bd0-78a0-b3a9-b87b8e4d02f7`). Check its current
+progress and coordinate before overlapping source, planning-record or semantic
+API changes. Begin with independent Zirql work; agree consumer ownership before
+integration and avoid a second programs/comprehension implementation.
+
 Zincite currently has unrelated in-progress semantic-owner edits. Consume its
 public APIs and preserve that work. Before implementing its integrations,
 reconcile Zincite base-126 (read-only programs), base-127 (data construction) and
@@ -242,7 +248,6 @@ these observations are not a promise that a later checkout has the same APIs.
 
 ## Outstanding decisions
 
-The framework design and exact task bundle require review before implementation.
 Concrete Rust signatures are chosen against the first two native controls within
 these boundaries. Zincite's data-construction grammar, operation subset,
 target/key/empty-axis and comment policies retain their existing attended gate.
