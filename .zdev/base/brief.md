@@ -41,8 +41,9 @@ their attended gate.
 
 The user subsequently authorized making the GitHub repository public on
 2026-10-12, and that visibility change is complete. The user also authorized a
-name-reservation prerelease followed by yanking that version. A usable framework
-crate release remains a separate decision.
+name-reservation prerelease followed by yanking that version. The user then
+approved usable prereleases after independent verification when consumer
+packaging requires a registry version. Preserve the yanked reservation.
 
 The `zirql` name is reserved on crates.io by `0.0.0-prerelease`, published from
 the verified core at `ab4aba4ade3100c3e3ebae23a98c6f56b72c6426` and yanked on
@@ -53,8 +54,8 @@ the verified core at `ab4aba4ade3100c3e3ebae23a98c6f56b72c6426` and yanked on
 Start with one reusable Rust library crate. A framework executable, parser
 generator, dynamic plugin loader, query optimizer and persistent cache have no
 current consumer requirement. Use the consumers' MIT OR Apache-2.0 license
-convention. A yanked prerelease may reserve the crate name; a usable crate release
-and a stable 1.0 API are outside this increment.
+convention. Publish independently verified prereleases when needed by consumer
+packaging. A stable 1.0 API remains outside this increment.
 
 Use [BAML](https://boundaryml.com/) as an additional design reference for readable
 language syntax, explicit types and native host integration. Draw on its ideas
@@ -266,6 +267,6 @@ these observations are not a promise that a later checkout has the same APIs.
 Concrete Rust signatures are chosen against the first two native controls within
 these boundaries. Zincite's data-construction grammar, operation subset,
 target/key/empty-axis and comment policies retain their existing attended gate.
-The repository is public and the crate name is reserved. A usable crate release
-remains a separate decision; any consumer packaging check that needs one remains
-a completion gate.
+The repository is public and the crate name is reserved. Usable prereleases
+after independent verification are approved when needed by consumer packaging;
+the affected consumer's packaging check remains a completion gate.
