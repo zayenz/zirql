@@ -1,6 +1,7 @@
 # Zirql
 
-Zirql is a Rust library for bounded query pipelines and programs over host-native values.
+Zirql is a Rust library for bounded query pipelines, native programs and
+constructed scalar and positional comprehension values.
 Zirql sequences filtering, head, count, stable unique, string tally and typed
 host stages. Hosts parse their syntax, evaluate predicate leaves and execute
 native navigation and projections. The common text reader supports
@@ -12,8 +13,8 @@ controls demonstrate borrowed source selections, document-owned operation
 handles and a host that projects native rows while retaining mutable context.
 Programs add immutable bindings, grouped expressions, ordered set operands,
 native records and explicit emission policies. Hosts supply these operations
-through typed hooks. Comprehensions and consumer program integrations remain
-later tasks. License: MIT OR Apache-2.0.
+through typed hooks. The pure value evaluator accepts a located typed expression
+without a parser, consumer adapter or renderer. License: MIT OR Apache-2.0.
 
 ## A borrowed source query
 
@@ -283,6 +284,133 @@ nesting; Group/Record and each set chain add one active level. Consecutive
 left-associated Set nodes share that level; grouped and right-nested sets add
 levels. Opaque nested selectors and pipeline predicates share the same remaining allowance and active call cap.
 Success and failure restore active depth/call state and retain spent work/results.
+
+## Constructed values and positional comprehensions
+
+Hosts lower their expression syntax to `ValueExpression`, whose nodes retain
+query byte ranges. The evaluator returns owned `ConstructedValue` data: fixed
+Booleans, signed `i64`, finite `f64`, strings, positional arrays, tuples, ordered
+records and homogeneous Boolean/integer/float sets. Arrays can contain different
+value types and keep positive `1..n` positions in generation order. Tuples and
+records retain declaration order. Sets deduplicate by typed identity and use
+`false` before `true` or numeric order. Empty arrays and sets are valid.
+
+A normalized comprehension chooses `ValueConstructor::Array` or `Set`, supplies
+ordered `ValueGenerator` clauses and a located head. `In` yields source values;
+use `IndexSet` and `ArrayAccess` when positions matter. Grouped binders evaluate
+one source before installing any of their names, then vary the last binder
+fastest. `Bind` evaluates one value per preceding environment. Later clauses
+see earlier names. `None` discards a binding; `_` cannot be read. Duplicate
+names, source/let shadowing and forward reads fail at their responsible ranges.
+Filters and conditional conditions require actual fixed Booleans.
+
+The five budgeted functions support the host projection sequence:
+
+1. `free_value_names` checks scope and declared facts, then returns distinct
+   global names at first-use ranges. A host can use `ValueType::Unestablished`
+   for a declared source whose projection is not yet available.
+2. `constructed_value_type` checks projected values and discovers actual facts.
+   `ArrayType::Positions` carries exact positions; `Elements` carries known
+   possible element types when length and positions are not established.
+3. `validate_value_expression` provides explicit preflight against those facts.
+   It visits every branch, filter and head, including unchosen branches.
+4. `evaluate_value` accepts `Bindings<ConstructedValue>` and performs its own
+   complete actual-type validation before execution. It returns one value.
+5. `copy_constructed_value` admits a binding or emission snapshot before
+   allocating its recursive copy. Constructed trees have no deep `Clone`.
+
+Hosts project only the requested globals, admit those values with the retained
+budget, and move them into `Bindings::new`. Explicit preflight is useful before
+projection and does not exempt later work. Each call spends its own allowance.
+Hosts retain native handles, source coordinates and completion metadata. They
+render the successful value with the same budget; constructed values do not
+invent original-source coordinates.
+
+This typed report keeps the input label order before any rendering:
+
+```rust
+use std::collections::BTreeMap;
+use zirql::{
+    ArrayType, Bindings, Budget, ConstructedValue as V, Located, Location,
+    ProgramLimits, ValueConstructor, ValueExpressionKind as K, ValueGenerator,
+    ValueType, constructed_value_type, copy_constructed_value, evaluate_value,
+    free_value_names, validate_value_expression,
+};
+
+let expression = Located::new(K::Comprehension {
+    constructor: ValueConstructor::Array,
+    clauses: vec![Located::new(ValueGenerator::In {
+        binders: vec![Located::new(Some("n".into()), 15..16)],
+        source: Located::new(K::Name("labels".into()), 20..26),
+        filter: None,
+    }, 15..26)],
+    head: Box::new(Located::new(K::Record(vec![
+        (Located::new("name".into(), 2..6),
+         Located::new(K::Name("n".into()), 8..9)),
+    ]), 1..10)),
+}, 0..27);
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000, results: 1_000, nesting: 32, stream_items: 100,
+});
+let declared = BTreeMap::from([("labels".into(),
+    ValueType::Array(ArrayType::Elements(vec![ValueType::String])))]);
+let names = free_value_names(&expression, &declared, &mut budget)?;
+assert_eq!(names[0].value, "labels");
+
+let source = V::Array(vec![V::String("beta".into()), V::String("alpha".into())]);
+let projected = copy_constructed_value(&source, &mut budget, Location::Source(0..14))?;
+let ty = constructed_value_type(&projected, &mut budget, Location::Source(0..14))?;
+validate_value_expression(&expression, &BTreeMap::from([("labels".into(), ty)]), &mut budget)?;
+let bindings = Bindings::new([(Located::new("labels".into(), 20..26), projected)])?;
+let value = evaluate_value(&expression, &bindings, &mut budget)?;
+assert_eq!(value, V::Array(vec![
+    V::Record(vec![("name".into(), V::String("beta".into()))]),
+    V::Record(vec![("name".into(), V::String("alpha".into()))]),
+]));
+let snapshot = copy_constructed_value(&value, &mut budget, Location::Query(0..27))?;
+assert_eq!(snapshot, value);
+# Ok::<(), zirql::QueryError>(())
+```
+
+The subset includes checked sign, `+`, `-`, `*`, integer `div`/`mod`, floating
+`/`, numeric comparisons, typed recursive equality and inequality, scalar set
+membership, Boolean `not`/`and`/`or`, string and positional-array concatenation,
+field/tuple/array access, `index_set`, inclusive integer ranges and ordered
+conditional branches with a mandatory else. Integer division truncates toward
+zero; the remainder has the dividend's sign. Integer overflow, zero division
+and the `i64::MIN` with `-1` division/remainder cases fail. Mixed arithmetic and
+comparisons require exact integer-to-binary64 promotion, including at the `i64`
+boundaries. Nonfinite inputs/results and nonzero floating arithmetic rounded
+to zero fail. Normalized `f64` literals retain no decimal spelling, so hosts
+must reject a nonzero decimal literal that parses to zero during lowering.
+Strings receive no numeric coercion.
+
+Known incompatible types and unsupported set elements fail before branch
+choice. Missing fields and positions supply only unestablished validation
+facts and fail if accessed at runtime. Boolean operations short-circuit and
+conditionals execute only the chosen branch, so skipped missing access and
+zero division remain unevaluated. Every referenced actual value is checked,
+including nonfinite floats, duplicate record labels and malformed sets.
+Enum identities, explicitly keyed/multidimensional arrays, model execution
+and data-edit policy remain with future host work.
+
+Value operations share the active `Budget`, including its remaining work,
+aggregate results and nesting. Work pays expression/value/type visits,
+validation metadata slots, known collection allocation, candidates before
+filters, copied UTF-8 name/label/string bytes and compatibility/equality
+comparisons. Results pay each new/copied scalar or container and each
+collection/record entry slot. Children already admitted by evaluation move
+into slots without another value admission. A snapshot scans its full size
+and invariants, admits its result units and bytes, then builds the copy. Each
+recursive expression/value/type walk retains active nesting. Both Result
+outcomes restore nesting/call state; spending is never refunded.
+
+Known range sizes, grouped products, lengths and byte sums are checked before
+allocation. A false filter cannot evade candidate admission. Limits fail at
+the active query or supplied source location and return no partial value.
+Legacy `Budget::new` keeps aggregate result accounting inactive, but these
+value APIs still charge all work. Native work costs and per-stream limits
+retain their existing contracts. There are no new default limits.
 
 Read the [base brief](.zdev/base/brief.md) for the integration order and testing
 level. [TASKS.md](.zdev/base/TASKS.md) is generated by zdev. The GitHub repository

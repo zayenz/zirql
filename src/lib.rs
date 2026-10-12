@@ -3,6 +3,7 @@
 mod eval;
 mod parser;
 mod program;
+mod value;
 
 use std::fmt;
 use std::ops::Range;
@@ -15,6 +16,12 @@ pub use parser::{ArgumentReader, parse_pipeline};
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, Program, ProgramHost,
     Statement, evaluate_expression, evaluate_program,
+};
+pub use value::{
+    ArrayType, ConstructedValue, SetElementType, ValueBinaryOperator, ValueConstructor,
+    ValueExpression, ValueExpressionKind, ValueGenerator, ValueType, ValueUnaryOperator,
+    constructed_value_type, copy_constructed_value, evaluate_value, free_value_names,
+    validate_value_expression,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.

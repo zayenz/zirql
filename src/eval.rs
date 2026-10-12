@@ -180,12 +180,12 @@ impl Budget {
         Ok(())
     }
 
-    pub(crate) fn within_evaluation<T, E>(
+    pub(crate) fn within_evaluation<T, E: From<QueryError>>(
         &mut self,
         depth: usize,
         location: Location,
-        operation: impl FnOnce(&mut Self) -> Result<T, EvaluationError<E>>,
-    ) -> Result<T, EvaluationError<E>> {
+        operation: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
         self.check_evaluation_depth(depth, 1, location)?;
         self.depth += depth;
         self.calls += 1;
