@@ -59,6 +59,13 @@ archive matches the clean verified package byte for byte, and exact-version
 resolution exposes the native program API. The reservation remains yanked and
 `0.1.0-alpha.1` remains available.
 
+The usable `0.1.0-alpha.3` prerelease was independently verified and published
+from `4e4baf38e7c8566781f069dccea110383d6c0d24` on 2026-10-12. It preserves flat
+left-associated native set sequencing without increasing grouped or recursive
+nesting limits. Its registry archive matches the clean verified package byte
+for byte, and exact-version resolution compiles. Earlier usable prereleases
+remain available; the reservation remains yanked.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser

@@ -39,11 +39,12 @@ Retain /private/tmp/zirql004-plan.json. Zirium's existing query_dsl flat_composi
 
 ## Result
 
-Implemented and independently verified iterative flat native set sequencing. Core source/package candidate is ready for the approved clean prerelease publication; consumer adoption remains in base-004.
+Implemented and independently verified iterative flat native set sequencing. Published the usable `0.1.0-alpha.3` prerelease from verified source commit `4e4baf38e7c8566781f069dccea110383d6c0d24`. Consumer adoption remains in base-004.
 
 Validation:
 
 - Fresh independent PASS at W860efc1ce49ba9fa; five source paths reviewed, no findings or source writes, snapshot comparison equal.
 - 201-operand borrowed selection regression failed before repair and passes after it; independent accounting/right-nesting controls preserve legacy and program thresholds and locations.
 - Formatting, warning-free Clippy, workspace tests including doctests, Rust 1.88 locked checks, diff and zdev checks, and actual locked candidate package verification all passed.
-- Candidate package has 13 byte-matching files, alpha.3, Rust 1.88, edition 2024, MIT OR Apache-2.0 and no dependencies. Clean source/package/dry-run and registry publication evidence will follow before parent resumption.
+- Clean locked package listing, package verification and publication dry run passed from the verified source commit. The 13-file package retains Rust 1.88, edition 2024, MIT OR Apache-2.0 and no dependencies.
+- Published `0.1.0-alpha.3`; registry archive matches the clean package byte for byte, checksum `40b689e72cd98f7b501d81b60ab1b552dcebb7e9475a3c194012095e02973297`. Exact-version registry resolution and compilation passed. Alpha.1 and alpha.2 remain available; the name reservation remains yanked.
