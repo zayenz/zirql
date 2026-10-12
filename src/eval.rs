@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, btree_map::Entry};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
@@ -47,11 +47,22 @@ pub struct Limits {
     pub nesting: usize,
 }
 
+/// Explicit program allowances. Results counts produced or copied native
+/// entries across the request; stream_items remains a per-stream ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProgramLimits {
+    pub work: usize,
+    pub results: usize,
+    pub nesting: usize,
+    pub stream_items: usize,
+}
+
 /// Caller-owned request state. Input admission, pipeline execution and nested
 /// host calls share this budget; successful or failed calls do not refund work.
 #[derive(Debug)]
 pub struct Budget {
     remaining_work: usize,
+    remaining_results: Option<usize>,
     max_items: usize,
     max_nesting: usize,
     depth: usize,
@@ -62,6 +73,7 @@ impl Budget {
     pub fn new(limits: Limits) -> Self {
         Self {
             remaining_work: limits.work,
+            remaining_results: None,
             max_items: limits.items,
             max_nesting: limits.nesting.min(MAX_NESTING),
             depth: 0,
@@ -69,8 +81,48 @@ impl Budget {
         }
     }
 
+    pub fn for_program(limits: ProgramLimits) -> Self {
+        Self {
+            remaining_results: Some(limits.results),
+            ..Self::new(Limits {
+                work: limits.work,
+                items: limits.stream_items,
+                nesting: limits.nesting,
+            })
+        }
+    }
+
     pub fn remaining_work(&self) -> usize {
         self.remaining_work
+    }
+
+    /// None denotes a legacy budget without aggregate result accounting.
+    pub fn remaining_results(&self) -> Option<usize> {
+        self.remaining_results
+    }
+
+    /// Admit produced/copied entries before allocation. Legacy budgets leave
+    /// this charge inactive. Moving already-admitted values needs no charge.
+    pub fn charge_results(&mut self, units: usize, location: Location) -> Result<(), QueryError> {
+        if let Some(remaining) = &mut self.remaining_results {
+            *remaining = remaining.checked_sub(units).ok_or_else(|| QueryError {
+                location,
+                message: "result limit exceeded".into(),
+            })?;
+        }
+        Ok(())
+    }
+
+    // New program visits/copies must not change legacy frontend work costs.
+    pub(crate) fn charge_program_work(
+        &mut self,
+        units: usize,
+        location: Location,
+    ) -> Result<(), QueryError> {
+        if self.remaining_results.is_some() {
+            self.charge(units, location)?;
+        }
+        Ok(())
     }
 
     /// Charge before a host scan, traversal or other declared unit of work.
@@ -107,20 +159,35 @@ impl Budget {
         Ok(())
     }
 
-    fn within_pipeline<T, E>(
+    pub(crate) fn check_evaluation_depth(
+        &self,
+        depth: usize,
+        calls: usize,
+        location: Location,
+    ) -> Result<(), QueryError> {
+        if self.calls + calls > MAX_NESTING {
+            return Err(QueryError {
+                location,
+                message: "nested evaluation call limit exceeded".into(),
+            });
+        }
+        if self.depth + depth > self.max_nesting {
+            return Err(QueryError {
+                location,
+                message: "nesting limit exceeded".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn within_evaluation<T, E>(
         &mut self,
         depth: usize,
         location: Location,
         operation: impl FnOnce(&mut Self) -> Result<T, EvaluationError<E>>,
     ) -> Result<T, EvaluationError<E>> {
-        if self.calls >= MAX_NESTING {
-            return Err(QueryError {
-                location,
-                message: "nested evaluation call limit exceeded".into(),
-            }
-            .into());
-        }
-        self.enter_depth(depth, location)?;
+        self.check_evaluation_depth(depth, 1, location)?;
+        self.depth += depth;
         self.calls += 1;
         let result = operation(self);
         self.calls -= 1;
@@ -148,6 +215,7 @@ impl<I, C> NativeInput<I, C> {
         for item in items {
             budget.check_items(collected.len() + 1, location.clone())?;
             budget.charge(1, location.clone())?;
+            budget.charge_results(1, location.clone())?;
             collected.push(item);
         }
         Ok(Self {
@@ -157,7 +225,8 @@ impl<I, C> NativeInput<I, C> {
     }
 
     /// Retain rows whose host scan/admission work was already charged to this
-    /// budget before allocation. Check the stream ceiling without charging again.
+    /// budget before allocation, including results in program mode. Check the
+    /// stream ceiling without charging again.
     /// The caller must use this same active budget for evaluation.
     pub fn from_admitted(
         context: C,
@@ -260,7 +329,8 @@ pub trait Host<I, C, L, S = ()> {
     ) -> Result<Truth, EvaluationError<Self::Error>>;
 
     /// Move native rows through a typed navigation or projection stage. Charge
-    /// scans and check known output sizes before allocation. The core checks the
+    /// scans, admit newly produced results and check output sizes before
+    /// allocation. Moving admitted rows needs no result charge. The core checks the
     /// returned stream ceiling without charging admission a second time.
     fn evaluate_stage(
         &self,
@@ -312,7 +382,7 @@ pub fn evaluate<I, C, L, S, H>(
 where
     H: Host<I, C, L, S>,
 {
-    budget.within_pipeline(
+    budget.within_evaluation(
         pipeline.nesting.pipeline_depth(),
         Location::Query(pipeline.range()),
         |budget| {
@@ -348,6 +418,7 @@ where
                     }
                     Stage::Head(count) => items.truncate(*count),
                     Stage::Count => {
+                        budget.charge_results(1, Location::Query(stage.range.clone()))?;
                         return Ok(NativeResult {
                             value: NativeValue::Count(items.len()),
                             context,
@@ -373,6 +444,7 @@ where
                         items = retained;
                     }
                     Stage::Tally => {
+                        budget.charge_results(1, Location::Query(stage.range.clone()))?;
                         let mut counts = BTreeMap::new();
                         for item in items {
                             budget.charge(
@@ -380,7 +452,15 @@ where
                                 Location::Query(stage.range.clone()),
                             )?;
                             let key = host.tally_key(item, &mut context, budget, &stage.range)?;
-                            *counts.entry(key).or_insert(0) += 1;
+                            match counts.entry(key) {
+                                Entry::Occupied(mut entry) => *entry.get_mut() += 1,
+                                Entry::Vacant(entry) => {
+                                    // One map entry and its newly produced count.
+                                    budget
+                                        .charge_results(2, Location::Query(stage.range.clone()))?;
+                                    entry.insert(1);
+                                }
+                            }
                         }
                         return Ok(NativeResult {
                             value: NativeValue::Tally(counts),

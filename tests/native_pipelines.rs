@@ -2,8 +2,8 @@ use std::{ops::Range, rc::Rc};
 
 use zirql::{
     ArgumentReader, Budget, EvaluationError, Host, Limits, Located, Location, NativeInput,
-    NativeResult, NativeValue, Pipeline, PredicateKind, QueryError, Stage, Truth, evaluate,
-    parse_pipeline,
+    NativeResult, NativeValue, Pipeline, PredicateKind, ProgramLimits, QueryError, Stage, Truth,
+    evaluate, parse_pipeline,
 };
 
 fn limits() -> Limits {
@@ -532,6 +532,7 @@ impl<'a> Host<Row<'a>, Context<'a>, NativeLeaf, NativeStage> for NativeHost {
                 unreachable!()
             };
             budget.charge(node.text.len().max(1), Location::Query(range.clone()))?;
+            budget.charge_results(1, Location::Query(range.clone()))?;
             names.push(Row::String(node.text.to_owned()));
         }
         context.strings = true;
@@ -993,9 +994,12 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
             &self,
             item: &&str,
             _context: &mut (),
-            _budget: &mut Budget,
-            _range: &Range<usize>,
+            budget: &mut Budget,
+            range: &Range<usize>,
         ) -> Result<String, EvaluationError<QueryError>> {
+            if budget.remaining_results().is_some() {
+                budget.charge(item.len(), Location::Query(range.clone()))?;
+            }
             Ok((*item).into())
         }
 
@@ -1003,9 +1007,12 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
             &self,
             item: &str,
             _context: &mut (),
-            _budget: &mut Budget,
-            _range: &Range<usize>,
+            budget: &mut Budget,
+            range: &Range<usize>,
         ) -> Result<String, EvaluationError<QueryError>> {
+            if budget.remaining_results().is_some() {
+                budget.charge(item.len(), Location::Query(range.clone()))?;
+            }
             Ok(item.into())
         }
     }
@@ -1047,5 +1054,29 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
     assert_eq!(
         evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap_err(),
         EvaluationError::Core(QueryError::query(9..14, "work limit exceeded"))
+    );
+
+    // Four admitted rows, one tally container, and three map entries/counts.
+    // Unique transfers rows; the resulting tally has no row readmission.
+    let program_limits = ProgramLimits {
+        work: 100,
+        results: 11,
+        nesting: 64,
+        stream_items: 8,
+    };
+    let mut budget = Budget::for_program(program_limits);
+    assert_eq!(
+        evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget)
+            .unwrap()
+            .value,
+        NativeValue::Tally([("alpha".into(), 1), ("apple".into(), 1), ("beta".into(), 1)].into())
+    );
+    let mut budget = Budget::for_program(ProgramLimits {
+        results: 10,
+        ..program_limits
+    });
+    assert_eq!(
+        evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap_err(),
+        EvaluationError::Core(QueryError::query(9..14, "result limit exceeded"))
     );
 }

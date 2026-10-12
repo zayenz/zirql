@@ -2,14 +2,20 @@
 
 mod eval;
 mod parser;
+mod program;
 
 use std::fmt;
 use std::ops::Range;
 
 pub use eval::{
-    Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, Truth, evaluate,
+    Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, ProgramLimits,
+    Truth, evaluate,
 };
 pub use parser::{ArgumentReader, parse_pipeline};
+pub use program::{
+    Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, Program, ProgramHost,
+    Statement, evaluate_expression, evaluate_program,
+};
 
 /// The maximum logical nesting allowance and active nested evaluation calls.
 /// Hosts may choose a smaller logical allowance.

@@ -4,15 +4,15 @@
 
 - Total: 13
 - Ready: 1
-- Blocked: 7
-- Done: 5
+- Blocked: 6
+- Done: 6
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
 | [base-001](tasks/001-run-bounded-native-pipelines-with-two-small-host-examples.md) | Run bounded native pipelines with two small host examples | done | — |
 | [base-002](tasks/002-run-zincite-read-only-pipelines-through-zirql.md) | Run Zincite read-only pipelines through Zirql | done | base-001, base-011 |
 | [base-003](tasks/003-run-zirium-operation-queries-and-typed-builders-through-zirq.md) | Run Zirium operation queries and typed builders through Zirql | done | base-001, base-012 |
-| [base-004](tasks/004-share-query-programs-bindings-and-nested-structured-reports.md) | Share query programs, bindings and nested structured reports | blocked | base-002, base-003, base-013 |
+| [base-004](tasks/004-share-query-programs-bindings-and-nested-structured-reports.md) | Share query programs, bindings and nested structured reports | ready | base-002, base-003, base-013 |
 | [base-005](tasks/005-build-zincite-positional-reports-with-the-shared-comprehensi.md) | Build Zincite positional reports with the shared comprehension evaluator | blocked | base-004 |
 | [base-006](tasks/006-add-natural-zirium-comprehensions-over-projected-query-resul.md) | Add natural Zirium comprehensions over projected query results | blocked | base-005 |
 | [base-007](tasks/007-construct-enum-aware-keyed-and-multidimensional-zincite-repo.md) | Construct enum-aware keyed and multidimensional Zincite reports | blocked | base-005 |
@@ -21,4 +21,4 @@
 | [base-010](tasks/010-finish-adoption-and-measure-multi-feature-report-reuse.md) | Finish adoption and measure multi-feature report reuse | blocked | base-006, base-008, base-009 |
 | [base-011](tasks/011-expose-the-native-pipeline-contract-needed-by-zincite.md) | Expose the native pipeline contract needed by Zincite | done | base-001 |
 | [base-012](tasks/012-support-zirium-work-charges-and-prepare-zirql-0-1-0-alpha-1.md) | Support Zirium work charges and prepare Zirql 0.1.0-alpha.1 | done | — |
-| [base-013](tasks/013-add-the-native-program-runtime-prerequisite-for-host-integra.md) | Add the native program runtime prerequisite for host integration | ready | — |
+| [base-013](tasks/013-add-the-native-program-runtime-prerequisite-for-host-integra.md) | Add the native program runtime prerequisite for host integration | done | — |

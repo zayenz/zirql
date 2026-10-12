@@ -1,6 +1,6 @@
 # Zirql
 
-Zirql is a Rust library for bounded query pipelines over host-native values.
+Zirql is a Rust library for bounded query pipelines and programs over host-native values.
 Zirql sequences filtering, head, count, stable unique, string tally and typed
 host stages. Hosts parse their syntax, evaluate predicate leaves and execute
 native navigation and projections. The common text reader supports
@@ -10,10 +10,10 @@ The intended consumers are [Zirium](https://github.com/zayenz/zirium), for MLIR,
 and [Zincite](https://github.com/zayenz/zincite), for MiniZinc. The native
 controls demonstrate borrowed source selections, document-owned operation
 handles and a host that projects native rows while retaining mutable context.
-Consumer integrations, programs and comprehensions are later tasks.
-The crate name is reserved by the yanked `0.0.0-prerelease` version. Consumer
-integrations use verified Git revisions and, when packaging requires one,
-verified prereleases. License: MIT OR Apache-2.0.
+Programs add immutable bindings, grouped expressions, ordered set operands,
+native records and explicit emission policies. Hosts supply these operations
+through typed hooks. Comprehensions and consumer program integrations remain
+later tasks. License: MIT OR Apache-2.0.
 
 ## A borrowed source query
 
@@ -112,7 +112,8 @@ context and active budget; work-cost hooks declare core charges:
   default accepts filter, head and count; hosts explicitly enable new stages.
 - `evaluate_stage` receives the typed host payload and moves the input rows
   into its output stream. Hosts check known sizes and charge scans before
-  allocating; the core checks the returned stream ceiling.
+  allocating, and admit newly produced results in program mode; the core checks
+  the returned stream ceiling without admitting rows a second time.
 - `prepare_filter_item` prepares a row once before its Boolean tree. Its
   default charges one row visit. Hosts can replace that preparation when their
   native admission already owns the work.
@@ -146,7 +147,7 @@ evaluation and nested host calls:
   scan/admission work was already charged to the same budget before allocation;
   it checks the ceiling without charging again. Host-stage output receives the
   same size check without readmission. Hosts use `Budget::check_items` before
-  their own known allocations. This slice has no aggregate expansion counter.
+  their own known allocations.
 - `Pipeline::new` and `parse_pipeline` count one level for the pipeline and each
   active predicate node, including groups. Stages add no depth. Their supplied
   allowances and the active budget's allowance are capped at `MAX_NESTING` (64).
@@ -156,12 +157,128 @@ count only written Group and Not wrappers. Pipeline, leaf and flat And/Or
 nodes consume no logical depth. Zero accepts a flat Boolean tree, one accepts
 one wrapper, and 64 accepts 64 wrappers with the frontend's precedence vectors.
 Both lowering and evaluation walk predicates iteratively. A separate cap of
-64 active `evaluate` calls bounds host reentry even when logical depth is zero.
+64 active pipeline/expression calls bounds host reentry even when logical depth
+is zero.
 
 Hosts pass explicit nested input and the same active budget to `evaluate`.
 Nested calls retain active logical depth and remaining work. Evaluation
 restores active depth and call state on success or error. Hosts choose parsing
 and execution allowances suitable for their request.
+
+## Native programs
+
+Hosts lower their syntax into `Program<Stage, SetOperator, Emitter>` and located
+`Expression` values. `Statement::Bind` defines an immutable native value;
+`Statement::Evaluate` evaluates and discards it or requests the supplied implicit
+emitter. Each statement starts from the original top-level input. Earlier
+statements receive a native copy through the host's `copy_value` hook; the final
+statement receives the original input by move. Initial `Bindings::new` values
+reserve their names. `Bindings::get(name, range)` exposes read-only native lookup.
+
+Expressions support current `Input`, `Binding`, `Group`, `Sequence` of typed
+stages/emitters, binary `Set` and ordered `Record` fields. Group passes current
+input. Set evaluates left before right; record fields run in written order.
+Independent operands receive charged native input copies, with original input
+moved into the final operand. The host chooses set identity/order and constructs
+its native record from the evaluated field vector. No native value needs `Clone`,
+`Send`, `Sync`, `'static` or serialization.
+
+For example, this lowering binds input selections and requests a native record
+containing the selection and a host-defined count. The host supplies the count
+stage and report emitter. The function returns bindings for native inspection.
+
+```rust
+use zirql::{
+    Bindings, Budget, EvaluationError, ExpressionKind, ExpressionStep, Located,
+    Program, ProgramHost, Statement, evaluate_program,
+};
+
+fn report<C, H: ProgramHost<C>>(
+    host: &H, input: H::Value, context: &mut C, budget: &mut Budget,
+    count: H::Stage, emitter: H::Emitter,
+) -> Result<Bindings<H::Value>, EvaluationError<H::Error>> {
+    let count = Located::new(ExpressionKind::Sequence {
+        input: Box::new(Located::new(ExpressionKind::Binding("selected".into()), 40..48)),
+        steps: vec![Located::new(ExpressionStep::Stage(count), 51..56)],
+    }, 40..56);
+    let fields = vec![
+        (Located::new("selection".into(), 20..29),
+         Located::new(ExpressionKind::Binding("selected".into()), 31..39)),
+        (Located::new("count".into(), 40..45), count),
+    ];
+    let program = Program::new(vec![
+        Located::new(Statement::Bind {
+            name: Located::new("selected".into(), 0..8),
+            expression: Located::new(ExpressionKind::Input, 11..16),
+        }, 0..16),
+        Located::new(Statement::Evaluate {
+            expression: Located::new(ExpressionKind::Record(fields), 20..57),
+            implicit_output: Some(emitter),
+        }, 20..57),
+    ], 0..57);
+    evaluate_program(&program, host, input, context, Bindings::default(), budget)
+}
+```
+
+`ProgramHost<Context>` supplies native `Value`, `Stage`, `SetOperator`, `Emitter`
+and `Error` types. Its hooks copy values, evaluate stages, combine set operands,
+construct records and observe emission requests. Every hook receives the same
+mutable host context and active budget. Stage hooks also receive bindings;
+native map/key/selector stages call `evaluate_expression` with relative input,
+those bindings, unchanged context and that budget. Existing pipelines run through
+`evaluate` with a context wrapper containing `&mut Context`. No query restart or
+fresh nested budget is needed.
+
+The runner preflights the complete program before native copies, stages or
+emissions. It rejects core-visible undefined/forward reads, duplicate definitions,
+redefinitions of initial names, structural nesting overflow and steps after a
+terminal emitter at their query ranges. Hosts must first validate names inside
+opaque payloads, pure binding/selector/constructor operands, supported operations,
+duplicate record labels and value transitions, including empty streams. Core
+preflight cannot inspect a host payload. Runtime host failures keep their native
+error type; core failures keep their location.
+
+An explicit `Emit` runs at its written position. `EmissionPolicy::PassThrough`
+retains the value for later steps; `Terminal` ends the expression. A final
+explicit emit, including through Group, suppresses that statement's implicit
+output. The core requests emission without rendering or promising rollback.
+Library hosts choose whether to collect native requests or invoke callbacks as
+they run. CLI hosts buffer all requested output and commit stdout only after the
+whole request succeeds. An earlier library callback or host effect can remain
+observable after a later failure.
+
+## Explicit aggregate limits
+
+`Budget::for_program(ProgramLimits { work, results, nesting, stream_items })`
+enables one aggregate allowance for produced/copied native entries across the
+request. `Budget::new(Limits)` keeps its existing work charges and per-stream
+ceiling; `charge_results` is inactive for that legacy budget. Hosts choose finite
+program allowances explicitly. The core provides no default limits.
+
+One native row or scalar consumes one result unit. A record/map constructor
+container consumes one, and each field/map entry consumes one. Nested values
+consume their own units when produced. Thus a count consumes one, and a tally
+consumes one container plus two units per distinct key: its entry and count.
+Moving admitted rows through filter/unique or moving a value into a binding does
+not admit them again. Repeated value, record, report and emission-snapshot copies
+consume new units. Raw source/model scan nodes consume work rather than results.
+
+Producers call `charge_results(units, location)` before allocation and check known
+sizes with `check_items`. `NativeInput::collect` admits each row before pushing;
+`from_admitted` accepts rows already charged to the same active budget. Returned
+streams receive ceiling checks without readmission. Core count/tally production
+charges new scalars and map entries. Host-stage producers and `copy_value` own
+their native charges. Core record staging admits its container/field entries and
+charges copied label bytes before allocation; `construct_record` can move that
+vector directly without another charge. Additional host materialization needs
+its own admission. Hosts charge copied string/label and rendered bytes to work
+before known allocations. Result exhaustion fails the request without truncation.
+
+Program budgets charge one work unit per visited expression, plus copied binding
+name and record-label bytes. Input/Binding/Sequence wrappers add no logical
+nesting; Group/Set/Record each add one active level. Opaque nested selectors and
+pipeline predicates share the same remaining allowance and active call cap.
+Success and failure restore active depth/call state and retain spent work/results.
 
 Read the [base brief](.zdev/base/brief.md) for the integration order and testing
 level. [TASKS.md](.zdev/base/TASKS.md) is generated by zdev. The GitHub repository
