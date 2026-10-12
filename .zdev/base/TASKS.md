@@ -3,15 +3,15 @@
 # Tasks: base
 
 - Total: 10
-- Ready: 1
-- Blocked: 9
-- Done: 0
+- Ready: 2
+- Blocked: 7
+- Done: 1
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
-| [base-001](tasks/001-run-bounded-native-pipelines-with-two-small-host-examples.md) | Run bounded native pipelines with two small host examples | ready | — |
-| [base-002](tasks/002-run-zincite-read-only-pipelines-through-zirql.md) | Run Zincite read-only pipelines through Zirql | blocked | base-001 |
-| [base-003](tasks/003-run-zirium-operation-queries-and-typed-builders-through-zirq.md) | Run Zirium operation queries and typed builders through Zirql | blocked | base-001 |
+| [base-001](tasks/001-run-bounded-native-pipelines-with-two-small-host-examples.md) | Run bounded native pipelines with two small host examples | done | — |
+| [base-002](tasks/002-run-zincite-read-only-pipelines-through-zirql.md) | Run Zincite read-only pipelines through Zirql | ready | base-001 |
+| [base-003](tasks/003-run-zirium-operation-queries-and-typed-builders-through-zirq.md) | Run Zirium operation queries and typed builders through Zirql | ready | base-001 |
 | [base-004](tasks/004-share-query-programs-bindings-and-nested-structured-reports.md) | Share query programs, bindings and nested structured reports | blocked | base-002, base-003 |
 | [base-005](tasks/005-build-zincite-positional-reports-with-the-shared-comprehensi.md) | Build Zincite positional reports with the shared comprehension evaluator | blocked | base-004 |
 | [base-006](tasks/006-add-natural-zirium-comprehensions-over-projected-query-resul.md) | Add natural Zirium comprehensions over projected query results | blocked | base-005 |
