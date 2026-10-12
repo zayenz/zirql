@@ -1,6 +1,42 @@
+use std::collections::{BTreeMap, HashSet};
+use std::fmt;
+use std::hash::Hash;
 use std::ops::Range;
 
-use crate::{Location, MAX_NESTING, Pipeline, Predicate, PredicateKind, QueryError, Stage};
+use crate::{
+    Located, Location, MAX_NESTING, Nesting, Pipeline, Predicate, PredicateKind, QueryError, Stage,
+};
+
+/// Core failures retain their location; native host failures retain their type.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EvaluationError<E> {
+    Core(QueryError),
+    Host(E),
+}
+
+impl<E> From<QueryError> for EvaluationError<E> {
+    fn from(error: QueryError) -> Self {
+        Self::Core(error)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for EvaluationError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Core(error) => error.fmt(formatter),
+            Self::Host(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for EvaluationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Core(error) => Some(error),
+            Self::Host(error) => Some(error),
+        }
+    }
+}
 
 /// Hosts choose request allowances. Items is a per-stream ceiling, not an
 /// aggregate copy or expansion counter. Nesting is capped by [`MAX_NESTING`].
@@ -19,6 +55,7 @@ pub struct Budget {
     max_items: usize,
     max_nesting: usize,
     depth: usize,
+    calls: usize,
 }
 
 impl Budget {
@@ -28,6 +65,7 @@ impl Budget {
             max_items: limits.items,
             max_nesting: limits.nesting.min(MAX_NESTING),
             depth: 0,
+            calls: 0,
         }
     }
 
@@ -58,26 +96,41 @@ impl Budget {
         Ok(())
     }
 
-    fn within_nesting<T>(
-        &mut self,
-        location: Location,
-        operation: impl FnOnce(&mut Self) -> Result<T, QueryError>,
-    ) -> Result<T, QueryError> {
-        if self.depth >= self.max_nesting {
+    fn enter_depth(&mut self, units: usize, location: Location) -> Result<(), QueryError> {
+        if self.depth + units > self.max_nesting {
             return Err(QueryError {
                 location,
                 message: "nesting limit exceeded".into(),
             });
         }
-        self.depth += 1;
+        self.depth += units;
+        Ok(())
+    }
+
+    fn within_pipeline<T, E>(
+        &mut self,
+        depth: usize,
+        location: Location,
+        operation: impl FnOnce(&mut Self) -> Result<T, EvaluationError<E>>,
+    ) -> Result<T, EvaluationError<E>> {
+        if self.calls >= MAX_NESTING {
+            return Err(QueryError {
+                location,
+                message: "nested evaluation call limit exceeded".into(),
+            }
+            .into());
+        }
+        self.enter_depth(depth, location)?;
+        self.calls += 1;
         let result = operation(self);
-        self.depth -= 1;
+        self.calls -= 1;
+        self.depth -= depth;
         result
     }
 }
 
-/// Explicit native input with retained host state. Construction admits items
-/// against the same budget later passed to [`evaluate`], before each push.
+/// Explicit native input with retained host state. Collect admits rows; use
+/// from_admitted for rows whose host scan already charged the active budget.
 #[derive(Debug)]
 pub struct NativeInput<I, C> {
     items: Vec<I>,
@@ -102,15 +155,29 @@ impl<I, C> NativeInput<I, C> {
             context,
         })
     }
+
+    /// Retain rows whose host scan/admission work was already charged to this
+    /// budget before allocation. Check the stream ceiling without charging again.
+    /// The caller must use this same active budget for evaluation.
+    pub fn from_admitted(
+        context: C,
+        items: Vec<I>,
+        budget: &Budget,
+        location: Location,
+    ) -> Result<Self, QueryError> {
+        budget.check_items(items.len(), location)?;
+        Ok(Self { items, context })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum NativeValue<I> {
     Stream(Vec<I>),
     Count(usize),
+    Tally(BTreeMap<String, usize>),
 }
 
-/// The context survives both stream and count results. The host owns identity,
+/// Context survives stream, count and tally results. The host owns identity,
 /// source lifetimes, limitations and rendering; the core only moves values.
 #[derive(Debug)]
 pub struct NativeResult<I, C> {
@@ -135,103 +202,293 @@ impl Truth {
     }
 }
 
-/// A static host extension. Leaves inspect native items and retained context.
-/// The host charges extra scans to the active budget and returns ordinary
-/// failures as errors, reserving Unknown for incomplete predicate knowledge.
-pub trait Host<I, C, L> {
+/// Static native operations. Every hook receives the retained mutable context
+/// and active budget. Use Host failures for domain errors and Core failures for
+/// budget refusals; reserve Unknown for incomplete predicate knowledge.
+pub trait Host<I, C, L, S = ()> {
+    type Error;
+    type Key: Eq + Hash;
+
+    /// Check applicability before any row iteration, including empty streams.
+    /// Hosts may update stream-kind metadata here. Existing operations need no
+    /// default preparation; optional operations require explicit host support.
+    fn prepare_stage(
+        &self,
+        stage: &Located<Stage<L, S>>,
+        _context: &mut C,
+        _budget: &mut Budget,
+    ) -> Result<(), EvaluationError<Self::Error>> {
+        match stage.value {
+            Stage::Filter(_) | Stage::Head(_) | Stage::Count => Ok(()),
+            _ => Err(QueryError::query(stage.range.clone(), "unsupported pipeline stage").into()),
+        }
+    }
+
+    /// Prepare one row before its Boolean tree. The default charges the existing
+    /// filter-row visit. A host that already owns admission may replace it.
+    fn prepare_filter_item(
+        &self,
+        _item: &I,
+        _context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), EvaluationError<Self::Error>> {
+        Ok(budget.charge(1, Location::Query(range.clone()))?)
+    }
+
     fn evaluate_leaf(
         &self,
         leaf: &L,
         item: &I,
-        context: &C,
+        context: &mut C,
         budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<Truth, QueryError>;
+    ) -> Result<Truth, EvaluationError<Self::Error>>;
+
+    /// Move native rows through a typed navigation or projection stage. Charge
+    /// scans and check known output sizes before allocation. The core checks the
+    /// returned stream ceiling without charging admission a second time.
+    fn evaluate_stage(
+        &self,
+        _stage: &S,
+        _items: Vec<I>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<I>, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "unsupported host stage").into())
+    }
+
+    /// Supply native identity for stable unique. The core has charged one row
+    /// visit; charge only additional key work here (e.g. string bytes beyond one).
+    fn identity_key(
+        &self,
+        _item: &I,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Key, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "unsupported unique identity").into())
+    }
+
+    /// Consume a string row for tally, moving owned keys where possible. The
+    /// core has charged one row visit; charge only additional key work here.
+    fn tally_key(
+        &self,
+        _item: I,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<String, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "unsupported tally key").into())
+    }
 }
 
-/// Run the validated pipeline on explicit input. No stage selects a document
-/// implicitly. Nested host evaluations pass explicit input and this same
-/// mutable budget, retaining the current depth and remaining work.
-///
-/// Core work units are admitted items, stage visits, filter item visits and
-/// visited predicate nodes. Filter keeps only True; head truncates; count is
-/// terminal. No stage requires items, context or leaves to implement Clone.
-pub fn evaluate<I, C, L>(
-    pipeline: &Pipeline<L>,
-    host: &impl Host<I, C, L>,
+/// Run a validated pipeline on explicit native input and retain its context.
+/// Nested host evaluations use this same budget and preserve active depth.
+/// Core work charges stage and predicate-node visits, default filter-row
+/// preparation, and one row visit for unique/tally. Host hooks charge scans.
+pub fn evaluate<I, C, L, S, H>(
+    pipeline: &Pipeline<L, S>,
+    host: &H,
     input: NativeInput<I, C>,
     budget: &mut Budget,
-) -> Result<NativeResult<I, C>, QueryError> {
-    budget.within_nesting(Location::Query(pipeline.range()), |budget| {
-        budget.check_items(input.items.len(), Location::Query(pipeline.range()))?;
-        let NativeInput { mut items, context } = input;
-        for stage in pipeline.stages() {
-            budget.charge(1, Location::Query(stage.range.clone()))?;
-            match &stage.value {
-                Stage::Filter(predicate) => {
-                    let mut retained = Vec::new();
-                    for item in items {
-                        budget.charge(1, Location::Query(stage.range.clone()))?;
-                        if evaluate_predicate(predicate, host, &item, &context, budget)?
-                            == Truth::True
-                        {
-                            retained.push(item);
+) -> Result<NativeResult<I, C>, EvaluationError<H::Error>>
+where
+    H: Host<I, C, L, S>,
+{
+    budget.within_pipeline(
+        pipeline.nesting.pipeline_depth(),
+        Location::Query(pipeline.range()),
+        |budget| {
+            budget.check_items(input.items.len(), Location::Query(pipeline.range()))?;
+            let NativeInput {
+                mut items,
+                mut context,
+            } = input;
+            for stage in pipeline.stages() {
+                budget.charge(1, Location::Query(stage.range.clone()))?;
+                host.prepare_stage(stage, &mut context, budget)?;
+                match &stage.value {
+                    Stage::Filter(predicate) => {
+                        let mut retained = Vec::new();
+                        for item in items {
+                            host.prepare_filter_item(&item, &mut context, budget, &stage.range)?;
+                            if evaluate_predicate(
+                                predicate,
+                                pipeline.nesting,
+                                host,
+                                &item,
+                                &mut context,
+                                budget,
+                            )? == Truth::True
+                            {
+                                retained.push(item);
+                            }
                         }
+                        items = retained;
                     }
-                    items = retained;
+                    Stage::Head(count) => items.truncate(*count),
+                    Stage::Count => {
+                        return Ok(NativeResult {
+                            value: NativeValue::Count(items.len()),
+                            context,
+                        });
+                    }
+                    Stage::Unique => {
+                        let mut seen = HashSet::new();
+                        let mut retained = Vec::new();
+                        for item in items {
+                            budget.charge(1, Location::Query(stage.range.clone()))?;
+                            if seen.insert(host.identity_key(
+                                &item,
+                                &mut context,
+                                budget,
+                                &stage.range,
+                            )?) {
+                                retained.push(item);
+                            }
+                        }
+                        items = retained;
+                    }
+                    Stage::Tally => {
+                        let mut counts = BTreeMap::new();
+                        for item in items {
+                            budget.charge(1, Location::Query(stage.range.clone()))?;
+                            let key = host.tally_key(item, &mut context, budget, &stage.range)?;
+                            *counts.entry(key).or_insert(0) += 1;
+                        }
+                        return Ok(NativeResult {
+                            value: NativeValue::Tally(counts),
+                            context,
+                        });
+                    }
+                    Stage::Host(payload) => {
+                        items = host.evaluate_stage(
+                            payload,
+                            items,
+                            &mut context,
+                            budget,
+                            &stage.range,
+                        )?;
+                    }
                 }
-                Stage::Head(count) => items.truncate(*count),
-                Stage::Count => {
-                    return Ok(NativeResult {
-                        value: NativeValue::Count(items.len()),
-                        context,
-                    });
-                }
+                budget.check_items(items.len(), Location::Query(stage.range.clone()))?;
             }
-        }
-        Ok(NativeResult {
-            value: NativeValue::Stream(items),
-            context,
-        })
-    })
+            Ok(NativeResult {
+                value: NativeValue::Stream(items),
+                context,
+            })
+        },
+    )
 }
 
-fn evaluate_predicate<I, C, L>(
+// Predicate frames replace Rust recursion. Logical depth remains active while
+// evaluating a child or calling a host, including reentrant host evaluation.
+enum PredicateFrame<'a, L> {
+    Unary {
+        negate: bool,
+        depth: usize,
+    },
+    Boolean {
+        remaining: &'a [Predicate<L>],
+        conjunction: bool,
+        unknown: bool,
+        depth: usize,
+    },
+}
+
+fn evaluate_predicate<I, C, L, S, H>(
     predicate: &Predicate<L>,
-    host: &impl Host<I, C, L>,
+    nesting: Nesting,
+    host: &H,
     item: &I,
-    context: &C,
+    context: &mut C,
     budget: &mut Budget,
-) -> Result<Truth, QueryError> {
-    budget.within_nesting(Location::Query(predicate.range.clone()), |budget| {
-        budget.charge(1, Location::Query(predicate.range.clone()))?;
-        match &predicate.value {
-            PredicateKind::Leaf(leaf) => {
-                host.evaluate_leaf(leaf, item, context, budget, &predicate.range)
-            }
-            PredicateKind::Not(child) => {
-                Ok(evaluate_predicate(child, host, item, context, budget)?.negate())
-            }
-            PredicateKind::Group(child) => evaluate_predicate(child, host, item, context, budget),
-            PredicateKind::And(children) | PredicateKind::Or(children) => {
-                let is_and = matches!(predicate.value, PredicateKind::And(_));
-                let decisive = if is_and { Truth::False } else { Truth::True };
-                let mut unknown = false;
-                for child in children {
-                    let truth = evaluate_predicate(child, host, item, context, budget)?;
-                    if truth == decisive {
-                        return Ok(decisive);
-                    }
-                    unknown |= truth == Truth::Unknown;
+) -> Result<Truth, EvaluationError<H::Error>>
+where
+    H: Host<I, C, L, S>,
+{
+    let initial_depth = budget.depth;
+    let result = (|| {
+        let mut frames = Vec::new();
+        let mut next = predicate;
+        loop {
+            let depth = nesting.predicate_depth(next);
+            budget.enter_depth(depth, Location::Query(next.range.clone()))?;
+            budget.charge(1, Location::Query(next.range.clone()))?;
+            let mut truth = match &next.value {
+                PredicateKind::Leaf(leaf) => {
+                    host.evaluate_leaf(leaf, item, context, budget, &next.range)?
                 }
-                Ok(if unknown {
-                    Truth::Unknown
-                } else if is_and {
-                    Truth::True
-                } else {
-                    Truth::False
-                })
+                PredicateKind::Not(child) | PredicateKind::Group(child) => {
+                    frames.push(PredicateFrame::Unary {
+                        negate: matches!(next.value, PredicateKind::Not(_)),
+                        depth,
+                    });
+                    next = child;
+                    continue;
+                }
+                PredicateKind::And(children) | PredicateKind::Or(children) => {
+                    frames.push(PredicateFrame::Boolean {
+                        remaining: &children[1..],
+                        conjunction: matches!(next.value, PredicateKind::And(_)),
+                        unknown: false,
+                        depth,
+                    });
+                    next = &children[0];
+                    continue;
+                }
+            };
+            budget.depth -= depth;
+            loop {
+                match frames.pop() {
+                    None => return Ok(truth),
+                    Some(PredicateFrame::Unary { negate, depth }) => {
+                        if negate {
+                            truth = truth.negate();
+                        }
+                        budget.depth -= depth;
+                    }
+                    Some(PredicateFrame::Boolean {
+                        remaining,
+                        conjunction,
+                        mut unknown,
+                        depth,
+                    }) => {
+                        let decisive = if conjunction {
+                            Truth::False
+                        } else {
+                            Truth::True
+                        };
+                        unknown |= truth == Truth::Unknown;
+                        if truth != decisive
+                            && let Some((child, remaining)) = remaining.split_first()
+                        {
+                            frames.push(PredicateFrame::Boolean {
+                                remaining,
+                                conjunction,
+                                unknown,
+                                depth,
+                            });
+                            next = child;
+                            break;
+                        }
+                        if truth != decisive {
+                            truth = if unknown {
+                                Truth::Unknown
+                            } else if conjunction {
+                                Truth::True
+                            } else {
+                                Truth::False
+                            };
+                        }
+                        budget.depth -= depth;
+                    }
+                }
             }
         }
-    })
+    })();
+    budget.depth = initial_depth;
+    result
 }

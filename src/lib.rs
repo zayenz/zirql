@@ -6,11 +6,13 @@ mod parser;
 use std::fmt;
 use std::ops::Range;
 
-pub use eval::{Budget, Host, Limits, NativeInput, NativeResult, NativeValue, Truth, evaluate};
+pub use eval::{
+    Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, Truth, evaluate,
+};
 pub use parser::{ArgumentReader, parse_pipeline};
 
-/// The core's recursive parser and evaluator support at most this depth.
-/// Hosts may choose a smaller nesting allowance.
+/// The maximum logical nesting allowance and active nested evaluation calls.
+/// Hosts may choose a smaller logical allowance.
 pub const MAX_NESTING: usize = 64;
 
 /// A half-open UTF-8 byte range in the query or the host's original source.
@@ -76,51 +78,102 @@ pub enum PredicateKind<L> {
     Or(Vec<Predicate<L>>),
 }
 
-/// All stages accept a stream. Filter and head return streams; count returns a
-/// scalar and must be last. Streams preserve order and duplicate identities.
+/// All stages accept a stream. Count and tally are terminal. Hosts supply typed
+/// navigation/projection payloads and check stream-kind applicability.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Stage<L> {
+pub enum Stage<L, S = ()> {
     Filter(Predicate<L>),
     Head(usize),
     Count,
+    Unique,
+    Tally,
+    Host(S),
 }
 
 /// A validated pipeline shared by textual and typed frontends.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pipeline<L> {
-    stages: Vec<Located<Stage<L>>>,
+pub struct Pipeline<L, S = ()> {
+    stages: Vec<Located<Stage<L, S>>>,
     range: Range<usize>,
+    nesting: Nesting,
 }
 
-impl<L> Pipeline<L> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nesting {
+    Nodes,
+    GroupNot,
+}
+
+impl Nesting {
+    fn pipeline_depth(self) -> usize {
+        usize::from(self == Self::Nodes)
+    }
+
+    fn predicate_depth<L>(self, predicate: &Predicate<L>) -> usize {
+        usize::from(
+            self == Self::Nodes
+                || matches!(
+                    predicate.value,
+                    PredicateKind::Group(_) | PredicateKind::Not(_)
+                ),
+        )
+    }
+}
+
+impl<L, S> Pipeline<L, S> {
     /// Lower typed stages, checking result transitions and predicate depth.
     /// An empty pipeline passes through its explicit input. Depth starts at one
     /// for the pipeline; each predicate node adds one, including groups.
     pub fn new(
-        stages: Vec<Located<Stage<L>>>,
+        stages: Vec<Located<Stage<L, S>>>,
         range: Range<usize>,
         nesting_limit: usize,
     ) -> Result<Self, QueryError> {
+        Self::lower(stages, range, nesting_limit, Nesting::Nodes)
+    }
+
+    /// Lower a frontend that counts only written Group and Not wrappers.
+    /// Pipeline, leaf and And/Or nodes consume no logical depth. The core walks
+    /// predicates iteratively and separately caps active nested evaluation calls.
+    pub fn with_group_not_nesting(
+        stages: Vec<Located<Stage<L, S>>>,
+        range: Range<usize>,
+        nesting_limit: usize,
+    ) -> Result<Self, QueryError> {
+        Self::lower(stages, range, nesting_limit, Nesting::GroupNot)
+    }
+
+    fn lower(
+        stages: Vec<Located<Stage<L, S>>>,
+        range: Range<usize>,
+        nesting_limit: usize,
+        nesting: Nesting,
+    ) -> Result<Self, QueryError> {
         let nesting_limit = nesting_limit.min(MAX_NESTING);
-        check_depth(1, nesting_limit, &range)?;
-        let mut counted = false;
+        check_depth(nesting.pipeline_depth(), nesting_limit, &range)?;
+        let mut terminal = None;
         for stage in &stages {
-            if counted {
+            if let Some(name) = terminal {
                 return Err(QueryError::query(
                     stage.range.clone(),
-                    "a stage cannot follow count",
+                    format!("a stage cannot follow {name}"),
                 ));
             }
             match &stage.value {
-                Stage::Filter(predicate) => validate_predicate(predicate, 2, nesting_limit)?,
-                Stage::Head(_) => {}
-                Stage::Count => counted = true,
+                Stage::Filter(predicate) => validate_predicate(predicate, nesting, nesting_limit)?,
+                Stage::Head(_) | Stage::Unique | Stage::Host(_) => {}
+                Stage::Count => terminal = Some("count"),
+                Stage::Tally => terminal = Some("tally"),
             }
         }
-        Ok(Self { stages, range })
+        Ok(Self {
+            stages,
+            range,
+            nesting,
+        })
     }
 
-    pub fn stages(&self) -> &[Located<Stage<L>>] {
+    pub fn stages(&self) -> &[Located<Stage<L, S>>] {
         &self.stages
     }
 
@@ -138,24 +191,26 @@ fn check_depth(depth: usize, limit: usize, range: &Range<usize>) -> Result<(), Q
 
 fn validate_predicate<L>(
     predicate: &Predicate<L>,
-    depth: usize,
+    nesting: Nesting,
     limit: usize,
 ) -> Result<(), QueryError> {
-    check_depth(depth, limit, &predicate.range)?;
-    match &predicate.value {
-        PredicateKind::Leaf(_) => {}
-        PredicateKind::Not(child) | PredicateKind::Group(child) => {
-            validate_predicate(child, depth + 1, limit)?;
-        }
-        PredicateKind::And(children) | PredicateKind::Or(children) => {
-            if children.is_empty() {
-                return Err(QueryError::query(
-                    predicate.range.clone(),
-                    "a Boolean combination needs at least one predicate",
-                ));
+    let mut pending = vec![(predicate, nesting.pipeline_depth())];
+    while let Some((predicate, parent_depth)) = pending.pop() {
+        let depth = parent_depth + nesting.predicate_depth(predicate);
+        check_depth(depth, limit, &predicate.range)?;
+        match &predicate.value {
+            PredicateKind::Leaf(_) => {}
+            PredicateKind::Not(child) | PredicateKind::Group(child) => {
+                pending.push((child, depth));
             }
-            for child in children {
-                validate_predicate(child, depth + 1, limit)?;
+            PredicateKind::And(children) | PredicateKind::Or(children) => {
+                if children.is_empty() {
+                    return Err(QueryError::query(
+                        predicate.range.clone(),
+                        "a Boolean combination needs at least one predicate",
+                    ));
+                }
+                pending.extend(children.iter().rev().map(|child| (child, depth)));
             }
         }
     }
