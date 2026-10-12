@@ -97,9 +97,16 @@ each host identity key and preserves input order. Tally consumes string keys
 and returns their counts in sorted key order. Hosts own rendering.
 
 `Host<Item, Context, Leaf, HostStage>` declares a native `Error` type and an
-identity `Key: Eq + Hash`. Its hooks receive the retained mutable context and
-active budget:
+identity `Key: Eq + Hash`. Evaluation hooks receive the retained mutable
+context and active budget; work-cost hooks declare core charges:
 
+- `stage_work(items, context)` returns the work charged at the stage location
+  before `prepare_stage`. It receives the current input rows and immutable
+  context and defaults to one unit. A host can return `items.len().max(1)` to
+  charge by input size, including one unit for an empty stream.
+- `collection_item_work()` returns the work charged at the stage location before
+  each `identity_key` or `tally_key` call. It defaults to one unit. A host can
+  return zero when its stage or admission charge already covers row visits.
 - `prepare_stage` checks stream-kind applicability before every stage, even on
   an empty stream. It may update metadata such as document selection. Its
   default accepts filter, head and count; hosts explicitly enable new stages.
@@ -125,12 +132,15 @@ Native errors need no error trait or serialization.
 The caller chooses `Limits` and owns one mutable `Budget` for input admission,
 evaluation and nested host calls:
 
-- Work charges one unit per admitted item, stage visit and visited predicate
-  node. Default filter preparation and each unique/tally row also charge one
-  unit. Hosts charge scans or traversal with `Budget::charge` before doing the
-  work. Unique/tally key hooks charge additional work beyond the core's row
-  visit; a string key of length `n` can charge `n.saturating_sub(1)` to preserve
-  a total charge of `n.max(1)`. Successful and failed calls retain spent work.
+- Work charges one unit per admitted item and visited predicate node. Stage
+  visits use `stage_work`; unique/tally rows use `collection_item_work`. Both
+  default to one unit, as does default filter preparation. Hosts charge scans
+  or traversal with `Budget::charge` before doing the work. Unique/tally key
+  hooks charge work beyond their declared row cost; with the default row cost,
+  a string key of length `n` can charge `n.saturating_sub(1)` to preserve a total
+  charge of `n.max(1)`. Weighted stage costs and zero collection-row costs let
+  hosts preserve input-length stage accounting without another row charge.
+  Successful and failed calls retain spent work.
 - Items is a per-stream ceiling. `NativeInput::collect` checks it and charges
   work before each push. `NativeInput::from_admitted` accepts rows whose host
   scan/admission work was already charged to the same budget before allocation;

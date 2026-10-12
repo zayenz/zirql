@@ -202,12 +202,26 @@ impl Truth {
     }
 }
 
-/// Static native operations. Every hook receives the retained mutable context
-/// and active budget. Use Host failures for domain errors and Core failures for
-/// budget refusals; reserve Unknown for incomplete predicate knowledge.
+/// Static native operations. Evaluation hooks receive the retained mutable
+/// context and active budget. Work-cost hooks only declare core charges. Use Host
+/// failures for domain errors and Core failures for budget refusals; reserve
+/// Unknown for incomplete predicate knowledge.
 pub trait Host<I, C, L, S = ()> {
     type Error;
     type Key: Eq + Hash;
+
+    /// Work charged at the stage location before stage preparation. The default
+    /// is one unit; hosts may weight it by input size and retained context.
+    fn stage_work(&self, _items: &[I], _context: &C) -> usize {
+        1
+    }
+
+    /// Work charged at the stage location before each unique/tally key hook.
+    /// The default is one row visit; hosts may return zero when stage or
+    /// admission work already accounts for these visits.
+    fn collection_item_work(&self) -> usize {
+        1
+    }
 
     /// Check applicability before any row iteration, including empty streams.
     /// Hosts may update stream-kind metadata here. Existing operations need no
@@ -259,8 +273,8 @@ pub trait Host<I, C, L, S = ()> {
         Err(QueryError::query(range.clone(), "unsupported host stage").into())
     }
 
-    /// Supply native identity for stable unique. The core has charged one row
-    /// visit; charge only additional key work here (e.g. string bytes beyond one).
+    /// Supply native identity for stable unique. The core has charged
+    /// collection_item_work; charge any additional key work here.
     fn identity_key(
         &self,
         _item: &I,
@@ -272,7 +286,7 @@ pub trait Host<I, C, L, S = ()> {
     }
 
     /// Consume a string row for tally, moving owned keys where possible. The
-    /// core has charged one row visit; charge only additional key work here.
+    /// core has charged collection_item_work; charge any additional key work here.
     fn tally_key(
         &self,
         _item: I,
@@ -286,8 +300,9 @@ pub trait Host<I, C, L, S = ()> {
 
 /// Run a validated pipeline on explicit native input and retain its context.
 /// Nested host evaluations use this same budget and preserve active depth.
-/// Core work charges stage and predicate-node visits, default filter-row
-/// preparation, and one row visit for unique/tally. Host hooks charge scans.
+/// Core work charges the host-declared stage and unique/tally row costs,
+/// predicate-node visits, and default filter-row preparation. Host evaluation
+/// hooks charge scans and any additional work.
 pub fn evaluate<I, C, L, S, H>(
     pipeline: &Pipeline<L, S>,
     host: &H,
@@ -307,7 +322,10 @@ where
                 mut context,
             } = input;
             for stage in pipeline.stages() {
-                budget.charge(1, Location::Query(stage.range.clone()))?;
+                budget.charge(
+                    host.stage_work(&items, &context),
+                    Location::Query(stage.range.clone()),
+                )?;
                 host.prepare_stage(stage, &mut context, budget)?;
                 match &stage.value {
                     Stage::Filter(predicate) => {
@@ -339,7 +357,10 @@ where
                         let mut seen = HashSet::new();
                         let mut retained = Vec::new();
                         for item in items {
-                            budget.charge(1, Location::Query(stage.range.clone()))?;
+                            budget.charge(
+                                host.collection_item_work(),
+                                Location::Query(stage.range.clone()),
+                            )?;
                             if seen.insert(host.identity_key(
                                 &item,
                                 &mut context,
@@ -354,7 +375,10 @@ where
                     Stage::Tally => {
                         let mut counts = BTreeMap::new();
                         for item in items {
-                            budget.charge(1, Location::Query(stage.range.clone()))?;
+                            budget.charge(
+                                host.collection_item_work(),
+                                Location::Query(stage.range.clone()),
+                            )?;
                             let key = host.tally_key(item, &mut context, budget, &stage.range)?;
                             *counts.entry(key).or_insert(0) += 1;
                         }

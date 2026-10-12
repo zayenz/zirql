@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-012"
 key = "zirium-work-and-prerelease"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "high"
@@ -30,10 +30,10 @@ This is the core prerequisite for base-003. Read the base brief and the existing
 
 ## Done when
 
-- [ ] Host::stage_work(items, context) and Host::collection_item_work() default to one, and the evaluator charges them before stage preparation and unique/tally row processing respectively.
-- [ ] Existing hosts retain their behavior and one compact public control demonstrates accepted weighted stages and zero additional unique/tally row work, including a located allowance refusal.
-- [ ] Cargo.toml and Cargo.lock use exactly 0.1.0-alpha.1; the manifest declares Rust 1.88, repository and readme metadata, and the required explicit package contents. README.md explains the host work contract.
-- [ ] Required core checks, Rust 1.88 tests, package content inspection and candidate package verification pass. The coordinator independently verifies the complete child delta before committing it.
+- [x] Host::stage_work(items, context) and Host::collection_item_work() default to one, and the evaluator charges them before stage preparation and unique/tally row processing respectively.
+- [x] Existing hosts retain their behavior and one compact public control demonstrates accepted weighted stages and zero additional unique/tally row work, including a located allowance refusal.
+- [x] Cargo.toml and Cargo.lock use exactly 0.1.0-alpha.1; the manifest declares Rust 1.88, repository and readme metadata, and the required explicit package contents. README.md explains the host work contract.
+- [x] Required core checks, Rust 1.88 tests, package content inspection and candidate package verification pass. The coordinator independently verifies the complete child delta before committing it.
 
 ## Validation
 
@@ -41,5 +41,15 @@ This is the core prerequisite for base-003. Read the base brief and the existing
 - Run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace.
 - Run cargo +1.88 test --workspace.
 - Reuse the native controls for default charges and add the single compact public allowance control described above. Preserve the existing unknown-negation and short-circuit controls.
-- Inspect cargo +stable package --list --locked. Confirm the package contains sources, tests, Cargo.toml, Cargo.lock, README.md and both licenses, and omits .zdev and AGENTS.md.
+- Inspect cargo +stable package --list --locked --allow-dirty for the uncommitted candidate. Confirm the package contains sources, tests, Cargo.toml, Cargo.lock, README.md and both licenses, and omits .zdev and AGENTS.md. The coordinator repeats cargo +stable package --list --locked after the verified commit.
 - Run cargo +stable package --locked --allow-dirty solely to verify the uncommitted candidate. After independent verification and the child commit, the coordinator runs cargo +stable package --locked and cargo +stable publish --dry-run --locked on the exact clean commit before the authorized push and publication. Confirm 0.1.0-alpha.1 is resolvable and non-yanked before resuming base-003, and retain the yanked reservation.
+
+## Result
+
+Added default-one Host work-cost hooks and publishable 0.1.0-alpha.1 metadata. Independently verified the complete candidate against W4d35d7ccc7ce2c19 with no findings; existing default hosts retain their behavior. Clean package checks and authorized publication follow this verified commit before resuming base-003.
+
+Validation:
+
+- PASS: git diff --check and zdev check base --format json.
+- PASS: cargo fmt --all -- --check, clippy --workspace --all-targets -D warnings, and workspace tests on stable and Rust 1.88 (11 native controls and one README doctest each).
+- PASS: stable locked candidate package list and full package verification with --allow-dirty; 11 files include required sources/tests/manifests/lock/README/licenses and omit .zdev/AGENTS. Independent verifier pass; unchanged snapshot comparison.

@@ -952,3 +952,100 @@ fn group_not_lowering_preserves_written_limits_and_nested_safety() {
         NativeValue::Count(1)
     );
 }
+
+#[test]
+fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
+    struct WeightedHost;
+
+    impl Host<&str, (), ()> for WeightedHost {
+        type Error = QueryError;
+        type Key = String;
+
+        fn stage_work(&self, items: &[&str], _context: &()) -> usize {
+            items.len().max(1)
+        }
+
+        fn collection_item_work(&self) -> usize {
+            0
+        }
+
+        fn prepare_stage(
+            &self,
+            _stage: &Located<Stage<()>>,
+            _context: &mut (),
+            _budget: &mut Budget,
+        ) -> Result<(), EvaluationError<QueryError>> {
+            Ok(())
+        }
+
+        fn evaluate_leaf(
+            &self,
+            _leaf: &(),
+            _item: &&str,
+            _context: &mut (),
+            _budget: &mut Budget,
+            _range: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            Ok(Truth::True)
+        }
+
+        fn identity_key(
+            &self,
+            item: &&str,
+            _context: &mut (),
+            _budget: &mut Budget,
+            _range: &Range<usize>,
+        ) -> Result<String, EvaluationError<QueryError>> {
+            Ok((*item).into())
+        }
+
+        fn tally_key(
+            &self,
+            item: &str,
+            _context: &mut (),
+            _budget: &mut Budget,
+            _range: &Range<usize>,
+        ) -> Result<String, EvaluationError<QueryError>> {
+            Ok(item.into())
+        }
+    }
+
+    let pipeline = Pipeline::new(
+        vec![
+            Located::new(Stage::Unique, 0..6),
+            Located::new(Stage::Tally, 9..14),
+        ],
+        0..14,
+        64,
+    )
+    .unwrap();
+    let input = |budget: &mut Budget| {
+        NativeInput::collect(
+            (),
+            ["beta", "alpha", "beta", "apple"],
+            budget,
+            Location::Source(0..21),
+        )
+        .unwrap()
+    };
+    // Four admitted rows, four unique inputs and three tally inputs.
+    let mut budget = Budget::new(Limits {
+        work: 11,
+        ..limits()
+    });
+    let result = evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap();
+    assert_eq!(
+        result.value,
+        NativeValue::Tally([("alpha".into(), 1), ("apple".into(), 1), ("beta".into(), 1)].into())
+    );
+    assert_eq!(budget.remaining_work(), 0);
+
+    let mut budget = Budget::new(Limits {
+        work: 10,
+        ..limits()
+    });
+    assert_eq!(
+        evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap_err(),
+        EvaluationError::Core(QueryError::query(9..14, "work limit exceeded"))
+    );
+}
