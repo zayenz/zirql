@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "normal"
-blocked_by = ["base-001"]
+blocked_by = ["base-001", "base-011"]
 +++
 # Run Zincite read-only pipelines through Zirql
 
