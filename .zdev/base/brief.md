@@ -46,6 +46,11 @@ generator, dynamic plugin loader, query optimizer and persistent cache have no
 current consumer requirement. Use the consumers' MIT OR Apache-2.0 license
 convention. Crate publication and a stable 1.0 API are outside this increment.
 
+Use [BAML](https://boundaryml.com/) as an additional design reference for readable
+language syntax, explicit types and native host integration. Draw on its ideas
+where they simplify Zirql's lowering, diagnostics or typed builder APIs; each
+choice still needs a concrete Zirium or Zincite use.
+
 ### Syntax and executable representation
 
 A surface frontend lowers syntax to a shared, located program representation.
