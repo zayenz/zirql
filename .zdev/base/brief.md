@@ -49,6 +49,10 @@ The `zirql` name is reserved on crates.io by `0.0.0-prerelease`, published from
 the verified core at `ab4aba4ade3100c3e3ebae23a98c6f56b72c6426` and yanked on
 2026-10-12. This reservation does not supply a resolvable registry dependency.
 
+The usable `0.1.0-alpha.1` prerelease was independently verified and published
+from `7ee35cad2f8d92cbccf29977ff4496987cf7e19d` on 2026-10-12. Its registry
+checksum matches the verified package; the name reservation remains yanked.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser

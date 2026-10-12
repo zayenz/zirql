@@ -46,10 +46,13 @@ This is the core prerequisite for base-003. Read the base brief and the existing
 
 ## Result
 
-Added default-one Host work-cost hooks and publishable 0.1.0-alpha.1 metadata. Independently verified the complete candidate against W4d35d7ccc7ce2c19 with no findings; existing default hosts retain their behavior. Clean package checks and authorized publication follow this verified commit before resuming base-003.
+Added default-one Host work-cost hooks and publishable 0.1.0-alpha.1 metadata. Independently verified the complete candidate against W4d35d7ccc7ce2c19 with no findings; existing default hosts retain their behavior.
+
+Committed and pushed as `7ee35cad2f8d92cbccf29977ff4496987cf7e19d`. Published `0.1.0-alpha.1` from that clean verified commit on 2026-10-12. The registry version is non-yanked and its SHA-256 checksum is `6b96055996a1e0a67fe4ba05a2bdb066e4a719102dbe7cd0f996e9de5dd307d2`, matching the packaged artifact. The original name-reservation version remains yanked.
 
 Validation:
 
 - PASS: git diff --check and zdev check base --format json.
 - PASS: cargo fmt --all -- --check, clippy --workspace --all-targets -D warnings, and workspace tests on stable and Rust 1.88 (11 native controls and one README doctest each).
 - PASS: stable locked candidate package list and full package verification with --allow-dirty; 11 files include required sources/tests/manifests/lock/README/licenses and omit .zdev/AGENTS. Independent verifier pass; unchanged snapshot comparison.
+- PASS: clean stable locked package listing, package verification and publication dry-run at the verified commit. Packaged source files match the checkout, and Cargo package metadata identifies that clean commit. Publication completed and the registry checksum matches the uploaded package.
