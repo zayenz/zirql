@@ -66,6 +66,14 @@ nesting limits. Its registry archive matches the clean verified package byte
 for byte, and exact-version resolution compiles. Earlier usable prereleases
 remain available; the reservation remains yanked.
 
+The usable `0.1.0-alpha.4` prerelease was independently verified and published
+from `be8bd8b07d5e7e4fb148f8f2e032ffe0f5e226b9` on 2026-10-13. It supplies
+budgeted scalar expressions and positional comprehensions through callable
+validation, free-name, type-discovery, evaluation and copy APIs. Its registry
+archive matches the clean verified package byte for byte, and an exact-version
+registry consumer executes scalar/comprehension values and all five functions.
+Earlier usable prereleases remain available; the reservation remains yanked.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser
