@@ -39,12 +39,22 @@ The user approved the exact ten-task bundle and authorized an implementation
 goal on 2026-10-12. The outstanding Zincite data-edit contract choices retain
 their attended gate.
 
+The user subsequently authorized making the GitHub repository public on
+2026-10-12, and that visibility change is complete. The user also authorized a
+name-reservation prerelease followed by yanking that version. A usable framework
+crate release remains a separate decision.
+
+The `zirql` name is reserved on crates.io by `0.0.0-prerelease`, published from
+the verified core at `ab4aba4ade3100c3e3ebae23a98c6f56b72c6426` and yanked on
+2026-10-12. This reservation does not supply a resolvable registry dependency.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser
 generator, dynamic plugin loader, query optimizer and persistent cache have no
 current consumer requirement. Use the consumers' MIT OR Apache-2.0 license
-convention. Crate publication and a stable 1.0 API are outside this increment.
+convention. A yanked prerelease may reserve the crate name; a usable crate release
+and a stable 1.0 API are outside this increment.
 
 Use [BAML](https://boundaryml.com/) as an additional design reference for readable
 language syntax, explicit types and native host integration. Draw on its ideas
@@ -256,4 +266,6 @@ these observations are not a promise that a later checkout has the same APIs.
 Concrete Rust signatures are chosen against the first two native controls within
 these boundaries. Zincite's data-construction grammar, operation subset,
 target/key/empty-axis and comment policies retain their existing attended gate.
-Publishing the repository or crate is deferred.
+The repository is public and the crate name is reserved. A usable crate release
+remains a separate decision; any consumer packaging check that needs one remains
+a completion gate.
