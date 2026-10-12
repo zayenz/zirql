@@ -47,11 +47,12 @@ Read the base brief first, including its statement/emission/limit ownership and 
 
 ## Result
 
-Added the independently verified native program/expression runtime, immutable bindings, host emission policies and explicit aggregate accounting while preserving legacy pipeline behavior. The complete 0.1.0-alpha.2 candidate is verified; coordinator clean-commit packaging and authorized publication follow before consumer adoption.
+Added the independently verified native program/expression runtime, immutable bindings, host emission policies and explicit aggregate accounting while preserving legacy pipeline behavior. The usable 0.1.0-alpha.2 prerelease is published from verified source commit `5dde88958b8e0744ca0e0b9814c19e88b614dedd` and supplies the base-004 integration prerequisite.
 
 Validation:
 
 - Independent whole-child review PASS against Wa2b093301118bb27; unchanged checkout and no findings.
 - git diff --check; zdev check base; cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings passed.
 - cargo test --workspace and cargo +1.88.0 test --workspace --locked passed: 11 pipeline controls, 2 native program controls and 2 doctests.
-- Actual locked allow-dirty Cargo package/list checks and byte inspection passed: exact alpha.2, Rust 1.88, edition 2024, MIT OR Apache-2.0, no dependencies and no AGENTS/.zdev package content. Clean committed release checks remain coordinator-owned.
+- Actual locked allow-dirty Cargo package/list checks and byte inspection passed: exact alpha.2, Rust 1.88, edition 2024, MIT OR Apache-2.0, no dependencies and no AGENTS/.zdev package content.
+- Clean committed `cargo package --list --locked`, `cargo package --locked` and `cargo publish --dry-run --locked` passed before authorized publication. Registry archive bytes and checksum match the verified package: `a0970321ca342796a7efcaa201f334e397550a77cb2a895d13a01afeb19873ea`. A fresh exact-version registry dependency resolves and compiles the public program API. Alpha.2 and alpha.1 remain non-yanked; the reservation remains yanked. Core publication does not complete base-004 or consumer tasks.

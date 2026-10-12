@@ -53,6 +53,12 @@ The usable `0.1.0-alpha.1` prerelease was independently verified and published
 from `7ee35cad2f8d92cbccf29977ff4496987cf7e19d` on 2026-10-12. Its registry
 checksum matches the verified package; the name reservation remains yanked.
 
+The usable `0.1.0-alpha.2` prerelease was independently verified and published
+from `5dde88958b8e0744ca0e0b9814c19e88b614dedd` on 2026-10-12. The registry
+archive matches the clean verified package byte for byte, and exact-version
+resolution exposes the native program API. The reservation remains yanked and
+`0.1.0-alpha.1` remains available.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser
