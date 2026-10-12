@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "normal"
-blocked_by = ["base-002", "base-003"]
+blocked_by = ["base-002", "base-003", "base-013"]
 +++
 # Share query programs, bindings and nested structured reports
 
