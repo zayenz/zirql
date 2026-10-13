@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 28
-- Ready: 6
+- Ready: 5
 - Blocked: 1
-- Done: 21
+- Done: 22
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -31,7 +31,7 @@
 | [base-020](tasks/020-supply-typed-query-parameters-through-both-host-clis-and-lib.md) | Supply typed query parameters through both host CLIs and libraries | done | base-019 |
 | [base-021](tasks/021-execute-shared-native-capture-queries-over-zirium-ssa-values.md) | Execute shared native capture queries over Zirium SSA values | done | base-019 |
 | [base-022](tasks/022-adapt-zincite-native-projections-and-captures-to-the-shared.md) | Adapt Zincite native projections and captures to the shared language | done | base-021 |
-| [base-023](tasks/023-group-constructed-records-with-stable-typed-keys-in-both-con.md) | Group constructed records with stable typed keys in both consumers | ready | base-019 |
+| [base-023](tasks/023-group-constructed-records-with-stable-typed-keys-in-both-con.md) | Group constructed records with stable typed keys in both consumers | done | base-019 |
 | [base-024](tasks/024-inspect-and-exactly-align-keyed-data-through-shared-value-op.md) | Inspect and exactly align keyed data through shared value operations | ready | base-018, base-007 |
 | [base-025](tasks/025-explain-native-connections-with-bounded-shortest-path-witnes.md) | Explain native connections with bounded shortest path witnesses | ready | base-022 |
 | [base-026](tasks/026-release-native-expression-trees-safely-on-shared-reader-erro.md) | Release native expression trees safely on shared reader errors | done | — |
