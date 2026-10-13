@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-009"
 key = "zirium-advanced-hosts"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -27,13 +27,25 @@ Read Zirium query/diff.rs, diff builders, semantic-diff docs and existing diff_q
 
 ## Done when
 
-- [ ] Fixed-point and advanced navigation stages invoke nested evaluation without resetting work/item/nesting bounds.
-- [ ] Text and typed diff builders preserve change/operation-side result types, projections and same-side operations through shared execution.
-- [ ] Live edits remain visible through retained native handles while saved scalar results retain their values; invalidated handles and diff edits are refused.
-- [ ] Explicit/implicit emission order, pass-through emitters and CLI later-error buffering remain compatible.
-- [ ] Redundant shared statement/pipeline implementations are removed after all advanced paths use the core, with domain traversal and mutation still host-owned.
+- [x] Fixed-point and advanced navigation stages invoke nested evaluation without resetting work/item/nesting bounds.
+- [x] Text and typed diff builders preserve change/operation-side result types, projections and same-side operations through shared execution.
+- [x] Live edits remain visible through retained native handles while saved scalar results retain their values; invalidated handles and diff edits are refused.
+- [x] Explicit/implicit emission order, pass-through emitters and CLI later-error buffering remain compatible.
+- [x] Redundant shared statement/pipeline implementations are removed after all advanced paths use the core, with domain traversal and mutation still host-owned.
 
 ## Validation
 
 - Reuse current fixed-point, diff and edit/emission tests; add focused controls only for an uncovered integration boundary.
 - Run required Zirql/Zirium checks and relevant Python diff/query tests; no new graph benchmark campaign.
+
+## Result
+
+Zirium text and typed diff queries execute shared language structure with native side identity and one nested budget, preserving live edits, emission policies and buffered CLI output. Long flat expressions are disposed iteratively through the additive ownership seam. Core source 56e561c; consumer source 29cbc66, pinned to that exact Git revision.
+
+Validation:
+
+- Independent whole-task PASS at W4079d70dbdcec48c; all five completion conditions covered and exact coordinator comparison passed before lifecycle mutation. All 18 consumer source hashes match reviewed bytes after the separate source commit.
+- All 33 required checks pass: Zirql fmt, workspace Clippy and tests; Zirium Rust 1.88/stable workspace tests and Clippy, doctests/docs; fresh editable CPython 3.11–3.14 format, lint, type and full pytest checks. Each Python run has 165 passes and two existing macOS /dev/full skips.
+- Focused public controls preserve native text/typed projection, empty-side sets, strict traversal, fixed-point cycles and nested limits, live handles versus scalar snapshots, and later-error buffering. Normal-thread 25,000-term parse/drop and later-parse-error cleanup pass, including the original standalone failure reproducer.
+- The original four-variant Runtime and DiffQueryResult conversion contract remains unchanged. The seven-line Program ownership method has an independent scoped PASS; host disposal adds no executor, unsafe code or logical-depth cap. Core and consumer source commits are separately reviewable and pushed.
+- git diff --check and zdev check base pass. Registry publication and distribution packaging remain deferred under pinned-Git development; Linux validation is not claimed.

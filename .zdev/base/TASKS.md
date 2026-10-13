@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 25
-- Ready: 3
+- Ready: 2
 - Blocked: 8
-- Done: 14
+- Done: 15
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -17,7 +17,7 @@
 | [base-006](tasks/006-add-natural-zirium-comprehensions-over-projected-query-resul.md) | Add natural Zirium comprehensions over projected query results | done | base-005 |
 | [base-007](tasks/007-construct-enum-aware-keyed-and-multidimensional-zincite-repo.md) | Construct enum-aware keyed and multidimensional Zincite reports | done | base-005, base-016 |
 | [base-008](tasks/008-use-shared-comprehensions-for-atomic-zincite-data-constructi.md) | Use shared comprehensions for atomic Zincite data construction | ready | base-007 |
-| [base-009](tasks/009-complete-zirium-diff-fixed-point-and-live-edit-integration.md) | Complete Zirium diff, fixed-point and live-edit integration | ready | base-004 |
+| [base-009](tasks/009-complete-zirium-diff-fixed-point-and-live-edit-integration.md) | Complete Zirium diff, fixed-point and live-edit integration | done | base-004 |
 | [base-010](tasks/010-finish-adoption-and-measure-multi-feature-report-reuse.md) | Finish adoption and measure multi-feature report reuse | blocked | base-006, base-008, base-009 |
 | [base-011](tasks/011-expose-the-native-pipeline-contract-needed-by-zincite.md) | Expose the native pipeline contract needed by Zincite | done | base-001 |
 | [base-012](tasks/012-support-zirium-work-charges-and-prepare-zirql-0-1-0-alpha-1.md) | Support Zirium work charges and prepare Zirql 0.1.0-alpha.1 | done | — |
