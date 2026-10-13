@@ -1,9 +1,13 @@
-# Future publication
+# Publish the documentation site
 
-The eventual canonical URL is `https://zayenz.se/zirql/`. The intended route is
-a separately built static directory imported into the existing personal-site
-repository, following Zincite's approach. This document prepares that route;
-it does not register a project, import files or authorize deployment.
+The canonical URL is `https://zayenz.se/zirql/`. Build this site separately and
+import its static output into the personal site's `public/zirql/` directory.
+The personal site owns the project card, sitemap discovery and deployment.
+
+Production uses the existing Netlify project `zayenz-web`
+(`36755581-737f-42cb-ac2f-a16d37fcd00f`). A push to the personal site's `main`
+branch triggers its hosted release build. Non-Git production deployments are
+blocked. Keep the existing build command, functions, environment and domains.
 
 ## Prepare the reviewed build
 
@@ -21,7 +25,7 @@ npm run preview -- --host 127.0.0.1
 
 The default origin and base are `https://zayenz.se` and `/zirql/`. Review the
 built preview, including search, links, assets, themes and mobile layout.
-`dist/` contains the contents of the future `/zirql/` directory; do not introduce
+`dist/` contains the contents of the `/zirql/` directory; do not introduce
 another `zirql` level while importing it.
 
 ## Import through the personal site's release process
@@ -32,8 +36,10 @@ reviewed `zirql` project registration for `/zirql/`; do not assume that it alrea
 exists. Preserve unrelated changes and record the current production commit,
 deploy identity and immutable URL as a rollback point.
 
-Zincite's import currently uses `npm run import:project`. After confirming that
-the same command and project registration apply, a Zirql import would use:
+The shared registry in the personal site's `src/data/projects.ts` supplies the
+project card, import destination and sitemap discovery. Its Zirql entry needs
+`site: '/zirql/'`, `importedSite: true`, the selected logo and guide links.
+Register it together with the first import. From that repository, run:
 
 ```sh
 npm run import:project -- --project zirql --source /absolute/path/to/zirql/site/dist --dry-run
@@ -46,9 +52,9 @@ Pagefind index and sitemaps together. Let the personal site own its error page.
 Do not hand-edit generated files.
 
 Commit the reviewed import in the personal-site repository, recording its Zirql
-source revision. Run that repository's required release checks and use its
-existing Git-based production route. Check current production policies at that
-time; these instructions do not authorize a direct hosting upload or DNS change.
+source revision. Run `npm run release:check` with that repository's Node.js 24
+toolchain, then publish through its Git-based production route. Source pushes to
+Zirql do not update the imported site; each update requires a new build and import.
 
 ## Verify and retain a rollback
 

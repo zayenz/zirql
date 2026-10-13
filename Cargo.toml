@@ -6,6 +6,7 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Bounded native query programs and nominal/keyed value comprehensions"
 repository = "https://github.com/zayenz/zirql"
+homepage = "https://zayenz.se/zirql/"
 readme = "README.md"
 include = [
     "src/**",

@@ -52,5 +52,6 @@ search. Code and tables should scroll within the content. Confirm favicon,
 styles, search assets, canonical URLs and sitemap paths use `/zirql/`.
 
 No new product tests are needed for these guides. Repository changes also run
-the checks listed in `../AGENTS.md`. Publication has a separate review and the
-[future publication procedure](PUBLISHING.md); this task does not deploy.
+the checks listed in `../AGENTS.md`. Follow the [publication procedure](PUBLISHING.md)
+to import a reviewed build into zayenz.se and publish it through the personal
+site's Git deployment.

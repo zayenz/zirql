@@ -12,12 +12,12 @@ program and constructed-value APIs used below:
 
 ```toml
 [dependencies]
-zirql = { git = "https://github.com/zayenz/zirql", rev = "3a63bf53cd4aff7a70d611c4d150a614e86968e6" }
+zirql = { git = "https://github.com/zayenz/zirql", rev = "9c3ce81dca3d35cde55b2fba77567d73e431ae54" }
 ```
 
 Use Rust 1.88 or newer (the crate uses edition 2024). Keep the revision pin
-when integrating a host, and review API changes before moving it. Usable alpha packages also exist
-on crates.io, but they may describe a different revision. The yanked
+when integrating a host, and review API changes before moving it. Usable alpha
+packages also exist on crates.io, but they may describe a different revision. The yanked
 `0.0.0-prerelease` name reservation is not an installation target.
 
 ## Evaluate a small expression

@@ -1,5 +1,8 @@
 # Zirql
 
+[Documentation and examples](https://zayenz.se/zirql/) cover the language and
+embedding Zirql in a Rust project.
+
 Zirql is a Rust library for bounded query pipelines, native programs and
 constructed scalar, nominal and keyed comprehension values.
 Zirql sequences filtering, head, count, stable unique, string tally and typed
