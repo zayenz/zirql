@@ -1160,3 +1160,119 @@ fn nominal_keyed_duplicate_incompatible_empty_and_budget_refusals_are_located() 
             .contains("result limit")
     );
 }
+
+#[test]
+fn host_value_policy_refuses_inline_sparse_sources_and_keeps_skipped_branches() {
+    use zirql::evaluate_value_with_host_validation;
+    let sparse = || {
+        Located::new(
+            K::KeyedArray {
+                axes: None,
+                entries: vec![
+                    (e(K::Tuple(vec![int(2), int(1)])), int(21)),
+                    (e(K::Tuple(vec![int(1), int(2)])), int(12)),
+                    (e(K::Tuple(vec![int(1), int(1)])), int(11)),
+                ],
+            },
+            40..70,
+        )
+    };
+    let expression = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("cell")],
+            source: sparse(),
+            filter: None,
+        })],
+        head: Box::new(name("cell")),
+    });
+    // Generic sparse construction remains valid without the host's stronger policy.
+    assert_eq!(
+        evaluate(&expression).unwrap(),
+        V::Array(vec![V::Integer(11), V::Integer(12), V::Integer(21)])
+    );
+    let validate_cells = |value: &V, budget: &mut Budget, location: &Location| {
+        budget.charge(1, location.clone())?;
+        if let V::KeyedArray { axes, entries } = value {
+            let count = axes
+                .iter()
+                .try_fold(1usize, |n, axis| n.checked_mul(axis.keys.len()))
+                .ok_or_else(|| zirql::QueryError {
+                    location: location.clone(),
+                    message: "host product overflow".into(),
+                })?;
+            if count != entries.len() {
+                return Err(zirql::QueryError {
+                    location: location.clone(),
+                    message: "host requires complete cells".into(),
+                });
+            }
+        }
+        Ok(())
+    };
+    let mut active = ample();
+    let before = active.remaining_work();
+    let error = evaluate_value_with_host_validation(
+        &expression,
+        &Bindings::default(),
+        &mut active,
+        validate_cells,
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(40..70));
+    assert_eq!(error.message, "host requires complete cells");
+    assert!(active.remaining_work() < before);
+    assert_eq!(
+        evaluate_value_with_host_validation(
+            &choose(sparse()),
+            &Bindings::default(),
+            &mut active,
+            validate_cells
+        )
+        .unwrap(),
+        V::Integer(7)
+    );
+    // The same allowance remains usable after the host error; scopes/depth restore.
+    assert_eq!(
+        evaluate_value(&int(8), &Bindings::default(), &mut active).unwrap(),
+        V::Integer(8)
+    );
+    let invalid = choose(binary(B::Add, int(1), literal(V::Boolean(false))));
+    assert!(
+        evaluate_value_with_host_validation(
+            &invalid,
+            &Bindings::default(),
+            &mut ample(),
+            validate_cells
+        )
+        .unwrap_err()
+        .message
+        .contains("numeric")
+    );
+
+    let mut low = ample();
+    let error = evaluate_value_with_host_validation(
+        &e(K::Array(vec![int(1)])),
+        &Bindings::default(),
+        &mut low,
+        |_, budget, location| budget.charge(1_000_000, location.clone()),
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(0..1));
+    assert!(error.message.contains("work limit"));
+    let mut shallow = budget(10_000, 100, 2);
+    let value = evaluate_value_with_host_validation(
+        &int(1),
+        &Bindings::default(),
+        &mut shallow,
+        |value, budget, location| {
+            constructed_value_type(value, budget, location.clone()).map(|_| ())
+        },
+    )
+    .unwrap();
+    assert_eq!(value, V::Integer(1));
+    assert_eq!(
+        evaluate_value(&int(2), &Bindings::default(), &mut shallow).unwrap(),
+        V::Integer(2)
+    );
+}

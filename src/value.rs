@@ -360,6 +360,26 @@ pub fn evaluate_value(
     bindings: &Bindings<ConstructedValue>,
     budget: &mut Budget,
 ) -> Result<ConstructedValue, QueryError> {
+    evaluate_value_with_host_validation(expression, bindings, budget, |_, _, _| Ok(()))
+}
+
+/// Evaluate with a trusted host's value policy before runtime parent consumption.
+/// The check runs on each successful runtime value inside the active evaluation
+/// guard, including source and binding copies. It can inspect nested native
+/// values and must charge its work to the supplied budget. Runtime-skipped
+/// branches do not run the check; all branches still receive static validation.
+/// No check is retained after this evaluation, and generic value policy remains
+/// unchanged when callers use [`evaluate_value`].
+///
+/// # Errors
+/// Returns ordinary evaluation or host-check refusals with their locations and
+/// no partial value. Nesting and local scopes restore without refunding spending.
+pub fn evaluate_value_with_host_validation(
+    expression: &ValueExpression,
+    bindings: &Bindings<ConstructedValue>,
+    budget: &mut Budget,
+    mut check_value: impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
+) -> Result<ConstructedValue, QueryError> {
     let mut analysis = Analysis::new(Globals::Available(bindings));
     analysis.walk(expression, budget)?;
     let mut types = BTreeMap::new();
@@ -372,7 +392,13 @@ pub fn evaluate_value(
         types.insert(name.value, ty);
     }
     validate_value_expression(expression, &types, budget)?;
-    run(expression, bindings, &mut Vec::new(), budget)
+    run(
+        expression,
+        bindings,
+        &mut Vec::new(),
+        budget,
+        &mut check_value,
+    )
 }
 
 /// Copy a constructed binding or emission snapshot under the active allowance.
@@ -2806,304 +2832,333 @@ fn run<'a>(
     bindings: &Bindings<ConstructedValue>,
     locals: &mut Vec<(&'a str, ConstructedValue)>,
     budget: &mut Budget,
+    check_value: &mut impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
 ) -> Result<ConstructedValue, QueryError> {
     let location = Location::Query(expression.range.clone());
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
-        match &expression.value {
-            ValueExpressionKind::Literal(value) => copy_constructed_value(value, budget, location),
-            ValueExpressionKind::Name(name) => {
-                for (local, value) in locals.iter().rev() {
-                    budget.charge(
-                        sum(1, name.len().min(local.len()), &location)?,
-                        location.clone(),
-                    )?;
-                    if name == local {
-                        return copy_constructed_value(value, budget, location);
-                    }
+        let value = (|| {
+            let location = location.clone();
+            match &expression.value {
+                ValueExpressionKind::Literal(value) => {
+                    copy_constructed_value(value, budget, location)
                 }
-                admit_diagnostic("undefined binding: ", name, budget, &location)?;
-                copy_constructed_value(
-                    bindings.get(name, expression.range.clone())?,
-                    budget,
-                    location,
-                )
-            }
-            ValueExpressionKind::Array(children)
-            | ValueExpressionKind::Tuple(children)
-            | ValueExpressionKind::Set(children) => {
-                let mut values = admit_container(children.len(), budget, &location)?;
-                let mut element_type = None;
-                for child in children {
-                    let value = run(child, bindings, locals, budget)?;
-                    if matches!(expression.value, ValueExpressionKind::Set(_)) {
-                        insert_set(
-                            &mut values,
-                            &mut element_type,
-                            value,
-                            false,
-                            budget,
-                            &location,
+                ValueExpressionKind::Name(name) => {
+                    for (local, value) in locals.iter().rev() {
+                        budget.charge(
+                            sum(1, name.len().min(local.len()), &location)?,
+                            location.clone(),
                         )?;
-                    } else {
-                        values.push(value);
-                    }
-                }
-                Ok(match expression.value {
-                    ValueExpressionKind::Array(_) => ConstructedValue::Array(values),
-                    ValueExpressionKind::Tuple(_) => ConstructedValue::Tuple(values),
-                    ValueExpressionKind::Set(_) => ConstructedValue::Set {
-                        element_type,
-                        elements: values,
-                    },
-                    _ => unreachable!("collection expression"),
-                })
-            }
-            ValueExpressionKind::KeyedArray { axes, entries } => {
-                let axes = match axes {
-                    Some(axes) => Some(copy_axes(axes, budget, &location)?),
-                    None => None,
-                };
-                let mut values = admit_container(entries.len(), budget, &location)?;
-                for (key, head) in entries {
-                    let key_location = Location::Query(key.range.clone());
-                    let keys =
-                        value_keys(run(key, bindings, locals, budget)?, budget, &key_location)?;
-                    let value = run(head, bindings, locals, budget)?;
-                    values.push(Located::new(
-                        KeyedEntry { key: keys, value },
-                        key.range.clone(),
-                    ));
-                }
-                finish_keyed(axes, values, budget, &location)
-            }
-            ValueExpressionKind::KeyedComprehension {
-                clauses,
-                key,
-                head,
-                empty_axis_sources,
-            } => {
-                let mut output = Construction::Keyed {
-                    key,
-                    entries: admit_container(0, budget, &location)?,
-                };
-                expand(
-                    clauses,
-                    head,
-                    bindings,
-                    locals,
-                    &mut output,
-                    budget,
-                    &location,
-                )?;
-                let Construction::Keyed { entries, .. } = output else {
-                    unreachable!("keyed construction");
-                };
-                let axes = if entries.is_empty() {
-                    let sources = empty_axis_sources
-                        .as_ref()
-                        .ok_or_else(|| error(&location, "unestablished empty keyed axes"))?;
-                    allocation::<KeyAxis>(sources.len(), &location)?;
-                    budget.charge(sources.len(), location.clone())?;
-                    budget.charge_results(sources.len(), location.clone())?;
-                    let mut axes = Vec::with_capacity(sources.len());
-                    for source in sources {
-                        let value = run(source, bindings, locals, budget)?;
-                        axes.push(source_axis(
-                            value,
-                            budget,
-                            &Location::Query(source.range.clone()),
-                        )?);
-                    }
-                    Some(axes)
-                } else {
-                    None
-                };
-                finish_keyed(axes, entries, budget, &location)
-            }
-            ValueExpressionKind::Record(fields) => {
-                let mut values = admit_container(fields.len(), budget, &location)?;
-                for (label, child) in fields {
-                    budget.charge(label.value.len(), Location::Query(label.range.clone()))?;
-                    let value = run(child, bindings, locals, budget)?;
-                    values.push((label.value.to_owned(), value));
-                }
-                Ok(ConstructedValue::Record(values))
-            }
-            ValueExpressionKind::Unary { operator, operand } => unary(
-                *operator,
-                run(operand, bindings, locals, budget)?,
-                budget,
-                &location,
-            ),
-            ValueExpressionKind::Binary {
-                operator,
-                left,
-                right,
-            } => {
-                let left = run(left, bindings, locals, budget)?;
-                if matches!(operator, ValueBinaryOperator::And | ValueBinaryOperator::Or) {
-                    let a = match left {
-                        ConstructedValue::Boolean(value) => value,
-                        _ => return Err(error(&location, "condition needs a fixed Boolean")),
-                    };
-                    if (*operator == ValueBinaryOperator::And && !a)
-                        || (*operator == ValueBinaryOperator::Or && a)
-                    {
-                        return scalar(ConstructedValue::Boolean(a), budget, &location);
-                    }
-                    let right = run(right, bindings, locals, budget)?;
-                    return binary(
-                        *operator,
-                        ConstructedValue::Boolean(a),
-                        right,
-                        budget,
-                        &location,
-                    );
-                }
-                let right = run(right, bindings, locals, budget)?;
-                binary(*operator, left, right, budget, &location)
-            }
-            ValueExpressionKind::Field { value, field } => {
-                let ConstructedValue::Record(fields) = run(value, bindings, locals, budget)? else {
-                    return Err(error(&location, "field access needs a record"));
-                };
-                for (label, value) in fields {
-                    budget.charge(
-                        sum(1, label.len().min(field.value.len()), &location)?,
-                        location.clone(),
-                    )?;
-                    if label == field.value {
-                        return Ok(value);
-                    }
-                }
-                admit_diagnostic("missing record field: ", &field.value, budget, &location)?;
-                Err(error(
-                    &location,
-                    format!("missing record field: {}", field.value),
-                ))
-            }
-            ValueExpressionKind::TupleAccess { value, position } => {
-                let ConstructedValue::Tuple(values) = run(value, bindings, locals, budget)? else {
-                    return Err(error(&location, "tuple access needs a tuple"));
-                };
-                take_position(values, position.value, budget, &location)
-            }
-            ValueExpressionKind::ArrayAccess { array, index } => {
-                let array = run(array, bindings, locals, budget)?;
-                let index = run(index, bindings, locals, budget)?;
-                match array {
-                    ConstructedValue::Array(values) => {
-                        let position = integer(index, &Location::Query(expression.range.clone()))?;
-                        let position = usize::try_from(position)
-                            .map_err(|_| error(&location, "missing array position"))?;
-                        take_position(values, position, budget, &location)
-                    }
-                    ConstructedValue::KeyedArray { axes, entries } => {
-                        let key =
-                            value_keys(index, budget, &Location::Query(expression.range.clone()))?;
-                        key_positions(&key, &axes, budget, &location)?;
-                        for entry in entries {
-                            budget.charge(1, location.clone())?;
-                            if equal_keys(&key, &entry.key, budget, &location)? {
-                                return Ok(entry.value);
-                            }
+                        if name == local {
+                            return copy_constructed_value(value, budget, location);
                         }
-                        Err(error(&location, "missing keyed array cell"))
                     }
-                    _ => Err(error(&location, "array access needs an array")),
+                    admit_diagnostic("undefined binding: ", name, budget, &location)?;
+                    copy_constructed_value(
+                        bindings.get(name, expression.range.clone())?,
+                        budget,
+                        location,
+                    )
                 }
-            }
-            ValueExpressionKind::IndexSet(array) => match run(array, bindings, locals, budget)? {
-                ConstructedValue::Array(values) => {
-                    let len = i64::try_from(values.len())
-                        .map_err(|_| error(&location, "index overflow"))?;
-                    integer_range(1, len, budget, &location)
-                }
-                ConstructedValue::KeyedArray { mut axes, .. } if axes.len() == 1 => {
-                    let axis = axes.pop().expect("rank one");
-                    let mut values = admit_container(axis.keys.len(), budget, &location)?;
-                    let mut element_type = Some(key_set_type(axis.key_type));
-                    for key in axis.keys {
-                        budget.charge(1, location.clone())?;
-                        let value = match key {
-                            ValueKey::Integer(value) => ConstructedValue::Integer(value),
-                            ValueKey::Member(member) => ConstructedValue::Member(member),
-                        };
-                        insert_set(
-                            &mut values,
-                            &mut element_type,
-                            value,
-                            false,
-                            budget,
-                            &location,
-                        )?;
+                ValueExpressionKind::Array(children)
+                | ValueExpressionKind::Tuple(children)
+                | ValueExpressionKind::Set(children) => {
+                    let mut values = admit_container(children.len(), budget, &location)?;
+                    let mut element_type = None;
+                    for child in children {
+                        let value = run(child, bindings, locals, budget, check_value)?;
+                        if matches!(expression.value, ValueExpressionKind::Set(_)) {
+                            insert_set(
+                                &mut values,
+                                &mut element_type,
+                                value,
+                                false,
+                                budget,
+                                &location,
+                            )?;
+                        } else {
+                            values.push(value);
+                        }
                     }
-                    Ok(ConstructedValue::Set {
-                        element_type,
-                        elements: values,
+                    Ok(match expression.value {
+                        ValueExpressionKind::Array(_) => ConstructedValue::Array(values),
+                        ValueExpressionKind::Tuple(_) => ConstructedValue::Tuple(values),
+                        ValueExpressionKind::Set(_) => ConstructedValue::Set {
+                            element_type,
+                            elements: values,
+                        },
+                        _ => unreachable!("collection expression"),
                     })
                 }
-                ConstructedValue::KeyedArray { .. } => {
-                    Err(error(&location, "index_set needs rank one"))
-                }
-                _ => Err(error(&location, "index_set needs an array")),
-            },
-            ValueExpressionKind::Range { lower, upper } => {
-                let lower = integer(run(lower, bindings, locals, budget)?, &location)?;
-                let upper = integer(run(upper, bindings, locals, budget)?, &location)?;
-                integer_range(lower, upper, budget, &location)
-            }
-            ValueExpressionKind::Conditional {
-                branches,
-                otherwise,
-            } => {
-                for (condition, value) in branches {
-                    if boolean(
-                        run(condition, bindings, locals, budget)?,
-                        &Location::Query(condition.range.clone()),
-                    )? {
-                        return run(value, bindings, locals, budget);
+                ValueExpressionKind::KeyedArray { axes, entries } => {
+                    let axes = match axes {
+                        Some(axes) => Some(copy_axes(axes, budget, &location)?),
+                        None => None,
+                    };
+                    let mut values = admit_container(entries.len(), budget, &location)?;
+                    for (key, head) in entries {
+                        let key_location = Location::Query(key.range.clone());
+                        let keys = value_keys(
+                            run(key, bindings, locals, budget, check_value)?,
+                            budget,
+                            &key_location,
+                        )?;
+                        let value = run(head, bindings, locals, budget, check_value)?;
+                        values.push(Located::new(
+                            KeyedEntry { key: keys, value },
+                            key.range.clone(),
+                        ));
                     }
+                    finish_keyed(axes, values, budget, &location)
                 }
-                run(otherwise, bindings, locals, budget)
-            }
-            ValueExpressionKind::Comprehension {
-                constructor,
-                clauses,
-                head,
-            } => {
-                let mut output = match constructor {
-                    ValueConstructor::Array => {
-                        Construction::Array(admit_container(0, budget, &location)?)
-                    }
-                    ValueConstructor::Set => Construction::Set {
-                        elements: admit_container(0, budget, &location)?,
-                        element_type: None,
-                    },
-                };
-                expand(
+                ValueExpressionKind::KeyedComprehension {
                     clauses,
+                    key,
                     head,
-                    bindings,
-                    locals,
-                    &mut output,
+                    empty_axis_sources,
+                } => {
+                    let mut output = Construction::Keyed {
+                        key,
+                        entries: admit_container(0, budget, &location)?,
+                    };
+                    expand(
+                        clauses,
+                        head,
+                        bindings,
+                        locals,
+                        &mut output,
+                        budget,
+                        &location,
+                        check_value,
+                    )?;
+                    let Construction::Keyed { entries, .. } = output else {
+                        unreachable!("keyed construction");
+                    };
+                    let axes = if entries.is_empty() {
+                        let sources = empty_axis_sources
+                            .as_ref()
+                            .ok_or_else(|| error(&location, "unestablished empty keyed axes"))?;
+                        allocation::<KeyAxis>(sources.len(), &location)?;
+                        budget.charge(sources.len(), location.clone())?;
+                        budget.charge_results(sources.len(), location.clone())?;
+                        let mut axes = Vec::with_capacity(sources.len());
+                        for source in sources {
+                            let value = run(source, bindings, locals, budget, check_value)?;
+                            axes.push(source_axis(
+                                value,
+                                budget,
+                                &Location::Query(source.range.clone()),
+                            )?);
+                        }
+                        Some(axes)
+                    } else {
+                        None
+                    };
+                    finish_keyed(axes, entries, budget, &location)
+                }
+                ValueExpressionKind::Record(fields) => {
+                    let mut values = admit_container(fields.len(), budget, &location)?;
+                    for (label, child) in fields {
+                        budget.charge(label.value.len(), Location::Query(label.range.clone()))?;
+                        let value = run(child, bindings, locals, budget, check_value)?;
+                        values.push((label.value.to_owned(), value));
+                    }
+                    Ok(ConstructedValue::Record(values))
+                }
+                ValueExpressionKind::Unary { operator, operand } => unary(
+                    *operator,
+                    run(operand, bindings, locals, budget, check_value)?,
                     budget,
                     &location,
-                )?;
-                Ok(match output {
-                    Construction::Array(values) => ConstructedValue::Array(values),
-                    Construction::Set {
-                        elements,
-                        element_type,
-                    } => ConstructedValue::Set {
-                        element_type,
-                        elements,
-                    },
-                    Construction::Keyed { .. } => unreachable!("positional construction"),
-                })
+                ),
+                ValueExpressionKind::Binary {
+                    operator,
+                    left,
+                    right,
+                } => {
+                    let left = run(left, bindings, locals, budget, check_value)?;
+                    if matches!(operator, ValueBinaryOperator::And | ValueBinaryOperator::Or) {
+                        let a = match left {
+                            ConstructedValue::Boolean(value) => value,
+                            _ => return Err(error(&location, "condition needs a fixed Boolean")),
+                        };
+                        if (*operator == ValueBinaryOperator::And && !a)
+                            || (*operator == ValueBinaryOperator::Or && a)
+                        {
+                            return scalar(ConstructedValue::Boolean(a), budget, &location);
+                        }
+                        let right = run(right, bindings, locals, budget, check_value)?;
+                        return binary(
+                            *operator,
+                            ConstructedValue::Boolean(a),
+                            right,
+                            budget,
+                            &location,
+                        );
+                    }
+                    let right = run(right, bindings, locals, budget, check_value)?;
+                    binary(*operator, left, right, budget, &location)
+                }
+                ValueExpressionKind::Field { value, field } => {
+                    let ConstructedValue::Record(fields) =
+                        run(value, bindings, locals, budget, check_value)?
+                    else {
+                        return Err(error(&location, "field access needs a record"));
+                    };
+                    for (label, value) in fields {
+                        budget.charge(
+                            sum(1, label.len().min(field.value.len()), &location)?,
+                            location.clone(),
+                        )?;
+                        if label == field.value {
+                            return Ok(value);
+                        }
+                    }
+                    admit_diagnostic("missing record field: ", &field.value, budget, &location)?;
+                    Err(error(
+                        &location,
+                        format!("missing record field: {}", field.value),
+                    ))
+                }
+                ValueExpressionKind::TupleAccess { value, position } => {
+                    let ConstructedValue::Tuple(values) =
+                        run(value, bindings, locals, budget, check_value)?
+                    else {
+                        return Err(error(&location, "tuple access needs a tuple"));
+                    };
+                    take_position(values, position.value, budget, &location)
+                }
+                ValueExpressionKind::ArrayAccess { array, index } => {
+                    let array = run(array, bindings, locals, budget, check_value)?;
+                    let index = run(index, bindings, locals, budget, check_value)?;
+                    match array {
+                        ConstructedValue::Array(values) => {
+                            let position =
+                                integer(index, &Location::Query(expression.range.clone()))?;
+                            let position = usize::try_from(position)
+                                .map_err(|_| error(&location, "missing array position"))?;
+                            take_position(values, position, budget, &location)
+                        }
+                        ConstructedValue::KeyedArray { axes, entries } => {
+                            let key = value_keys(
+                                index,
+                                budget,
+                                &Location::Query(expression.range.clone()),
+                            )?;
+                            key_positions(&key, &axes, budget, &location)?;
+                            for entry in entries {
+                                budget.charge(1, location.clone())?;
+                                if equal_keys(&key, &entry.key, budget, &location)? {
+                                    return Ok(entry.value);
+                                }
+                            }
+                            Err(error(&location, "missing keyed array cell"))
+                        }
+                        _ => Err(error(&location, "array access needs an array")),
+                    }
+                }
+                ValueExpressionKind::IndexSet(array) => {
+                    match run(array, bindings, locals, budget, check_value)? {
+                        ConstructedValue::Array(values) => {
+                            let len = i64::try_from(values.len())
+                                .map_err(|_| error(&location, "index overflow"))?;
+                            integer_range(1, len, budget, &location)
+                        }
+                        ConstructedValue::KeyedArray { mut axes, .. } if axes.len() == 1 => {
+                            let axis = axes.pop().expect("rank one");
+                            let mut values = admit_container(axis.keys.len(), budget, &location)?;
+                            let mut element_type = Some(key_set_type(axis.key_type));
+                            for key in axis.keys {
+                                budget.charge(1, location.clone())?;
+                                let value = match key {
+                                    ValueKey::Integer(value) => ConstructedValue::Integer(value),
+                                    ValueKey::Member(member) => ConstructedValue::Member(member),
+                                };
+                                insert_set(
+                                    &mut values,
+                                    &mut element_type,
+                                    value,
+                                    false,
+                                    budget,
+                                    &location,
+                                )?;
+                            }
+                            Ok(ConstructedValue::Set {
+                                element_type,
+                                elements: values,
+                            })
+                        }
+                        ConstructedValue::KeyedArray { .. } => {
+                            Err(error(&location, "index_set needs rank one"))
+                        }
+                        _ => Err(error(&location, "index_set needs an array")),
+                    }
+                }
+                ValueExpressionKind::Range { lower, upper } => {
+                    let lower = integer(
+                        run(lower, bindings, locals, budget, check_value)?,
+                        &location,
+                    )?;
+                    let upper = integer(
+                        run(upper, bindings, locals, budget, check_value)?,
+                        &location,
+                    )?;
+                    integer_range(lower, upper, budget, &location)
+                }
+                ValueExpressionKind::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    for (condition, value) in branches {
+                        if boolean(
+                            run(condition, bindings, locals, budget, check_value)?,
+                            &Location::Query(condition.range.clone()),
+                        )? {
+                            return run(value, bindings, locals, budget, check_value);
+                        }
+                    }
+                    run(otherwise, bindings, locals, budget, check_value)
+                }
+                ValueExpressionKind::Comprehension {
+                    constructor,
+                    clauses,
+                    head,
+                } => {
+                    let mut output = match constructor {
+                        ValueConstructor::Array => {
+                            Construction::Array(admit_container(0, budget, &location)?)
+                        }
+                        ValueConstructor::Set => Construction::Set {
+                            elements: admit_container(0, budget, &location)?,
+                            element_type: None,
+                        },
+                    };
+                    expand(
+                        clauses,
+                        head,
+                        bindings,
+                        locals,
+                        &mut output,
+                        budget,
+                        &location,
+                        check_value,
+                    )?;
+                    Ok(match output {
+                        Construction::Array(values) => ConstructedValue::Array(values),
+                        Construction::Set {
+                            elements,
+                            element_type,
+                        } => ConstructedValue::Set {
+                            element_type,
+                            elements,
+                        },
+                        Construction::Keyed { .. } => unreachable!("positional construction"),
+                    })
+                }
             }
-        }
+        })()?;
+        check_value(&value, budget, &location)?;
+        Ok(value)
     })
 }
 
@@ -3211,6 +3266,10 @@ enum Construction<'a> {
 
 // This is the runtime clause chain, not a second expression evaluator. Each
 // source runs before its own binders; scope restoration covers every Result.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Clause expansion retains its scope, output and active budget with the same host check"
+)]
 fn expand<'a>(
     clauses: &'a [Located<ValueGenerator>],
     head: &'a ValueExpression,
@@ -3219,11 +3278,12 @@ fn expand<'a>(
     output: &mut Construction<'a>,
     budget: &mut Budget,
     location: &Location,
+    check_value: &mut impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     let Some((clause, rest)) = clauses.split_first() else {
         match output {
             Construction::Array(values) => {
-                let value = run(head, bindings, locals, budget)?;
+                let value = run(head, bindings, locals, budget, check_value)?;
                 allocation::<ConstructedValue>(sum(values.len(), 1, location)?, location)?;
                 budget.charge_results(1, location.clone())?;
                 values.push(value);
@@ -3232,13 +3292,17 @@ fn expand<'a>(
                 elements,
                 element_type,
             } => {
-                let value = run(head, bindings, locals, budget)?;
+                let value = run(head, bindings, locals, budget, check_value)?;
                 insert_set(elements, element_type, value, true, budget, location)?;
             }
             Construction::Keyed { key, entries } => {
                 let key_location = Location::Query(key.range.clone());
-                let keys = value_keys(run(key, bindings, locals, budget)?, budget, &key_location)?;
-                let value = run(head, bindings, locals, budget)?;
+                let keys = value_keys(
+                    run(key, bindings, locals, budget, check_value)?,
+                    budget,
+                    &key_location,
+                )?;
+                let value = run(head, bindings, locals, budget, check_value)?;
                 allocation::<Located<KeyedEntry>>(
                     sum(entries.len(), 1, &key_location)?,
                     &key_location,
@@ -3263,14 +3327,23 @@ fn expand<'a>(
                 filter,
             } => {
                 budget.charge(1, clause_location.clone())?;
-                let value = run(value, bindings, locals, budget)?;
+                let value = run(value, bindings, locals, budget, check_value)?;
                 let saved = locals.len();
                 let result = (|| {
                     if let Some(name) = &binder.value {
                         push_metadata(locals, (name, value), budget, &clause_location)?;
                     }
-                    if filter_passes(filter, bindings, locals, budget)? {
-                        expand(rest, head, bindings, locals, output, budget, location)?;
+                    if filter_passes(filter, bindings, locals, budget, check_value)? {
+                        expand(
+                            rest,
+                            head,
+                            bindings,
+                            locals,
+                            output,
+                            budget,
+                            location,
+                            check_value,
+                        )?;
                     }
                     Ok(())
                 })();
@@ -3282,7 +3355,7 @@ fn expand<'a>(
                 source,
                 filter,
             } => {
-                let source_value = run(source, bindings, locals, budget)?;
+                let source_value = run(source, bindings, locals, budget, check_value)?;
                 let values = match source_value {
                     ConstructedValue::Array(values)
                     | ConstructedValue::Set {
@@ -3331,8 +3404,17 @@ fn expand<'a>(
                                 push_metadata(locals, (name, value), budget, &clause_location)?;
                             }
                         }
-                        if filter_passes(filter, bindings, locals, budget)? {
-                            expand(rest, head, bindings, locals, output, budget, location)?;
+                        if filter_passes(filter, bindings, locals, budget, check_value)? {
+                            expand(
+                                rest,
+                                head,
+                                bindings,
+                                locals,
+                                output,
+                                budget,
+                                location,
+                                check_value,
+                            )?;
                         }
                         Ok(())
                     })();
@@ -3358,10 +3440,11 @@ fn filter_passes<'a>(
     bindings: &Bindings<ConstructedValue>,
     locals: &mut Vec<(&'a str, ConstructedValue)>,
     budget: &mut Budget,
+    check_value: &mut impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
 ) -> Result<bool, QueryError> {
     match filter {
         Some(filter) => boolean(
-            run(filter, bindings, locals, budget)?,
+            run(filter, bindings, locals, budget, check_value)?,
             &Location::Query(filter.range.clone()),
         ),
         None => Ok(true),

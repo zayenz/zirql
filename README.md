@@ -308,6 +308,17 @@ see earlier names. `None` discards a binding; `_` cannot be read. Duplicate
 names, source/let shadowing and forward reads fail at their responsible ranges.
 Filters and conditional conditions require actual fixed Booleans.
 
+Development Git builds additionally expose `evaluate_value_with_host_validation`.
+It accepts a trusted Rust host check of `(&ConstructedValue, &mut Budget,
+&Location) -> Result<(), QueryError>` and runs it before each successful runtime
+value reaches its parent. This lets Zincite reject incomplete rectangular arrays
+before inline iteration converts them to positional values. The check runs
+inside the existing evaluation guard with the same budget; skipped runtime
+branches are untouched. `evaluate_value` retains generic sparse values and its
+existing spending through a no-op check. This additive entry point is absent
+from the published alpha.5 registry release; consumers need its pinned
+development Git source until release work supplies a registry version.
+
 The five budgeted functions support the host projection sequence:
 
 1. `free_value_names` checks scope and declared facts, then returns distinct
