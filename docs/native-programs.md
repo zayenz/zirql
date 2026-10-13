@@ -36,8 +36,12 @@ Before domain execution, call `admit_parameters` with all declarations and eithe
 `ParameterInputs::Typed` or `ParameterInputs::Cli`. It refuses duplicate
 declarations, ambient-name collisions, duplicate supplied names, missing values,
 extra names and incompatible types. It returns declaration-located scalar values
-in declaration order. Lift those values into the host's native wrapper and
-install them with admitted ambient values through `Bindings::new`.
+in declaration order. Lift those values into the host's native wrapper.
+A text frontend lowers each parameter declaration to an ordinary `Statement::Bind`
+at its written position; a host stage supplies the already-admitted value.
+Admission checks all inputs up front, while ordered binding preserves scope during
+execution. Typed root builders have no declaration statements: install their
+parameters with admitted ambient values through `Bindings::new`.
 
 The shared CLI decoder splits each `name=value` at the first `=`:
 

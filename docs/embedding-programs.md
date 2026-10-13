@@ -77,8 +77,13 @@ to earlier statements. When adapting a typed root builder, retain its declaratio
 through erasure, appended stages and composition. Validate that metadata on every request.
 
 Real hosts lift admitted `ConstructedValue` scalars into their existing native
-result wrapper before constructing `Bindings`. Execute and render with the same
-`Budget`; repeated reads and copies spend the remaining allowance.
+result wrapper. The example above uses initial bindings, as typed root builders do.
+For a text program, retain the admitted values and lower each declaration to an
+ordinary `Statement::Bind` at its written position. A host stage returns that
+already-admitted scalar; the shared runner introduces its name into scope.
+This lets an earlier local binder use a name declared as a parameter later.
+Execute and render with the same `Budget`; repeated reads and copies spend the
+remaining allowance.
 
 ## Supply program operations
 
