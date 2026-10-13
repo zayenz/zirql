@@ -86,6 +86,13 @@ impl<S, O, E> Program<S, O, E> {
         &self.statements
     }
 
+    /// Consume the program and transfer its located statements without copying
+    /// or evaluating them. A host that retains long, flat expression spines can
+    /// use this ownership to release expressions and host payloads iteratively.
+    pub fn into_statements(self) -> Vec<Located<Statement<S, O, E>>> {
+        self.statements
+    }
+
     pub fn range(&self) -> Range<usize> {
         self.range.clone()
     }
