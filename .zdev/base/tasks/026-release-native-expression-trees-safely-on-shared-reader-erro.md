@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-026"
 key = "parser-error-cleanup"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "high"
@@ -27,12 +27,23 @@ The 2026-10-13 independent code review reproduced an abort in the shared reader 
 
 ## Done when
 
-- [ ] Malformed scalar tails, missing container terminators and budget failures after a retained flat native expression return a located QueryError without process abort or leaked retained trees.
-- [ ] Successful native expression parsing and existing flat-sequence behavior remain compatible; the public return-value disposal contract and affected host callers are checked.
-- [ ] Focused regression evidence exercises the demonstrated error cleanup, and required core plus any affected consumer checks pass.
+- [x] Malformed scalar tails, missing container terminators and budget failures after a retained flat native expression return a located QueryError without process abort or leaked retained trees.
+- [x] Successful native expression parsing and existing flat-sequence behavior remain compatible; the public return-value disposal contract and affected host callers are checked.
+- [x] Focused regression evidence exercises the demonstrated error cleanup, and required core plus any affected consumer checks pass.
 
 ## Validation
 
 - Reuse tests/native_programs.rs shared-reader controls; add only a focused regression that can detect the cleanup failure. Use an isolated subprocess for an aborting control if needed rather than large checked-in fixtures.
 - Replay the long-flat-prefix reproducer with successful, malformed scalar and malformed native tails; verify error returns separately from successful-tree cleanup.
 - Run the brief required Rust, diff and zdev checks, and required checks for any consumer actually changed.
+
+## Result
+
+The shared reader now releases partially parsed native-bearing values iteratively on malformed scalar/container syntax and budget errors. A small private ValueGuard reuses existing cleanup; successful callers can use the public consuming dispose_native_value helper. Accepted flat sequencing, locations, allowances and opaque host ownership are preserved. Both consumers remain unchanged.
+
+Validation:
+
+- Fresh independent whole-task PASS at W759c4a3f159ddb72, with no corrections; all three completion conditions and actual caller disposal contracts checked.
+- Exact 100000-union public controls parse and dispose successfully; scalar/native malformed tails return original EOF ranges 1200007..1200007 and 1200011..1200011. The pre-change scalar control aborted with SIGABRT. Focused subprocess coverage verifies payload lifetime and scalar/container/projection/require/comprehension and work/result cleanup.
+- All seven independently run required checks passed: core fmt, warning-free Clippy, workspace tests (33 integration tests and 3 doctests), diff check, zdev check and site check/build. The public guide example compiled; fresh guide text, canonical URL and internal links/anchors passed.
+- All three repository HEADs/indexes and consumer Git states, four source digests, accepted plan/readiness records and 36 unrelated core files matched the reviewed state.

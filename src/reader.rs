@@ -140,6 +140,8 @@ pub fn read_statement_prefix(
 
 /// Read a value using original byte offsets and one parsing allowance.
 /// Native operands remain normalized trees and execute only through the runner.
+/// The caller owns a successful tree; use [`dispose_native_value`] to release
+/// shared wrappers and flat native operands without recursive drop.
 ///
 /// # Errors
 /// Unsupported syntax, invalid literals, nesting and allocation refusals are located.
@@ -248,8 +250,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         value: K<ReadExpression<H>>,
         range: Range<usize>,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let value = ValueGuard::new(Located::new(value, range));
         self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-        Ok(Located::new(value, range))
+        Ok(value.into_value())
     }
     fn depth(&self, depth: usize) -> Result<(), QueryError> {
         if depth >= self.nesting {
@@ -354,35 +357,35 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        let mut left = self.atom(depth)?;
+        let mut left = ValueGuard::new(self.atom(depth)?);
         let mut chain = 0;
         loop {
             self.reader.skip_whitespace();
             if minimum <= 10 && self.reader.consume('[') {
-                let index = self.expression(0, depth + 1)?;
+                let index = ValueGuard::new(self.expression(0, depth + 1)?);
                 self.reader.expect(']')?;
-                let range = left.range.start..self.reader.position();
-                left = self.node(
+                let range = left.value().range.start..self.reader.position();
+                left = ValueGuard::new(self.node(
                     K::ArrayAccess {
-                        array: Box::new(left),
-                        index: Box::new(index),
+                        array: Box::new(left.into_value()),
+                        index: Box::new(index.into_value()),
                     },
                     range,
-                )?;
+                )?);
             } else if minimum <= 10
                 && self.reader.remaining().starts_with('.')
                 && !self.reader.remaining().starts_with("..")
             {
                 self.reader.advance(1)?;
                 let field = self.name()?;
-                let range = left.range.start..field.range.end;
-                left = self.node(
+                let range = left.value().range.start..field.range.end;
+                left = ValueGuard::new(self.node(
                     K::Field {
-                        value: Box::new(left),
+                        value: Box::new(left.into_value()),
                         field,
                     },
                     range,
-                )?;
+                )?);
             } else {
                 let rest = self.reader.remaining();
                 let operator = [
@@ -417,26 +420,26 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 }
                 self.reader.advance(word.len())?;
                 let right = self.expression(precedence + 1, depth + chain + 1)?;
-                let range = left.range.start..right.range.end;
-                left = self.node(
+                let range = left.value().range.start..right.range.end;
+                left = ValueGuard::new(self.node(
                     match operator {
                         Some(operator) => K::Binary {
                             operator,
-                            left: Box::new(left),
+                            left: Box::new(left.into_value()),
                             right: Box::new(right),
                         },
                         None => K::Range {
-                            lower: Box::new(left),
+                            lower: Box::new(left.into_value()),
                             upper: Box::new(right),
                         },
                     },
                     range,
-                )?;
+                )?);
             }
             chain += 1;
             self.depth(depth + chain)?;
         }
-        Ok(left)
+        Ok(left.into_value())
     }
     fn atom(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.reader.skip_whitespace();
@@ -540,16 +543,16 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 operand: Box::new(self.expression(9, depth + 1)?),
             },
             _ if self.reader.consume('(') => {
-                let value = self.expression(0, depth + 1)?;
+                let value = ValueGuard::new(self.expression(0, depth + 1)?);
                 if name.value == "require" {
                     self.reader.expect(',')?;
-                    let result = self.expression(0, depth + 1)?;
+                    let result = ValueGuard::new(self.expression(0, depth + 1)?);
                     self.reader.expect(',')?;
                     let message = self.string()?;
                     self.reader.expect(')')?;
                     K::Require {
-                        condition: Box::new(value),
-                        value: Box::new(result),
+                        condition: Box::new(value.into_value()),
+                        value: Box::new(result.into_value()),
                         message,
                     }
                 } else {
@@ -560,14 +563,16 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         "forall" => ValueReducer::Forall,
                         "exists" => ValueReducer::Exists,
                         "one" => {
-                            return self
-                                .node(K::One(Box::new(value)), start..self.reader.position());
+                            return self.node(
+                                K::One(Box::new(value.into_value())),
+                                start..self.reader.position(),
+                            );
                         }
                         _ => return Err(QueryError::query(name.range, "unsupported value call")),
                     };
                     K::Reduce {
                         operator,
-                        array: Box::new(value),
+                        array: Box::new(value.into_value()),
                     }
                 }
             }
@@ -579,17 +584,21 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         &mut self,
         depth: usize,
     ) -> Result<crate::ProjectionFields<ReadExpression<H>>, QueryError> {
+        let start = self.reader.position();
         self.reader.expect('{')?;
-        let mut fields = Vec::new();
         if self.reader.consume('}') {
-            return Ok(fields);
+            return Ok(Vec::new());
         }
+        let mut record = ValueGuard::new(Located::new(K::Record(Vec::new()), start..start));
         loop {
             let label = self.string()?;
             self.reader.expect(':')?;
-            let value = self.expression(0, depth + 1)?;
+            let value = ValueGuard::new(self.expression(0, depth + 1)?);
             self.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(1)?;
-            fields.push((label, value));
+            let K::Record(fields) = &mut record.value_mut().value else {
+                unreachable!("retained record fields")
+            };
+            fields.push((label, value.into_value()));
             if !self.reader.consume(',') {
                 self.reader.expect('}')?;
                 break;
@@ -599,14 +608,16 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 return Err(self.reader.error("trailing comma in record fields"));
             }
         }
+        let K::Record(fields) = record.into_value().value else {
+            unreachable!("retained record fields")
+        };
         Ok(fields)
     }
     fn array(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let start = self.reader.position();
         self.reader.expect('[')?;
-        let mut values = Vec::new();
         if self.reader.consume(']') {
-            return self.node(K::Array(values), start..self.reader.position());
+            return self.node(K::Array(Vec::new()), start..self.reader.position());
         }
         let scope = self.locals.len();
         let binders = self.array_binders()?;
@@ -614,10 +625,17 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.locals.extend(binders);
         let head = self.expression(0, depth + 1);
         self.locals.truncate(scope);
-        let head = head?;
+        let head = ValueGuard::new(head?);
         if self.word_is("for") {
+            let mut comprehension = ValueGuard::new(Located::new(
+                K::Comprehension {
+                    constructor: ValueConstructor::Array,
+                    clauses: Vec::new(),
+                    head: Box::new(head.into_value()),
+                },
+                start..start,
+            ));
             let result = (|| {
-                let mut clauses = Vec::new();
                 while self.reader.keyword("for") {
                     let clause_start = self.reader.position();
                     let name = self.name()?;
@@ -626,29 +644,33 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                             .reader
                             .error("expected `in` after comprehension binder"));
                     }
-                    let source = self.expression(0, depth + 1)?;
+                    let source = ValueGuard::new(self.expression(0, depth + 1)?);
                     if name.value != "_" {
                         self.slots::<&str>(1)?;
                         self.locals.push(&self.reader.source()[name.range.clone()]);
                     }
                     let filter = if self.reader.keyword("if") {
-                        Some(self.expression(0, depth + 1)?)
+                        Some(ValueGuard::new(self.expression(0, depth + 1)?))
                     } else {
                         None
                     };
                     let end = filter
                         .as_ref()
-                        .map_or(source.range.end, |value| value.range.end);
+                        .map_or(source.value().range.end, |value| value.value().range.end);
                     self.slots::<Located<ValueGenerator<ReadExpression<H>>>>(1)?;
                     self.slots::<Located<Option<String>>>(1)?;
+                    let K::Comprehension { clauses, .. } = &mut comprehension.value_mut().value
+                    else {
+                        unreachable!("retained comprehension")
+                    };
                     clauses.push(Located::new(
                         ValueGenerator::In {
                             binders: vec![Located::new(
                                 (name.value != "_").then_some(name.value),
                                 name.range,
                             )],
-                            source,
-                            filter,
+                            source: source.into_value(),
+                            filter: filter.map(ValueGuard::into_value),
                         },
                         clause_start..end,
                     ));
@@ -656,11 +678,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 }
                 self.reader.expect(']')?;
                 self.node(
-                    K::Comprehension {
-                        constructor: ValueConstructor::Array,
-                        clauses,
-                        head: Box::new(head),
-                    },
+                    comprehension.into_value().value,
                     start..self.reader.position(),
                 )
             })();
@@ -668,14 +686,20 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             return result;
         }
         self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-        values.push(head);
+        let mut array = ValueGuard::new(Located::new(
+            K::Array(vec![head.into_value()]),
+            start..start,
+        ));
         while self.reader.consume(',') {
-            let value = self.expression(0, depth + 1)?;
+            let value = ValueGuard::new(self.expression(0, depth + 1)?);
             self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-            values.push(value);
+            let K::Array(values) = &mut array.value_mut().value else {
+                unreachable!("retained array values")
+            };
+            values.push(value.into_value());
         }
         self.reader.expect(']')?;
-        self.node(K::Array(values), start..self.reader.position())
+        self.node(array.into_value().value, start..self.reader.position())
     }
     // The head precedes its declarations. Inspect only this array's own level;
     // the normal parser still owns grammar and diagnostics.
@@ -746,7 +770,11 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let subject = self.name()?;
         self.reader.expect(',')?;
         let fields = self.fields(depth + 1)?;
+        let fields = ValueGuard::new(Located::new(K::Record(fields), subject.range.clone()));
         self.reader.expect(')')?;
+        let K::Record(fields) = fields.into_value().value else {
+            unreachable!("retained projection fields")
+        };
         Ok(Projection { subject, fields })
     }
     fn native(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
@@ -755,9 +783,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
     }
     fn native_sets(
         &mut self,
-        mut value: ValueExpression<ReadExpression<H>>,
+        value: ValueExpression<ReadExpression<H>>,
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let mut value = ValueGuard::new(value);
         loop {
             self.reader.skip_whitespace();
             let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
@@ -769,25 +798,19 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             };
             self.reader
                 .advance(probe.position() - self.reader.position())?;
-            let right = match self.native_pipeline(depth) {
-                Ok(right) => right,
-                Err(error) => {
-                    dispose_native_value(value);
-                    return Err(error);
-                }
-            };
-            let range = value.range.start..right.range.end;
-            if !matches!(value.value, K::NativeQuery(_))
-                || !matches!(right.value, K::NativeQuery(_))
+            let right = ValueGuard::new(self.native_pipeline(depth)?);
+            let range = value.value().range.start..right.value().range.end;
+            if !matches!(value.value().value, K::NativeQuery(_))
+                || !matches!(right.value().value, K::NativeQuery(_))
             {
-                dispose_native_value(value);
-                dispose_native_value(right);
                 return Err(QueryError::query(
                     range,
                     "set operands require native selections",
                 ));
             }
-            let (K::NativeQuery(left), K::NativeQuery(right)) = (value.value, right.value) else {
+            let (K::NativeQuery(left), K::NativeQuery(right)) =
+                (value.into_value().value, right.into_value().value)
+            else {
                 unreachable!("native set operands checked")
             };
             let guard = NativeGuard(Some(Located::new(
@@ -801,14 +824,14 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             self.slots::<ReadExpression<H>>(1)?;
             self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
             let mut guard = guard;
-            value = Located::new(
+            value = ValueGuard::new(Located::new(
                 K::NativeQuery(Box::new(
                     guard.0.take().expect("retained native expression"),
                 )),
                 range,
-            );
+            ));
         }
-        Ok(value)
+        Ok(value.into_value())
     }
     fn native_pipeline(
         &mut self,
@@ -839,22 +862,20 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 range,
             )
         } else if self.reader.consume('(') {
-            let value = self.expression(0, depth + 1)?;
-            if let Err(error) = self.reader.expect(')') {
-                dispose_native_value(value);
-                return Err(error);
-            }
+            let value = ValueGuard::new(self.expression(0, depth + 1)?);
+            self.reader.expect(')')?;
             let range = start..self.reader.position();
-            match value.value {
-                K::NativeQuery(query) => Located::new(ExpressionKind::Group(query), range),
-                kind => {
-                    self.reader.skip_whitespace();
-                    if self.reader.remaining().starts_with('|') {
-                        return Err(self.reader.error("pipeline input requires a native query"));
-                    }
-                    return Ok(Located::new(kind, range));
+            if !matches!(value.value().value, K::NativeQuery(_)) {
+                self.reader.skip_whitespace();
+                if self.reader.remaining().starts_with('|') {
+                    return Err(self.reader.error("pipeline input requires a native query"));
                 }
+                return Ok(Located::new(value.into_value().value, range));
             }
+            let K::NativeQuery(query) = value.into_value().value else {
+                unreachable!("native group checked")
+            };
+            Located::new(ExpressionKind::Group(query), range)
         } else {
             let mut probe = ArgumentReader::new(self.reader.source(), start)?;
             let first = probe.word()?;
@@ -1137,9 +1158,35 @@ impl<S, O, E> Drop for NativeGuard<S, O, E> {
         }
     }
 }
-// A rejected native source can contain scalar wrappers around flat native sets.
-// Visit those wrappers too, so error cleanup does not recursively drop that spine.
-fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>) {
+// Keep partially parsed shared values under iterative cleanup across fallible steps.
+struct ValueGuard<S, O, E>(Option<ValueExpression<Expression<S, O, E>>>);
+impl<S, O, E> ValueGuard<S, O, E> {
+    fn new(value: ValueExpression<Expression<S, O, E>>) -> Self {
+        Self(Some(value))
+    }
+    fn value(&self) -> &ValueExpression<Expression<S, O, E>> {
+        self.0.as_ref().expect("retained value expression")
+    }
+    fn value_mut(&mut self) -> &mut ValueExpression<Expression<S, O, E>> {
+        self.0.as_mut().expect("retained value expression")
+    }
+    fn into_value(mut self) -> ValueExpression<Expression<S, O, E>> {
+        self.0.take().expect("retained value expression")
+    }
+}
+impl<S, O, E> Drop for ValueGuard<S, O, E> {
+    fn drop(&mut self) {
+        if let Some(value) = self.0.take() {
+            dispose_native_value(value);
+        }
+    }
+}
+
+/// Consume a shared value expression and release its wrappers and native trees
+/// iteratively, including flat native set operands. Cleanup needs no budget.
+/// Hosts remain responsible for trees inside opaque stage, set-operator,
+/// emitter and predicate payloads, which this helper drops without inspecting.
+pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>) {
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         let clauses = match value.value {

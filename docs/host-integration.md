@@ -219,9 +219,24 @@ Handles never enter `ConstructedValue` or `ValueType`.
 Its default returns a located unsupported error. Supporting adapters dispatch
 that stage to the shared match functions; `parse_stage` and
 `parse_predicate_leaf` only parse domain primitive arguments. They must not
-implement a second match evaluator. Retained trees can use `dispose_match`
-and `dispose_expression` to release clauses, Boolean wrappers, native fields
-and flat set operands iteratively. A host releases its own opaque payloads.
+implement a second match evaluator.
+
+The reader releases partially constructed shared trees when parsing fails.
+Callers own successful returns and must release long flat native trees
+iteratively: use `dispose_expression` for a native expression, `dispose_match`
+for a match, and `dispose_native_value` for a shared value containing native
+operands. For a returned projection, consume its fields with the same helper:
+
+```rust
+for (_, value) in projection.fields {
+    zirql::dispose_native_value(value);
+}
+```
+
+These consuming helpers need no remaining parsing allowance. They visit shared
+wrappers and native composition; the host remains responsible for cleanup
+inside opaque stage, set-operator, emitter and predicate payloads. Host wrappers
+can call the helpers from their own `Drop` implementations.
 
 Native handles still retain the host's document ownership, source coordinates,
 completeness and diff-side rules. Operand lookup and SSA equality, for example,

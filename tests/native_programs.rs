@@ -2505,3 +2505,185 @@ mod projection {
         );
     }
 }
+
+#[test]
+fn shared_reader_releases_native_values_on_errors() {
+    // An abort must fail the parent assertion without killing the test harness.
+    const CHILD: &str = "ZIRQL_NATIVE_CLEANUP_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "shared_reader_releases_native_values_on_errors",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    // The host holds only a weak handle; accepted set operands retain its payload.
+    #[derive(Default)]
+    struct ReaderHost(std::cell::RefCell<std::rc::Weak<()>>);
+    impl zirql::ValueReaderHost for ReaderHost {
+        type Stage = ();
+        type SetOperator = Rc<()>;
+        type Emitter = ();
+        type Predicate = ();
+        fn is_binding(&self, _: &str) -> bool {
+            false
+        }
+        fn is_stage(&self, _: &str) -> bool {
+            false
+        }
+        fn parse_stage(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<ExpressionStep<(), ()>, QueryError> {
+            Err(reader.error("no domain stages"))
+        }
+        fn parse_predicate_leaf(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<(), QueryError> {
+            Err(reader.error("no domain predicates"))
+        }
+        fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) {}
+        fn projection(
+            &mut self,
+            projection: zirql::Projection<zirql::ReadExpression<Self>>,
+            _: Range<usize>,
+        ) {
+            for (_, value) in projection.fields {
+                zirql::dispose_native_value(value);
+            }
+        }
+        fn set_operator(&self, word: &str) -> Option<Rc<()>> {
+            if word != "union" {
+                return None;
+            }
+            let retained = self.0.borrow().upgrade().unwrap_or_else(|| Rc::new(()));
+            *self.0.borrow_mut() = Rc::downgrade(&retained);
+            Some(retained)
+        }
+    }
+    let generous = ProgramLimits {
+        work: 100_000_000,
+        results: 100_000_000,
+        nesting: 64,
+        stream_items: 1,
+    };
+    let prefix = format!("input{}", " union input".repeat(100_000));
+    let mut host = ReaderHost::default();
+    let mut reader = zirql::ArgumentReader::new(&prefix, 0).unwrap();
+    let value = zirql::read_value_expression(
+        &mut reader,
+        &mut host,
+        &mut Budget::for_program(generous),
+        64,
+    )
+    .unwrap();
+    assert_eq!(reader.position(), prefix.len());
+    assert!(host.0.borrow().upgrade().is_some());
+    zirql::dispose_native_value(value);
+    assert!(host.0.borrow().upgrade().is_none());
+    let mut reader = zirql::ArgumentReader::new(&prefix, 0).unwrap();
+    let native = zirql::read_native_expression(
+        &mut reader,
+        &mut host,
+        &mut Budget::for_program(generous),
+        64,
+    )
+    .unwrap();
+    assert_eq!(reader.position(), prefix.len());
+    assert!(host.0.borrow().upgrade().is_some());
+    zirql::dispose_expression(native);
+    assert!(host.0.borrow().upgrade().is_none());
+
+    for (source, message) in [
+        (format!("{prefix} +"), "expected a value expression"),
+        (format!("{prefix} union"), "expected an identifier"),
+        (format!("[{prefix}"), "expected ']'"),
+        (format!("{{\"x\": {prefix}"), "expected '}'"),
+        (format!("require(true, {prefix},"), "expected '\"'"),
+        (
+            format!("[{prefix} for x in input if"),
+            "expected a value expression",
+        ),
+    ] {
+        let mut reader = zirql::ArgumentReader::new(&source, 0).unwrap();
+        let error = zirql::read_value_expression(
+            &mut reader,
+            &mut host,
+            &mut Budget::for_program(generous),
+            64,
+        )
+        .unwrap_err();
+        assert_eq!(error.location, Location::Query(source.len()..source.len()));
+        assert_eq!(error.message, message);
+        assert!(host.0.borrow().upgrade().is_none());
+    }
+    let source = format!("project(x, {{\"x\": {prefix}}}");
+    let mut reader = zirql::ArgumentReader::new(&source, 0).unwrap();
+    let error = zirql::read_projection(
+        &mut reader,
+        &mut host,
+        &mut Budget::for_program(generous),
+        64,
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(source.len()..source.len()));
+    assert_eq!(error.message, "expected ')'");
+    assert!(host.0.borrow().upgrade().is_none());
+
+    // Public remaining allowances locate refusals after native children exist:
+    // binary node admission, array insertion, and comprehension clause insertion.
+    for (source, missing_results, work_refusal) in [
+        (format!("{prefix} + 1"), 1, true),
+        (format!("[{prefix}]"), 2, false),
+        (format!("[0 for x in {prefix}]"), 3, false),
+    ] {
+        let mut allowance = Budget::for_program(generous);
+        let mut reader = zirql::ArgumentReader::new(&source, 0).unwrap();
+        let value =
+            zirql::read_value_expression(&mut reader, &mut host, &mut allowance, 64).unwrap();
+        let work = generous.work - allowance.remaining_work();
+        let results = generous.results - allowance.remaining_results().unwrap();
+        zirql::dispose_native_value(value);
+        assert!(host.0.borrow().upgrade().is_none());
+        let mut scarce = Budget::for_program(ProgramLimits {
+            results: results - missing_results,
+            ..generous
+        });
+        let mut reader = zirql::ArgumentReader::new(&source, 0).unwrap();
+        let error =
+            zirql::read_value_expression(&mut reader, &mut host, &mut scarce, 64).unwrap_err();
+        let position = source.len() - usize::from(missing_results > 1);
+        assert_eq!(error.location, Location::Query(position..position));
+        assert_eq!(error.message, "result limit exceeded");
+        assert_eq!(scarce.remaining_results(), Some(0));
+        assert!(host.0.borrow().upgrade().is_none());
+        if work_refusal {
+            let mut scarce = Budget::for_program(ProgramLimits {
+                work: work - 1,
+                ..generous
+            });
+            let mut reader = zirql::ArgumentReader::new(&source, 0).unwrap();
+            let error =
+                zirql::read_value_expression(&mut reader, &mut host, &mut scarce, 64).unwrap_err();
+            assert_eq!(error.location, Location::Query(source.len()..source.len()));
+            assert_eq!(error.message, "work limit exceeded");
+            assert_eq!(scarce.remaining_work(), 0);
+            assert!(host.0.borrow().upgrade().is_none());
+        }
+    }
+}

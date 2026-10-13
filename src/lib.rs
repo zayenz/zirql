@@ -30,8 +30,8 @@ pub use projection::{
     projection_types,
 };
 pub use reader::{
-    CommonStatement, ReadExpression, ValueReaderHost, read_match, read_native_expression,
-    read_projection, read_statement_prefix, read_value_expression,
+    CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value, read_match,
+    read_native_expression, read_projection, read_statement_prefix, read_value_expression,
 };
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
