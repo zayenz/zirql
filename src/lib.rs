@@ -16,8 +16,9 @@ pub use eval::{
 };
 pub use parser::{ArgumentReader, parse_pipeline};
 pub use program::{
-    Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, Program, ProgramHost,
-    Statement, dispose_expression, evaluate_expression, evaluate_program,
+    Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, ParameterDeclaration,
+    ParameterInputs, ParameterType, Program, ProgramHost, Statement, admit_parameters,
+    dispose_expression, evaluate_expression, evaluate_program,
 };
 pub use projection::{
     NativeExpression, NativeOperands, Projection, ProjectionFields, ProjectionHost,

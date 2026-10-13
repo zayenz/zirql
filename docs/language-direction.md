@@ -1,12 +1,13 @@
 # Design examples
 
 The current [word examples](examples.md) select words and construct values.
-These sketches use that small domain to explain proposed projection, reducers,
-parameters, grouping, native captures and bounded paths.
+These sketches use that small domain to combine projection, reducers and
+parameters with proposed grouping, native captures and bounded paths.
 
-The forms on this page are not implemented. They describe the language being
-designed, rather than programs to run with the current parser. Syntax and
-supported subsets can change. Callable behavior is covered by the
+These complete word-host programs remain design sketches. The core supplies
+callable projection, reducers, requirements and typed parameter admission;
+matching, grouping and paths remain proposals. A host frontend supplies its
+domain syntax and supported subset. Callable behavior is covered by the
 [Rust guides](getting-started.md).
 
 ## Correlate fields with one native word
@@ -59,11 +60,15 @@ query or load a program file; embedding does not require a Zirql executable.
 
 ## Required parameters and reductions
 
-The proposed `param` declarations accept required `int`, `string` or `bool`
-inputs. Library callers would supply typed values. A CLI could use repeated
-`--param name=value` arguments. Missing, duplicate, extra or incompatible inputs
-would fail before domain execution, without query-text substitution. Defaults
+The shared `param` reader accepts required `int`, `string` or `bool`
+declarations. Library callers supply typed values to `admit_parameters`; a host
+CLI can transport repeated `--param name=value` arguments.
+Missing, duplicate, extra or incompatible inputs
+fail before domain execution, without query-text substitution. Defaults
 and named result schemas are outside this design.
+The [parameter reference](native-programs.md#required-caller-parameters) defines
+decoding and scope; [Rust admission](embedding-programs.md#supply-typed-caller-inputs)
+shows the callable entry point.
 
 The candidate reducers `sum`, `length`, `forall` and `exists` operate on evaluated
 arrays. Integer sums are checked; quantifiers require known Booleans. These are

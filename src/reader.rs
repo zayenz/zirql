@@ -2,9 +2,9 @@ use std::ops::Range;
 
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
-    Located, Location, Predicate, PredicateKind, Projection, QueryError, ValueBinaryOperator as B,
-    ValueConstructor, ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
-    ValueUnaryOperator as U,
+    Located, Location, ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection,
+    QueryError, ValueBinaryOperator as B, ValueConstructor, ValueExpression,
+    ValueExpressionKind as K, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
 };
 
 pub type ReadExpression<H> = Expression<
@@ -50,13 +50,17 @@ pub trait ValueReaderHost {
 pub enum CommonStatement {
     Let(Located<String>),
     Report,
+    Param(ParameterDeclaration),
 }
 
-/// Recognize `let name =` and `report expression` without reserving bare names.
+/// Recognize `let name =`, `report expression` and `param name: type` without
+/// reserving bare names. A parameter declaration leaves its required `;` for
+/// the host frontend, which introduces the name at this written position.
 /// Failure to recognize leaves the original cursor unchanged.
 ///
 /// # Errors
-/// Invalid source boundaries or admitted name metadata fail at the query.
+/// Malformed declarations, unsupported parameter types, invalid source boundaries
+/// or exhausted name-metadata allowances fail at the original query range.
 pub fn read_statement_prefix(
     reader: &mut ArgumentReader<'_>,
     budget: &mut Budget,
@@ -74,6 +78,36 @@ pub fn read_statement_prefix(
         }
         budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
         CommonStatement::Let(Located::new(name.value.to_owned(), name.range))
+    } else if word.value == "param" {
+        probe.skip_whitespace();
+        if probe.remaining().is_empty() || probe.remaining().starts_with(['=', '|', ';', '(']) {
+            return Ok(None);
+        }
+        let name = probe.word()?;
+        if !probe.consume(':') {
+            return Ok(None);
+        }
+        let ty = probe.word()?;
+        let value = match ty.value {
+            "int" => ParameterType::Int,
+            "string" => ParameterType::String,
+            "bool" => ParameterType::Bool,
+            _ => {
+                return Err(QueryError::query(
+                    ty.range,
+                    "parameter type must be int, string or bool",
+                ));
+            }
+        };
+        budget.charge(
+            probe.position() - word.range.start,
+            Location::Query(name.range.clone()),
+        )?;
+        budget.charge_results(1, Location::Query(name.range.clone()))?;
+        CommonStatement::Param(ParameterDeclaration {
+            name: Located::new(name.value.to_owned(), name.range),
+            ty: Located::new(value, ty.range),
+        })
     } else if word.value == "report" {
         probe.skip_whitespace();
         if probe.remaining().is_empty() || probe.remaining().starts_with(['=', '|', ';']) {

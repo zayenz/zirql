@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 
 use zirql::{
     ArrayType, Bindings, Budget, ConstructedValue as V, KeyAxis, KeyedArrayType, KeyedEntry,
-    Limits, Located, Location, NominalMember, NominalMemberId, NominalTypeId, ProgramLimits,
-    SetElementType, ValueBinaryOperator as B, ValueConstructor, ValueExpression as E,
-    ValueExpressionKind as K, ValueGenerator as G, ValueKey, ValueKeyType, ValueReducer as R,
-    ValueType, ValueUnaryOperator as U, constructed_value_type, copy_constructed_value,
-    evaluate_value, free_value_names, validate_value_expression,
+    Limits, Located, Location, NominalMember, NominalMemberId, NominalTypeId, ParameterDeclaration,
+    ParameterInputs, ParameterType, ProgramLimits, SetElementType, ValueBinaryOperator as B,
+    ValueConstructor, ValueExpression as E, ValueExpressionKind as K, ValueGenerator as G,
+    ValueKey, ValueKeyType, ValueReducer as R, ValueType, ValueUnaryOperator as U,
+    admit_parameters, constructed_value_type, copy_constructed_value, evaluate_value,
+    free_value_names, validate_value_expression,
 };
 
 fn e(kind: K) -> E {
@@ -79,6 +80,236 @@ fn choose(skipped: E) -> E {
         branches: vec![(literal(V::Boolean(false)), skipped)],
         otherwise: Box::new(int(7)),
     })
+}
+
+fn parameter(value: &str, ty: ParameterType, start: usize) -> ParameterDeclaration {
+    ParameterDeclaration {
+        name: Located::new(value.into(), start..start + value.len()),
+        ty: Located::new(ty, start + value.len() + 2..start + value.len() + 5),
+    }
+}
+
+#[test]
+fn typed_and_cli_parameters_use_immutable_values_without_source_interpolation() {
+    let declarations = [
+        parameter("factor", ParameterType::Int, 6),
+        parameter("label", ParameterType::String, 28),
+        parameter("enabled", ParameterType::Bool, 50),
+    ];
+    let data = " \"quoted\"\\path=x; report 999; ";
+    let typed = [
+        ("enabled".into(), V::Boolean(true)),
+        ("label".into(), V::String(data.into())),
+        ("factor".into(), V::Integer(2)),
+    ];
+    let cli = [
+        "factor=+2".into(),
+        "enabled=true".into(),
+        format!("label={data}"),
+    ];
+    let expression = record(vec![
+        ("label", name("label")),
+        (
+            "scaled",
+            e(K::Conditional {
+                branches: vec![(name("enabled"), binary(B::Multiply, name("factor"), int(3)))],
+                otherwise: Box::new(int(0)),
+            }),
+        ),
+    ]);
+    let types = declarations
+        .iter()
+        .map(|declaration| {
+            (
+                declaration.name.value.clone(),
+                ValueType::from(declaration.ty.value),
+            )
+        })
+        .collect();
+    free_value_names(&expression, &types, &mut ample()).unwrap();
+    for inputs in [ParameterInputs::Typed(&typed), ParameterInputs::Cli(&cli)] {
+        let mut allowance = ample();
+        let admitted = admit_parameters(&declarations, inputs, &[], 0..80, &mut allowance).unwrap();
+        assert_eq!(
+            admitted.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            declarations
+                .iter()
+                .map(|declaration| &declaration.name)
+                .collect::<Vec<_>>()
+        );
+        let bindings = Bindings::new(admitted).unwrap();
+        assert_eq!(
+            evaluate_value(&expression, &bindings, &mut allowance).unwrap(),
+            V::Record(vec![
+                ("label".into(), V::String(data.into())),
+                ("scaled".into(), V::Integer(6))
+            ])
+        );
+        let shadowing = e(K::Comprehension {
+            constructor: ValueConstructor::Array,
+            clauses: vec![clause(G::In {
+                binders: vec![binder("factor")],
+                source: e(K::Array(vec![])),
+                filter: None,
+            })],
+            head: Box::new(name("factor")),
+        });
+        assert!(evaluate_value(&shadowing, &bindings, &mut allowance).is_err());
+        assert!(allowance.remaining_work() < ample().remaining_work());
+    }
+    let admitted = |declarations: &[ParameterDeclaration], inputs: ParameterInputs<'_>| {
+        admit_parameters(declarations, inputs, &[], 0..80, &mut ample()).unwrap()
+    };
+    assert_eq!(
+        admitted(
+            &declarations[..1],
+            ParameterInputs::Cli(&["factor=-9223372036854775808".into()])
+        )[0]
+        .1,
+        V::Integer(i64::MIN)
+    );
+    assert_eq!(
+        admitted(
+            &declarations[..1],
+            ParameterInputs::Cli(&["factor=9223372036854775807".into()])
+        )[0]
+        .1,
+        V::Integer(i64::MAX)
+    );
+    assert_eq!(
+        admitted(
+            &declarations[1..2],
+            ParameterInputs::Cli(&["label=".into()])
+        )[0]
+        .1,
+        V::String(String::new())
+    );
+}
+
+#[test]
+fn parameter_admission_refuses_incomplete_sets_wrong_types_and_exhausted_budgets() {
+    let declaration = parameter("factor", ParameterType::Int, 6);
+    let declarations = std::slice::from_ref(&declaration);
+    let refuse = |inputs: ParameterInputs<'_>| {
+        admit_parameters(declarations, inputs, &[], 0..40, &mut ample()).unwrap_err()
+    };
+    let missing = refuse(ParameterInputs::Typed(&[]));
+    assert_eq!(
+        missing.location,
+        Location::Query(declaration.name.range.clone())
+    );
+    assert!(missing.message.contains("factor"));
+    for values in [
+        vec![
+            ("factor".into(), V::Integer(2)),
+            ("factor".into(), V::Integer(3)),
+        ],
+        vec![("other".into(), V::Integer(2))],
+    ] {
+        assert_eq!(
+            refuse(ParameterInputs::Typed(&values)).location,
+            Location::Query(0..40)
+        );
+    }
+    let wrong = [("factor".into(), V::Boolean(true))];
+    assert_eq!(
+        refuse(ParameterInputs::Typed(&wrong)).location,
+        Location::Query(declaration.ty.range.clone())
+    );
+    for spelling in ["0x2", "2_000", " 2", "2.0", "9223372036854775808", "+"] {
+        assert_eq!(
+            refuse(ParameterInputs::Cli(&[format!("factor={spelling}")])).location,
+            Location::Query(declaration.ty.range.clone())
+        );
+    }
+    for arguments in [
+        vec!["factor".into()],
+        vec!["=2".into()],
+        vec!["other=2".into()],
+        vec!["factor=2".into(), "factor=3".into()],
+    ] {
+        assert_eq!(
+            refuse(ParameterInputs::Cli(&arguments)).location,
+            Location::Query(0..40)
+        );
+    }
+    let boolean = parameter("enabled", ParameterType::Bool, 50);
+    let error = admit_parameters(
+        std::slice::from_ref(&boolean),
+        ParameterInputs::Cli(&["enabled=True".into()]),
+        &[],
+        0..80,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(boolean.ty.range));
+    assert!(
+        admit_parameters(
+            &[declaration.clone(), declaration.clone()],
+            ParameterInputs::Typed(&[]),
+            &[],
+            0..40,
+            &mut ample()
+        )
+        .is_err()
+    );
+    assert!(
+        admit_parameters(
+            declarations,
+            ParameterInputs::Typed(&[]),
+            &["factor"],
+            0..40,
+            &mut ample()
+        )
+        .is_err()
+    );
+
+    let typed = [("factor".into(), V::Integer(2))];
+    for (mut low, message) in [
+        (budget(1_000, 0, 8), "result limit"),
+        (budget(1, 100, 8), "work limit"),
+    ] {
+        let error = admit_parameters(
+            declarations,
+            ParameterInputs::Typed(&typed),
+            &[],
+            0..40,
+            &mut low,
+        )
+        .unwrap_err();
+        assert!(error.message.contains(message));
+    }
+    assert!(
+        admit_parameters(
+            &[],
+            ParameterInputs::Typed(&[]),
+            &[],
+            0..0,
+            &mut budget(0, 0, 0)
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let mut allowance = ample();
+    let admitted = admit_parameters(
+        declarations,
+        ParameterInputs::Typed(&typed),
+        &[],
+        0..40,
+        &mut allowance,
+    )
+    .unwrap();
+    let remaining = allowance.remaining_work();
+    allowance
+        .charge(remaining, Location::Query(40..40))
+        .unwrap();
+    let error = evaluate_value(
+        &name("factor"),
+        &Bindings::new(admitted).unwrap(),
+        &mut allowance,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("work limit"));
 }
 
 #[test]

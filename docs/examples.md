@@ -136,8 +136,10 @@ to Zincite and Zirium. Its operation-count and label-report examples use each
 host's own inputs and syntax.
 
 The common reader and [native projection APIs](host-integration.md#correlated-native-projection)
-support correlated rows and scalar summaries. Parameters, matching and paths
-remain described by the [design examples](language-direction.md).
+support correlated rows and scalar summaries. The core admits
+[required typed parameters](native-programs.md#required-caller-parameters)
+through immutable bindings. The [design examples](language-direction.md)
+show complete candidate surfaces, including proposed matching and paths.
 
 ## Project each native subject
 

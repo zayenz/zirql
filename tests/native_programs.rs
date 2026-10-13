@@ -16,6 +16,74 @@ fn limits() -> ProgramLimits {
     }
 }
 
+#[test]
+fn parameter_declarations_are_contextual_located_and_require_a_terminator() {
+    let source = "  param factor: int; param label: string; param enabled: bool;";
+    let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+    let mut budget = Budget::for_program(limits());
+    for (name, ty) in [
+        ("factor", zirql::ParameterType::Int),
+        ("label", zirql::ParameterType::String),
+        ("enabled", zirql::ParameterType::Bool),
+    ] {
+        let Some(zirql::CommonStatement::Param(declaration)) =
+            zirql::read_statement_prefix(&mut reader, &mut budget).unwrap()
+        else {
+            panic!("expected parameter declaration");
+        };
+        assert_eq!(declaration.name.value, name);
+        assert_eq!(&source[declaration.name.range], name);
+        assert_eq!(declaration.ty.value, ty);
+        assert!(reader.consume(';'));
+    }
+    for source in [
+        "param = names;",
+        "param | count",
+        "param union other",
+        "param",
+        "param;",
+    ] {
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        assert!(
+            zirql::read_statement_prefix(&mut reader, &mut budget)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(reader.position(), 0);
+    }
+    for source in ["param : int;", "param factor: float;", "param factor: ;"] {
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let error = zirql::read_statement_prefix(&mut reader, &mut budget).unwrap_err();
+        let Location::Query(range) = error.location else {
+            panic!("expected query location");
+        };
+        assert!(range.start < source.len() || range.start == range.end);
+        assert_eq!(reader.position(), 0);
+    }
+    for source in [
+        "param factor: int = 2;",
+        "param factor: int extra;",
+        "param factor: int",
+    ] {
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        assert!(matches!(
+            zirql::read_statement_prefix(&mut reader, &mut budget).unwrap(),
+            Some(zirql::CommonStatement::Param(_))
+        ));
+        assert!(reader.expect(';').is_err());
+    }
+    let mut reader = zirql::ArgumentReader::new("param label: string;", 0).unwrap();
+    let error = zirql::read_statement_prefix(
+        &mut reader,
+        &mut Budget::for_program(ProgramLimits {
+            work: 1,
+            ..limits()
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(6..11));
+}
+
 fn at<T>(value: T, start: usize) -> Located<T> {
     Located::new(value, start..start + 1)
 }

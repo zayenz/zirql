@@ -1,7 +1,284 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use crate::{Budget, EvaluationError, Located, Location, QueryError};
+use crate::{
+    Budget, ConstructedValue, EvaluationError, Located, Location, QueryError, ValueType,
+    copy_constructed_value,
+};
+
+/// Required caller inputs support exactly these three scalar types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterType {
+    Int,
+    String,
+    Bool,
+}
+
+impl From<ParameterType> for ValueType {
+    fn from(ty: ParameterType) -> Self {
+        match ty {
+            ParameterType::Int => Self::Integer,
+            ParameterType::String => Self::String,
+            ParameterType::Bool => Self::Boolean,
+        }
+    }
+}
+
+/// Immutable request metadata retained beside a host's lowered program.
+/// Text frontends introduce the name into scope at its written declaration,
+/// checking host reserved names and later binding/generator/projection collisions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParameterDeclaration {
+    pub name: Located<String>,
+    pub ty: Located<ParameterType>,
+}
+
+/// Borrowed caller values. CLI hosts collect raw arguments without decoding or
+/// substituting them into source; library callers supply exact scalar values.
+#[derive(Clone, Copy, Debug)]
+pub enum ParameterInputs<'a> {
+    Typed(&'a [(String, ConstructedValue)]),
+    Cli(&'a [String]),
+}
+
+/// Admit a complete required argument set before any domain execution.
+/// Returned values follow declaration order and use declaration name ranges;
+/// hosts lift them into their native wrapper and install them with [`Bindings::new`].
+/// Admission, preflight, execution and rendering must share `budget`.
+///
+/// CLI inputs split at the first `=`. Strings are verbatim, including empty
+/// strings. Integers are optional `+`/`-` followed by ASCII decimal digits fitting
+/// `i64`; Booleans are exactly `true` or `false`. No trimming or unescaping occurs.
+/// Empty declarations and empty inputs spend nothing, preserving literal queries.
+///
+/// # Errors
+/// Empty, duplicate or ambient declaration names, duplicate/missing/extra inputs,
+/// wrong scalar types and exhausted allowances fail without returning a partial
+/// set. Missing values point to the name and wrong types to the declaration type;
+/// other input errors use `request_range`, not fabricated argument coordinates.
+pub fn admit_parameters(
+    declarations: &[ParameterDeclaration],
+    inputs: ParameterInputs<'_>,
+    ambient_names: &[&str],
+    request_range: Range<usize>,
+    budget: &mut Budget,
+) -> Result<Vec<(Located<String>, ConstructedValue)>, QueryError> {
+    if declarations.is_empty()
+        && match inputs {
+            ParameterInputs::Typed(values) => values.is_empty(),
+            ParameterInputs::Cli(values) => values.is_empty(),
+        }
+    {
+        return Ok(Vec::new());
+    }
+    // Lookup slots borrow declaration names; scalar copies are admitted below.
+    parameter_slots::<(&str, ParameterSlot<'_>)>(declarations.len(), budget, &request_range)?;
+    let mut values = BTreeMap::new();
+    for declaration in declarations {
+        let name = &declaration.name;
+        budget.charge(name.value.len(), Location::Query(name.range.clone()))?;
+        if name.value.is_empty() {
+            return Err(QueryError::query(
+                name.range.clone(),
+                "parameter name is empty",
+            ));
+        }
+        for ambient in ambient_names {
+            budget.charge(
+                1 + name.value.len().min(ambient.len()),
+                Location::Query(name.range.clone()),
+            )?;
+            if name.value == *ambient {
+                return Err(parameter_error(name, "name is reserved", budget)?);
+            }
+        }
+        if values
+            .insert(
+                name.value.as_str(),
+                ParameterSlot {
+                    declaration,
+                    value: None,
+                },
+            )
+            .is_some()
+        {
+            return Err(parameter_error(name, "already declared", budget)?);
+        }
+    }
+    match inputs {
+        ParameterInputs::Typed(inputs) => {
+            for (name, value) in inputs {
+                budget.charge(name.len(), Location::Query(request_range.clone()))?;
+                let slot = parameter_slot(&mut values, name, &request_range, budget)?;
+                let declaration = slot.declaration;
+                if !matches!(
+                    (declaration.ty.value, value),
+                    (ParameterType::Int, ConstructedValue::Integer(_))
+                        | (ParameterType::String, ConstructedValue::String(_))
+                        | (ParameterType::Bool, ConstructedValue::Boolean(_))
+                ) {
+                    return Err(parameter_type_error(declaration, budget)?);
+                }
+                slot.value = Some(copy_constructed_value(
+                    value,
+                    budget,
+                    Location::Query(declaration.ty.range.clone()),
+                )?);
+            }
+        }
+        ParameterInputs::Cli(inputs) => {
+            for argument in inputs {
+                budget.charge(argument.len(), Location::Query(request_range.clone()))?;
+                let Some((name, text)) = argument.split_once('=') else {
+                    return Err(parameter_error(
+                        &Located::new(argument.as_str(), request_range.clone()),
+                        "expected name=value",
+                        budget,
+                    )?);
+                };
+                let slot = parameter_slot(&mut values, name, &request_range, budget)?;
+                let declaration = slot.declaration;
+                budget.charge_results(1, Location::Query(declaration.ty.range.clone()))?;
+                let value = match declaration.ty.value {
+                    ParameterType::Int => {
+                        let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+                        let integer = (!digits.is_empty()
+                            && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                        .then(|| text.parse::<i64>().ok())
+                        .flatten();
+                        let Some(integer) = integer else {
+                            return Err(parameter_type_error(declaration, budget)?);
+                        };
+                        ConstructedValue::Integer(integer)
+                    }
+                    ParameterType::String => {
+                        budget.charge(text.len(), Location::Query(declaration.ty.range.clone()))?;
+                        ConstructedValue::String(text.to_owned())
+                    }
+                    ParameterType::Bool => match text {
+                        "true" => ConstructedValue::Boolean(true),
+                        "false" => ConstructedValue::Boolean(false),
+                        _ => return Err(parameter_type_error(declaration, budget)?),
+                    },
+                };
+                slot.value = Some(value);
+            }
+        }
+    }
+    for declaration in declarations {
+        if values[declaration.name.value.as_str()].value.is_none() {
+            return Err(parameter_error(
+                &declaration.name,
+                "missing required value",
+                budget,
+            )?);
+        }
+    }
+    parameter_slots::<(Located<String>, ConstructedValue)>(
+        declarations.len(),
+        budget,
+        &request_range,
+    )?;
+    let mut admitted = Vec::with_capacity(declarations.len());
+    for declaration in declarations {
+        budget.charge(
+            declaration.name.value.len(),
+            Location::Query(declaration.name.range.clone()),
+        )?;
+        let value = values
+            .remove(declaration.name.value.as_str())
+            .and_then(|slot| slot.value)
+            .expect("all parameter values were checked above");
+        admitted.push((declaration.name.clone(), value));
+    }
+    Ok(admitted)
+}
+
+fn parameter_slots<T>(
+    count: usize,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<(), QueryError> {
+    if count
+        .checked_mul(std::mem::size_of::<T>())
+        .is_none_or(|bytes| bytes > isize::MAX as usize)
+    {
+        return Err(QueryError::query(
+            range.clone(),
+            "parameter allocation size overflow",
+        ));
+    }
+    let units = count
+        .checked_add(1)
+        .ok_or_else(|| QueryError::query(range.clone(), "parameter allocation size overflow"))?;
+    budget.charge(units, Location::Query(range.clone()))?;
+    budget.charge_results(units, Location::Query(range.clone()))
+}
+
+struct ParameterSlot<'a> {
+    declaration: &'a ParameterDeclaration,
+    value: Option<ConstructedValue>,
+}
+
+fn parameter_slot<'a, 'v>(
+    values: &'v mut BTreeMap<&str, ParameterSlot<'a>>,
+    name: &str,
+    range: &Range<usize>,
+    budget: &mut Budget,
+) -> Result<&'v mut ParameterSlot<'a>, QueryError> {
+    let located = Located::new(name, range.clone());
+    let Some(slot) = values.get_mut(name) else {
+        return Err(parameter_error(&located, "is not declared", budget)?);
+    };
+    if slot.value.is_some() {
+        return Err(parameter_error(
+            &located,
+            "supplied more than once",
+            budget,
+        )?);
+    }
+    Ok(slot)
+}
+
+fn parameter_type_error(
+    declaration: &ParameterDeclaration,
+    budget: &mut Budget,
+) -> Result<QueryError, QueryError> {
+    let message = match declaration.ty.value {
+        ParameterType::Int => "expected decimal int fitting i64",
+        ParameterType::String => "expected string",
+        ParameterType::Bool => "expected bool (true or false)",
+    };
+    parameter_error(
+        &Located::new(
+            declaration.name.value.as_str(),
+            declaration.ty.range.clone(),
+        ),
+        message,
+        budget,
+    )
+}
+
+fn parameter_error(
+    name: &Located<impl AsRef<str>>,
+    message: &str,
+    budget: &mut Budget,
+) -> Result<QueryError, QueryError> {
+    let bytes = name
+        .value
+        .as_ref()
+        .len()
+        .checked_add(message.len())
+        .and_then(|bytes| bytes.checked_add("parameter : ".len()))
+        .ok_or_else(|| {
+            QueryError::query(name.range.clone(), "parameter diagnostic size overflow")
+        })?;
+    budget.charge(bytes, Location::Query(name.range.clone()))?;
+    Ok(QueryError::query(
+        name.range.clone(),
+        format!("parameter {}: {message}", name.value.as_ref()),
+    ))
+}
 
 /// Host-selected behavior of a written emitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

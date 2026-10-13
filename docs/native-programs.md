@@ -13,14 +13,44 @@ forward references to unavailable names fail during preflight.
 
 A host frontend chooses the statement spelling and lowers it to this
 representation. `parse_pipeline` reads only pipelines. The common
-`read_statement_prefix` recognizes `let name =` and `report` prefixes without
-reserving those words as bare binding names.
+`read_statement_prefix` recognizes `let name =`, `report` and
+`param name: type` prefixes without reserving those words as bare binding names.
+The host consumes the statement terminator after a parameter's type.
 The [language direction examples](language-direction.md) show proposed surfaces.
 
 Program expressions cover input, binding lookup, grouping, stage sequences,
 ordered set operands and records. A record evaluates its fields in written order.
 Set combination evaluates the left operand before the right; the host supplies
 its domain identity and combination behavior.
+
+## Required caller parameters
+
+`ParameterDeclaration` records a located name and one of `ParameterType::Int`,
+`String` or `Bool`. Declarations are metadata beside the host program. A text
+frontend adds each name and its scalar type when it reaches that declaration;
+an earlier statement cannot use a later parameter. Parameters follow the same
+immutable, no-shadowing rules as saved values and local generator/projection names.
+Defaults and undeclared caller inputs are unsupported.
+
+Before domain execution, call `admit_parameters` with all declarations and either
+`ParameterInputs::Typed` or `ParameterInputs::Cli`. It refuses duplicate
+declarations, ambient-name collisions, duplicate supplied names, missing values,
+extra names and incompatible types. It returns declaration-located scalar values
+in declaration order. Lift those values into the host's native wrapper and
+install them with admitted ambient values through `Bindings::new`.
+
+The shared CLI decoder splits each `name=value` at the first `=`:
+
+- `string` preserves the complete value, including empty text, quotes,
+  backslashes, whitespace and further `=` characters.
+- `int` accepts an optional `+` or `-`, then ASCII decimal digits fitting `i64`.
+  Whitespace, prefixes such as `0x`, separators, decimals and overflow fail.
+- `bool` accepts exactly `true` or `false`.
+
+Neither input form substitutes text into the program. A host CLI can transport
+repeated `--param name=value` arguments through the same decoder for inline and
+file programs. Literal-only requests use empty declarations and inputs.
+See [typed admission in Rust](embedding-programs.md#supply-typed-caller-inputs).
 
 ## Saved native values
 

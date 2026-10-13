@@ -33,6 +33,53 @@ stages, set operators or emitters in it.
 A nested host selector can call it with relative input while retaining the
 same context and budget.
 
+## Supply typed caller inputs
+
+Admit the entire input set before reading domain data. This example installs
+one integer parameter through the existing immutable binding path. The snippet
+belongs inside a function returning `Result<_, zirql::QueryError>`:
+
+```rust
+use zirql::{
+    Bindings, Budget, ConstructedValue, Located, ParameterDeclaration,
+    ParameterInputs, ParameterType, ProgramLimits, admit_parameters,
+};
+
+let declarations = [ParameterDeclaration {
+    name: Located::new("factor".into(), 6..12),
+    ty: Located::new(ParameterType::Int, 14..17),
+}];
+let inputs = [("factor".into(), ConstructedValue::Integer(2))];
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000,
+    results: 1_000,
+    nesting: 16,
+    stream_items: 100,
+});
+let admitted = admit_parameters(
+    &declarations, ParameterInputs::Typed(&inputs), &[], 0..18, &mut budget,
+)?;
+let bindings = Bindings::new(admitted)?;
+assert_eq!(bindings.get("factor", 30..36)?, &ConstructedValue::Integer(2));
+```
+
+For a CLI request, pass its borrowed raw argument list as `ParameterInputs::Cli`.
+The [parameter reference](native-programs.md#required-caller-parameters) defines
+the exact decoding rules. Hosts reserve ambient names separately; for example,
+`&["document"]` prevents a parameter from replacing an ambient document binding.
+Calls with no inputs pass `ParameterInputs::Typed(&[])` and still reject a
+program's missing required parameters.
+
+Convert each declaration's type to a scalar fact with `ValueType::from` for
+expression and primitive-argument preflight. Text frontends retain written
+declaration scope; admitting all inputs does not make a later declaration visible
+to earlier statements. When adapting a typed root builder, retain its declarations
+through erasure, appended stages and composition. Validate that metadata on every request.
+
+Real hosts lift admitted `ConstructedValue` scalars into their existing native
+result wrapper before constructing `Bindings`. Execute and render with the same
+`Budget`; repeated reads and copies spend the remaining allowance.
+
 ## Supply program operations
 
 `ProgramHost` supplies the native value type, charged copying, stage execution,

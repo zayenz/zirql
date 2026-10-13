@@ -23,6 +23,12 @@ facts can fail when accessed at runtime. An overflow fails at the arithmetic
 expression. A limit refusal identifies the active query or supplied source
 location and returns no partial constructed value.
 
+Parameter declaration errors use their original name or type range. Missing
+required inputs point to the declaration name; incompatible values point to its
+type. Duplicate, extra or malformed caller arguments use the request range and
+identify the parameter in the message. A host retains its inline/file source label
+instead of inventing a query byte range for command-line arguments.
+
 ## Request allowances
 
 | Field | Meaning |
@@ -43,6 +49,10 @@ the host must choose values appropriate to its requests.
 
 Work pays for expression, value and type visits, validation metadata, comparisons,
 known collection allocation, generator candidates and copied UTF-8 bytes.
+Parameter admission charges declaration lookup metadata, raw argument bytes,
+name copies, scalar values and copied string bytes before allocating them.
+Its full-set validation completes before domain execution. Empty declarations
+and inputs spend nothing, so literal-only requests keep their existing costs.
 A value snapshot scans the full size and invariants, admits the result units
 and copied bytes, then constructs the copy.
 
