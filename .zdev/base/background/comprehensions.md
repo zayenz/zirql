@@ -108,8 +108,9 @@ coverage, compatible target declaration types and coherent candidate shapes.
 Its adapter validates these obligations after construction and before report
 or `.dzn` serialization as required by the consumer contract. Equal cardinality
 is not equal index identity. A filter cannot silently compact a keyed array.
-Zirql supplies construction data and reusable shape checks when both consumers
-actually need them; the MiniZinc target policy remains with Zincite.
+Zirql supplies construction data and generic shape checks justified by concrete
+consumer use; a second consumer is not a prerequisite. MiniZinc target policy
+remains with Zincite.
 
 Queries that need keys use explicit key projections/access, for example the
 existing proposed Zincite `index_set(a)` helper. Host helpers run with the same

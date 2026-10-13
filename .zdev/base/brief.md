@@ -3,8 +3,9 @@
 ## Objective
 
 Build Zirql as a Rust framework for purpose-built query languages in Zirium
-and Zincite. Share query execution and bounded comprehension evaluation while
-each tool keeps syntax, operations and native results that fit its domain.
+and Zincite. Provide a substantial shared base language, including query
+execution and bounded comprehension evaluation. Consumers primarily adapt that
+language to their domains through native types, operations and surface syntax.
 
 Zincite is about to add programs, bindings and comprehensions. Zirium already
 implements programs and structured reports. A common owner should prevent
@@ -44,6 +45,29 @@ The user subsequently authorized making the GitHub repository public on
 name-reservation prerelease followed by yanking that version. The user then
 approved usable prereleases after independent verification when consumer
 packaging requires a registry version. Preserve the yanked reservation.
+
+On 2026-10-13, the user clarified that development should use pinned Git
+dependencies. Reserve further publication for an explicitly chosen release
+milestone; intermediate package validation does not trigger a prerelease.
+Development integration uses workspace, library and CLI checks. Consumer
+distribution packaging also needs sibling dependency version metadata and
+registry readiness, which belong to release work. Keep existing usable
+prereleases available.
+
+On 2026-10-13, the user clarified that the base should contain more reusable
+language behavior. Consumers should primarily supply domain adaptations, rather
+than develop their own language extensions. Keep the implementation small by
+sharing language machinery, not by pushing that machinery into adapters.
+The user authorized retaining extension research and developing three example
+programs for discussion. The specific extensions, syntax and task split remain
+proposals; this exploration does not authorize their implementation.
+
+The user subsequently endorsed the examples and requested a zdev task split
+covering the full research scope, including grouping, keyed entry/alignment
+helpers and explanatory paths. Short command-line programs are required. A
+small query must not require a file, named entry point, type declaration or
+parameter preamble when literal arguments suffice. Inline and file programs
+use the same semantics, native results, diagnostics and limits.
 
 The `zirql` name is reserved on crates.io by `0.0.0-prerelease`, published from
 the verified core at `ab4aba4ade3100c3e3ebae23a98c6f56b72c6426` and yanked on
@@ -88,13 +112,97 @@ yanked.
 Start with one reusable Rust library crate. A framework executable, parser
 generator, dynamic plugin loader, query optimizer and persistent cache have no
 current consumer requirement. Use the consumers' MIT OR Apache-2.0 license
-convention. Publish independently verified prereleases when needed by consumer
-packaging. A stable 1.0 API remains outside this increment.
+convention. Follow the development and release policy above. A stable 1.0 API
+remains outside this increment.
 
 Use [BAML](https://boundaryml.com/) as an additional design reference for readable
 language syntax, explicit types and native host integration. Draw on its ideas
 where they simplify Zirql's lowering, diagnostics or typed builder APIs; each
 choice still needs a concrete Zirium or Zincite use.
+
+### Base language and domain adaptations
+
+Zirql owns reusable language constructs and their validation, scope, evaluation,
+ordering, cardinality, diagnostics and resource accounting. New per-item record
+projection, reducers, typed parameters, grouping, requirements and capture
+composition, if selected, belong in the base. A concrete consumer use can
+justify a shared construct before both consumers need it; duplicate host
+implementations are not a prerequisite. Prefer direct shared implementation
+over an extensibility system built solely to keep the core small.
+
+Hosts supply domain types, primitive operations and predicates, native identity,
+source coordinates, rendering and effect policy. For example, Zirql would own
+capture bindings and match enumeration; Zirium would supply operand lookup and
+SSA-value equality. Domain-specific spellings may lower to the same constructs.
+The common frontend and typed builders should make base features reusable
+without each consumer implementing their language rules again.
+
+Read [the extension research](background/language-extensions.md) when comparing
+new base capabilities or their ownership. Read [the three example
+programs](background/language-design-examples.md) when discussing projection,
+value aggregation, parameter syntax, requirements or native structural
+captures. The examples expose unresolved choices and are not executable
+contracts. The existing comprehension contract and approved task boundaries
+continue to govern implementation until a design change is selected.
+
+### Proposed extension bundle
+
+The task bundle selects the examples' explicit `project(subject, {fields})`,
+required `param name: type` declarations with `int`, `string` or `bool` types,
+eager array reducers and conditional `require`. Initially `require` accepts a
+literal string message; it preflights all operands and evaluates its value only
+after a true condition. It includes shared `match` clauses (`from`, `bind`,
+`where`) returning native capture records. Named result schemas, parameter
+defaults, arbitrary functions and lazy generator reduction remain deferred.
+The user approved this exact bundle on 2026-10-13. Tasks base-018 through
+base-025 record its implementation scope; the language forms below remain
+unimplemented until their tasks are completed.
+
+Use Zirium's existing query argument for inline programs. Add `--program TEXT`
+to both Zincite query commands, mutually exclusive with `--program-file` and
+the legacy positional query. Both hosts accept repeated `--param name=value`
+for declared inputs: strings are passed verbatim, integers are checked decimal
+`i64`, and Booleans are exactly `true` or `false`. Duplicate, missing, extra or
+incompatible parameters fail before domain execution. Library callers supply
+typed values. Files remain useful for longer programs; single expressions and
+pipelines keep their existing host emission conventions.
+
+The remaining selected forms are `group_by(rows, "field")` with first-seen
+groups and typed keys; `entries(a)` for keyed cells; `zip_exact(a, b)` for
+keyed arrays with identical ordered axes and present keys, including identical
+sparse coverage, producing two-element tuple cells; and one deterministic
+shortest path per reachable source/sink pair within an explicit edge-depth
+bound. Hosts supply path edges and native identity. Their uncertainty and diff
+side rules survive shared execution. Path queries are read-only and do not
+enumerate all possible paths.
+
+Path steps include both endpoints. Zirium's `users` edge means one operation
+to one direct SSA user operation. Zincite's new `referenced_declarations` edge
+means one declaration to a proven target of a reference written anywhere in
+its owning region, following `transitive_references`' existing region and
+reference-order rules. Each such declaration-to-declaration connection counts
+as one edge; reference occurrences are not additional steps. Repeated targets
+are considered in first-reference order. Unknown target predicates cause a
+located refusal, and unresolved edges retain the host's incompleteness.
+
+For the MLIR fixture in the examples, this proposed command has one witness
+with steps `[arith.muli, arith.addi, func.return]` in `mix`:
+
+```sh
+zirium 'filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=2) | json' input.mlir
+```
+
+For a model containing `int: c = 1; int: b = c; int: a = b; solve satisfy;`,
+this proposed command has one native declaration witness `[a, b, c]`. At depth
+one it has no witness for `c`:
+
+```sh
+zincite-query --program 'subtree | declarations | filter(name("a")) | paths(referenced_declarations, to=name("c"), max_depth=2) | json' input.mzn
+```
+
+These extension tasks supplement base-007 through base-010; they do not broaden
+those tasks' completion conditions. Only keyed helpers require base-007's
+consumer integration. Preserve the existing attended gate for data edits.
 
 ### Syntax and executable representation
 
@@ -136,11 +244,12 @@ without any CLI or renderer; typed builders use that same path without text.
 ### Execution and native values
 
 The shared evaluator owns pipeline sequencing, binding lookup and scope, nested
-input, common collection transformations and comprehension expansion. Hosts
-own navigation, projections, predicate leaves, domain comparison where needed,
-source rendering and effectful operations. The host API receives the active
-budget for scans, traversal, copying and nested evaluation; opening a nested
-query does not reset the allowance.
+input, common collection transformations and comprehension expansion. Generic
+per-item projection and record construction belong to this shared execution;
+hosts own the domain projections used inside them, navigation, predicate leaves,
+domain comparison where needed, source rendering and effectful operations.
+The host API receives the active budget for scans, traversal, copying and
+nested evaluation; opening a nested query does not reset the allowance.
 
 Keep native selections and values native. A Zincite node can borrow retained
 source; a Zirium operation can remain a document-scoped handle. No JSON
@@ -203,6 +312,32 @@ rules; other hosts may support a value kind without inheriting MiniZinc
 serialization restrictions. Host helpers such as enum-member resolution supply
 native identities; they do not become built-in MiniZinc services in Zirql.
 
+## Documentation site
+
+On 2026-10-13, the user requested a Zirql documentation site similar to Zincite's,
+at `https://zayenz.se/zirql/`.
+
+Build up reader documentation alongside the language. Cover getting started,
+shared language concepts and examples, Rust host integration, native results,
+diagnostics and resource limits. Link to Rust API documentation and the consumer
+guides for domain-specific syntax. Describe implemented behavior as available;
+keep proposed language extensions clearly identified as proposals.
+
+Use Zincite's repository-local Astro/Starlight site as the starting approach,
+with authoritative Markdown guides in `docs/` and a separate build in `site/`.
+Adapt its visual conventions to Zirql. Keep site tooling independent of Cargo.
+When planning the site, inspect `../zincite/site/README.md`, `astro.config.mjs`
+and `scripts/prepare-content.mjs`. When planning publication, inspect
+`../zincite/site/PUBLISHING.md` and the personal site's current release rules;
+Zincite currently imports its static build into the personal site's deployment.
+
+Deliver reader guides, a locally reviewable site, then publication at the chosen
+path. Validate the site build and manually check navigation, search, links,
+assets, canonical URLs and mobile layout under `/zirql/`. Publication also
+requires checks of the live HTTPS site and existing personal-site routes.
+Use existing checks; documentation needs no new product tests. Reader guides
+and the local site are complete in base-017. Deployment remains unapproved.
+
 ## Integration order
 
 1. Demonstrate a small native pipeline through the core with two embedded host
@@ -263,6 +398,14 @@ call counts. Temporary instrumentation can establish parse/fact reuse without
 permanent implementation-count assertions. No corpus campaign, solver run,
 large generated test matrix or benchmark service is required.
 
+For the language extensions, reuse the three example programs as compact public
+behavior controls. Add focused checks for parameter/type refusals, projection
+correlation and cardinality, eager reduction and lazy requirement failures,
+native capture identity/scope, grouping order, key-alignment refusal and bounded
+path witnesses. Each relevant integration demonstrates inline/file/library
+agreement and existing later-error buffering. Reuse these controls across
+surfaces; do not multiply them into a syntax matrix or add timing assertions.
+
 ## Validation
 
 For record changes: `git diff --check` and `zdev check base --format json`.
@@ -301,6 +444,10 @@ these observations are not a promise that a later checkout has the same APIs.
 Concrete Rust signatures are chosen against the first two native controls within
 these boundaries. Zincite's data-construction grammar, operation subset,
 target/key/empty-axis and comment policies retain their existing attended gate.
-The repository is public and the crate name is reserved. Usable prereleases
-after independent verification are approved when needed by consumer packaging;
-the affected consumer's packaging check remains a completion gate.
+The repository is public and the crate name is reserved. Before another
+publication or consumer distribution, follow the development and release
+policy in User decisions.
+
+The approved extension bundle records the selected concrete language choices.
+Result schemas and broader function syntax remain future
+design work. Shared base ownership and short command-line usage are settled.
