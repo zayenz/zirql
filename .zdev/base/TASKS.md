@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 25
-- Ready: 2
-- Blocked: 8
-- Done: 15
+- Ready: 3
+- Blocked: 6
+- Done: 16
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -26,11 +26,11 @@
 | [base-015](tasks/015-deliver-the-bounded-positional-value-evaluator-and-usable-pr.md) | Deliver the bounded positional value evaluator and usable prerelease | done | — |
 | [base-016](tasks/016-deliver-nominal-keyed-value-construction-and-a-usable-prerel.md) | Deliver nominal keyed value construction and a usable prerelease | done | — |
 | [base-017](tasks/017-build-zirql-reader-documentation-and-a-local-documentation-s.md) | Build Zirql reader documentation and a local documentation site | done | — |
-| [base-018](tasks/018-run-bounded-scalar-summaries-and-requirements-from-zincite-c.md) | Run bounded scalar summaries and requirements from Zincite command lines | ready | base-005 |
-| [base-019](tasks/019-build-correlated-zirium-report-rows-with-shared-projection-s.md) | Build correlated Zirium report rows with shared projection syntax | blocked | base-018 |
+| [base-018](tasks/018-run-bounded-scalar-summaries-and-requirements-from-zincite-c.md) | Run bounded scalar summaries and requirements from Zincite command lines | done | base-005 |
+| [base-019](tasks/019-build-correlated-zirium-report-rows-with-shared-projection-s.md) | Build correlated Zirium report rows with shared projection syntax | ready | base-018 |
 | [base-020](tasks/020-supply-typed-query-parameters-through-both-host-clis-and-lib.md) | Supply typed query parameters through both host CLIs and libraries | blocked | base-019 |
 | [base-021](tasks/021-execute-shared-native-capture-queries-over-zirium-ssa-values.md) | Execute shared native capture queries over Zirium SSA values | blocked | base-019 |
 | [base-022](tasks/022-adapt-zincite-native-projections-and-captures-to-the-shared.md) | Adapt Zincite native projections and captures to the shared language | blocked | base-021 |
 | [base-023](tasks/023-group-constructed-records-with-stable-typed-keys-in-both-con.md) | Group constructed records with stable typed keys in both consumers | blocked | base-019 |
-| [base-024](tasks/024-inspect-and-exactly-align-keyed-data-through-shared-value-op.md) | Inspect and exactly align keyed data through shared value operations | blocked | base-018, base-007 |
+| [base-024](tasks/024-inspect-and-exactly-align-keyed-data-through-shared-value-op.md) | Inspect and exactly align keyed data through shared value operations | ready | base-018, base-007 |
 | [base-025](tasks/025-explain-native-connections-with-bounded-shortest-path-witnes.md) | Explain native connections with bounded shortest path witnesses | blocked | base-022 |
