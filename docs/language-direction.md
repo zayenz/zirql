@@ -2,12 +2,12 @@
 
 The current [word examples](examples.md) select words and construct values.
 These sketches use that small domain to combine projection, reducers and
-parameters and native captures with proposed grouping and bounded paths.
+parameters, native captures and grouping with proposed bounded paths.
 
 These complete word-host programs remain design sketches. The core supplies
 callable projection, reducers, requirements and typed parameter admission;
-common native matching APIs are also available on the development branch,
-while grouping and paths remain proposals. A host frontend supplies its
+common native matching and grouping APIs are also available on the development
+branch, while paths remain proposals. A host frontend supplies its
 domain syntax and supported subset. Callable behavior is covered by the
 [Rust guides](getting-started.md).
 
@@ -112,10 +112,12 @@ renderer; no particular source-file format is implied by these arrays.
 
 ## Group rows and align keyed cells
 
-Applied to all four word records, `group_by(rows, "bytes")` would produce a
+Applied to all four word records, `group_by(rows, "bytes")` produces a
 group keyed by integer 5 containing `birch`, `apple`, `apple`, followed by a
 group keyed by integer 3 containing `ash`. Groups follow first occurrence;
 members retain their row order. Keys retain their value type.
+The [grouping reference](values.md#stable-record-groups) describes the callable
+form, common reader and supported keys.
 
 Positional comprehensions create new one-based positions. To retain explicit
 keys, the proposed `entries(a)` helper would expose keyed cells.

@@ -544,7 +544,15 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             },
             _ if self.reader.consume('(') => {
                 let value = ValueGuard::new(self.expression(0, depth + 1)?);
-                if name.value == "require" {
+                if name.value == "group_by" {
+                    self.reader.expect(',')?;
+                    let field = self.string()?;
+                    self.reader.expect(')')?;
+                    K::GroupBy {
+                        rows: Box::new(value.into_value()),
+                        field,
+                    }
+                } else if name.value == "require" {
                     self.reader.expect(',')?;
                     let result = ValueGuard::new(self.expression(0, depth + 1)?);
                     self.reader.expect(',')?;
@@ -1200,6 +1208,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::Unary { operand: child, .. }
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }
+            | K::GroupBy { rows: child, .. }
             | K::Reduce { array: child, .. } => {
                 pending.push(*child);
                 continue;

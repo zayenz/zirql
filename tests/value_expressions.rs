@@ -7,7 +7,7 @@ use zirql::{
     ValueConstructor, ValueExpression as E, ValueExpressionKind as K, ValueGenerator as G,
     ValueKey, ValueKeyType, ValueReducer as R, ValueType, ValueUnaryOperator as U,
     admit_parameters, constructed_value_type, copy_constructed_value, evaluate_value,
-    free_value_names, validate_value_expression,
+    free_value_names, validate_value_expression, value_expression_types,
 };
 
 fn e(kind: K) -> E {
@@ -767,6 +767,233 @@ fn member(id: u64, order: usize) -> NominalMember {
 }
 fn member_expression(id: u64, order: usize) -> E {
     literal(V::Member(member(id, order)))
+}
+
+fn grouping(rows: E, label: &str) -> E {
+    e(K::GroupBy {
+        rows: Box::new(rows),
+        field: Located::new(label.into(), 5..6),
+    })
+}
+
+#[test]
+fn grouping_preserves_first_seen_keys_all_rows_and_the_public_value_sequence() {
+    let row = |machine: &str, demand| {
+        V::Record(vec![
+            ("machine".into(), V::String(machine.into())),
+            ("demand".into(), V::Integer(demand)),
+        ])
+    };
+    let rows = V::Array(vec![row("b", 3), row("a", 5), row("b", 7), row("b", 3)]);
+    let expression = grouping(name("rows"), "machine");
+    let mut allowance = ample();
+    let row_types =
+        constructed_value_type(&rows, &mut allowance, Location::Source(10..30)).unwrap();
+    let types = BTreeMap::from([("rows".into(), row_types)]);
+    assert_eq!(
+        free_value_names(&expression, &types, &mut allowance).unwrap(),
+        vec![Located::new("rows".into(), 0..1)]
+    );
+    validate_value_expression(&expression, &types, &mut allowance).unwrap();
+    let ValueType::Array(ArrayType::Positions(row_types)) = &types["rows"] else {
+        panic!("row positions")
+    };
+    let facts = value_expression_types(&expression, &types, &mut allowance).unwrap();
+    let ValueType::Array(ArrayType::Elements(groups)) = &facts[0] else {
+        panic!("group facts")
+    };
+    let ValueType::Record(fields) = &groups[0] else {
+        panic!("group schema")
+    };
+    assert_eq!(fields[0], ("key".into(), ValueType::String));
+    let ValueType::Array(ArrayType::Elements(items)) = &fields[1].1 else {
+        panic!("item schemas")
+    };
+    assert_eq!(items, row_types);
+    let bindings = Bindings::new([(Located::new("rows".into(), 0..4), rows)]).unwrap();
+    let value = evaluate_value(&expression, &bindings, &mut allowance).unwrap();
+    let expected = V::Array(vec![
+        V::Record(vec![
+            ("key".into(), V::String("b".into())),
+            (
+                "items".into(),
+                V::Array(vec![row("b", 3), row("b", 7), row("b", 3)]),
+            ),
+        ]),
+        V::Record(vec![
+            ("key".into(), V::String("a".into())),
+            ("items".into(), V::Array(vec![row("a", 5)])),
+        ]),
+    ]);
+    assert_eq!(value, expected);
+    assert!(
+        matches!(constructed_value_type(&value, &mut allowance, Location::Query(0..1)).unwrap(), ValueType::Array(ArrayType::Positions(groups)) if groups.len() == 2)
+    );
+    assert_eq!(
+        copy_constructed_value(&value, &mut allowance, Location::Query(40..50)).unwrap(),
+        value
+    );
+}
+
+#[test]
+fn grouping_retains_empty_and_different_row_schema_facts() {
+    let empty = grouping(e(K::Array(vec![])), "kind");
+    assert_eq!(evaluate(&empty).unwrap(), V::Array(vec![]));
+    assert_eq!(
+        value_expression_types(&empty, &BTreeMap::new(), &mut ample()).unwrap(),
+        vec![ValueType::Array(ArrayType::Elements(vec![]))]
+    );
+    let types = BTreeMap::from([(
+        "rows".into(),
+        ValueType::Array(ArrayType::Elements(vec![ValueType::Record(vec![(
+            "kind".into(),
+            ValueType::Integer,
+        )])])),
+    )]);
+    assert_eq!(
+        value_expression_types(&grouping(name("rows"), "kind"), &types, &mut ample()).unwrap(),
+        vec![ValueType::Array(ArrayType::Elements(vec![
+            ValueType::Record(vec![
+                ("key".into(), ValueType::Integer),
+                (
+                    "items".into(),
+                    ValueType::Array(ArrayType::Elements(vec![ValueType::Record(vec![(
+                        "kind".into(),
+                        ValueType::Integer
+                    )])]))
+                ),
+            ])
+        ]))]
+    );
+    let expression = grouping(
+        e(K::Array(vec![
+            record(vec![("kind", int(2)), ("count", int(3))]),
+            record(vec![
+                ("label", literal(V::String("other".into()))),
+                ("kind", int(2)),
+            ]),
+        ])),
+        "kind",
+    );
+    let facts = value_expression_types(&expression, &BTreeMap::new(), &mut ample()).unwrap();
+    let ValueType::Array(ArrayType::Elements(groups)) = &facts[0] else {
+        panic!("group facts")
+    };
+    let ValueType::Record(fields) = &groups[0] else {
+        panic!("group schema")
+    };
+    let ValueType::Array(ArrayType::Elements(rows)) = &fields[1].1 else {
+        panic!("item schemas")
+    };
+    assert_ne!(rows[0], rows[1]);
+    assert_eq!(
+        evaluate(&expression).unwrap(),
+        V::Array(vec![V::Record(vec![
+            ("key".into(), V::Integer(2)),
+            (
+                "items".into(),
+                V::Array(vec![
+                    V::Record(vec![
+                        ("kind".into(), V::Integer(2)),
+                        ("count".into(), V::Integer(3))
+                    ]),
+                    V::Record(vec![
+                        ("label".into(), V::String("other".into())),
+                        ("kind".into(), V::Integer(2))
+                    ]),
+                ])
+            ),
+        ])])
+    );
+}
+
+#[test]
+fn grouping_locates_key_refusals_and_preserves_nominal_identity() {
+    let missing = grouping(e(K::Array(vec![record(vec![("other", int(1))])])), "kind");
+    validate_value_expression(&missing, &BTreeMap::new(), &mut ample()).unwrap();
+    assert_eq!(
+        evaluate(&choose(grouping(
+            e(K::Array(vec![record(vec![("other", int(1))])])),
+            "kind"
+        )))
+        .unwrap(),
+        V::Integer(7)
+    );
+    let error = evaluate(&missing).unwrap_err();
+    assert_eq!(error.location, Location::Query(5..6));
+    assert!(error.message.contains("missing record field"));
+    let incompatible = grouping(
+        e(K::Array(vec![
+            record(vec![("kind", int(1))]),
+            record(vec![("kind", literal(V::String("1".into())))]),
+        ])),
+        "kind",
+    );
+    assert_eq!(
+        evaluate(&choose(incompatible)).unwrap_err().location,
+        Location::Query(5..6)
+    );
+    assert_eq!(
+        evaluate(&grouping(int(1), "kind")).unwrap_err().location,
+        Location::Query(0..1)
+    );
+    let expression = grouping(
+        e(K::Array(vec![
+            record(vec![("kind", member_expression(22, 4))]),
+            record(vec![("kind", member_expression(11, 1))]),
+            record(vec![("kind", member_expression(22, 4))]),
+        ])),
+        "kind",
+    );
+    let row = |id, order| V::Record(vec![("kind".into(), V::Member(member(id, order)))]);
+    assert_eq!(
+        evaluate(&expression).unwrap(),
+        V::Array(vec![
+            V::Record(vec![
+                ("key".into(), V::Member(member(22, 4))),
+                ("items".into(), V::Array(vec![row(22, 4), row(22, 4)]))
+            ]),
+            V::Record(vec![
+                ("key".into(), V::Member(member(11, 1))),
+                ("items".into(), V::Array(vec![row(11, 1)]))
+            ]),
+        ])
+    );
+}
+
+#[test]
+fn grouping_and_subsequent_copies_share_finite_allowances() {
+    let expression = grouping(
+        e(K::Array(vec![
+            record(vec![("kind", int(2))]),
+            record(vec![("kind", int(1))]),
+            record(vec![("kind", int(2))]),
+        ])),
+        "kind",
+    );
+    for (mut allowance, limit) in [
+        (budget(20, 100, 64), "work"),
+        (budget(10_000, 20, 64), "result"),
+        (budget(10_000, 100, 4), "nesting"),
+    ] {
+        assert!(
+            evaluate_value(&expression, &Bindings::default(), &mut allowance)
+                .unwrap_err()
+                .message
+                .contains(limit)
+        );
+    }
+    let mut allowance = budget(10_000, 128, 64);
+    let value = evaluate_value(&expression, &Bindings::default(), &mut allowance).unwrap();
+    let location = Location::Query(40..50);
+    let error = loop {
+        match copy_constructed_value(&value, &mut allowance, location.clone()) {
+            Ok(copy) => assert_eq!(copy, value),
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error.location, location);
+    assert!(error.message.contains("result"));
 }
 fn integer_axis(keys: &[i64]) -> KeyAxis {
     KeyAxis {

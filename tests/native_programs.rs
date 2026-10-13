@@ -2132,6 +2132,16 @@ mod projection {
             ("project", V::Array(vec![V::String("legacy".into())])),
             ("f | project", V::Array(vec![V::String("legacy".into())])),
             ("one(f | names)", V::String("beta".into())),
+            (
+                "group_by(project(w, {\"n\": w | count}), \"n\")",
+                V::Array(vec![V::Record(vec![
+                    ("key".into(), V::Integer(1)),
+                    (
+                        "items".into(),
+                        V::Array(vec![V::Record(vec![("n".into(), V::Integer(1))])]),
+                    ),
+                ])]),
+            ),
         ] {
             let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
             let expression =
@@ -2148,6 +2158,20 @@ mod projection {
             )
             .unwrap();
             assert_eq!(value, expected);
+            if let K::GroupBy { field, .. } = &expression.value {
+                assert_eq!(&source[field.range.clone()], "\"n\"");
+            }
+            zirql::dispose_native_value(expression);
+        }
+        for source in [
+            "group_by([], 1)",
+            "group_by([])",
+            "group_by([], \"n\", \"m\")",
+        ] {
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            assert!(
+                zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).is_err()
+            );
         }
         for (source, expected) in [
             ("(f | names) | count", Kind::Count),

@@ -81,6 +81,16 @@ already admitted value without another result or copy charge. Arithmetic errors
 retain their child ranges, and limit errors retain the active operation range.
 Emission snapshots and rendering charge again under the same budget.
 
+Grouping materializes its positional rows before scanning them. Row visits,
+selector-label comparisons, typed key comparisons and nominal metadata checks
+charge work. New group records, the outer array, each `items` array and their
+entry slots charge work and aggregate results before allocation. Each new
+group copies its key and the `key`/`items` labels; existing rows move without
+another value-copy charge. A depth scan checks the extra group record and items
+array around each moved row. Type discovery pays for schema metadata and labels.
+Missing fields and incompatible keys use the selector range; input-kind errors
+use the grouping call. Child query or source failures keep their locations.
+
 Native matches require aggregate program result limits. Every clause and guard
 branch is preflighted before subject enumeration. Dependent clause calls and
 native field expressions use the active logical nesting allowance; Boolean

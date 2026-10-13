@@ -232,6 +232,15 @@ pub enum ValueExpressionKind<Q = ()> {
         operator: ValueReducer,
         array: Box<ValueExpression<Q>>,
     },
+    /// Group positional records by one static field, preserving first-seen keys
+    /// and all rows in input order. Keys are homogeneous integers, strings or
+    /// members of one nominal type. Results use existing `key`/`items` records.
+    /// Missing fields are deferred until execution; known incompatible types
+    /// fail preflight. Selector/key errors use `field`'s range.
+    GroupBy {
+        rows: Box<ValueExpression<Q>>,
+        field: Located<String>,
+    },
     /// Preflight both operands; run value only after a true fixed Boolean.
     /// A false condition fails at this node with the literal message.
     Require {
@@ -2115,6 +2124,77 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     location,
                 )
             }
+            ValueExpressionKind::GroupBy { rows, field } => {
+                let selector = Location::Query(field.range.clone());
+                let mut result = Vec::new();
+                for ty in self.walk(rows, budget)? {
+                    budget.charge(1, location.clone())?;
+                    let elements = match ty {
+                        ValueType::Array(
+                            ArrayType::Positions(elements) | ArrayType::Elements(elements),
+                        ) => elements,
+                        ValueType::Unestablished => {
+                            push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
+                            continue;
+                        }
+                        _ => return Err(error(location, "group_by needs a positional array")),
+                    };
+                    let mut key_type = None;
+                    for row in &elements {
+                        budget.charge(1, location.clone())?;
+                        let fields = match row {
+                            ValueType::Record(fields) => fields,
+                            ValueType::Unestablished => continue,
+                            _ => return Err(error(location, "group_by needs record rows")),
+                        };
+                        for (label, ty) in fields {
+                            budget.charge(
+                                sum(1, label.len().min(field.value.len()), &selector)?,
+                                selector.clone(),
+                            )?;
+                            if label != &field.value || matches!(ty, ValueType::Unestablished) {
+                                continue;
+                            }
+                            if !matches!(
+                                ty,
+                                ValueType::Integer | ValueType::String | ValueType::Member(_)
+                            ) {
+                                return Err(error(
+                                    &selector,
+                                    "group_by keys need integers, strings or nominal members",
+                                ));
+                            }
+                            if key_type.as_ref().is_some_and(|previous| previous != ty) {
+                                return Err(error(
+                                    &selector,
+                                    "group_by needs homogeneous key types",
+                                ));
+                            }
+                            if key_type.is_none() {
+                                key_type = Some(copy_type(ty, budget, &selector)?);
+                            }
+                        }
+                    }
+                    let mut groups = Vec::new();
+                    if !elements.is_empty() {
+                        let mut fields = metadata_vec(2, budget, location)?;
+                        budget.charge("key".len() + "items".len(), location.clone())?;
+                        fields.push(("key".into(), key_type.unwrap_or(ValueType::Unestablished)));
+                        fields.push((
+                            "items".into(),
+                            ValueType::Array(ArrayType::Elements(elements)),
+                        ));
+                        push_metadata(&mut groups, ValueType::Record(fields), budget, location)?;
+                    }
+                    push_metadata(
+                        &mut result,
+                        ValueType::Array(ArrayType::Elements(groups)),
+                        budget,
+                        location,
+                    )?;
+                }
+                Ok(result)
+            }
             ValueExpressionKind::Require {
                 condition,
                 value,
@@ -3385,6 +3465,12 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                     budget,
                     &location,
                 )?),
+                ValueExpressionKind::GroupBy { rows, field } => Ok(group_by(
+                    run(rows, queries, locals, budget, check_value)?,
+                    field,
+                    budget,
+                    &location,
+                )?),
                 ValueExpressionKind::Require {
                     condition,
                     value,
@@ -3461,6 +3547,104 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
         check_value(&value, budget, &location)?;
         Ok(value)
     })
+}
+
+fn group_by(
+    rows: ConstructedValue,
+    field: &Located<String>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let ConstructedValue::Array(rows) = rows else {
+        return Err(error(location, "group_by needs a positional array"));
+    };
+    let selector = Location::Query(field.range.clone());
+    let mut groups = admit_container(0, budget, location)?;
+    let mut key_type = None;
+    for row in rows {
+        budget.charge(1, location.clone())?;
+        let ConstructedValue::Record(fields) = &row else {
+            return Err(error(location, "group_by needs record rows"));
+        };
+        // Moving rows adds a group record and items array around them. Check
+        // that added depth without copying or charging their result units again.
+        budget.within_evaluation(2, location.clone(), |budget| {
+            copy_size(&row, budget, location).map(|_| ())
+        })?;
+        let mut key = None;
+        for (label, value) in fields {
+            budget.charge(
+                sum(1, label.len().min(field.value.len()), &selector)?,
+                selector.clone(),
+            )?;
+            if label == &field.value {
+                key = Some(value);
+                break;
+            }
+        }
+        let Some(key) = key else {
+            admit_diagnostic("missing record field: ", &field.value, budget, &selector)?;
+            return Err(error(
+                &selector,
+                format!("missing record field: {}", field.value),
+            ));
+        };
+        let ty = match key {
+            ConstructedValue::Integer(_) => ValueType::Integer,
+            ConstructedValue::String(_) => ValueType::String,
+            ConstructedValue::Member(member) => ValueType::Member(member.type_id),
+            _ => {
+                return Err(error(
+                    &selector,
+                    "group_by keys need integers, strings or nominal members",
+                ));
+            }
+        };
+        budget.charge(1, selector.clone())?;
+        if key_type.as_ref().is_some_and(|previous| previous != &ty) {
+            return Err(error(&selector, "group_by needs homogeneous key types"));
+        }
+        key_type = Some(ty);
+        let mut matched = None;
+        for (index, group) in groups.iter().enumerate() {
+            let ConstructedValue::Record(fields) = group else {
+                unreachable!("group record")
+            };
+            if equal_values(key, &fields[0].1, budget, &selector)? {
+                matched = Some(index);
+                break;
+            }
+        }
+        let index = match matched {
+            Some(index) => index,
+            None => {
+                let key = copy_constructed_value(key, budget, selector.clone())?;
+                let mut fields = admit_container(2, budget, location)?;
+                budget.charge("key".len() + "items".len(), location.clone())?;
+                fields.push(("key".into(), key));
+                fields.push((
+                    "items".into(),
+                    ConstructedValue::Array(admit_container(0, budget, location)?),
+                ));
+                allocation::<ConstructedValue>(sum(groups.len(), 1, location)?, location)?;
+                budget.charge(1, location.clone())?;
+                budget.charge_results(1, location.clone())?;
+                groups.push(ConstructedValue::Record(fields));
+                groups.len() - 1
+            }
+        };
+        let ConstructedValue::Record(fields) = &mut groups[index] else {
+            unreachable!("group record")
+        };
+        let ConstructedValue::Array(items) = &mut fields[1].1 else {
+            unreachable!("group items")
+        };
+        allocation::<ConstructedValue>(sum(items.len(), 1, location)?, location)?;
+        budget.charge(1, location.clone())?;
+        budget.charge_results(1, location.clone())?;
+        items.push(row);
+    }
+    Ok(ConstructedValue::Array(groups))
 }
 
 fn reduce(

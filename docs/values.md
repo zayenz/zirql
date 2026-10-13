@@ -140,6 +140,48 @@ child value kinds, so concrete type discovery and charged copying need no
 separate summary result type. Hosts choose surface spellings and effect policy;
 Zirql executes no model or solver.
 
+## Stable record groups
+
+`group_by(rows, "field")` groups a positional array of records by one literal
+string selector. Its keys must all be integers, strings or members of one
+nominal type. Keys keep their types; nominal equality uses type/member IDs.
+Keyed arrays require an explicit conversion to positional rows first.
+
+The result is an array of records with `key` followed by `items`. Groups follow
+the first occurrence of each key. Each `items` array retains input order and
+duplicates, including records whose other fields differ. Empty input returns
+an empty array.
+
+```text
+group_by([
+  {"machine": "b", "demand": 3},
+  {"machine": "a", "demand": 5},
+  {"machine": "b", "demand": 7},
+  {"machine": "b", "demand": 3}
+], "machine")
+→ [{"key": "b", "items": [first row, third row, fourth row]},
+   {"key": "a", "items": [second row]}]
+```
+
+A comprehension can read `g.key` and reduce `g.items` with `length` or a
+projection such as `sum([r.demand for r in g.items])`.
+
+The callable form is `ValueExpressionKind::GroupBy { rows, field }`, where
+`field` is a `Located<String>` and `rows` is the sole expression operand. The
+five value APIs and native-value APIs use the shared analysis and evaluator.
+Type discovery retains possible original row schemas in `items` without
+claiming a group count or assigning rows to particular keys. A schema-bearing
+empty projection retains these facts; an empty literal invents no key or row
+schema. Missing field facts remain deferred until execution, so a skipped
+missing field does not fail. Known incompatible keys still fail preflight.
+Missing fields and key-type refusals point to the selector; non-array input and
+non-record rows point to the grouping call. Child failures retain their ranges.
+
+Grouping evaluates its rows once. Comparisons, new containers and slots, copied
+group keys and labels use the active budget. Rows move into the new groups;
+their values are not copied again. Subsequent snapshots and rendering use the
+same allowance. See [diagnostics and limits](diagnostics-and-limits.md).
+
 ## Native operands and extraction
 
 `ValueExpression<Q>` defaults to ordinary constructed expressions with `Q = ()`.
