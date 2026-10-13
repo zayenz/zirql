@@ -21,9 +21,9 @@ export default defineConfig({
     customCss: ['./src/styles/custom.css'],
     social: [{ icon: 'github', label: 'Source on GitHub', href: 'https://github.com/zayenz/zirql' }],
     sidebar: [
-      { label: 'Using Zirql', items: ['guides/getting-started', 'guides/shared-concepts'] },
-      { label: 'Rust integration', items: ['guides/native-programs', 'guides/values', 'guides/host-integration', 'guides/diagnostics-and-limits'] },
-      { label: 'Design examples', items: ['guides/language-direction'] },
+      { label: 'Language reference', items: ['guides/shared-concepts', 'guides/native-programs', 'guides/values', 'guides/diagnostics-and-limits'] },
+      { label: 'Examples', items: ['guides/examples', 'guides/language-direction'] },
+      { label: 'Embedding in Rust', items: ['guides/getting-started', 'guides/host-integration', 'guides/embedding-programs'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql' },
       { label: 'Zincite guides', link: 'https://zayenz.se/zincite/' },
       { label: 'Zirium source and guides', link: 'https://github.com/zayenz/zirium' },

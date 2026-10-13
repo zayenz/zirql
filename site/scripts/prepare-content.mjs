@@ -6,7 +6,7 @@ const site = fileURLToPath(new URL('../', import.meta.url));
 const root = resolve(site, '..');
 const guides = [
   'getting-started', 'shared-concepts', 'native-programs', 'values',
-  'host-integration', 'diagnostics-and-limits', 'language-direction',
+  'host-integration', 'embedding-programs', 'diagnostics-and-limits', 'examples', 'language-direction',
 ];
 const output = resolve(site, 'src/content/docs');
 await mkdir(resolve(output, 'guides'), { recursive: true });
@@ -30,13 +30,17 @@ for (const name of ['index', ...guides]) {
   });
   const landing = name === 'index' ? `template: splash
 hero:
-  title: Query languages for Rust tools.
+  title: Zirql
+  tagline: A Rust library for pipelines, programs and comprehensions over native data.
   actions:
-    - text: Rust example
-      link: ./guides/getting-started/
+    - text: Examples
+      link: ./guides/examples/
       icon: right-arrow
-    - text: Language examples
-      link: ./guides/language-direction/
+    - text: Language reference
+      link: ./guides/shared-concepts/
+      variant: minimal
+    - text: Embedding in Rust
+      link: ./guides/host-integration/
       variant: minimal
 ` : '';
   await writeFile(resolve(output, name === 'index' ? 'index.md' : `guides/${name}.md`),

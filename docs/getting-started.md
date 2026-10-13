@@ -15,8 +15,8 @@ program and constructed-value APIs used below:
 zirql = { git = "https://github.com/zayenz/zirql", rev = "3a63bf53cd4aff7a70d611c4d150a614e86968e6" }
 ```
 
-Use a current stable Rust toolchain. Keep the revision pin when integrating a
-host, and review API changes before moving it. Usable alpha packages also exist
+Use Rust 1.88 or newer (the crate uses edition 2024). Keep the revision pin
+when integrating a host, and review API changes before moving it. Usable alpha packages also exist
 on crates.io, but they may describe a different revision. The yanked
 `0.0.0-prerelease` name reservation is not an installation target.
 
@@ -72,3 +72,7 @@ The [published API documentation](https://docs.rs/zirql) is useful for looking u
 names, but check its version against your dependency. Continue with
 [values and comprehensions](values.md) for collection construction, or
 [host integration](host-integration.md) to query native domain items.
+
+For a native pipeline, the [complete borrowed-word host example](../README.md#a-borrowed-source-query)
+shows the predicate callback and input admission. Read
+[embedding in Rust](host-integration.md) before adapting it to a document model.

@@ -1,4 +1,4 @@
-# Language examples
+# Design examples
 
 A function report needs to keep names and counts together. A capacity report
 needs to compare matching cells, even when the totals look sufficient. These

@@ -14,15 +14,8 @@ ranges, conditional branches and comprehensions. A host parser lowers its syntax
 to this tree. The [getting started example](getting-started.md) evaluates one
 without a frontend.
 
-The callable entry points have different jobs:
-
-| API | Purpose |
-| --- | --- |
-| `free_value_names` | Find external references using declared type facts |
-| `validate_value_expression` | Check an expression against binding types |
-| `constructed_value_type` | Discover type facts from an actual value |
-| `evaluate_value` | Evaluate with immutable bindings |
-| `copy_constructed_value` | Make a validated, budgeted snapshot |
+The [embedding guide](host-integration.md#constructed-value-apis) describes
+validation, evaluation and copying APIs for this representation.
 
 Use the same request budget across these operations. There is no deep `Clone`
 implementation that bypasses copy accounting. Records preserve their written

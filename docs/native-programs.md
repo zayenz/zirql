@@ -1,14 +1,13 @@
 # Native programs
 
 Use a program when several statements need the same native input or saved
-results. `Program` retains statement order; `ProgramHost` supplies operations
-on the host's value type. Bindings can save document handles or borrowed
-selections for later use.
+results. Statements execute in written order. Bindings can save document
+handles or borrowed selections for later use.
 
 ## Statements and scope
 
-`Statement::Bind` evaluates an expression and installs an immutable binding.
-`Statement::Evaluate` evaluates an expression and can request implicit output.
+A binding statement evaluates an expression and installs an immutable name.
+An evaluation statement evaluates an expression and can request implicit output.
 Initial bindings are reserved for the whole program. Duplicate definitions and
 forward references to unavailable names fail during preflight.
 
@@ -16,39 +15,20 @@ A host frontend chooses the statement spelling and lowers it to this
 representation. `parse_pipeline` reads only pipelines.
 The [language direction examples](language-direction.md) show proposed surfaces.
 
-`ExpressionKind` covers input, binding lookup, grouping, stage sequences, ordered
-set operands and records. A record evaluates its fields in written order.
+Program expressions cover input, binding lookup, grouping, stage sequences,
+ordered set operands and records. A record evaluates its fields in written order.
 Set combination evaluates the left operand before the right; the host supplies
 its domain identity and combination behavior.
 
-## A native binding in Rust
+## Saved native values
 
-This constructs a program that saves its initial input under `selected`:
+A binding retains the host's value type. It can hold a borrowed selection,
+a document handle or a constructed native record. Saving a value does not
+render it. Nested selectors evaluate relative input in the same scope and
+request budget.
 
-```rust
-use zirql::{ExpressionKind, Located, Program, Statement};
-
-let program: Program<(), (), ()> = Program::new(
-    vec![Located::new(
-        Statement::Bind {
-            name: Located::new("selected".into(), 4..12),
-            expression: Located::new(ExpressionKind::Input, 15..20),
-        },
-        0..21,
-    )],
-    0..21,
-);
-```
-
-Constructing the program runs no host hooks. To execute it, call
-`evaluate_program` with a `ProgramHost`, its native input, mutable context,
-initial `Bindings` and the active `Budget`. The returned bindings retain the
-host's value type. This example uses unit payload types because there are no
-stages, set operators or emitters in it.
-
-`evaluate_expression` is the corresponding entry point for one expression.
-A nested host selector can call it with relative input while retaining the
-same context and budget.
+The [Rust program construction guide](embedding-programs.md) shows how to
+build and execute this representation without text syntax.
 
 ## Copying saved values
 

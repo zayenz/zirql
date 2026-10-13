@@ -3,7 +3,9 @@
 Authoritative reader guides live in `../docs/`. The preparation script adds
 Starlight metadata and rewrites their repository-relative links into site links.
 Generated content is ignored. Edit the Markdown guides, then rerun preparation;
-site tooling remains independent of Cargo.
+site tooling remains independent of Cargo. The sidebar separates language
+reference, worked examples and Rust embedding guides; all retain `/guides/`
+routes.
 
 The selected Zirql logo supplies the navy, royal blue and pale steel palette.
 Its horizontal logo and glyph are copied unchanged into `public/`; the header

@@ -32,6 +32,7 @@ The user explicitly requested implementation now, independently of ongoing langu
 - [x] A Zirql-branded Astro/Starlight site renders the guides at /zirql/ with navigation, search, responsive layouts and light/dark themes.
 - [x] The site has local build/preview instructions and a documented future publication route, without deployment.
 - [x] Site checks/build, representative browser checks, and required repository checks pass.
+- [x] Navigation separates language reference, examples and embedding. Examples are prominent on the homepage, and the embedding guide explains the dependencies and host responsibilities needed for an integration.
 
 ## Validation
 
@@ -39,7 +40,12 @@ The user explicitly requested implementation now, independently of ongoing langu
 - Run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings, and cargo test --workspace.
 - Run site npm run check and npm run build; preview /zirql/ and check search, links, mobile navigation, themes, assets and canonical URLs.
 
-## Result
+## History
+
+Reopened on 2026-10-13 for the user's requested separation of language reference,
+examples and embedding guides. Retain the selected logo and plain writing style.
+
+### Previous completion
 
 Built and independently verified eight reader guides and the local Astro/Starlight site, revised for plain prose and the selected Zirql logo. No deployment.
 
@@ -48,3 +54,14 @@ Validation:
 - npm check/build and generated links, assets, canonical URLs and sitemap checks passed.
 - Browser checks passed for search/results, mobile navigation, themes, keyboard dismissal and 390px overflow.
 - Pinned getting-started example compiled and printed Integer(42); cargo fmt/clippy/test, git diff --check and zdev check passed.
+
+## Result
+
+Reorganized the docs into language reference, worked examples and Rust embedding, with homepage examples and explicit integration requirements. No deployment.
+
+Validation:
+
+- Independent review PASS; git diff --check and zdev check passed.
+- Site check/build and internal links/fragments/canonical/assets checks passed; 11 pages built.
+- Three local host example commands returned the documented results; browser navigation/search/keyboard/themes/mobile checks passed.
+- cargo fmt, clippy and workspace tests passed.
