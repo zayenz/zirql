@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 25
-- Ready: 4
+- Total: 28
+- Ready: 7
 - Blocked: 3
 - Done: 18
 
@@ -34,3 +34,6 @@
 | [base-023](tasks/023-group-constructed-records-with-stable-typed-keys-in-both-con.md) | Group constructed records with stable typed keys in both consumers | ready | base-019 |
 | [base-024](tasks/024-inspect-and-exactly-align-keyed-data-through-shared-value-op.md) | Inspect and exactly align keyed data through shared value operations | ready | base-018, base-007 |
 | [base-025](tasks/025-explain-native-connections-with-bounded-shortest-path-witnes.md) | Explain native connections with bounded shortest path witnesses | blocked | base-022 |
+| [base-026](tasks/026-release-native-expression-trees-safely-on-shared-reader-erro.md) | Release native expression trees safely on shared reader errors | ready | — |
+| [base-027](tasks/027-give-translated-core-errors-stable-machine-readable-categori.md) | Give translated core errors stable machine-readable categories | ready | — |
+| [base-028](tasks/028-run-core-validation-and-the-declared-rust-version-in-ci.md) | Run core validation and the declared Rust version in CI | ready | — |
