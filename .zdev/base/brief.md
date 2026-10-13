@@ -336,7 +336,20 @@ path. Validate the site build and manually check navigation, search, links,
 assets, canonical URLs and mobile layout under `/zirql/`. Publication also
 requires checks of the live HTTPS site and existing personal-site routes.
 Use existing checks; documentation needs no new product tests. Reader guides
-and the local site are complete in base-017. Deployment remains unapproved.
+and the local site are complete in base-017. The user subsequently authorized
+publication on 2026-10-13, and the site is published at `https://zayenz.se/zirql/`.
+The [publication follow-up](tasks/017-build-zirql-reader-documentation-and-a-local-documentation-s.md#publication-follow-up)
+records the imported source and website revisions.
+
+The homepage, worked examples and design sketches use a small word model.
+A separate semantic-model integration guide explains Zincite and Zirium's native
+items, domain operations, identity, syntax and rendering. The docs header uses
+light and dark SVG variants of the selected logo; the personal-site project card
+uses the dark SVG.
+
+The published copy describes its imported source revision. Later language or
+documentation changes require a reviewed build and an explicit personal-site
+import; a Zirql source push does not update the deployed site.
 
 ## Integration order
 

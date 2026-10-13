@@ -65,3 +65,30 @@ Validation:
 - Site check/build and internal links/fragments/canonical/assets checks passed; 11 pages built.
 - Three local host example commands returned the documented results; browser navigation/search/keyboard/themes/mobile checks passed.
 - cargo fmt, clippy and workspace tests passed.
+
+## Publication follow-up
+
+On 2026-10-13, the user authorized publication after this task's local-site
+completion. The original boundaries and results above describe that earlier
+local delivery.
+
+The reviewed word-model docs were published at https://zayenz.se/zirql/ from
+Zirql source commit `7bec181`, imported through personal-site commit `7a7a6130`.
+Netlify deployment `6acdfe1ab642bbf05e12e6e0` reached production and was verified
+over HTTPS.
+
+The homepage, worked examples and design sketches use words independently of
+the consumer dialects. A separate semantic-model integration guide explains
+Zincite and Zirium. Selected-logo variants are available as transparent SVGs
+and PNGs in both themes; the docs header switches variants and the Projects
+card uses the dark SVG.
+
+Validation passed for the source site's check/build, Rust formatting, Clippy,
+workspace tests, `git diff --check` and `zdev check base`. The word pipelines
+and constructed values were executed through Zirql, and the integration
+commands through both consumer CLIs. The personal-site release check passed.
+Browser and live HTTPS checks covered navigation, search results, both themes,
+mobile layout, assets, canonical URLs, sitemaps and existing personal-site routes.
+
+Later language changes are outside this published snapshot and need a reviewed
+build and explicit import before they reach the site.
