@@ -74,6 +74,15 @@ archive matches the clean verified package byte for byte, and an exact-version
 registry consumer executes scalar/comprehension values and all five functions.
 Earlier usable prereleases remain available; the reservation remains yanked.
 
+The usable `0.1.0-alpha.5` prerelease was independently verified and published
+from `bc7e8abdf928a27a4a56a049b17522eeefd680d4` on 2026-10-13. It adds nominal
+members, typed sparse keyed arrays and keyed comprehensions to the five
+budgeted value APIs, preserving positional values and host-owned shape policy.
+The registry archive matches the clean reviewed package byte for byte, and an
+exact-version registry consumer executes nominal/keyed values and all five
+functions. Earlier usable prereleases remain available; the reservation remains
+yanked.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser
