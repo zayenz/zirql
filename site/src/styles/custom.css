@@ -1,0 +1,81 @@
+/* Palette follows the selected extraction glyph and wordmark. */
+:root,
+:root[data-theme='dark'] {
+  --sl-font: 'Avenir Next', 'Century Gothic', sans-serif;
+  --sl-font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --sl-color-accent-low: #163562;
+  --sl-color-accent: #5c99ff;
+  --sl-color-accent-high: #b9d5ff;
+  --sl-color-black: #111c2a;
+  --sl-color-gray-6: #192738;
+  --sl-color-gray-5: #30445c;
+  --sl-color-gray-2: #d1deec;
+  --sl-color-gray-3: #9db2c9;
+  --sl-content-width: 44rem;
+  --sl-sidebar-width: 17rem;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e7f0ff;
+  --sl-color-accent: #1761d1;
+  --sl-color-accent-high: #134a9c;
+  --sl-color-black: #ffffff;
+  --sl-color-gray-2: #34495f;
+  --sl-color-gray-3: #526980;
+  --sl-color-gray-6: #f1f6fa;
+  --sl-color-gray-5: #d5e1ed;
+  --sl-color-white: #203044;
+}
+/* Starlight's splash template otherwise expands prose to 67.5rem. */
+:root[data-has-hero] { --sl-content-width: 44rem; }
+/* The source PNG remains unchanged; only its surrounding whitespace is clipped. */
+header.header {
+  background: #ffffff;
+  color: #203044;
+  border-bottom-color: #d5e1ed;
+  --sl-color-white: #203044;
+  --sl-color-black: #ffffff;
+  --sl-color-gray-2: #34495f;
+  --sl-color-gray-3: #526980;
+  --sl-color-gray-5: #d5e1ed;
+  --sl-color-gray-6: #f1f6fa;
+  --sl-color-text: #34495f;
+  --sl-color-text-accent: #1761d1;
+  --sl-color-bg: #ffffff;
+  --sl-color-bg-nav: #ffffff;
+}
+.site-title { position: relative; width: 10.4rem; height: 3.2rem; overflow: hidden; }
+.site-title img {
+  position: absolute;
+  width: 15.3rem;
+  height: auto;
+  max-width: none;
+  left: -2.65rem;
+  top: -2.25rem;
+}
+.hero { display: block; padding-block: 3rem 0.5rem; }
+.hero .stack { text-align: start; gap: 1.5rem; }
+.hero .copy { align-items: flex-start; gap: 1.25rem; }
+.hero h1 {
+  font-family: var(--sl-font);
+  font-size: clamp(2.4rem, 5vw, 3.7rem);
+  font-weight: 650;
+  line-height: 1.12;
+  letter-spacing: -0.05em;
+  max-width: 19ch;
+}
+.hero .actions { justify-content: flex-start; gap: 0.75rem 1.5rem; }
+.hero .sl-link-button { border-radius: 0.25rem; font-size: 0.95rem; }
+.sl-markdown-content h2 {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-size: 1.5rem;
+  padding-top: 0.25rem;
+}
+.sl-markdown-content p { line-height: 1.75; }
+.sl-markdown-content table { display: block; max-width: 100%; overflow-x: auto; }
+.sl-markdown-content li + li { margin-top: 0.65rem; }
+:focus-visible { outline: 3px solid #2474f5; outline-offset: 4px; }
+@media (max-width: 49.99rem) {
+  .hero { padding-block: 1.5rem 0.5rem; }
+  .hero h1 { font-size: clamp(2.25rem, 9vw, 3.25rem); }
+}
