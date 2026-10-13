@@ -163,6 +163,17 @@ pub enum ValueConstructor {
     Set,
 }
 
+/// Closed summaries over fully evaluated positional or keyed arrays.
+/// Length counts present values; sum accepts integers and the quantifiers
+/// accept fixed Booleans. Empty identities are 0, 0, true and false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueReducer {
+    Length,
+    Sum,
+    Forall,
+    Exists,
+}
+
 pub type ValueExpression = Located<ValueExpressionKind>;
 
 /// A host-lowered pure expression. Every node retains its query byte range.
@@ -212,6 +223,18 @@ pub enum ValueExpressionKind {
         index: Box<ValueExpression>,
     },
     IndexSet(Box<ValueExpression>),
+    /// Evaluate the entire array before scanning its values in stored order.
+    Reduce {
+        operator: ValueReducer,
+        array: Box<ValueExpression>,
+    },
+    /// Preflight both operands; run value only after a true fixed Boolean.
+    /// A false condition fails at this node with the literal message.
+    Require {
+        condition: Box<ValueExpression>,
+        value: Box<ValueExpression>,
+        message: Located<String>,
+    },
     Range {
         lower: Box<ValueExpression>,
         upper: Box<ValueExpression>,
@@ -1836,6 +1859,50 @@ impl<'a> Analysis<'a> {
                 }
                 Ok(result)
             }
+            ValueExpressionKind::Reduce { operator, array } => {
+                for ty in self.walk(array, budget)? {
+                    budget.charge(1, location.clone())?;
+                    let elements = match ty {
+                        ValueType::Array(
+                            ArrayType::Positions(elements) | ArrayType::Elements(elements),
+                        ) => elements,
+                        ValueType::KeyedArray(keyed) => keyed.elements,
+                        ValueType::Unestablished => continue,
+                        _ => return Err(error(location, "reducer needs an array")),
+                    };
+                    if let Some(requirement) = match operator {
+                        ValueReducer::Length => None,
+                        ValueReducer::Sum => Some(ScalarRequirement::Integer),
+                        ValueReducer::Forall | ValueReducer::Exists => {
+                            Some(ScalarRequirement::Boolean)
+                        }
+                    } {
+                        for element in elements {
+                            budget.charge(1, location.clone())?;
+                            require_type(&element, requirement, location)?;
+                        }
+                    }
+                }
+                one_type(
+                    match operator {
+                        ValueReducer::Length | ValueReducer::Sum => ValueType::Integer,
+                        ValueReducer::Forall | ValueReducer::Exists => ValueType::Boolean,
+                    },
+                    budget,
+                    location,
+                )
+            }
+            ValueExpressionKind::Require {
+                condition,
+                value,
+                message,
+            } => {
+                self.condition(condition, budget)?;
+                let types = self.walk(value, budget)?;
+                allocation::<u8>(message.value.len(), location)?;
+                budget.charge(message.value.len(), Location::Query(message.range.clone()))?;
+                Ok(types)
+            }
             ValueExpressionKind::Range { lower, upper } => {
                 for expression in [lower, upper] {
                     for ty in self.walk(expression, budget)? {
@@ -3094,6 +3161,26 @@ fn run<'a>(
                         _ => Err(error(&location, "index_set needs an array")),
                     }
                 }
+                ValueExpressionKind::Reduce { operator, array } => reduce(
+                    *operator,
+                    run(array, bindings, locals, budget, check_value)?,
+                    budget,
+                    &location,
+                ),
+                ValueExpressionKind::Require {
+                    condition,
+                    value,
+                    message,
+                } => {
+                    if !boolean(
+                        run(condition, bindings, locals, budget, check_value)?,
+                        &Location::Query(condition.range.clone()),
+                    )? {
+                        admit_diagnostic("", &message.value, budget, &location)?;
+                        return Err(error(&location, message.value.to_owned()));
+                    }
+                    run(value, bindings, locals, budget, check_value)
+                }
                 ValueExpressionKind::Range { lower, upper } => {
                     let lower = integer(
                         run(lower, bindings, locals, budget, check_value)?,
@@ -3160,6 +3247,65 @@ fn run<'a>(
         check_value(&value, budget, &location)?;
         Ok(value)
     })
+}
+
+fn reduce(
+    operator: ValueReducer,
+    array: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    // Borrow the materialized values so keyed arrays need no intermediate copy.
+    let (positional, keyed) = match &array {
+        ConstructedValue::Array(values) => (values.as_slice(), &[][..]),
+        ConstructedValue::KeyedArray { entries, .. } => (&[][..], entries.as_slice()),
+        _ => return Err(error(location, "reducer needs an array")),
+    };
+    let len = positional.len().max(keyed.len());
+    let values = positional
+        .iter()
+        .chain(keyed.iter().map(|entry| &entry.value));
+    let value = match operator {
+        ValueReducer::Length => {
+            budget.charge(1, location.clone())?;
+            ConstructedValue::Integer(
+                i64::try_from(len).map_err(|_| error(location, "length overflow"))?,
+            )
+        }
+        ValueReducer::Sum => {
+            let mut total = 0_i64;
+            for value in values {
+                budget.charge(1, location.clone())?;
+                let ConstructedValue::Integer(value) = value else {
+                    return Err(error(location, "sum needs integer array elements"));
+                };
+                total = total
+                    .checked_add(*value)
+                    .ok_or_else(|| error(location, "integer sum overflow"))?;
+            }
+            ConstructedValue::Integer(total)
+        }
+        ValueReducer::Forall | ValueReducer::Exists => {
+            let mut result = operator == ValueReducer::Forall;
+            for value in values {
+                budget.charge(1, location.clone())?;
+                let ConstructedValue::Boolean(value) = value else {
+                    return Err(error(
+                        location,
+                        "quantifier needs fixed Boolean array elements",
+                    ));
+                };
+                // Scan every element even once the Boolean result is decisive.
+                if operator == ValueReducer::Forall {
+                    result &= value;
+                } else {
+                    result |= value;
+                }
+            }
+            ConstructedValue::Boolean(result)
+        }
+    };
+    scalar(value, budget, location)
 }
 
 fn take_position(

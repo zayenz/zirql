@@ -55,6 +55,22 @@ Known range lengths, Cartesian products and byte sums are checked before
 allocation. Generator candidates pay before filters. Host hooks must charge work
 hidden from the core, such as scans and native materialization.
 
+Array summaries pay the full operand's materialization, candidate and copy
+costs before reduction. Sum and both Boolean quantifiers charge one work unit
+per inspected element, including elements after a decisive Boolean. Length
+charges one work unit for reading the present-value count and converting it to
+`i64`. Each summary adds one aggregate result unit for its scalar, including
+empty arrays.
+
+Require preflight visits both expressions and charges its literal message bytes.
+A false requirement charges diagnostic-copy bytes before allocation and fails
+at the requirement call. Its skipped value has no runtime arithmetic, access,
+construction or host-check charges; referenced binding projection and actual-type
+discovery can still spend work before runtime. A true requirement moves its
+already admitted value without another result or copy charge. Arithmetic errors
+retain their child ranges, and limit errors retain the active operation range.
+Emission snapshots and rendering charge again under the same budget.
+
 Spent allowances are not refunded after success or failure. Active scope and
 nesting state are restored on both outcomes, so a failed operation does not
 leave the budget stuck inside a nested call.

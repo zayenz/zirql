@@ -20,8 +20,8 @@ pub use program::{
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
     NominalMemberId, NominalTypeId, SetElementType, ValueBinaryOperator, ValueConstructor,
-    ValueExpression, ValueExpressionKind, ValueGenerator, ValueKey, ValueKeyType, ValueType,
-    ValueUnaryOperator, constructed_value_type, copy_constructed_value, evaluate_value,
+    ValueExpression, ValueExpressionKind, ValueGenerator, ValueKey, ValueKeyType, ValueReducer,
+    ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value, evaluate_value,
     evaluate_value_with_host_validation, free_value_names, validate_value_expression,
 };
 

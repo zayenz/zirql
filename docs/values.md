@@ -99,3 +99,43 @@ the typed axis as a set in numeric or declaration order. A host may require
 contiguous axes or complete rectangular coverage even though the core supports
 sparse cells. See [semantic model integrations](semantic-models.md) for a
 concrete example of that boundary.
+
+## Array summaries and requirements
+
+`ValueExpressionKind::Reduce` selects a closed `ValueReducer`: `Length`, `Sum`,
+`Forall` or `Exists`. The operand is evaluated completely before reduction.
+Positional arrays and keyed arrays are accepted; keyed summaries visit present
+entries in stored order. `Length` counts present values, including sparse cells,
+and accepts any element type. It creates no axes and does not flatten nested
+arrays. `Sum` accepts integers and adds them in order with checked `i64`
+arithmetic. `Forall` and `Exists` accept fixed Booleans and scan every element,
+even after the result is decisive. Sets, tuples and strings are not array inputs.
+
+| Reducer | Result | Empty array |
+| --- | --- | --- |
+| `Length` | Integer number of present values | `0` |
+| `Sum` | Checked integer total | `0` |
+| `Forall` | Boolean conjunction | `true` |
+| `Exists` | Boolean disjunction | `false` |
+
+A comprehension operand materializes every selected head before a reducer runs.
+A later arithmetic failure therefore fails the request even when an earlier
+Boolean would settle the result. Validation checks every possible known operand
+and element type, including unchosen branches. Deferred types receive ordinary
+runtime checks.
+
+`ValueExpressionKind::Require { condition, value, message }` contains a
+`Located<String>` literal message. Preflight visits both expression operands and
+admits the message bytes. Runtime evaluates the condition as a fixed Boolean.
+On true, it evaluates and returns the value; on false, it fails with the literal
+message at the requirement's range. The false case skips the value's runtime
+arithmetic, access, construction and host checks. It still refuses undefined
+names, unsupported frontend forms and incompatible known types during preflight.
+Host projection and actual binding-type discovery can still inspect or copy
+referenced bindings before runtime.
+
+These operations run in the existing five value APIs and
+`evaluate_value_with_host_validation`. They return existing integer, Boolean or
+child value kinds, so concrete type discovery and charged copying need no
+separate summary result type. Hosts choose surface spellings and effect policy;
+Zirql executes no model or solver.

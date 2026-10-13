@@ -403,6 +403,18 @@ to zero fail. Normalized `f64` literals retain no decimal spelling, so hosts
 must reject a nonzero decimal literal that parses to zero during lowering.
 Strings receive no numeric coercion.
 
+`Reduce` supports the closed `ValueReducer::{Length, Sum, Forall, Exists}` over
+fully materialized positional or keyed arrays. Length counts present values;
+sum performs checked integer addition; the quantifiers scan all fixed Boolean
+elements. Empty identities are `0`, `0`, `true` and `false`. Nested arrays are
+not flattened, and sparse keyed arrays retain their present-cell meaning.
+`Require { condition, value, message }` preflights both expressions and carries
+a literal `Located<String>` message. A true fixed Boolean runs and returns the
+value. False fails at the requirement with that message and skips the value's
+runtime arithmetic, access, construction and host checks. Preflight still checks
+all names and known types. See [values and comprehensions](docs/values.md#array-summaries-and-requirements)
+for these contracts. These development Git forms are absent from alpha.5.
+
 Known incompatible types and unsupported set elements fail before branch
 choice. Missing fields and positions supply only unestablished validation
 facts and fail if accessed at runtime. Boolean operations short-circuit and
@@ -458,6 +470,15 @@ admission. A snapshot scans its full size
 and invariants, admits its result units and bytes, then builds the copy. Each
 recursive expression/value/type walk retains active nesting. Both Result
 outcomes restore nesting/call state; spending is never refunded.
+
+Reducers retain operand materialization, candidate and copy charges. Sum and
+both quantifiers charge one work unit per inspected element; length charges one
+work unit for its metadata read and checked conversion. Each summary scalar
+charges one aggregate result unit. Require preflight charges literal message
+bytes; a false diagnostic charges the copied bytes before allocation. True
+require moves its admitted child without a new result or copy charge. Empty
+summaries still pay expression/preflight work and the scalar result unit.
+Emission snapshots and rendering spend their own allowance again.
 
 Known range sizes, grouped products, lengths and byte sums are checked before
 allocation. A false filter cannot evade candidate admission. Limits fail at

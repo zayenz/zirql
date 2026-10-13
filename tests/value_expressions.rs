@@ -4,9 +4,9 @@ use zirql::{
     ArrayType, Bindings, Budget, ConstructedValue as V, KeyAxis, KeyedArrayType, KeyedEntry,
     Limits, Located, Location, NominalMember, NominalMemberId, NominalTypeId, ProgramLimits,
     SetElementType, ValueBinaryOperator as B, ValueConstructor, ValueExpression as E,
-    ValueExpressionKind as K, ValueGenerator as G, ValueKey, ValueKeyType, ValueType,
-    ValueUnaryOperator as U, constructed_value_type, copy_constructed_value, evaluate_value,
-    free_value_names, validate_value_expression,
+    ValueExpressionKind as K, ValueGenerator as G, ValueKey, ValueKeyType, ValueReducer as R,
+    ValueType, ValueUnaryOperator as U, constructed_value_type, copy_constructed_value,
+    evaluate_value, free_value_names, validate_value_expression,
 };
 
 fn e(kind: K) -> E {
@@ -1274,5 +1274,261 @@ fn host_value_policy_refuses_inline_sparse_sources_and_keeps_skipped_branches() 
     assert_eq!(
         evaluate_value(&int(2), &Bindings::default(), &mut shallow).unwrap(),
         V::Integer(2)
+    );
+}
+
+fn reduction(operator: R, array: E) -> E {
+    e(K::Reduce {
+        operator,
+        array: Box::new(array),
+    })
+}
+fn requirement(condition: E, value: E) -> E {
+    Located::new(
+        K::Require {
+            condition: Box::new(condition),
+            value: Box::new(value),
+            message: Located::new("capacity refused".into(), 80..98),
+        },
+        60..99,
+    )
+}
+
+#[test]
+fn eager_summaries_and_requirement_use_the_public_value_sequence() {
+    let expression = requirement(
+        literal(V::Boolean(true)),
+        record(vec![
+            ("length", reduction(R::Length, name("cells"))),
+            ("total", reduction(R::Sum, name("cells"))),
+            (
+                "all",
+                reduction(
+                    R::Forall,
+                    e(K::Array(vec![
+                        literal(V::Boolean(true)),
+                        literal(V::Boolean(false)),
+                    ])),
+                ),
+            ),
+            (
+                "some",
+                reduction(
+                    R::Exists,
+                    e(K::Array(vec![
+                        literal(V::Boolean(false)),
+                        literal(V::Boolean(true)),
+                    ])),
+                ),
+            ),
+        ]),
+    );
+    let cells = V::KeyedArray {
+        axes: vec![integer_axis(&[2, 5, 9])],
+        entries: vec![
+            KeyedEntry {
+                key: vec![ValueKey::Integer(2)],
+                value: V::Integer(4),
+            },
+            KeyedEntry {
+                key: vec![ValueKey::Integer(9)],
+                value: V::Integer(3),
+            },
+        ],
+    };
+    let mut allowance = ample();
+    let declared = BTreeMap::from([("cells".into(), ValueType::Unestablished)]);
+    assert_eq!(
+        free_value_names(&expression, &declared, &mut allowance).unwrap(),
+        vec![Located::new("cells".into(), 0..1)]
+    );
+    let ty = constructed_value_type(&cells, &mut allowance, Location::Source(0..20)).unwrap();
+    validate_value_expression(
+        &expression,
+        &BTreeMap::from([("cells".into(), ty)]),
+        &mut allowance,
+    )
+    .unwrap();
+    let bindings = Bindings::new([(Located::new("cells".into(), 0..5), cells)]).unwrap();
+    let value = evaluate_value(&expression, &bindings, &mut allowance).unwrap();
+    assert_eq!(
+        value,
+        V::Record(vec![
+            ("length".into(), V::Integer(2)),
+            ("total".into(), V::Integer(7)),
+            ("all".into(), V::Boolean(false)),
+            ("some".into(), V::Boolean(true)),
+        ])
+    );
+    assert_eq!(
+        constructed_value_type(&value, &mut allowance, Location::Query(60..99)).unwrap(),
+        ValueType::Record(vec![
+            ("length".into(), ValueType::Integer),
+            ("total".into(), ValueType::Integer),
+            ("all".into(), ValueType::Boolean),
+            ("some".into(), ValueType::Boolean),
+        ])
+    );
+    let remaining = allowance.remaining_results().unwrap();
+    assert_eq!(
+        copy_constructed_value(&value, &mut allowance, Location::Query(60..99)).unwrap(),
+        value
+    );
+    assert!(allowance.remaining_results().unwrap() < remaining);
+}
+
+#[test]
+fn summaries_keep_empty_identities_overflow_eager_heads_and_limits() {
+    let empty = record(vec![
+        ("length", reduction(R::Length, e(K::Array(vec![])))),
+        ("sum", reduction(R::Sum, e(K::Array(vec![])))),
+        ("all", reduction(R::Forall, e(K::Array(vec![])))),
+        ("some", reduction(R::Exists, e(K::Array(vec![])))),
+    ]);
+    assert_eq!(
+        evaluate(&empty).unwrap(),
+        V::Record(vec![
+            ("length".into(), V::Integer(0)),
+            ("sum".into(), V::Integer(0)),
+            ("all".into(), V::Boolean(true)),
+            ("some".into(), V::Boolean(false)),
+        ])
+    );
+    let overflow = Located::new(
+        K::Reduce {
+            operator: R::Sum,
+            array: Box::new(e(K::Array(vec![int(i64::MAX), int(1)]))),
+        },
+        40..50,
+    );
+    let failure = evaluate(&overflow).unwrap_err();
+    assert_eq!(failure.location, Location::Query(40..50));
+    assert!(failure.message.contains("overflow"));
+    let division = Located::new(
+        K::Binary {
+            operator: B::IntegerDivide,
+            left: Box::new(int(1)),
+            right: Box::new(int(0)),
+        },
+        30..35,
+    );
+    let head = e(K::Conditional {
+        branches: vec![(
+            binary(B::Equal, name("i"), int(1)),
+            literal(V::Boolean(false)),
+        )],
+        otherwise: Box::new(binary(B::Equal, division, int(0))),
+    });
+    let eager = reduction(
+        R::Forall,
+        e(K::Comprehension {
+            constructor: ValueConstructor::Array,
+            clauses: vec![clause(G::In {
+                binders: vec![binder("i")],
+                source: e(K::Array(vec![int(1), int(2)])),
+                filter: None,
+            })],
+            head: Box::new(head),
+        }),
+    );
+    assert_eq!(
+        evaluate(&eager).unwrap_err().location,
+        Location::Query(30..35)
+    );
+    for bad in [
+        reduction(R::Sum, e(K::Array(vec![literal(V::Float(1.0))]))),
+        reduction(
+            R::Exists,
+            e(K::Array(vec![literal(V::Boolean(true)), int(0)])),
+        ),
+        reduction(R::Length, literal(V::String("x".into()))),
+    ] {
+        assert!(validate_value_expression(&choose(bad), &BTreeMap::new(), &mut ample()).is_err());
+    }
+    let summary = reduction(R::Sum, e(K::Array(vec![int(1), int(2)])));
+    assert!(
+        evaluate_value(&summary, &Bindings::default(), &mut budget(2, 100, 64))
+            .unwrap_err()
+            .message
+            .contains("work")
+    );
+    assert!(
+        evaluate_value(&summary, &Bindings::default(), &mut budget(10_000, 0, 64))
+            .unwrap_err()
+            .message
+            .contains("result")
+    );
+    assert!(
+        evaluate_value(&summary, &Bindings::default(), &mut budget(10_000, 100, 1))
+            .unwrap_err()
+            .message
+            .contains("nesting")
+    );
+}
+
+#[test]
+fn false_requirement_skips_runtime_values_but_preflights_names_and_types() {
+    let skipped = e(K::Tuple(vec![
+        binary(B::IntegerDivide, int(1), int(0)),
+        access(e(K::Array(vec![])), int(7)),
+    ]));
+    let expression = requirement(literal(V::Boolean(false)), skipped);
+    let failure = evaluate(&expression).unwrap_err();
+    assert_eq!(failure.location, Location::Query(60..99));
+    assert_eq!(failure.message, "capacity refused");
+    let missing = Located::new(K::Name("missing".into()), 30..37);
+    let failure = evaluate(&requirement(literal(V::Boolean(false)), missing)).unwrap_err();
+    assert_eq!(failure.location, Location::Query(30..37));
+    assert!(failure.message.contains("undefined"));
+    assert!(
+        evaluate(&requirement(
+            literal(V::Boolean(false)),
+            reduction(R::Sum, e(K::Array(vec![literal(V::String("x".into()))])))
+        ))
+        .is_err()
+    );
+    let condition = Located::new(K::Literal(V::Integer(0)), 10..11);
+    assert_eq!(
+        evaluate(&requirement(condition, int(7)))
+            .unwrap_err()
+            .location,
+        Location::Query(10..11)
+    );
+    let arithmetic = Located::new(
+        K::Binary {
+            operator: B::Multiply,
+            left: Box::new(int(i64::MAX)),
+            right: Box::new(int(2)),
+        },
+        20..25,
+    );
+    assert_eq!(
+        evaluate(&requirement(literal(V::Boolean(true)), arithmetic))
+            .unwrap_err()
+            .location,
+        Location::Query(20..25)
+    );
+    let expression = requirement(literal(V::Boolean(false)), int(7));
+    let failure = zirql::evaluate_value_with_host_validation(
+        &expression,
+        &Bindings::default(),
+        &mut ample(),
+        |value, _, location| {
+            if matches!(value, V::Integer(7)) {
+                return Err(zirql::QueryError {
+                    location: location.clone(),
+                    message: "host refuses seven".into(),
+                });
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(failure.message, "capacity refused");
+    assert!(
+        evaluate_value(&expression, &Bindings::default(), &mut budget(2, 100, 64))
+            .unwrap_err()
+            .message
+            .contains("work")
     );
 }
