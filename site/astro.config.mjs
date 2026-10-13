@@ -17,7 +17,12 @@ export default defineConfig({
     title: 'Zirql',
     description: 'Shared query language machinery for native Rust hosts.',
     favicon: '/favicon.png',
-    logo: { src: './public/zirql-logo.png', replacesTitle: true, alt: 'Zirql' },
+    logo: {
+      light: './public/zirql-logo-light.svg',
+      dark: './public/zirql-logo-dark.svg',
+      replacesTitle: true,
+      alt: 'Zirql',
+    },
     customCss: ['./src/styles/custom.css'],
     social: [{ icon: 'github', label: 'Source on GitHub', href: 'https://github.com/zayenz/zirql' }],
     sidebar: [

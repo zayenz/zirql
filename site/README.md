@@ -8,10 +8,11 @@ reference, worked examples and Rust embedding guides; all retain `/guides/`
 routes.
 
 The selected Zirql logo supplies the navy, royal blue and pale steel palette.
-Its horizontal logo and glyph are copied unchanged into `public/`; the header
-clips surrounding whitespace in CSS. A white header keeps the original PNG
-readable in both themes. Colors and typography live in `src/styles/custom.css`.
-Starlight supplies search and mobile navigation.
+The header uses transparent SVGs from `../assets/logo/vector-v1/`, with pale
+lettering in the dark theme and navy lettering in the light theme. Both retain
+the blue accent. The asset directory includes all five layouts in both themes
+as SVG and PNG. Colors and typography live in `src/styles/custom.css`.
+Starlight supplies theme switching, search and mobile navigation.
 
 ## Build and preview
 
