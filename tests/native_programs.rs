@@ -2110,6 +2110,25 @@ mod projection {
         let mut allowance = budget();
         let bindings = Bindings::new([
             (
+                Located::new("keyed".into(), 0..0),
+                Value::Constructed(V::KeyedArray {
+                    axes: vec![zirql::KeyAxis {
+                        key_type: zirql::ValueKeyType::Integer,
+                        keys: vec![zirql::ValueKey::Integer(9), zirql::ValueKey::Integer(3)],
+                    }],
+                    entries: vec![
+                        zirql::KeyedEntry {
+                            key: vec![zirql::ValueKey::Integer(9)],
+                            value: V::Integer(90),
+                        },
+                        zirql::KeyedEntry {
+                            key: vec![zirql::ValueKey::Integer(3)],
+                            value: V::Integer(30),
+                        },
+                    ],
+                }),
+            ),
+            (
                 Located::new("f".into(), 0..0),
                 Value::Subjects(vec!["beta"]),
             ),
@@ -2124,6 +2143,25 @@ mod projection {
         ])
         .unwrap();
         for (source, expected) in [
+            (
+                "entries(zip_exact(keyed, keyed))",
+                V::Array(vec![
+                    V::Record(vec![
+                        ("key".into(), V::Integer(9)),
+                        (
+                            "value".into(),
+                            V::Tuple(vec![V::Integer(90), V::Integer(90)]),
+                        ),
+                    ]),
+                    V::Record(vec![
+                        ("key".into(), V::Integer(3)),
+                        (
+                            "value".into(),
+                            V::Tuple(vec![V::Integer(30), V::Integer(30)]),
+                        ),
+                    ]),
+                ]),
+            ),
             ("f | names | one", V::Array(vec![V::String("saved".into())])),
             (
                 "project(w, {\"n\": w | count})",
@@ -2164,6 +2202,10 @@ mod projection {
             zirql::dispose_native_value(expression);
         }
         for source in [
+            "entries()",
+            "entries([], [])",
+            "zip_exact([])",
+            "zip_exact([], [], [])",
             "group_by([], 1)",
             "group_by([])",
             "group_by([], \"n\", \"m\")",
@@ -2637,6 +2679,12 @@ fn shared_reader_releases_native_values_on_errors() {
         (format!("{prefix} +"), "expected a value expression"),
         (format!("{prefix} union"), "expected an identifier"),
         (format!("[{prefix}"), "expected ']'"),
+        (format!("entries({prefix}"), "expected ')'"),
+        (
+            format!("zip_exact({prefix},"),
+            "expected a value expression",
+        ),
+        (format!("zip_exact(input, {prefix}"), "expected ')'"),
         (format!("{{\"x\": {prefix}"), "expected '}'"),
         (format!("require(true, {prefix},"), "expected '\"'"),
         (

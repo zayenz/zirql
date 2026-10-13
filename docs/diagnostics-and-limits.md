@@ -91,6 +91,17 @@ array around each moved row. Type discovery pays for schema metadata and labels.
 Missing fields and incompatible keys use the selector range; input-kind errors
 use the grouping call. Child query or source failures keep their locations.
 
+Keyed entries and exact pairing materialize each operand once. Ordered axis and
+full-key comparisons, nominal metadata checks and type facts charge work.
+Entries admits the positional array, records, tuple keys where needed, slots
+and copied `key`/`value` labels. Exact pairing admits the keyed result slots and
+two-element tuple cells, retaining admitted left axes and keys. Cell values move
+without another deep copy. Depth scans check the added wrappers; later snapshots
+and rendering spend the same allowance. Input-kind, alignment and operation
+limit failures use the helper call range. Child and host-source failures retain
+their responsible locations. Every executed operand receives the host value
+check before the helper can consume it.
+
 Native matches require aggregate program result limits. Every clause and guard
 branch is preflighted before subject enumeration. Dependent clause calls and
 native field expressions use the active logical nesting allowance; Boolean

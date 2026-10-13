@@ -552,6 +552,14 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         rows: Box::new(value.into_value()),
                         field,
                     }
+                } else if name.value == "zip_exact" {
+                    self.reader.expect(',')?;
+                    let right = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.reader.expect(')')?;
+                    K::ZipExact {
+                        left: Box::new(value.into_value()),
+                        right: Box::new(right.into_value()),
+                    }
                 } else if name.value == "require" {
                     self.reader.expect(',')?;
                     let result = ValueGuard::new(self.expression(0, depth + 1)?);
@@ -570,6 +578,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         "sum" => ValueReducer::Sum,
                         "forall" => ValueReducer::Forall,
                         "exists" => ValueReducer::Exists,
+                        "entries" => {
+                            return self.node(
+                                K::Entries(Box::new(value.into_value())),
+                                start..self.reader.position(),
+                            );
+                        }
                         "one" => {
                             return self.node(
                                 K::One(Box::new(value.into_value())),
@@ -1205,6 +1219,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             }
             K::One(child)
             | K::IndexSet(child)
+            | K::Entries(child)
             | K::Unary { operand: child, .. }
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }
@@ -1214,6 +1229,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::Binary { left, right, .. }
+            | K::ZipExact { left, right }
             | K::ArrayAccess {
                 array: left,
                 index: right,

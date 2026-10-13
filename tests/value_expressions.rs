@@ -1234,11 +1234,24 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
     };
     assert_eq!(axes[0], integer_axis(&[9, 3]));
     assert_eq!(
-        entries
-            .into_iter()
-            .map(|entry| entry.value)
-            .collect::<Vec<_>>(),
-        vec![V::Integer(92), V::Integer(91), V::Integer(31)]
+        entries.iter().map(|entry| &entry.value).collect::<Vec<_>>(),
+        vec![&V::Integer(92), &V::Integer(91), &V::Integer(31)]
+    );
+    let mut supplied = supplied;
+    if let K::KeyedArray { entries, .. } = &mut supplied.value {
+        entries.reverse();
+    }
+    let aligned = evaluate(&e(K::ZipExact {
+        left: Box::new(literal(V::KeyedArray { axes, entries })),
+        right: Box::new(supplied),
+    }))
+    .unwrap();
+    let V::KeyedArray { entries, .. } = aligned else {
+        panic!("keyed pairs")
+    };
+    assert_eq!(
+        entries[0].value,
+        V::Tuple(vec![V::Integer(92), V::Integer(92)])
     );
     let one = e(K::KeyedArray {
         axes: Some(vec![KeyAxis {
@@ -1410,6 +1423,249 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
             axes: vec![integer_axis(&[])],
             entries: vec![]
         }
+    );
+}
+
+#[test]
+fn keyed_helpers_keep_sparse_coordinates_types_and_exact_alignment() {
+    let sparse = || V::KeyedArray {
+        axes: vec![
+            integer_axis(&[9, 3]),
+            KeyAxis {
+                key_type: ValueKeyType::Member(NominalTypeId(7)),
+                keys: vec![
+                    ValueKey::Member(member(22, 4)),
+                    ValueKey::Member(member(11, 1)),
+                ],
+            },
+        ],
+        entries: vec![
+            KeyedEntry {
+                key: vec![ValueKey::Integer(9), ValueKey::Member(member(22, 4))],
+                value: V::Integer(90),
+            },
+            KeyedEntry {
+                key: vec![ValueKey::Integer(3), ValueKey::Member(member(11, 1))],
+                value: V::Integer(30),
+            },
+        ],
+    };
+    let mut right = sparse();
+    if let V::KeyedArray { entries, .. } = &mut right {
+        entries[0].value = V::String("ninety".into());
+        entries[1].value = V::String("thirty".into());
+    }
+    let mut allowance = ample();
+    let declared = BTreeMap::from([
+        (
+            "a".into(),
+            constructed_value_type(&sparse(), &mut allowance, Location::Source(2..3)).unwrap(),
+        ),
+        (
+            "b".into(),
+            constructed_value_type(&right, &mut allowance, Location::Source(4..5)).unwrap(),
+        ),
+    ]);
+    let bindings = Bindings::new([
+        (Located::new("a".into(), 2..3), sparse()),
+        (Located::new("b".into(), 4..5), right),
+    ])
+    .unwrap();
+    let pair = || {
+        e(K::ZipExact {
+            left: Box::new(name("a")),
+            right: Box::new(name("b")),
+        })
+    };
+    let expression = e(K::Entries(Box::new(pair())));
+    validate_value_expression(&expression, &declared, &mut allowance).unwrap();
+    assert_eq!(
+        free_value_names(&expression, &declared, &mut allowance).unwrap(),
+        vec![
+            Located::new("a".into(), 0..1),
+            Located::new("b".into(), 0..1)
+        ]
+    );
+    let facts = value_expression_types(&expression, &declared, &mut allowance).unwrap();
+    let ValueType::Array(ArrayType::Elements(records)) = &facts[0] else {
+        panic!("entry facts")
+    };
+    assert!(!records.is_empty());
+    assert!(records.iter().all(|ty| matches!(ty, ValueType::Record(fields)
+        if fields[0] == ("key".into(), ValueType::Tuple(vec![ValueType::Integer, ValueType::Member(NominalTypeId(7))]))
+        && fields[1] == ("value".into(), ValueType::Tuple(vec![ValueType::Integer, ValueType::String])))));
+    let paired = evaluate_value(&pair(), &bindings, &mut allowance).unwrap();
+    let V::KeyedArray { axes, entries } = &paired else {
+        panic!("paired array")
+    };
+    assert_eq!(axes[0], integer_axis(&[9, 3]));
+    let ValueKey::Member(retained) = &axes[1].keys[0] else {
+        panic!("nominal axis")
+    };
+    assert_eq!(
+        (
+            retained.type_id,
+            retained.member_id,
+            retained.declaration_order
+        ),
+        (NominalTypeId(7), NominalMemberId(22), 4)
+    );
+    assert_eq!(
+        entries[0].value,
+        V::Tuple(vec![V::Integer(90), V::String("ninety".into())])
+    );
+    let records = evaluate_value(&expression, &bindings, &mut allowance).unwrap();
+    assert_eq!(
+        records,
+        V::Array(vec![
+            V::Record(vec![
+                (
+                    "key".into(),
+                    V::Tuple(vec![V::Integer(9), V::Member(member(22, 4))])
+                ),
+                (
+                    "value".into(),
+                    V::Tuple(vec![V::Integer(90), V::String("ninety".into())])
+                )
+            ]),
+            V::Record(vec![
+                (
+                    "key".into(),
+                    V::Tuple(vec![V::Integer(3), V::Member(member(11, 1))])
+                ),
+                (
+                    "value".into(),
+                    V::Tuple(vec![V::Integer(30), V::String("thirty".into())])
+                )
+            ]),
+        ])
+    );
+    let before = allowance.remaining_results().unwrap();
+    assert_eq!(
+        copy_constructed_value(&paired, &mut allowance, Location::Query(50..60)).unwrap(),
+        paired
+    );
+    assert!(allowance.remaining_results().unwrap() < before);
+    assert_eq!(bindings.get("a", 0..1).unwrap(), &sparse());
+
+    let mut different = sparse();
+    if let V::KeyedArray { entries, .. } = &mut different {
+        entries[1].key[1] = ValueKey::Member(member(22, 4));
+    }
+    let mismatch = Located::new(
+        K::ZipExact {
+            left: Box::new(literal(sparse())),
+            right: Box::new(literal(different)),
+        },
+        70..80,
+    );
+    assert_eq!(
+        evaluate(&mismatch).unwrap_err(),
+        zirql::QueryError::query(70..80, "zip_exact needs identical present keys")
+    );
+    assert_eq!(evaluate(&choose(mismatch)).unwrap(), V::Integer(7));
+    let mut reversed = sparse();
+    if let V::KeyedArray { axes, entries } = &mut reversed {
+        axes[0].keys.reverse();
+        entries.reverse();
+    }
+    assert!(
+        evaluate(&e(K::ZipExact {
+            left: Box::new(literal(sparse())),
+            right: Box::new(literal(reversed))
+        }))
+        .unwrap_err()
+        .message
+        .contains("ordered axes")
+    );
+    let empty = || {
+        literal(V::KeyedArray {
+            axes: vec![
+                integer_axis(&[]),
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![],
+                },
+            ],
+            entries: vec![],
+        })
+    };
+    assert_eq!(
+        evaluate(&e(K::ZipExact {
+            left: Box::new(empty()),
+            right: Box::new(empty())
+        }))
+        .unwrap(),
+        V::KeyedArray {
+            axes: vec![
+                integer_axis(&[]),
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![]
+                }
+            ],
+            entries: vec![]
+        }
+    );
+    assert_eq!(
+        evaluate(&e(K::Entries(Box::new(empty())))).unwrap(),
+        V::Array(vec![])
+    );
+    for right in [
+        literal(V::KeyedArray {
+            axes: vec![integer_axis(&[])],
+            entries: vec![],
+        }),
+        literal(V::KeyedArray {
+            axes: vec![integer_axis(&[]), integer_axis(&[])],
+            entries: vec![],
+        }),
+    ] {
+        assert!(
+            evaluate(&choose(e(K::ZipExact {
+                left: Box::new(empty()),
+                right: Box::new(right)
+            })))
+            .unwrap_err()
+            .message
+            .contains("rank and types")
+        );
+    }
+    assert!(
+        evaluate(&choose(e(K::Entries(Box::new(int(1))))))
+            .unwrap_err()
+            .message
+            .contains("keyed array")
+    );
+    let missing = Located::new(K::Name("absent".into()), 90..96);
+    assert_eq!(
+        evaluate(&choose(e(K::ZipExact {
+            left: Box::new(empty()),
+            right: Box::new(missing)
+        })))
+        .unwrap_err()
+        .location,
+        Location::Query(90..96)
+    );
+    assert_eq!(
+        evaluate(&choose(e(K::Entries(Box::new(access(
+            e(K::Array(vec![])),
+            int(1)
+        ))))))
+        .unwrap(),
+        V::Integer(7)
+    );
+    assert!(
+        evaluate_value(&expression, &bindings, &mut budget(1, 1000, 64))
+            .unwrap_err()
+            .message
+            .contains("work limit")
+    );
+    assert!(
+        evaluate_value(&expression, &bindings, &mut budget(100_000, 1, 64))
+            .unwrap_err()
+            .message
+            .contains("result limit")
     );
 }
 
@@ -1686,6 +1942,18 @@ fn host_value_policy_refuses_inline_sparse_sources_and_keeps_skipped_branches() 
     assert_eq!(error.location, Location::Query(40..70));
     assert_eq!(error.message, "host requires complete cells");
     assert!(active.remaining_work() < before);
+    let error = evaluate_value_with_host_validation(
+        &e(K::Entries(Box::new(e(K::ZipExact {
+            left: Box::new(sparse()),
+            right: Box::new(sparse()),
+        })))),
+        &Bindings::default(),
+        &mut active,
+        validate_cells,
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(40..70));
+    assert_eq!(error.message, "host requires complete cells");
     assert_eq!(
         evaluate_value_with_host_validation(
             &choose(sparse()),

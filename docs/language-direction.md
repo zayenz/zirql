@@ -6,9 +6,9 @@ parameters, native captures and grouping with proposed bounded paths.
 
 These complete word-host programs remain design sketches. The core supplies
 callable projection, reducers, requirements and typed parameter admission;
-common native matching and grouping APIs are also available on the development
-branch, while paths remain proposals. A host frontend supplies its
-domain syntax and supported subset. Callable behavior is covered by the
+common native matching, grouping and keyed helper APIs are also available on
+the development branch, while paths remain proposals. A host frontend supplies
+its domain syntax and supported subset. Callable behavior is covered by the
 [Rust guides](getting-started.md).
 
 ## Correlate fields with one native word
@@ -120,14 +120,16 @@ The [grouping reference](values.md#stable-record-groups) describes the callable
 form, common reader and supported keys.
 
 Positional comprehensions create new one-based positions. To retain explicit
-keys, the proposed `entries(a)` helper would expose keyed cells.
-`zip_exact(a, b)` would align arrays only when their ordered axes and present
-full keys match, returning two-element tuple cells. Equal lengths alone are
-insufficient. Two sparse arrays with keys `[1, 4]` and `[1, 3]` cannot be paired
+keys, `entries(a)` exposes present keyed cells as positional `key`/`value`
+records. `zip_exact(a, b)` pairs keyed arrays only when their ordered axes and
+present full keys match, returning two-element tuple cells. Equal lengths alone
+are insufficient. Two sparse arrays with keys `[1, 4]` and `[1, 3]` cannot be paired
 by silently matching their second entries.
 
-These helpers would use the [current keyed value representation](values.md#keyed-arrays).
-Domain restrictions on the allowed axes or missing cells remain host policy.
+The [keyed helper reference](values.md#keyed-entries-and-exact-pairing) describes
+the callable forms and common reader. Both use the existing keyed value
+representation and retain equal empty axes during pairing. Domain restrictions
+on the allowed axes or missing cells remain host policy.
 
 ## Match neighbouring word occurrences
 

@@ -227,6 +227,15 @@ pub enum ValueExpressionKind<Q = ()> {
         index: Box<ValueExpression<Q>>,
     },
     IndexSet(Box<ValueExpression<Q>>),
+    /// Expose present keyed cells as positional `key`/`value` records. Rank-one
+    /// keys are scalars; higher-rank keys are tuples in dimension order.
+    Entries(Box<ValueExpression<Q>>),
+    /// Pair keyed arrays with identical ordered axes and present full keys.
+    /// Retain left axes/keys and move each pair into a two-element tuple cell.
+    ZipExact {
+        left: Box<ValueExpression<Q>>,
+        right: Box<ValueExpression<Q>>,
+    },
     /// Evaluate the entire array before scanning its values in stored order.
     Reduce {
         operator: ValueReducer,
@@ -763,6 +772,13 @@ fn copy_member_admitted(member: &NominalMember) -> NominalMember {
         declaration_order: member.declaration_order,
         type_name: member.type_name.to_owned(),
         member_name: member.member_name.to_owned(),
+    }
+}
+
+fn key_value(key: ValueKey) -> ConstructedValue {
+    match key {
+        ValueKey::Integer(value) => ConstructedValue::Integer(value),
+        ValueKey::Member(member) => ConstructedValue::Member(member),
     }
 }
 
@@ -2091,6 +2107,65 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 }
                 Ok(result)
             }
+            ValueExpressionKind::Entries(array) => {
+                let mut result = Vec::new();
+                for ty in self.walk(array, budget)? {
+                    budget.charge(1, location.clone())?;
+                    let keyed = match ty {
+                        ValueType::KeyedArray(keyed) => keyed,
+                        ValueType::Unestablished => {
+                            push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
+                            continue;
+                        }
+                        _ => return Err(error(location, "entries needs a keyed array")),
+                    };
+                    let key = match keyed.axes {
+                        Some(axes) => {
+                            let mut components = metadata_vec(axes.len(), budget, location)?;
+                            for axis in axes {
+                                budget.charge(1, location.clone())?;
+                                components.push(match axis {
+                                    ValueKeyType::Integer => ValueType::Integer,
+                                    ValueKeyType::Member(id) => ValueType::Member(id),
+                                });
+                            }
+                            if components.len() == 1 {
+                                components.pop().expect("rank one")
+                            } else {
+                                ValueType::Tuple(components)
+                            }
+                        }
+                        None => ValueType::Unestablished,
+                    };
+                    let mut records = metadata_vec(keyed.elements.len(), budget, location)?;
+                    for value in keyed.elements {
+                        let mut fields = metadata_vec(2, budget, location)?;
+                        budget.charge("key".len() + "value".len(), location.clone())?;
+                        fields.push(("key".into(), copy_type(&key, budget, location)?));
+                        fields.push(("value".into(), value));
+                        records.push(ValueType::Record(fields));
+                    }
+                    push_metadata(
+                        &mut result,
+                        ValueType::Array(ArrayType::Elements(records)),
+                        budget,
+                        location,
+                    )?;
+                }
+                Ok(result)
+            }
+            ValueExpressionKind::ZipExact { left, right } => {
+                let left = self.walk(left, budget)?;
+                let right = self.walk(right, budget)?;
+                let mut result = Vec::new();
+                for a in &left {
+                    for b in &right {
+                        let ty = zip_exact_type(a, b, budget, location)?;
+                        push_metadata(&mut result, ty, budget, location)?;
+                    }
+                }
+                Ok(result)
+            }
             ValueExpressionKind::Reduce { operator, array } => {
                 for ty in self.walk(array, budget)? {
                     budget.charge(1, location.clone())?;
@@ -2366,6 +2441,48 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         }
         Ok(positions)
     }
+}
+
+fn zip_exact_type(
+    left: &ValueType,
+    right: &ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    let [left, right] = [left, right].map(|ty| match ty {
+        ValueType::KeyedArray(keyed) => Ok(Some(keyed)),
+        ValueType::Unestablished => Ok(None),
+        _ => Err(error(location, "zip_exact needs keyed arrays")),
+    });
+    let left = left?;
+    let right = right?;
+    let left_axes = left.and_then(|keyed| keyed.axes.as_deref());
+    let right_axes = right.and_then(|keyed| keyed.axes.as_deref());
+    if let (Some(a), Some(b)) = (left_axes, right_axes)
+        && !same_axis_types(a, b, budget, location)?
+    {
+        return Err(error(
+            location,
+            "zip_exact needs identical axis rank and types",
+        ));
+    }
+    let axes = match left_axes.or(right_axes) {
+        Some(axes) => Some(copy_axis_types(axes, budget, location)?),
+        None => None,
+    };
+    let deferred = [ValueType::Unestablished];
+    let a = left.map_or(deferred.as_slice(), |keyed| keyed.elements.as_slice());
+    let b = right.map_or(deferred.as_slice(), |keyed| keyed.elements.as_slice());
+    let mut elements = Vec::new();
+    for a in a {
+        for b in b {
+            let mut pair = metadata_vec(2, budget, location)?;
+            pair.push(copy_type(a, budget, location)?);
+            pair.push(copy_type(b, budget, location)?);
+            push_metadata(&mut elements, ValueType::Tuple(pair), budget, location)?;
+        }
+    }
+    Ok(ValueType::KeyedArray(KeyedArrayType { axes, elements }))
 }
 
 // Keep known component facts even when one deferred component prevents a public
@@ -3435,10 +3552,7 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                             let mut element_type = Some(key_set_type(axis.key_type));
                             for key in axis.keys {
                                 budget.charge(1, location.clone())?;
-                                let value = match key {
-                                    ValueKey::Integer(value) => ConstructedValue::Integer(value),
-                                    ValueKey::Member(member) => ConstructedValue::Member(member),
-                                };
+                                let value = key_value(key);
                                 insert_set(
                                     &mut values,
                                     &mut element_type,
@@ -3458,6 +3572,16 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                         }
                         _ => Err(error(&location, "index_set needs an array").into()),
                     }
+                }
+                ValueExpressionKind::Entries(array) => Ok(entries(
+                    run(array, queries, locals, budget, check_value)?,
+                    budget,
+                    &location,
+                )?),
+                ValueExpressionKind::ZipExact { left, right } => {
+                    let left = run(left, queries, locals, budget, check_value)?;
+                    let right = run(right, queries, locals, budget, check_value)?;
+                    Ok(zip_exact(left, right, budget, &location)?)
                 }
                 ValueExpressionKind::Reduce { operator, array } => Ok(reduce(
                     *operator,
@@ -3547,6 +3671,100 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
         check_value(&value, budget, &location)?;
         Ok(value)
     })
+}
+
+fn entries(
+    array: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let ConstructedValue::KeyedArray { axes, entries } = array else {
+        return Err(error(location, "entries needs a keyed array"));
+    };
+    check_keyed(&axes, &entries, budget, location)?;
+    let mut records = admit_container(entries.len(), budget, location)?;
+    for entry in entries {
+        // The outer array and record add two levels around a moved cell.
+        budget.within_evaluation(2, location.clone(), |budget| {
+            copy_size(&entry.value, budget, location).map(|_| ())
+        })?;
+        let key = if entry.key.len() == 1 {
+            budget.charge(1, location.clone())?;
+            key_value(entry.key.into_iter().next().expect("rank one"))
+        } else {
+            let mut components = admit_container(entry.key.len(), budget, location)?;
+            for key in entry.key {
+                budget.charge(1, location.clone())?;
+                components.push(key_value(key));
+            }
+            ConstructedValue::Tuple(components)
+        };
+        budget.within_evaluation(2, location.clone(), |budget| {
+            copy_size(&key, budget, location).map(|_| ())
+        })?;
+        let mut fields = admit_container(2, budget, location)?;
+        budget.charge("key".len() + "value".len(), location.clone())?;
+        fields.push(("key".into(), key));
+        fields.push(("value".into(), entry.value));
+        records.push(ConstructedValue::Record(fields));
+    }
+    Ok(ConstructedValue::Array(records))
+}
+
+fn zip_exact(
+    left: ConstructedValue,
+    right: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let (
+        ConstructedValue::KeyedArray {
+            axes,
+            entries: left,
+        },
+        ConstructedValue::KeyedArray {
+            axes: right_axes,
+            entries: right,
+        },
+    ) = (left, right)
+    else {
+        return Err(error(location, "zip_exact needs keyed arrays"));
+    };
+    check_keyed(&axes, &left, budget, location)?;
+    check_keyed(&right_axes, &right, budget, location)?;
+    budget.charge(1, location.clone())?;
+    if axes.len() != right_axes.len() {
+        return Err(error(location, "zip_exact needs identical ordered axes"));
+    }
+    for (a, b) in axes.iter().zip(&right_axes) {
+        budget.charge(1, location.clone())?;
+        if a.key_type != b.key_type || !equal_keys(&a.keys, &b.keys, budget, location)? {
+            return Err(error(location, "zip_exact needs identical ordered axes"));
+        }
+    }
+    budget.charge(1, location.clone())?;
+    if left.len() != right.len() {
+        return Err(error(location, "zip_exact needs identical present keys"));
+    }
+    let mut entries = admit_container(left.len(), budget, location)?;
+    for (a, b) in left.into_iter().zip(right) {
+        if !equal_keys(&a.key, &b.key, budget, location)? {
+            return Err(error(location, "zip_exact needs identical present keys"));
+        }
+        // The keyed container and tuple add two levels around moved values.
+        budget.within_evaluation(2, location.clone(), |budget| {
+            copy_size(&a.value, budget, location)?;
+            copy_size(&b.value, budget, location).map(|_| ())
+        })?;
+        let mut pair = admit_container(2, budget, location)?;
+        pair.push(a.value);
+        pair.push(b.value);
+        entries.push(KeyedEntry {
+            key: a.key,
+            value: ConstructedValue::Tuple(pair),
+        });
+    }
+    Ok(ConstructedValue::KeyedArray { axes, entries })
 }
 
 fn group_by(

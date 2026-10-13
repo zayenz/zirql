@@ -100,6 +100,48 @@ contiguous axes or complete rectangular coverage even though the core supports
 sparse cells. See [semantic model integrations](semantic-models.md) for a
 concrete example of that boundary.
 
+## Keyed entries and exact pairing
+
+`entries(a)` exposes a keyed array's present cells as a positional array of
+records with `key` followed by `value`, in stored entry order. Rank-one keys are
+integer or nominal scalars; higher-rank keys are tuples in dimension order.
+The source binding retains its typed axes. Empty input returns an ordinary
+empty positional array.
+
+`zip_exact(a, b)` accepts two keyed arrays with identical ordered axes and
+present full keys, including identical sparse coverage. Its result retains the
+left axes and keys, with each cell containing a two-element tuple: the left
+value followed by the right value. Component value types may differ. Equal
+cell counts alone do not establish alignment. Different axis order, rank,
+integer keys, nominal identity or present-key coverage causes a refusal.
+Equal empty arrays retain their complete typed axes.
+
+For two rank-two arrays with matching coordinates, a host can read their pairs:
+
+```text
+entries(zip_exact(before, after))
+→ [{key: (1, 1), value: (3, 4)},
+   {key: (1, 2), value: (4, 6)},
+   {key: (2, 1), value: (5, 8)},
+   {key: (2, 2), value: (6, 10)}]
+```
+
+The callable forms are `ValueExpressionKind::Entries` and `ZipExact { left,
+right }`. The common reader accepts the exact one- and two-argument calls with
+keyed bindings; hosts supply their own keyed literals and tuple-access syntax.
+Shared validation checks known input kinds and axis rank/types in every branch.
+Runtime compares the ordered axes and full keys, including retained nominal
+metadata, at the call range. Skipped runtime alignment or missing-access errors
+remain skipped; child failures keep their own locations.
+
+Both operations use the ordinary value and native-value APIs. Entries moves
+admitted keys and cells into records; pairing moves left axes, keys and both
+cell values into tuple cells. New containers, slots, labels, comparisons and
+depth checks spend the continuing budget. Later copies and rendering spend
+that same allowance. Host checks still inspect each executed operand before a
+parent consumes it, so entries cannot bypass a host's rectangularity policy.
+Neither helper fills, truncates, reindexes or writes data.
+
 ## Array summaries and requirements
 
 `ValueExpressionKind::Reduce` selects a closed `ValueReducer`: `Length`, `Sum`,

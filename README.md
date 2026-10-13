@@ -456,6 +456,17 @@ An empty positional array or untyped set establishes no key identity. Missing
 fallback rank/types/axes receive a located refusal. Nonempty results do not
 evaluate or apply fallback axes.
 
+`ValueExpressionKind::Entries` exposes present keyed cells as positional records
+with `key` then `value`, in stored order. Rank-one keys are scalars; larger keys
+are tuples in axis order. `ZipExact { left, right }` requires identical ordered
+axes and present full keys, including sparse coverage, and returns the existing
+keyed array with two-element tuple cells. It retains left axes and keys,
+including equal typed empty axes. Equal cell counts do not establish alignment.
+Known input kinds and axis rank/types are checked before execution; actual keys
+and nominal metadata are checked at runtime. The common reader accepts
+`entries(a)` and `zip_exact(a, b)` with keyed bindings. See
+[the keyed helper reference](docs/values.md#keyed-entries-and-exact-pairing).
+
 Value operations share the active `Budget`, including its remaining work,
 aggregate results and nesting. Work pays expression/value/type visits,
 validation metadata slots, known collection allocation, candidates before
