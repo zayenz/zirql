@@ -135,5 +135,29 @@ size 3. The head runs only for the three survivors.
 to Zincite and Zirium. Its operation-count and label-report examples use each
 host's own inputs and syntax.
 
-For proposed projection, reducers, parameters, matching and paths, read the
-[design examples](language-direction.md). Those forms are not implemented.
+The common reader and [native projection APIs](host-integration.md#correlated-native-projection)
+support correlated rows and scalar summaries. Parameters, matching and paths
+remain described by the [design examples](language-direction.md).
+
+## Project each native subject
+
+A host with a `names` string projection and native `count` stage can read:
+
+```text
+project(w, {"name": w | names | one, "n": w | count})
+```
+
+For native subjects `beta`, `alpha`, `beta`, `evaluate_projection` returns:
+
+```json
+[{"name": "beta", "n": 1}, {"name": "alpha", "n": 1}, {"name": "beta", "n": 1}]
+```
+
+The core returns constructed records before rendering. The subject stays native
+until `names` projects strings. `one` requires exactly one projected name, and
+`count` checks the signed integer boundary when converted to constructed data.
+The repeated subject produces a repeated row.
+
+A field such as `require(false, w | failing_stage | names, "stop")` is fully
+preflighted, then fails with `stop` without executing `failing_stage`. Undefined
+names, known incompatible types and effects still fail preflight.

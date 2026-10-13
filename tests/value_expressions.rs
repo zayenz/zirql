@@ -209,6 +209,12 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
 
 #[test]
 fn scope_refusals_are_located_before_generator_execution() {
+    let unavailable = Located::new(K::NativeQuery(Box::new(())), 40..45);
+    assert_eq!(
+        evaluate(&unavailable).unwrap_err().location,
+        Location::Query(40..45)
+    );
+
     let expression = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {

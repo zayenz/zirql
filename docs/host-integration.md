@@ -44,10 +44,16 @@ For the common pipeline syntax, call `parse_pipeline` with a predicate-reader
 callback. For existing or domain-specific syntax, lower directly to the located
 Rust representation. `Pipeline::new` accepts located typed stages;
 `Program` and `ValueExpression` describe programs and scalar/collection expressions.
-The common reader does not supply program, value or typed host-stage syntax.
+`read_value_expression` reads JSON-shaped values, operators, positional
+comprehensions, reducers and requirements. `read_projection` reads an explicit
+subject and ordered fields. A `ValueReaderHost` supplies one domain stage or
+predicate leaf; the reader owns native composition and Boolean wrappers.
+`read_statement_prefix` recognizes contextual `let name =` and `report` forms.
+The host retains its program sequencing and emission policy.
 
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
-quoted-string helpers; `remaining` and `advance` let a predicate callback read
+quoted-string helpers that skip whitespace and `#` line comments. Quoted strings
+retain literal `#` characters. `remaining` and `advance` let a predicate callback read
 other argument forms. The callback must consume and validate the whole leaf.
 
 The core validates the structure it can see. The frontend must validate references
@@ -145,3 +151,31 @@ For signatures and budget charging helpers, use
 [the Rust API reference](https://docs.rs/zirql) for your published version or
 `cargo doc --open` for the pinned revision. The [diagnostics guide](diagnostics-and-limits.md)
 explains how core and native errors remain distinct.
+
+## Correlated native projection
+
+`Projection<Q>` contains a located subject name and ordered fields of
+`ValueExpression<Q>`. For native reports, `Q` is a normalized `Expression` tree.
+Each subject is a singleton native selection. `evaluate_projection` preflights
+every field before obtaining subjects, then evaluates the fields in written
+order and returns an `Array` of `Record` values. Input duplicates remain separate
+rows. Empty inputs still receive complete scope, type and purity checks.
+
+`ProjectionHost` extends `ProgramHost` with native kinds, stage applicability
+and effect facts, visible nested selector operands, subject extraction and
+scalar conversion. `native_expression_kind` walks bindings, grouping, sequences
+and sets and refuses effects and emitters. Domain hooks validate primitive
+arguments and retain native source failures. Handles require an explicit domain
+projection before becoming scalar report data.
+
+`projection_types` and `native_value_types` retain inferred record alternatives,
+including schemas of empty row arrays. Keep these facts with saved constructed
+bindings so later filters and reducers can preflight known types.
+`evaluate_native_value` uses the same shared value runner for literals,
+constructed names and native operands. A false requirement preflights its value
+operand without executing that operand's native query.
+
+`Bindings::with_local` creates an immutable child scope by sharing outer values
+and copying admitted name metadata. Native values need no deep `Clone` bound.
+Reads still use the host's charged copy operation. Dropping a child scope
+restores outer bindings on success and failure.

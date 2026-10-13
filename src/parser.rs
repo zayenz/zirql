@@ -3,7 +3,7 @@ use crate::{
 };
 
 /// The host reads its leaf name and arguments from the original query text.
-/// Common helpers skip whitespace and return original UTF-8 byte ranges.
+/// Common helpers skip whitespace and `#` line comments, returning original UTF-8 byte ranges.
 /// `source`, `remaining`, `position` and `advance` support host-specific forms.
 pub struct ArgumentReader<'a> {
     source: &'a str,
@@ -11,6 +11,17 @@ pub struct ArgumentReader<'a> {
 }
 
 impl<'a> ArgumentReader<'a> {
+    /// Start at an original source byte boundary.
+    pub fn new(source: &'a str, position: usize) -> Result<Self, QueryError> {
+        if !source.is_char_boundary(position) {
+            return Err(QueryError::query(
+                position..position,
+                "reader position must be an in-bounds UTF-8 boundary",
+            ));
+        }
+        Ok(Self { source, position })
+    }
+
     pub fn source(&self) -> &'a str {
         self.source
     }
@@ -36,12 +47,19 @@ impl<'a> ArgumentReader<'a> {
         Ok(())
     }
 
+    /// Skip whitespace and unquoted `#` comments through newline or end of input.
     pub fn skip_whitespace(&mut self) {
         while let Some(character) = self.remaining().chars().next() {
-            if !character.is_whitespace() {
-                break;
+            match character {
+                character if character.is_whitespace() => self.position += character.len_utf8(),
+                '#' => {
+                    self.position += self
+                        .remaining()
+                        .find('\n')
+                        .unwrap_or(self.remaining().len());
+                }
+                _ => break,
             }
-            self.position += character.len_utf8();
         }
     }
 
@@ -153,7 +171,7 @@ impl<'a> ArgumentReader<'a> {
         QueryError::query(self.position..end, message)
     }
 
-    fn keyword(&mut self, keyword: &str) -> bool {
+    pub fn keyword(&mut self, keyword: &str) -> bool {
         self.skip_whitespace();
         let remaining = self.remaining();
         if remaining.starts_with(keyword)

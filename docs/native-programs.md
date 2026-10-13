@@ -12,7 +12,9 @@ Initial bindings are reserved for the whole program. Duplicate definitions and
 forward references to unavailable names fail during preflight.
 
 A host frontend chooses the statement spelling and lowers it to this
-representation. `parse_pipeline` reads only pipelines.
+representation. `parse_pipeline` reads only pipelines. The common
+`read_statement_prefix` recognizes `let name =` and `report` prefixes without
+reserving those words as bare binding names.
 The [language direction examples](language-direction.md) show proposed surfaces.
 
 Program expressions cover input, binding lookup, grouping, stage sequences,
@@ -55,3 +57,18 @@ Pure bindings and nested constructor operands must be checked by the host
 frontend before execution. The core cannot discover an emitter or edit hidden
 inside an opaque domain payload. Read [host integration](host-integration.md)
 for these validation obligations.
+
+## Construct ordered report rows
+
+A native stage can dispatch `project(subject, {fields})` to `evaluate_projection`.
+The subject is visible only inside the fields and cannot shadow an outer name.
+Native query fields use the existing expression representation; explicit scalar
+projections produce constructed strings, integers or arrays. The result is a
+positional array, so equal projected names require no unique key.
+
+The core validates field scope, known types and effects before evaluating a row.
+Nested selectors and value generators retain the same request budget. The host
+keeps declared constructed schemas with saved bindings and renders at its
+established emitter boundary. See
+[embedding native projection](host-integration.md#correlated-native-projection)
+for the callable adapter.

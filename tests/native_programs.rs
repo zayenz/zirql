@@ -1090,3 +1090,789 @@ fn document_program_keeps_owner_order_set_operands_and_native_records() {
         EvaluationError::Core(QueryError::query(20..21, "result limit exceeded"))
     );
 }
+
+mod projection {
+    use std::{collections::BTreeMap, ops::Range, sync::Arc};
+    use zirql::{
+        ArrayType, Bindings, Budget, ConstructedValue as V, EvaluationError, Expression,
+        ExpressionKind, ExpressionStep, Located, Location, NativeOperands, Predicate, ProgramHost,
+        ProgramLimits, Projection, ProjectionHost, QueryError, ReadExpression,
+        ValueExpressionKind as K, ValueReaderHost, ValueType,
+    };
+
+    #[derive(Debug, PartialEq)]
+    enum Value {
+        Subjects(Vec<&'static str>),
+        Strings(Vec<String>),
+        Count(usize),
+        Constructed(V),
+    }
+    #[derive(Clone, PartialEq)]
+    enum Kind {
+        Subjects,
+        Strings,
+        Count,
+        Constructed(Arc<Vec<ValueType>>),
+    }
+    #[derive(Debug, PartialEq)]
+    enum Stage {
+        Names,
+        Count,
+        Fail,
+        Edit,
+        Saved(String),
+        Projection(Box<Projection<Query>>),
+    }
+    struct Host;
+    type Query = Expression<Stage, (), ()>;
+    impl ProgramHost<()> for Host {
+        type Value = Value;
+        type Stage = Stage;
+        type SetOperator = ();
+        type Emitter = ();
+        type Error = QueryError;
+        fn copy_value(
+            &self,
+            value: &Value,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            let location = Location::Query(range.clone());
+            Ok(match value {
+                Value::Subjects(rows) => {
+                    budget.charge(rows.len(), location.clone())?;
+                    budget.charge_results(rows.len(), location)?;
+                    Value::Subjects(rows.clone())
+                }
+                Value::Strings(values) => {
+                    budget.charge(values.iter().map(String::len).sum(), location.clone())?;
+                    budget.charge_results(values.len(), location)?;
+                    Value::Strings(values.clone())
+                }
+                Value::Count(count) => {
+                    budget.charge_results(1, location)?;
+                    Value::Count(*count)
+                }
+                Value::Constructed(value) => {
+                    Value::Constructed(zirql::copy_constructed_value(value, budget, location)?)
+                }
+            })
+        }
+        fn evaluate_stage(
+            &self,
+            stage: &Stage,
+            value: Value,
+            context: &mut (),
+            bindings: &Bindings<Value>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            budget.charge(1, Location::Query(range.clone()))?;
+            match stage {
+                Stage::Saved(name) => {
+                    self.copy_value(bindings.get(name, range.clone())?, context, budget, range)
+                }
+                Stage::Projection(projection) => {
+                    zirql::evaluate_projection(projection, self, value, context, bindings, budget)
+                        .map(Value::Constructed)
+                }
+                Stage::Names => {
+                    let Value::Subjects(rows) = value else {
+                        return Err(QueryError::query(range.clone(), "names needs subjects").into());
+                    };
+                    budget.charge_results(rows.len(), Location::Query(range.clone()))?;
+                    Ok(Value::Strings(
+                        rows.into_iter().map(str::to_owned).collect(),
+                    ))
+                }
+                Stage::Count => {
+                    let count = match value {
+                        Value::Subjects(rows) => rows.len(),
+                        Value::Strings(rows) => rows.len(),
+                        _ => {
+                            return Err(
+                                QueryError::query(range.clone(), "count needs a stream").into()
+                            );
+                        }
+                    };
+                    Ok(Value::Count(count))
+                }
+                Stage::Fail => Err(EvaluationError::Host(QueryError::source(
+                    20..21,
+                    "native failure",
+                ))),
+                Stage::Edit => unreachable!("preflight refuses edits"),
+            }
+        }
+        fn combine(
+            &self,
+            _: &(),
+            left: Value,
+            right: Value,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            let (Value::Strings(mut left), Value::Strings(right)) = (left, right) else {
+                return Err(QueryError::query(range.clone(), "set operands need strings").into());
+            };
+            for value in right {
+                budget.charge(1, Location::Query(range.clone()))?;
+                if !left.contains(&value) {
+                    left.push(value);
+                }
+            }
+            Ok(Value::Strings(left))
+        }
+        fn construct_record(
+            &self,
+            _: Vec<(String, Value)>,
+            _: &mut (),
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            Err(QueryError::query(range.clone(), "native records unavailable").into())
+        }
+        fn emit(
+            &self,
+            _: &(),
+            _: &Value,
+            _: &mut (),
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<(), EvaluationError<QueryError>> {
+            unreachable!("preflight refuses emitters")
+        }
+    }
+    impl ProjectionHost<()> for Host {
+        type Kind = Kind;
+        fn kind(
+            &self,
+            value: &Value,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Kind, QueryError> {
+            Ok(match value {
+                Value::Subjects(_) => Kind::Subjects,
+                Value::Strings(_) => Kind::Strings,
+                Value::Count(_) => Kind::Count,
+                Value::Constructed(value) => {
+                    Kind::Constructed(Arc::new(vec![zirql::constructed_value_type(
+                        value,
+                        budget,
+                        Location::Query(range.clone()),
+                    )?]))
+                }
+            })
+        }
+        fn scalar_types(
+            &self,
+            kind: &Kind,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Option<Vec<ValueType>>, QueryError> {
+            Ok(match kind {
+                Kind::Subjects => None,
+                Kind::Strings => Some(vec![ValueType::Array(ArrayType::Elements(vec![
+                    ValueType::String,
+                ]))]),
+                Kind::Count => Some(vec![ValueType::Integer]),
+                Kind::Constructed(types) => Some(zirql::copy_value_types(
+                    types,
+                    budget,
+                    Location::Query(range.clone()),
+                )?),
+            })
+        }
+        fn constructed_kind(&self, types: Vec<ValueType>) -> Kind {
+            Kind::Constructed(Arc::new(types))
+        }
+        fn stage_kind(
+            &self,
+            stage: &Stage,
+            input: &Kind,
+            scope: &BTreeMap<String, Kind>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Kind, QueryError> {
+            match stage {
+                Stage::Saved(name) => Ok(scope[name].clone()),
+                Stage::Projection(projection) => Ok(Kind::Constructed(Arc::new(
+                    zirql::projection_types::<(), _>(
+                        projection,
+                        self,
+                        input.clone(),
+                        scope.clone(),
+                        budget,
+                    )?,
+                ))),
+                Stage::Names if *input == Kind::Subjects => Ok(Kind::Strings),
+                Stage::Count if matches!(input, Kind::Subjects | Kind::Strings) => Ok(Kind::Count),
+                Stage::Fail | Stage::Edit => Ok(input.clone()),
+                _ => Err(QueryError::query(
+                    range.clone(),
+                    "incompatible native stage",
+                )),
+            }
+        }
+        fn is_pure(&self, stage: &Stage) -> bool {
+            *stage != Stage::Edit
+        }
+        fn nested_queries(
+            &self,
+            _: &Stage,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<NativeOperands<(), Self>, QueryError> {
+            Ok(vec![])
+        }
+        fn subjects(
+            &self,
+            input: Value,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Vec<Value>, EvaluationError<QueryError>> {
+            let Value::Subjects(rows) = input else {
+                return Err(QueryError::query(range.clone(), "projection needs subjects").into());
+            };
+            budget.charge_results(rows.len(), Location::Query(range.clone()))?;
+            Ok(rows
+                .into_iter()
+                .map(|row| Value::Subjects(vec![row]))
+                .collect())
+        }
+        fn project_value(
+            &self,
+            value: Value,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<V, EvaluationError<QueryError>> {
+            match value {
+                Value::Subjects(_) => Err(QueryError::query(
+                    range.clone(),
+                    "native handles require an explicit scalar projection",
+                )
+                .into()),
+                Value::Strings(values) => {
+                    budget.charge_results(1, Location::Query(range.clone()))?;
+                    Ok(V::Array(values.into_iter().map(V::String).collect()))
+                }
+                Value::Count(count) => Ok(zirql::count_value(
+                    count,
+                    budget,
+                    Location::Query(range.clone()),
+                )?),
+                Value::Constructed(value) => Ok(value),
+            }
+        }
+        fn lift_constructed(
+            &self,
+            value: V,
+            _: Vec<ValueType>,
+            _: &mut (),
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            Ok(Value::Constructed(value))
+        }
+    }
+    impl ValueReaderHost for Host {
+        type Stage = Stage;
+        type SetOperator = ();
+        type Emitter = ();
+        type Predicate = ();
+        fn is_binding(&self, name: &str) -> bool {
+            name == "f"
+        }
+        fn is_stage(&self, name: &str) -> bool {
+            matches!(name, "names" | "count" | "fail" | "edit" | "project")
+        }
+        fn parse_stage(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
+            let word = reader.word()?;
+            let stage = match word.value {
+                "names" => Stage::Names,
+                "count" => Stage::Count,
+                "fail" => Stage::Fail,
+                "edit" => Stage::Edit,
+                _ => return Err(QueryError::query(word.range, "unsupported stage")),
+            };
+            Ok(ExpressionStep::Stage(stage))
+        }
+        fn parse_predicate_leaf(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<(), QueryError> {
+            Err(reader.error("predicates unavailable"))
+        }
+        fn filter(&mut self, _: Predicate<()>, _: Range<usize>) -> Stage {
+            unreachable!()
+        }
+        fn projection(
+            &mut self,
+            projection: Projection<ReadExpression<Self>>,
+            _: Range<usize>,
+        ) -> Stage {
+            Stage::Projection(Box::new(projection))
+        }
+        fn set_operator(&self, word: &str) -> Option<()> {
+            (word == "union").then_some(())
+        }
+    }
+    struct SavedNames;
+    impl ValueReaderHost for SavedNames {
+        type Stage = Stage;
+        type SetOperator = ();
+        type Emitter = ();
+        type Predicate = ();
+        fn is_binding(&self, name: &str) -> bool {
+            matches!(name, "f" | "one" | "project")
+        }
+        fn is_stage(&self, name: &str) -> bool {
+            Host.is_stage(name)
+        }
+        fn parse_stage(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            budget: &mut Budget,
+        ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
+            let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
+            let name = probe.word()?;
+            if matches!(name.value, "one" | "project") {
+                budget.charge(name.value.len(), Location::Query(name.range.clone()))?;
+                reader.advance(probe.position() - reader.position())?;
+                Ok(ExpressionStep::Stage(Stage::Saved(name.value.to_owned())))
+            } else {
+                Host.parse_stage(reader, budget)
+            }
+        }
+        fn parse_predicate_leaf(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            budget: &mut Budget,
+        ) -> Result<(), QueryError> {
+            Host.parse_predicate_leaf(reader, budget)
+        }
+        fn filter(&mut self, predicate: Predicate<()>, range: Range<usize>) -> Stage {
+            Host.filter(predicate, range)
+        }
+        fn projection(
+            &mut self,
+            projection: Projection<ReadExpression<Self>>,
+            range: Range<usize>,
+        ) -> Stage {
+            Host.projection(projection, range)
+        }
+        fn set_operator(&self, word: &str) -> Option<()> {
+            Host.set_operator(word)
+        }
+    }
+    fn budget() -> Budget {
+        Budget::for_program(ProgramLimits {
+            work: 100_000,
+            results: 10_000,
+            nesting: 32,
+            stream_items: 100,
+        })
+    }
+    fn parse(source: &str, budget: &mut Budget) -> Projection<Query> {
+        zirql::read_projection(
+            &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+            &mut Host,
+            budget,
+            32,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn native_rows_reader_preflight_and_lazy_requirement_share_the_value_runner() {
+        let mut allowance = budget();
+        let bindings = Bindings::new([
+            (
+                Located::new("f".into(), 0..0),
+                Value::Subjects(vec!["beta"]),
+            ),
+            (
+                Located::new("one".into(), 0..0),
+                Value::Strings(vec!["saved".into()]),
+            ),
+            (
+                Located::new("project".into(), 0..0),
+                Value::Strings(vec!["legacy".into()]),
+            ),
+        ])
+        .unwrap();
+        for (source, expected) in [
+            ("f | names | one", V::Array(vec![V::String("saved".into())])),
+            (
+                "project(w, {\"n\": w | count})",
+                V::Array(vec![V::Record(vec![("n".into(), V::Integer(1))])]),
+            ),
+            ("project", V::Array(vec![V::String("legacy".into())])),
+            ("f | project", V::Array(vec![V::String("legacy".into())])),
+            ("one(f | names)", V::String("beta".into())),
+        ] {
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let expression =
+                zirql::read_value_expression(&mut reader, &mut SavedNames, &mut allowance, 32)
+                    .unwrap();
+            assert!(reader.remaining().is_empty());
+            let value = zirql::evaluate_native_value(
+                &expression,
+                &Host,
+                Value::Subjects(vec!["beta"]),
+                &mut (),
+                &bindings,
+                &mut allowance,
+            )
+            .unwrap();
+            assert_eq!(value, expected);
+        }
+        for (source, expected) in [
+            ("(f | names) | count", Kind::Count),
+            ("f | names union (f | names)", Kind::Strings),
+        ] {
+            let mut allowance = budget();
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let value =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+            assert!(reader.remaining().is_empty());
+            assert_eq!(value.range, 0..source.len());
+            let K::NativeQuery(query) = value.value else {
+                panic!("native operand")
+            };
+            let scope = BTreeMap::from([("f".to_owned(), Kind::Subjects)]);
+            assert!(
+                zirql::native_expression_kind::<(), _>(
+                    &query,
+                    &Host,
+                    &Kind::Subjects,
+                    &scope,
+                    &mut allowance
+                )
+                .unwrap()
+                    == expected
+            );
+            let bindings = Bindings::new([(
+                Located::new("f".into(), 0..0),
+                Value::Subjects(vec!["beta"]),
+            )])
+            .unwrap();
+            let value = zirql::evaluate_expression(
+                &query,
+                &Host,
+                Value::Subjects(vec!["beta"]),
+                &mut (),
+                &bindings,
+                &mut allowance,
+            )
+            .unwrap();
+            assert!(matches!(value, Value::Count(1) | Value::Strings(_)));
+            zirql::dispose_expression(*query);
+        }
+        let source = std::iter::repeat_n("f | names", 40)
+            .collect::<Vec<_>>()
+            .join(" union ");
+        let mut allowance = budget();
+        let mut reader = zirql::ArgumentReader::new(&source, 0).unwrap();
+        let value =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 3).unwrap();
+        let K::NativeQuery(query) = value.value else {
+            panic!("native set operand")
+        };
+        let mut allowance = Budget::for_program(ProgramLimits {
+            nesting: 3,
+            work: 100_000,
+            results: 10_000,
+            stream_items: 100,
+        });
+        let scope = BTreeMap::from([("f".to_owned(), Kind::Subjects)]);
+        assert!(
+            zirql::native_expression_kind::<(), _>(
+                &query,
+                &Host,
+                &Kind::Subjects,
+                &scope,
+                &mut allowance
+            )
+            .unwrap()
+                == Kind::Strings
+        );
+        let bindings = Bindings::new([(
+            Located::new("f".into(), 0..0),
+            Value::Subjects(vec!["beta"]),
+        )])
+        .unwrap();
+        assert!(
+            matches!(zirql::evaluate_expression(&query,&Host,Value::Subjects(vec!["beta"]),&mut (),&bindings,&mut allowance).unwrap(),Value::Strings(values) if values==["beta"])
+        );
+        zirql::dispose_expression(*query);
+        let mut reader = zirql::ArgumentReader::new("(1 + 2) * 3", 0).unwrap();
+        let mut allowance = budget();
+        let scalar =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        assert!(reader.remaining().is_empty());
+        assert!(matches!(
+            scalar.value,
+            K::Binary {
+                operator: zirql::ValueBinaryOperator::Multiply,
+                ..
+            }
+        ));
+        let commented = "# π before\n[\"# β\" # head\n for n in [1]] # end";
+        let mut reader = zirql::ArgumentReader::new(commented, 0).unwrap();
+        let expression =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        assert!(reader.remaining().is_empty());
+        assert_eq!(
+            zirql::evaluate_native_value(
+                &expression,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance,
+            )
+            .unwrap(),
+            V::Array(vec![V::String("# β".into())])
+        );
+        let invalid = "# π before\nmissing";
+        let mut reader = zirql::ArgumentReader::new(invalid, 0).unwrap();
+        let expression =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        let error = zirql::native_value_types::<(), _>(
+            &expression,
+            &Host,
+            Kind::Subjects,
+            BTreeMap::new(),
+            &mut allowance,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.location,
+            Location::Query(invalid.find("missing").unwrap()..invalid.len())
+        );
+        let names = (0..200)
+            .map(|index| format!("v{index:04}"))
+            .collect::<Vec<_>>();
+        let expression = Located::new(
+            K::Array(
+                names
+                    .iter()
+                    .map(|name| Located::new(K::Name(name.clone()), 0..1))
+                    .collect(),
+            ),
+            0..1,
+        );
+        let scope = names.into_iter().map(|name| (name, Kind::Count)).collect();
+        let mut low = Budget::for_program(ProgramLimits {
+            work: 20_000,
+            results: 100_000,
+            nesting: 32,
+            stream_items: 1_000,
+        });
+        assert!(
+            zirql::native_value_types::<(), _>(&expression, &Host, Kind::Subjects, scope, &mut low)
+                .unwrap_err()
+                .message
+                .contains("work limit")
+        );
+        let source = r#"project(f, {"name": f | names | one, "n": f | count})"#;
+        let mut allowance = budget();
+        let projection = parse(source, &mut allowance);
+        let result = zirql::evaluate_projection(
+            &projection,
+            &Host,
+            Value::Subjects(vec!["beta", "alpha", "beta"]),
+            &mut (),
+            &Bindings::default(),
+            &mut allowance,
+        )
+        .unwrap();
+        let row = |name: &str| {
+            V::Record(vec![
+                ("name".into(), V::String(name.into())),
+                ("n".into(), V::Integer(1)),
+            ])
+        };
+        assert_eq!(
+            result,
+            V::Array(vec![row("beta"), row("alpha"), row("beta")])
+        );
+        let types = zirql::projection_types::<(), _>(
+            &projection,
+            &Host,
+            Kind::Subjects,
+            BTreeMap::new(),
+            &mut allowance,
+        )
+        .unwrap();
+        assert_eq!(
+            types,
+            vec![ValueType::Array(ArrayType::Elements(vec![
+                ValueType::Record(vec![
+                    ("name".into(), ValueType::String),
+                    ("n".into(), ValueType::Integer)
+                ])
+            ]))]
+        );
+        assert_eq!(
+            zirql::evaluate_projection(
+                &projection,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap(),
+            V::Array(vec![])
+        );
+        for invalid in [
+            r#"project(f, {"x": missing | names})"#,
+            r#"project(f, {"x": sum(f | names)})"#,
+            r#"project(f, {"x": f | edit | names})"#,
+            r#"project(f, {"x": f})"#,
+        ] {
+            let projection = parse(invalid, &mut allowance);
+            assert!(
+                zirql::evaluate_projection(
+                    &projection,
+                    &Host,
+                    Value::Subjects(vec![]),
+                    &mut (),
+                    &Bindings::default(),
+                    &mut allowance
+                )
+                .is_err()
+            );
+        }
+        let skipped = parse(
+            r#"project(f, {"x": require(false, f | fail | names, "stop")})"#,
+            &mut allowance,
+        );
+        let error = zirql::evaluate_projection(
+            &skipped,
+            &Host,
+            Value::Subjects(vec!["alpha"]),
+            &mut (),
+            &Bindings::default(),
+            &mut allowance,
+        )
+        .unwrap_err();
+        assert!(matches!(error,EvaluationError::Core(QueryError{message,..}) if message=="stop"));
+        let active = parse(
+            r#"project(f, {"x": require(true, f | fail | names, "stop")})"#,
+            &mut allowance,
+        );
+        assert_eq!(
+            zirql::evaluate_projection(
+                &active,
+                &Host,
+                Value::Subjects(vec!["alpha"]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap_err(),
+            EvaluationError::Host(QueryError::source(20..21, "native failure"))
+        );
+        let alternatives = Projection {
+            subject: Located::new("f".into(), 0..1),
+            fields: vec![(
+                Located::new("choice".into(), 2..3),
+                Located::new(
+                    K::Conditional {
+                        branches: vec![(
+                            Located::new(K::Literal(V::Boolean(true)), 3..4),
+                            Located::new(K::Literal(V::Integer(1)), 4..5),
+                        )],
+                        otherwise: Box::new(Located::new(
+                            K::Literal(V::String("fallback".into())),
+                            5..6,
+                        )),
+                    },
+                    3..6,
+                ),
+            )],
+        };
+        let types = zirql::projection_types::<(), _>(
+            &alternatives,
+            &Host,
+            Kind::Subjects,
+            BTreeMap::new(),
+            &mut allowance,
+        )
+        .unwrap();
+        assert_eq!(
+            types,
+            vec![ValueType::Array(ArrayType::Elements(vec![
+                ValueType::Record(vec![("choice".into(), ValueType::Integer)]),
+                ValueType::Record(vec![("choice".into(), ValueType::String)])
+            ]))]
+        );
+        let empty: Vec<String> = vec![];
+        assert_eq!(
+            zirql::take_one(empty, 4..7).unwrap_err().location,
+            Location::Query(4..7)
+        );
+        assert!(zirql::take_one(vec!["a", "b"], 4..7).is_err());
+        assert_eq!(zirql::take_one(vec!["a"], 4..7).unwrap(), "a");
+        if usize::BITS > 63 {
+            assert!(zirql::count_value(usize::MAX, &mut allowance, Location::Query(8..9)).is_err());
+        }
+        let projection = parse(source, &mut allowance);
+        let mut low = Budget::for_program(ProgramLimits {
+            work: 100_000,
+            results: 2,
+            nesting: 32,
+            stream_items: 100,
+        });
+        assert!(
+            zirql::evaluate_projection(
+                &projection,
+                &Host,
+                Value::Subjects(vec!["alpha"]),
+                &mut (),
+                &Bindings::default(),
+                &mut low
+            )
+            .is_err()
+        );
+        let mut prefix = zirql::ArgumentReader::new("let label = \"\\u03b2\";", 0).unwrap();
+        assert!(matches!(
+            zirql::read_statement_prefix(&mut prefix, &mut allowance).unwrap(),
+            Some(zirql::CommonStatement::Let(_))
+        ));
+        let value =
+            zirql::read_value_expression(&mut prefix, &mut Host, &mut allowance, 32).unwrap();
+        assert!(matches!(value.value,K::Literal(V::String(value)) if value=="β"));
+        let pure = Located::new(K::Literal(V::Integer(2)), 0..1);
+        assert_eq!(
+            zirql::value_expression_types(&pure, &BTreeMap::new(), &mut allowance).unwrap(),
+            vec![ValueType::Integer]
+        );
+        let binding = Located::new(
+            ExpressionKind::<Stage, (), ()>::Binding("saved".into()),
+            0..1,
+        );
+        assert!(
+            zirql::native_expression_kind::<(), _>(
+                &binding,
+                &Host,
+                &Kind::Subjects,
+                &BTreeMap::new(),
+                &mut allowance
+            )
+            .is_err()
+        );
+    }
+}

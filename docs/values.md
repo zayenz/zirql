@@ -139,3 +139,25 @@ These operations run in the existing five value APIs and
 child value kinds, so concrete type discovery and charged copying need no
 separate summary result type. Hosts choose surface spellings and effect policy;
 Zirql executes no model or solver.
+
+## Native operands and extraction
+
+`ValueExpression<Q>` defaults to ordinary constructed expressions with `Q = ()`.
+A host can use `NativeQuery(Box<Q>)` for a normalized native operand.
+`query_value_types`, `free_query_value_names` and `evaluate_query_value` use the
+same analysis and runner as ordinary values. `ValueQueryHost` supplies declared
+query facts, scalar binding reads and native execution with current generator
+locals and the active budget. Runtime branch selection controls when a query
+runs.
+
+`One` accepts a positional array and moves out its sole child. Zero or multiple
+children fail at the extraction range. The shared `take_one` helper also serves
+native string extraction. `count_value` converts a `usize` count to an admitted
+integer only when it fits `i64`; ordinary native counts retain their original
+type. String projections remain arrays until explicitly extracted.
+
+`value_expression_types` exposes inferred facts without execution. A projected
+array's element schema remains known when it has no rows, so preflight can reject
+a sum over known string fields on empty input. See
+[native projection](host-integration.md#correlated-native-projection) for the
+subject and conversion contract.

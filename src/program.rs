@@ -33,7 +33,7 @@ pub enum ExpressionKind<S, O, E> {
 
 impl<S, O, E> ExpressionKind<S, O, E> {
     // Representation-only Input/Binding/Sequence wrappers add no logical depth.
-    fn depth(&self) -> usize {
+    pub(crate) fn depth(&self) -> usize {
         match self {
             Self::Group(_) | Self::Set { .. } | Self::Record(_) => 1,
             Self::Input | Self::Binding(_) | Self::Sequence { .. } => 0,
@@ -102,7 +102,7 @@ impl<S, O, E> Program<S, O, E> {
 /// only ordered execution can add subsequent definitions. No Clone bound applies.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Bindings<V> {
-    values: BTreeMap<String, V>,
+    values: BTreeMap<String, std::sync::Arc<V>>,
 }
 
 impl<V> Default for Bindings<V> {
@@ -123,9 +123,54 @@ impl<V> Bindings<V> {
             if bindings.values.contains_key(&name.value) {
                 return Err(QueryError::query(name.range, "binding is already defined"));
             }
-            bindings.values.insert(name.value, value);
+            bindings
+                .values
+                .insert(name.value, std::sync::Arc::new(value));
         }
         Ok(bindings)
+    }
+
+    /// Iterate immutable scope entries in name order without copying values.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
+        self.values
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_ref()))
+    }
+
+    /// Add one local name while sharing immutable outer values. Name metadata
+    /// spends the active allowance; dropping this child restores the outer scope.
+    pub fn with_local(
+        &self,
+        name: Located<String>,
+        value: V,
+        budget: &mut Budget,
+    ) -> Result<Self, QueryError> {
+        if self.values.contains_key(&name.value) {
+            return Err(QueryError::query(name.range, "binding is already defined"));
+        }
+        let location = Location::Query(name.range.clone());
+        let bytes = self
+            .values
+            .keys()
+            .try_fold(name.value.len(), |bytes, outer| {
+                bytes.checked_add(outer.len()).ok_or_else(|| {
+                    QueryError::query(name.range.clone(), "binding metadata size overflow")
+                })
+            })?;
+        // Outer values are admitted; only names and Arc entries are copied.
+        budget.charge(
+            bytes.checked_add(self.values.len() + 1).ok_or_else(|| {
+                QueryError::query(name.range.clone(), "binding metadata size overflow")
+            })?,
+            location,
+        )?;
+        let mut values = self
+            .values
+            .iter()
+            .map(|(name, value)| (name.clone(), std::sync::Arc::clone(value)))
+            .collect::<BTreeMap<_, _>>();
+        values.insert(name.value, std::sync::Arc::new(value));
+        Ok(Self { values })
     }
 
     /// Read a native value without copying it. The supplied query range locates
@@ -133,6 +178,7 @@ impl<V> Bindings<V> {
     pub fn get(&self, name: &str, range: Range<usize>) -> Result<&V, QueryError> {
         self.values
             .get(name)
+            .map(std::sync::Arc::as_ref)
             .ok_or_else(|| QueryError::query(range, format!("undefined binding: {name}")))
     }
 }
@@ -256,7 +302,9 @@ where
             Statement::Bind { name, .. } => {
                 budget
                     .charge_program_work(name.value.len(), Location::Query(name.range.clone()))?;
-                bindings.values.insert(name.value.clone(), value);
+                bindings
+                    .values
+                    .insert(name.value.clone(), std::sync::Arc::new(value));
             }
             Statement::Evaluate {
                 implicit_output, ..
@@ -487,4 +535,24 @@ fn validate_expression<S, O, E>(
         }
     }
     Ok(())
+}
+
+/// Release a retained native tree without recursively dropping its flat set spine.
+/// Hosts owning normalized operands use this when their immutable tree is released.
+pub fn dispose_expression<S, O, E>(expression: Expression<S, O, E>) {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        match expression.value {
+            ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+            ExpressionKind::Group(child) => pending.push(*child),
+            ExpressionKind::Sequence { input, .. } => pending.push(*input),
+            ExpressionKind::Set { left, right, .. } => {
+                pending.push(*left);
+                pending.push(*right);
+            }
+            ExpressionKind::Record(fields) => {
+                pending.extend(fields.into_iter().map(|(_, expression)| expression))
+            }
+        }
+    }
 }

@@ -3,6 +3,8 @@
 mod eval;
 mod parser;
 mod program;
+mod projection;
+mod reader;
 mod value;
 
 use std::fmt;
@@ -15,14 +17,25 @@ pub use eval::{
 pub use parser::{ArgumentReader, parse_pipeline};
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, Program, ProgramHost,
-    Statement, evaluate_expression, evaluate_program,
+    Statement, dispose_expression, evaluate_expression, evaluate_program,
+};
+pub use projection::{
+    NativeExpression, NativeOperands, Projection, ProjectionFields, ProjectionHost,
+    evaluate_native_value, evaluate_projection, native_expression_kind, native_value_types,
+    projection_types,
+};
+pub use reader::{
+    CommonStatement, ReadExpression, ValueReaderHost, read_projection, read_statement_prefix,
+    read_value_expression,
 };
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
     NominalMemberId, NominalTypeId, SetElementType, ValueBinaryOperator, ValueConstructor,
-    ValueExpression, ValueExpressionKind, ValueGenerator, ValueKey, ValueKeyType, ValueReducer,
-    ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value, evaluate_value,
-    evaluate_value_with_host_validation, free_value_names, validate_value_expression,
+    ValueExpression, ValueExpressionKind, ValueGenerator, ValueKey, ValueKeyType, ValueQueryHost,
+    ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value,
+    copy_value_types, count_value, evaluate_query_value, evaluate_value,
+    evaluate_value_with_host_validation, free_query_value_names, free_value_names,
+    query_value_types, take_one, validate_value_expression, value_expression_types,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.
