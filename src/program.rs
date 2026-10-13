@@ -296,6 +296,11 @@ pub enum ExpressionKind<S, O, E> {
     Input,
     Binding(String),
     Group(Box<Expression<S, O, E>>),
+    /// Checked native capture selection; copying retains the host value kind.
+    Field {
+        value: Box<Expression<S, O, E>>,
+        field: Located<String>,
+    },
     Sequence {
         input: Box<Expression<S, O, E>>,
         steps: Vec<Located<ExpressionStep<S, E>>>,
@@ -312,7 +317,7 @@ impl<S, O, E> ExpressionKind<S, O, E> {
     // Representation-only Input/Binding/Sequence wrappers add no logical depth.
     pub(crate) fn depth(&self) -> usize {
         match self {
-            Self::Group(_) | Self::Set { .. } | Self::Record(_) => 1,
+            Self::Group(_) | Self::Field { .. } | Self::Set { .. } | Self::Record(_) => 1,
             Self::Input | Self::Binding(_) | Self::Sequence { .. } => 0,
         }
     }
@@ -512,6 +517,15 @@ pub trait ProgramHost<C> {
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>>;
 
+    /// Borrow a native capture without converting its handles to scalar data.
+    /// Hosts only unwrap their record wrapper; core lookup and copies are charged.
+    fn capture_record<'v>(
+        &self,
+        _value: &'v Self::Value,
+    ) -> Option<&'v crate::NativeCapture<Self::Value>> {
+        None
+    }
+
     /// Observe a native value at this written position. Hosts charge retained
     /// snapshots/rendered bytes and own library buffering and effect semantics.
     fn emit(
@@ -646,6 +660,16 @@ where
                 ExpressionKind::Group(child) => {
                     run_expression(child, host, input, context, bindings, budget)
                 }
+                ExpressionKind::Field { value, field } => {
+                    let value = run_expression(value, host, input, context, bindings, budget)?;
+                    let record = host.capture_record(&value).ok_or_else(|| {
+                        QueryError::query(
+                            field.range.clone(),
+                            "field access requires a native capture",
+                        )
+                    })?;
+                    host.copy_value(record.get(field, budget)?, context, budget, &field.range)
+                }
                 ExpressionKind::Sequence {
                     input: source,
                     steps,
@@ -747,6 +771,7 @@ fn final_emission<S, O, E>(expression: &Expression<S, O, E>) -> Option<EmissionP
             },
             ExpressionKind::Input
             | ExpressionKind::Binding(_)
+            | ExpressionKind::Field { .. }
             | ExpressionKind::Set { .. }
             | ExpressionKind::Record(_) => return None,
         }
@@ -774,6 +799,15 @@ fn validate_expression<S, O, E>(
                 }
             }
             ExpressionKind::Group(child) => pending.push((child, depth, calls)),
+            ExpressionKind::Field { value, field } => {
+                if final_emission(value) == Some(EmissionPolicy::Terminal) {
+                    return Err(QueryError::query(
+                        field.range.clone(),
+                        "field cannot follow terminal emission",
+                    ));
+                }
+                pending.push((value, depth, calls));
+            }
             ExpressionKind::Sequence { input, steps } => {
                 let mut terminal = final_emission(input) == Some(EmissionPolicy::Terminal);
                 for step in steps {
@@ -822,6 +856,7 @@ pub fn dispose_expression<S, O, E>(expression: Expression<S, O, E>) {
         match expression.value {
             ExpressionKind::Input | ExpressionKind::Binding(_) => {}
             ExpressionKind::Group(child) => pending.push(*child),
+            ExpressionKind::Field { value, .. } => pending.push(*value),
             ExpressionKind::Sequence { input, .. } => pending.push(*input),
             ExpressionKind::Set { left, right, .. } => {
                 pending.push(*left);

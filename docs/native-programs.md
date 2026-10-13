@@ -19,7 +19,7 @@ The host consumes the statement terminator after a parameter's type.
 The [language direction examples](language-direction.md) show proposed surfaces.
 
 Program expressions cover input, binding lookup, grouping, stage sequences,
-ordered set operands and records. A record evaluates its fields in written order.
+ordered set operands, native capture field access and records. A record evaluates its fields in written order.
 Set combination evaluates the left operand before the right; the host supplies
 its domain identity and combination behavior.
 
@@ -106,3 +106,51 @@ keeps declared constructed schemas with saved bindings and renders at its
 established emitter boundary. See
 [embedding native projection](host-integration.md#correlated-native-projection)
 for the callable adapter.
+
+## Retain native captures
+
+Use `NativeMatch<Q, P>` when a query needs correlated native handles before
+constructing a scalar report. Its ordered, located clauses have three forms:
+
+- `from name in query` enumerates finite subjects in their native order.
+- `bind name = query` requires exactly one native subject for the candidate.
+- `where predicate` keeps a candidate only when its final truth is known true.
+
+Later clauses see earlier names. A name is absent in its own source; duplicate
+names, ambient-name shadowing and the reserved input name fail preflight.
+The rightmost `from` varies fastest. Capture names stay local to the match.
+An unavailable required binding or an Unknown final guard gives a located error,
+including when the guard is negated.
+
+The common readers accept this surface for a host that supplies the native
+primitives and match stage wrapper:
+
+```text
+match {
+  from add in (input | filter(op("arith.addi")));
+  bind lhs = operand(add, 0);
+  bind rhs = operand(add, 1);
+  where same_value(lhs, rhs);
+}
+```
+
+`read_match` returns the clause tree. `read_native_expression` also reads a
+match composed with later stages, such as a host's explicit `| json` emitter.
+The word `match` is contextual before `{`, so a bare saved binding named
+`match` remains readable. Inline and file frontends can use the same readers;
+the core requires no file or entry-point declaration.
+
+Each successful row is a host-wrapped `NativeCapture<Value>` with fields in
+written order. Selecting `m.add` retains its native operation kind and uses a
+charged native copy. A later `project(m, {"name": m.add | names | one})`
+explicitly constructs a scalar report. Plain constructed-record field access
+continues to use the scalar value evaluator.
+
+`match_types` checks every clause, operand, Boolean branch, type and effect
+before `evaluate_match` obtains subjects. Empty inputs and false guards do not
+hide invalid clauses. Returned field kinds describe empty capture collections
+too; the host retains that schema beside its collection wrapper. Matching
+requires a program budget with aggregate result limits and charges candidates
+before filtering. See [the adapter contract](host-integration.md#native-match-adapter).
+These callable matching APIs require a development revision that contains them;
+they are absent from the published alpha.5 release.

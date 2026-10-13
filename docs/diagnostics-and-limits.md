@@ -81,6 +81,14 @@ already admitted value without another result or copy charge. Arithmetic errors
 retain their child ranges, and limit errors retain the active operation range.
 Emission snapshots and rendering charge again under the same budget.
 
+Native matches require aggregate program result limits. Every clause and guard
+branch is preflighted before subject enumeration. Dependent clause calls and
+native field expressions use the active logical nesting allowance; Boolean
+wrappers keep that depth active through native leaf evaluation. Candidates pay
+before later filters. Capture rows, field slots, labels, native copies and host
+materialization share the same request budget. Exhaustion fails the match and
+returns no partial row vector.
+
 Spent allowances are not refunded after success or failure. Active scope and
 nesting state are restored on both outcomes, so a failed operation does not
 leave the budget stuck inside a nested call.

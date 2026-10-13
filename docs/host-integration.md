@@ -167,7 +167,7 @@ rows. Empty inputs still receive complete scope, type and purity checks.
 `ProjectionHost` extends `ProgramHost` with native kinds, stage applicability
 and effect facts, visible nested selector operands, subject extraction and
 scalar conversion. `native_expression_kind` walks bindings, grouping, sequences
-and sets and refuses effects and emitters. Domain hooks validate primitive
+sets and native capture fields and refuses effects and emitters. Domain hooks validate primitive
 arguments and retain native source failures. Handles require an explicit domain
 projection before becoming scalar report data.
 
@@ -182,3 +182,48 @@ operand without executing that operand's native query.
 and copying admitted name metadata. Native values need no deep `Clone` bound.
 Reads still use the host's charged copy operation. Dropping a child scope
 restores outer bindings on success and failure.
+
+## Native match adapter
+
+Implement `MatchHost<C>` on the existing `ProjectionHost<C>` adapter. Its
+`Guard` type holds a domain Boolean leaf. `validate_guard_leaf` checks every
+native operand against the supplied input kind and ordered scope, including
+purity and supported types. `evaluate_guard_leaf` returns the existing `Truth`
+with the active context, immutable bindings and budget. The core owns all
+Boolean wrappers and short-circuit evaluation; the leaf owns native identity.
+
+The callable pair is `match_types(&matching, host, &input_kind, &scope, budget)`
+and `evaluate_match(&matching, host, input, context, bindings, budget)`.
+Type discovery returns ordered `NativeCapture<Kind>` fields. Execution returns
+`Vec<Value>` rows built through `ProgramHost::construct_record`. Keep the
+schema in the native collection wrapper, including when the row vector is
+empty. Wrapping already-admitted rows moves them; admit any new host container
+before allocation.
+
+`ProjectionHost::subject_kind` declares the singleton kind yielded by
+`subjects` and rejects unsupported enumeration even on empty input. Its default
+returns the input kind for existing hosts. Both `from` and `bind` use these
+hooks; the core checks the exact-one requirement for `bind`. Projection binds
+that same singleton kind, so a collection of native capture records can feed
+shared report projection without losing its field schema.
+
+Expose the singleton record through the borrowed
+`ProgramHost::capture_record` and `ProjectionHost::capture_record_kind` hooks.
+Both default to absence. Hosts unwrap their wrappers; `NativeCapture::get`
+checks and charges field lookup, and the expression runner uses `copy_value`
+to retain the selected native type. Kinds should use shared immutable metadata
+so their required `Clone` operation does not hide native materialization.
+Handles never enter `ConstructedValue` or `ValueType`.
+
+`ValueReaderHost::matching` wraps the shared parsed tree as a native stage.
+Its default returns a located unsupported error. Supporting adapters dispatch
+that stage to the shared match functions; `parse_stage` and
+`parse_predicate_leaf` only parse domain primitive arguments. They must not
+implement a second match evaluator. Retained trees can use `dispose_match`
+and `dispose_expression` to release clauses, Boolean wrappers, native fields
+and flat set operands iteratively. A host releases its own opaque payloads.
+
+Native handles still retain the host's document ownership, source coordinates,
+completeness and diff-side rules. Operand lookup and SSA equality, for example,
+remain Zirium operations. Rendering is an explicit host boundary and does not
+supply identity to the matcher.

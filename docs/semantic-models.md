@@ -116,6 +116,21 @@ names are equal. Projecting `names` first makes both values the string
 text-based unique keys would likewise treat repeated `apple` spellings as
 one key. The host must choose and implement that identity rule.
 
+## Correlate native handles before rendering
+
+The shared native matcher can retain several domain handles in one ordered
+record. Zirql owns clause scope, finite enumeration, required cardinality,
+Boolean control and native field selection. Hosts supply the primitives and
+keep ownership, source coordinates and incompleteness with their values.
+
+For an SSA adapter, operand identity includes its document and result or block
+argument position. Different results of one operation remain different values;
+a defining operation or printed SSA name cannot replace that identity. Field
+selection preserves the handle, while a later explicit projection can produce
+strings for a report. The [native match adapter](host-integration.md#native-match-adapter)
+defines the callable hooks; concrete consumer primitives require their own
+integration.
+
 ## Build records from labels
 
 Once native items have been projected to strings, both hosts can supply the

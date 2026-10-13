@@ -2,11 +2,12 @@
 
 The current [word examples](examples.md) select words and construct values.
 These sketches use that small domain to combine projection, reducers and
-parameters with proposed grouping, native captures and bounded paths.
+parameters and native captures with proposed grouping and bounded paths.
 
 These complete word-host programs remain design sketches. The core supplies
 callable projection, reducers, requirements and typed parameter admission;
-matching, grouping and paths remain proposals. A host frontend supplies its
+common native matching APIs are also available on the development branch,
+while grouping and paths remain proposals. A host frontend supplies its
 domain syntax and supported subset. Callable behavior is covered by the
 [Rust guides](getting-started.md).
 
@@ -148,15 +149,16 @@ report {"matches": rows, "count": length(rows)};
 ```
 
 Using one-based word positions, the intended report contains the occurrence
-`apple` at position 2 and a count of 1. Captures would retain both native
-handles; projecting the report would not turn their matching spellings into
-native identity.
+`apple` at position 2 and a count of 1. Captures retain both native handles.
+Projecting a report produces scalar fields while the native records keep
+occurrence identity.
 
-`from` would enumerate candidates, `bind` would retain a native value per
-candidate and `where` would guard the match. Later clauses would see earlier
-bindings. Zirql would own that scope and enumeration; the word host would own
-adjacency, source positions and text comparison. An Unknown required guard
-would fail with the host's reason instead of silently discarding a candidate.
+`from` enumerates candidates, `bind` requires one native value per candidate
+and `where` guards the match. Later clauses see earlier bindings. Zirql owns
+that scope and enumeration; the proposed word adapter supplies adjacency,
+source positions and text comparison. An Unknown final guard fails at its
+query location. The host retains any separate incompleteness reasons. See
+[the callable native match contract](host-integration.md#native-match-adapter).
 
 ## Explain a connection with a bounded path
 

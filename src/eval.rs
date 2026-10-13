@@ -405,10 +405,10 @@ where
                             if evaluate_predicate(
                                 predicate,
                                 pipeline.nesting,
-                                host,
-                                &item,
-                                &mut context,
                                 budget,
+                                |leaf, budget, range| {
+                                    host.evaluate_leaf(leaf, &item, &mut context, budget, range)
+                                },
                             )? == Truth::True
                             {
                                 retained.push(item);
@@ -502,17 +502,12 @@ enum PredicateFrame<'a, L> {
     },
 }
 
-fn evaluate_predicate<I, C, L, S, H>(
+pub(crate) fn evaluate_predicate<L, E: From<QueryError>>(
     predicate: &Predicate<L>,
     nesting: Nesting,
-    host: &H,
-    item: &I,
-    context: &mut C,
     budget: &mut Budget,
-) -> Result<Truth, EvaluationError<H::Error>>
-where
-    H: Host<I, C, L, S>,
-{
+    mut leaf: impl FnMut(&L, &mut Budget, &Range<usize>) -> Result<Truth, E>,
+) -> Result<Truth, E> {
     let initial_depth = budget.depth;
     let result = (|| {
         let mut frames = Vec::new();
@@ -522,10 +517,9 @@ where
             budget.enter_depth(depth, Location::Query(next.range.clone()))?;
             budget.charge(1, Location::Query(next.range.clone()))?;
             let mut truth = match &next.value {
-                PredicateKind::Leaf(leaf) => {
-                    host.evaluate_leaf(leaf, item, context, budget, &next.range)?
-                }
+                PredicateKind::Leaf(guard) => leaf(guard, budget, &next.range)?,
                 PredicateKind::Not(child) | PredicateKind::Group(child) => {
+                    admit_predicate_frame::<L>(frames.len(), budget, &next.range)?;
                     frames.push(PredicateFrame::Unary {
                         negate: matches!(next.value, PredicateKind::Not(_)),
                         depth,
@@ -534,6 +528,7 @@ where
                     continue;
                 }
                 PredicateKind::And(children) | PredicateKind::Or(children) => {
+                    admit_predicate_frame::<L>(frames.len(), budget, &next.range)?;
                     frames.push(PredicateFrame::Boolean {
                         remaining: &children[1..],
                         conjunction: matches!(next.value, PredicateKind::And(_)),
@@ -595,4 +590,22 @@ where
     })();
     budget.depth = initial_depth;
     result
+}
+
+fn admit_predicate_frame<L>(
+    count: usize,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<(), QueryError> {
+    if count
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<PredicateFrame<'_, L>>()))
+        .is_none_or(|bytes| bytes > isize::MAX as usize)
+    {
+        return Err(QueryError::query(
+            range.clone(),
+            "predicate allocation size overflow",
+        ));
+    }
+    budget.charge_program_work(1, Location::Query(range.clone()))
 }

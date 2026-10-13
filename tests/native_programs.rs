@@ -1133,6 +1133,34 @@ fn document_program_keeps_owner_order_set_operands_and_native_records() {
     );
     assert!(context.emissions.is_empty());
 
+    let terminal_field = at(
+        ExpressionKind::Field {
+            value: Box::new(sequence(
+                at(ExpressionKind::Input, 0),
+                vec![emit("terminal", EmissionPolicy::Terminal, 60)],
+            )),
+            field: at("item".to_owned(), 61),
+        },
+        60,
+    );
+    let input = document_input(&mut budget);
+    assert_eq!(
+        evaluate_expression(
+            &terminal_field,
+            &DocumentHost,
+            input,
+            &mut context,
+            &Bindings::default(),
+            &mut budget
+        )
+        .unwrap_err(),
+        EvaluationError::Core(QueryError::query(
+            61..62,
+            "field cannot follow terminal emission"
+        ))
+    );
+    assert!(context.emissions.is_empty());
+
     let copy_program = Program::new(
         vec![
             bind("all", 10, at(ExpressionKind::Input, 0)),
@@ -1163,9 +1191,9 @@ mod projection {
     use std::{collections::BTreeMap, ops::Range, sync::Arc};
     use zirql::{
         ArrayType, Bindings, Budget, ConstructedValue as V, EvaluationError, Expression,
-        ExpressionKind, ExpressionStep, Located, Location, NativeOperands, Predicate, ProgramHost,
-        ProgramLimits, Projection, ProjectionHost, QueryError, ReadExpression,
-        ValueExpressionKind as K, ValueReaderHost, ValueType,
+        ExpressionKind, ExpressionStep, Located, Location, MatchHost, NativeCapture, NativeMatch,
+        NativeOperands, Predicate, ProgramHost, ProgramLimits, Projection, ProjectionHost,
+        QueryError, ReadExpression, Truth, ValueExpressionKind as K, ValueReaderHost, ValueType,
     };
 
     #[derive(Debug, PartialEq)]
@@ -1174,13 +1202,20 @@ mod projection {
         Strings(Vec<String>),
         Count(usize),
         Constructed(V),
+        Capture(NativeCapture<Value>),
+        Captures {
+            rows: Vec<Value>,
+            schema: Arc<NativeCapture<Kind>>,
+        },
     }
-    #[derive(Clone, PartialEq)]
+    #[derive(Clone, Debug, PartialEq)]
     enum Kind {
         Subjects,
         Strings,
         Count,
         Constructed(Arc<Vec<ValueType>>),
+        Capture(Arc<NativeCapture<Kind>>),
+        Captures(Arc<NativeCapture<Kind>>),
     }
     #[derive(Debug, PartialEq)]
     enum Stage {
@@ -1190,6 +1225,7 @@ mod projection {
         Edit,
         Saved(String),
         Projection(Box<Projection<Query>>),
+        Match(Box<NativeMatch<Query, Truth>>),
     }
     struct Host;
     type Query = Expression<Stage, (), ()>;
@@ -1225,6 +1261,30 @@ mod projection {
                 Value::Constructed(value) => {
                     Value::Constructed(zirql::copy_constructed_value(value, budget, location)?)
                 }
+                Value::Capture(record) => {
+                    budget.charge_results(record.fields.len() + 1, location.clone())?;
+                    budget.charge(record.fields.len(), location.clone())?;
+                    let mut fields = Vec::with_capacity(record.fields.len());
+                    for (name, value) in &record.fields {
+                        budget.charge(name.len(), location.clone())?;
+                        fields.push((
+                            name.clone(),
+                            self.copy_value(value, &mut (), budget, range)?,
+                        ));
+                    }
+                    Value::Capture(NativeCapture { fields })
+                }
+                Value::Captures { rows, schema } => {
+                    budget.charge_results(rows.len() + 1, location.clone())?;
+                    budget.charge(rows.len(), location)?;
+                    Value::Captures {
+                        rows: rows
+                            .iter()
+                            .map(|row| self.copy_value(row, &mut (), budget, range))
+                            .collect::<Result<_, _>>()?,
+                        schema: Arc::clone(schema),
+                    }
+                }
             })
         }
         fn evaluate_stage(
@@ -1244,6 +1304,25 @@ mod projection {
                 Stage::Projection(projection) => {
                     zirql::evaluate_projection(projection, self, value, context, bindings, budget)
                         .map(Value::Constructed)
+                }
+                Stage::Match(matching) => {
+                    let input_kind = self.kind(&value, budget, range)?;
+                    let mut scope = BTreeMap::new();
+                    for (name, value) in bindings.iter() {
+                        budget.charge(name.len() + 1, Location::Query(range.clone()))?;
+                        scope.insert(name.to_owned(), self.kind(value, budget, range)?);
+                    }
+                    let schema = Arc::new(zirql::match_types(
+                        matching,
+                        self,
+                        &input_kind,
+                        &scope,
+                        budget,
+                    )?);
+                    let rows =
+                        zirql::evaluate_match(matching, self, value, context, bindings, budget)?;
+                    budget.charge_results(1, Location::Query(range.clone()))?;
+                    Ok(Value::Captures { rows, schema })
                 }
                 Stage::Names => {
                     let Value::Subjects(rows) = value else {
@@ -1295,12 +1374,18 @@ mod projection {
         }
         fn construct_record(
             &self,
-            _: Vec<(String, Value)>,
+            fields: Vec<(String, Value)>,
             _: &mut (),
             _: &mut Budget,
-            range: &Range<usize>,
+            _: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
-            Err(QueryError::query(range.clone(), "native records unavailable").into())
+            Ok(Value::Capture(NativeCapture { fields }))
+        }
+        fn capture_record<'v>(&self, value: &'v Value) -> Option<&'v NativeCapture<Value>> {
+            match value {
+                Value::Capture(record) => Some(record),
+                _ => None,
+            }
         }
         fn emit(
             &self,
@@ -1325,6 +1410,16 @@ mod projection {
                 Value::Subjects(_) => Kind::Subjects,
                 Value::Strings(_) => Kind::Strings,
                 Value::Count(_) => Kind::Count,
+                Value::Capture(record) => {
+                    budget.charge(record.fields.len(), Location::Query(range.clone()))?;
+                    let mut fields = Vec::with_capacity(record.fields.len());
+                    for (name, value) in &record.fields {
+                        budget.charge(name.len(), Location::Query(range.clone()))?;
+                        fields.push((name.clone(), self.kind(value, budget, range)?));
+                    }
+                    Kind::Capture(Arc::new(NativeCapture { fields }))
+                }
+                Value::Captures { schema, .. } => Kind::Captures(Arc::clone(schema)),
                 Value::Constructed(value) => {
                     Kind::Constructed(Arc::new(vec![zirql::constructed_value_type(
                         value,
@@ -1341,7 +1436,7 @@ mod projection {
             range: &Range<usize>,
         ) -> Result<Option<Vec<ValueType>>, QueryError> {
             Ok(match kind {
-                Kind::Subjects => None,
+                Kind::Subjects | Kind::Capture(_) | Kind::Captures(_) => None,
                 Kind::Strings => Some(vec![ValueType::Array(ArrayType::Elements(vec![
                     ValueType::String,
                 ]))]),
@@ -1366,6 +1461,9 @@ mod projection {
         ) -> Result<Kind, QueryError> {
             match stage {
                 Stage::Saved(name) => Ok(scope[name].clone()),
+                Stage::Match(matching) => Ok(Kind::Captures(Arc::new(zirql::match_types(
+                    matching, self, input, scope, budget,
+                )?))),
                 Stage::Projection(projection) => Ok(Kind::Constructed(Arc::new(
                     zirql::projection_types::<(), _>(
                         projection,
@@ -1402,14 +1500,47 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Vec<Value>, EvaluationError<QueryError>> {
-            let Value::Subjects(rows) = input else {
-                return Err(QueryError::query(range.clone(), "projection needs subjects").into());
+            let rows = match input {
+                Value::Captures { rows, .. } => return Ok(rows),
+                Value::Capture(record) => {
+                    budget.charge_results(1, Location::Query(range.clone()))?;
+                    return Ok(vec![Value::Capture(record)]);
+                }
+                Value::Subjects(rows) => rows,
+                _ => {
+                    return Err(
+                        QueryError::query(range.clone(), "projection needs subjects").into(),
+                    );
+                }
             };
             budget.charge_results(rows.len(), Location::Query(range.clone()))?;
             Ok(rows
                 .into_iter()
                 .map(|row| Value::Subjects(vec![row]))
                 .collect())
+        }
+        fn subject_kind(
+            &self,
+            input: &Kind,
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Kind, QueryError> {
+            match input {
+                Kind::Subjects => Ok(Kind::Subjects),
+                Kind::Capture(schema) | Kind::Captures(schema) => {
+                    Ok(Kind::Capture(Arc::clone(schema)))
+                }
+                _ => Err(QueryError::query(
+                    range.clone(),
+                    "projection needs subjects",
+                )),
+            }
+        }
+        fn capture_record_kind<'k>(&self, kind: &'k Kind) -> Option<&'k NativeCapture<Kind>> {
+            match kind {
+                Kind::Capture(schema) => Some(schema),
+                _ => None,
+            }
         }
         fn project_value(
             &self,
@@ -1419,11 +1550,13 @@ mod projection {
             range: &Range<usize>,
         ) -> Result<V, EvaluationError<QueryError>> {
             match value {
-                Value::Subjects(_) => Err(QueryError::query(
-                    range.clone(),
-                    "native handles require an explicit scalar projection",
-                )
-                .into()),
+                Value::Subjects(_) | Value::Capture(_) | Value::Captures { .. } => {
+                    Err(QueryError::query(
+                        range.clone(),
+                        "native handles require an explicit scalar projection",
+                    )
+                    .into())
+                }
                 Value::Strings(values) => {
                     budget.charge_results(1, Location::Query(range.clone()))?;
                     Ok(V::Array(values.into_iter().map(V::String).collect()))
@@ -1451,7 +1584,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = ();
+        type Predicate = Truth;
         fn is_binding(&self, name: &str) -> bool {
             name == "f"
         }
@@ -1477,10 +1610,16 @@ mod projection {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<(), QueryError> {
-            Err(reader.error("predicates unavailable"))
+        ) -> Result<Truth, QueryError> {
+            let word = reader.word()?;
+            match word.value {
+                "true" => Ok(Truth::True),
+                "false" => Ok(Truth::False),
+                "unknown" => Ok(Truth::Unknown),
+                _ => Err(QueryError::query(word.range, "unsupported guard")),
+            }
         }
-        fn filter(&mut self, _: Predicate<()>, _: Range<usize>) -> Stage {
+        fn filter(&mut self, _: Predicate<Truth>, _: Range<usize>) -> Stage {
             unreachable!()
         }
         fn projection(
@@ -1490,8 +1629,39 @@ mod projection {
         ) -> Stage {
             Stage::Projection(Box::new(projection))
         }
+        fn matching(
+            &mut self,
+            matching: NativeMatch<ReadExpression<Self>, Truth>,
+            _: Range<usize>,
+        ) -> Result<Stage, QueryError> {
+            Ok(Stage::Match(Box::new(matching)))
+        }
         fn set_operator(&self, word: &str) -> Option<()> {
             (word == "union").then_some(())
+        }
+    }
+    impl MatchHost<()> for Host {
+        type Guard = Truth;
+        fn validate_guard_leaf(
+            &self,
+            _: &Truth,
+            _: &Kind,
+            _: &BTreeMap<String, Kind>,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<(), QueryError> {
+            Ok(())
+        }
+        fn evaluate_guard_leaf(
+            &self,
+            guard: &Truth,
+            _: &Value,
+            _: &mut (),
+            _: &Bindings<Value>,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            Ok(*guard)
         }
     }
     struct SavedNames;
@@ -1499,7 +1669,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = ();
+        type Predicate = Truth;
         fn is_binding(&self, name: &str) -> bool {
             matches!(name, "f" | "one" | "project")
         }
@@ -1525,10 +1695,10 @@ mod projection {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
-        ) -> Result<(), QueryError> {
+        ) -> Result<Truth, QueryError> {
             Host.parse_predicate_leaf(reader, budget)
         }
-        fn filter(&mut self, predicate: Predicate<()>, range: Range<usize>) -> Stage {
+        fn filter(&mut self, predicate: Predicate<Truth>, range: Range<usize>) -> Stage {
             Host.filter(predicate, range)
         }
         fn projection(
@@ -1558,6 +1728,381 @@ mod projection {
             32,
         )
         .unwrap()
+    }
+
+    fn parse_match(source: &str) -> NativeMatch<Query, Truth> {
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let matching = zirql::read_match(&mut reader, &mut Host, &mut budget(), 32).unwrap();
+        assert!(reader.remaining().is_empty());
+        matching
+    }
+
+    #[test]
+    fn native_captures_keep_written_fields_and_feed_shared_projection() {
+        let source = "match { from add in input; bind lhs = add; bind rhs = lhs; where not false and (true or unknown); }";
+        let matching = parse_match(source);
+        let mut allowance = budget();
+        let schema = zirql::match_types(
+            &matching,
+            &Host,
+            &Kind::Subjects,
+            &BTreeMap::new(),
+            &mut allowance,
+        )
+        .unwrap();
+        assert_eq!(
+            schema
+                .fields
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["add", "lhs", "rhs"]
+        );
+        let rows = zirql::evaluate_match(
+            &matching,
+            &Host,
+            Value::Subjects(vec!["beta", "alpha", "beta"]),
+            &mut (),
+            &Bindings::default(),
+            &mut allowance,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        for (row, name) in rows.iter().zip(["beta", "alpha", "beta"]) {
+            let Value::Capture(record) = row else {
+                panic!("native capture")
+            };
+            assert_eq!(
+                record
+                    .fields
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                ["add", "lhs", "rhs"]
+            );
+            assert!(
+                record
+                    .fields
+                    .iter()
+                    .all(|(_, value)| *value == Value::Subjects(vec![name]))
+            );
+        }
+        let query_source = format!(
+            r#"{source} | project(m, {{"name": m.add | names | one, "n": m.rhs | count}})"#
+        );
+        let mut reader = zirql::ArgumentReader::new(&query_source, 0).unwrap();
+        let query =
+            zirql::read_native_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        assert!(reader.remaining().is_empty());
+        let result = zirql::evaluate_expression(
+            &query,
+            &Host,
+            Value::Subjects(vec!["beta", "alpha", "beta"]),
+            &mut (),
+            &Bindings::default(),
+            &mut allowance,
+        )
+        .unwrap();
+        let row = |name: &str| {
+            V::Record(vec![
+                ("name".into(), V::String(name.into())),
+                ("n".into(), V::Integer(1)),
+            ])
+        };
+        assert_eq!(
+            result,
+            Value::Constructed(V::Array(vec![row("beta"), row("alpha"), row("beta")]))
+        );
+        let field = Located::new(
+            ExpressionKind::Field {
+                value: Box::new(Located::new(ExpressionKind::Binding("m".into()), 3..4)),
+                field: Located::new("add".into(), 5..8),
+            },
+            3..8,
+        );
+        assert_eq!(
+            zirql::native_expression_kind::<(), _>(
+                &field,
+                &Host,
+                &Kind::Subjects,
+                &BTreeMap::from([("m".into(), Kind::Capture(Arc::new(schema.clone())))]),
+                &mut allowance
+            )
+            .unwrap(),
+            Kind::Subjects
+        );
+        let bindings = Bindings::new([(
+            Located::new("m".into(), 0..1),
+            rows.into_iter().next().unwrap(),
+        )])
+        .unwrap();
+        assert_eq!(
+            zirql::evaluate_expression(
+                &field,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &bindings,
+                &mut allowance
+            )
+            .unwrap(),
+            Value::Subjects(vec!["beta"])
+        );
+        let projection = parse(
+            r#"project(m, {"name": m.add | names | one})"#,
+            &mut allowance,
+        );
+        let empty = Value::Captures {
+            rows: vec![],
+            schema: Arc::new(schema),
+        };
+        assert_eq!(
+            zirql::evaluate_projection(
+                &projection,
+                &Host,
+                empty,
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap(),
+            V::Array(vec![])
+        );
+        // Plain constructed records still use the scalar field representation.
+        let scalar = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new("r.name", 0).unwrap(),
+            &mut Host,
+            &mut allowance,
+            32,
+        )
+        .unwrap();
+        assert!(matches!(scalar.value, K::Field { .. }));
+        // Match is contextual: the legacy bare binding remains readable.
+        let bare = zirql::read_native_expression(
+            &mut zirql::ArgumentReader::new("match | count", 0).unwrap(),
+            &mut Host,
+            &mut allowance,
+            32,
+        )
+        .unwrap();
+        let names = BTreeMap::from([("match".into(), Kind::Subjects)]);
+        assert_eq!(
+            zirql::native_expression_kind::<(), _>(
+                &bare,
+                &Host,
+                &Kind::Subjects,
+                &names,
+                &mut allowance
+            )
+            .unwrap(),
+            Kind::Count
+        );
+        zirql::dispose_expression(query);
+        zirql::dispose_expression(bare);
+        zirql::dispose_expression(field);
+        zirql::dispose_match(matching);
+    }
+
+    #[test]
+    fn dependent_matches_refuse_scope_types_effects_missing_values_and_unknown() {
+        let matching =
+            parse_match("match { from outer in input; from inner in input; bind saved = outer; }");
+        let mut allowance = budget();
+        let rows = zirql::evaluate_match(
+            &matching,
+            &Host,
+            Value::Subjects(vec!["beta", "alpha"]),
+            &mut (),
+            &Bindings::default(),
+            &mut allowance,
+        )
+        .unwrap();
+        let pairs = rows
+            .iter()
+            .map(|row| {
+                let Value::Capture(record) = row else {
+                    panic!("native capture")
+                };
+                (
+                    record.fields[0].1 == Value::Subjects(vec!["beta"]),
+                    record.fields[1].1 == Value::Subjects(vec!["beta"]),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pairs,
+            [(true, true), (true, false), (false, true), (false, false)]
+        );
+        // A later source sees the first singleton rather than the original input.
+        let dependent = parse_match("match { from outer in input; from inner in outer; }");
+        assert_eq!(
+            zirql::evaluate_match(
+                &dependent,
+                &Host,
+                Value::Subjects(vec!["beta", "alpha"]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap()
+            .len(),
+            2
+        );
+        for source in [
+            "match { from x in x; }",
+            "match { from x in later; bind later = input; }",
+            "match { from x in input; bind x = input; }",
+            "match { from input in input; }",
+            "match { from x in input; where false; bind bad = input | count; }",
+            "match { from x in input; where false; bind bad = input | edit; }",
+        ] {
+            let matching = parse_match(source);
+            assert!(
+                zirql::evaluate_match(
+                    &matching,
+                    &Host,
+                    Value::Subjects(vec![]),
+                    &mut (),
+                    &Bindings::default(),
+                    &mut allowance
+                )
+                .is_err()
+            );
+            zirql::dispose_match(matching);
+        }
+        let ambient = parse_match("match { from f in input; }");
+        let bindings =
+            Bindings::new([(Located::new("f".into(), 0..1), Value::Subjects(vec![]))]).unwrap();
+        assert!(
+            zirql::evaluate_match(
+                &ambient,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &bindings,
+                &mut allowance
+            )
+            .is_err()
+        );
+        let required = parse_match("match { bind x = input; }");
+        for input in [vec![], vec!["a", "b"]] {
+            let error = zirql::evaluate_match(
+                &required,
+                &Host,
+                Value::Subjects(input),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, EvaluationError::Core(QueryError { message, .. }) if message == "required capture needs exactly one value")
+            );
+        }
+        let unknown_source = "match { from x in input; where not unknown; }";
+        let unknown = parse_match(unknown_source);
+        let error = zirql::evaluate_match(
+            &unknown,
+            &Host,
+            Value::Subjects(vec!["a"]),
+            &mut (),
+            &Bindings::default(),
+            &mut allowance,
+        )
+        .unwrap_err();
+        let start = unknown_source.find("not").unwrap();
+        assert_eq!(
+            error,
+            EvaluationError::Core(QueryError::query(
+                start..start + "not unknown".len(),
+                "required match guard is Unknown"
+            ))
+        );
+        let mut reader = zirql::ArgumentReader::new(
+            r#"match { from x in input; } | project(m, {"bad": m.missing | names})"#,
+            0,
+        )
+        .unwrap();
+        let invalid_field =
+            zirql::read_native_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        assert!(
+            matches!(zirql::native_expression_kind::<(),_>(&invalid_field, &Host, &Kind::Subjects, &BTreeMap::new(), &mut allowance), Err(QueryError { message, .. }) if message == "unknown native capture field")
+        );
+        zirql::dispose_expression(invalid_field);
+        for matching in [matching, dependent, ambient, required, unknown] {
+            zirql::dispose_match(matching);
+        }
+    }
+
+    #[test]
+    fn match_candidates_before_false_guards_share_work_result_and_nesting_limits() {
+        let matching =
+            parse_match("match { from outer in input; from inner in input; where false; }");
+        let input = || Value::Subjects(vec!["a"; 10]);
+        let mut low = Budget::for_program(ProgramLimits {
+            work: 300,
+            results: 10_000,
+            nesting: 32,
+            stream_items: 100,
+        });
+        let error = zirql::evaluate_match(
+            &matching,
+            &Host,
+            input(),
+            &mut (),
+            &Bindings::default(),
+            &mut low,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EvaluationError::Core(QueryError { message, .. }) if message == "work limit exceeded")
+        );
+        let mut allowance = budget();
+        assert!(
+            zirql::evaluate_match(
+                &matching,
+                &Host,
+                input(),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let mut shallow = Budget::for_program(ProgramLimits {
+            nesting: 2,
+            ..super::limits()
+        });
+        assert!(
+            zirql::evaluate_match(
+                &matching,
+                &Host,
+                input(),
+                &mut (),
+                &Bindings::default(),
+                &mut shallow
+            )
+            .is_err()
+        );
+        let produces = parse_match("match { from x in input; }");
+        let mut scarce = Budget::for_program(ProgramLimits {
+            results: 2,
+            ..super::limits()
+        });
+        assert!(
+            matches!(zirql::evaluate_match(&produces, &Host, Value::Subjects(vec!["a"]), &mut (), &Bindings::default(), &mut scarce), Err(EvaluationError::Core(QueryError { message, .. })) if message == "result limit exceeded")
+        );
+        let mut legacy = Budget::new(zirql::Limits {
+            work: 1000,
+            items: 100,
+            nesting: 32,
+        });
+        assert!(
+            matches!(zirql::evaluate_match(&produces, &Host, input(), &mut (), &Bindings::default(), &mut legacy), Err(EvaluationError::Core(QueryError { message, .. })) if message == "native matching requires aggregate result limits")
+        );
+        zirql::dispose_match(matching);
+        zirql::dispose_match(produces);
     }
 
     #[test]

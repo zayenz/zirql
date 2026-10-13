@@ -2,9 +2,10 @@ use std::ops::Range;
 
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
-    Located, Location, ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection,
-    QueryError, ValueBinaryOperator as B, ValueConstructor, ValueExpression,
-    ValueExpressionKind as K, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
+    Located, Location, MatchClause, NativeMatch, ParameterDeclaration, ParameterType, Predicate,
+    PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
+    ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
+    ValueUnaryOperator as U,
 };
 
 pub type ReadExpression<H> = Expression<
@@ -42,6 +43,22 @@ pub trait ValueReaderHost {
     ) -> Self::Stage
     where
         Self: Sized;
+    /// Wrap the shared match tree as a native stage. Supporting hosts retain
+    /// this tree and delegate its type discovery and execution to Zirql.
+    fn matching(
+        &mut self,
+        matching: NativeMatch<ReadExpression<Self>, Self::Predicate>,
+        range: Range<usize>,
+    ) -> Result<Self::Stage, QueryError>
+    where
+        Self: Sized,
+    {
+        crate::dispose_match(matching);
+        Err(QueryError::query(
+            range,
+            "native matching is unsupported by this host",
+        ))
+    }
     fn set_operator(&self, word: &str) -> Option<Self::SetOperator>;
 }
 
@@ -140,6 +157,48 @@ pub fn read_value_expression<H: ValueReaderHost>(
         locals: Vec::new(),
     }
     .expression(0, 0)
+}
+
+/// Read a normalized native expression, including capture field postfixes.
+/// Domain stage hooks own native primitive arguments; common composition stays shared.
+///
+/// # Errors
+/// Scalar expressions, malformed syntax and exhausted allowances are located.
+pub fn read_native_expression<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<ReadExpression<H>, QueryError> {
+    Reader {
+        reader,
+        host,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+        locals: Vec::new(),
+    }
+    .native_expression(0)
+}
+
+/// Read contextual `match { from name in query; bind name = query; where guard; }`.
+/// The reader retains ordered clauses and original query ranges; execution is separate.
+///
+/// # Errors
+/// Unsupported/malformed clauses and nesting or allocation exhaustion fail at source offsets.
+pub fn read_match<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<NativeMatch<ReadExpression<H>, H::Predicate>, QueryError> {
+    Reader {
+        reader,
+        host,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+        locals: Vec::new(),
+    }
+    .matching(0)
 }
 
 /// Read `project(subject, {static quoted fields})` with shared value fields.
@@ -254,6 +313,28 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             .word()
             .is_ok_and(|word| word.value == "project" && self.host.is_stage(word.value))
             && probe.consume('(')
+    }
+    fn match_call(&self) -> bool {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+            .expect("reader byte boundary");
+        probe.word().is_ok_and(|word| word.value == "match") && probe.consume('{')
+    }
+    // A dotted scalar name stays a scalar field access unless it feeds a native
+    // pipeline. Explicit native readers always admit the same postfix chain.
+    fn field_pipeline(&self) -> bool {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+            .expect("reader byte boundary");
+        if probe.word().is_err() || !probe.consume('.') {
+            return false;
+        }
+        loop {
+            if probe.word().is_err() {
+                return false;
+            }
+            if !probe.consume('.') {
+                return probe.consume('|');
+            }
+        }
     }
     fn is_local(&mut self, name: &str, range: &Range<usize>) -> Result<bool, QueryError> {
         for local in self.locals.iter().rev() {
@@ -435,8 +516,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let word = probe.word()?;
         probe.skip_whitespace();
         let local = self.is_local(word.value, &word.range)?;
-        if (self.host.is_stage(word.value)
-            && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
+        if self.match_call()
+            || self.field_pipeline()
+            || (self.host.is_stage(word.value)
+                && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
             || (word.value == "input" && !local)
             || probe.remaining().starts_with('|')
         {
@@ -735,7 +818,27 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.reader.skip_whitespace();
         let start = self.reader.position();
         self.slots::<ReadExpression<H>>(2)?;
-        let source = if self.reader.consume('(') {
+        let source = if self.match_call() {
+            let mut matching = MatchGuard(Some(self.matching(depth + 1)?));
+            let range = matching
+                .0
+                .as_ref()
+                .expect("native match source")
+                .range
+                .clone();
+            self.slots::<Located<ExpressionStep<H::Stage, H::Emitter>>>(1)?;
+            let stage = self.host.matching(
+                matching.0.take().expect("native match source"),
+                range.clone(),
+            )?;
+            Located::new(
+                ExpressionKind::Sequence {
+                    input: Box::new(Located::new(ExpressionKind::Input, start..start)),
+                    steps: vec![Located::new(ExpressionStep::Stage(stage), range.clone())],
+                },
+                range,
+            )
+        } else if self.reader.consume('(') {
             let value = self.expression(0, depth + 1)?;
             if let Err(error) = self.reader.expect(')') {
                 dispose_native_value(value);
@@ -772,6 +875,21 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             }
         };
         let mut source = NativeGuard(Some(source));
+        let mut postfixes = 0;
+        while self.reader.consume('.') {
+            self.depth(depth + postfixes + 1)?;
+            let field = self.name()?;
+            let range = start..field.range.end;
+            self.slots::<ReadExpression<H>>(1)?;
+            source.0 = Some(Located::new(
+                ExpressionKind::Field {
+                    value: Box::new(source.0.take().expect("native field source")),
+                    field,
+                },
+                range,
+            ));
+            postfixes += 1;
+        }
         let mut steps = Vec::new();
         let starts_stage = matches!(
             source.0.as_ref().expect("native source").value,
@@ -841,6 +959,97 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             K::NativeQuery(Box::new(query.0.take().expect("native pipeline"))),
             range,
         ))
+    }
+    fn native_expression(&mut self, depth: usize) -> Result<ReadExpression<H>, QueryError> {
+        let value = self.native(depth)?;
+        let range = value.range.clone();
+        match value.value {
+            K::NativeQuery(query) => Ok(*query),
+            kind => {
+                dispose_native_value(Located::new(kind, range.clone()));
+                Err(QueryError::query(range, "expected a native expression"))
+            }
+        }
+    }
+    fn matching(
+        &mut self,
+        depth: usize,
+    ) -> Result<NativeMatch<ReadExpression<H>, H::Predicate>, QueryError> {
+        self.depth(depth)?;
+        self.reader.skip_whitespace();
+        let start = self.reader.position();
+        if !self.reader.keyword("match") {
+            return Err(self.reader.error("expected `match`"));
+        }
+        self.reader.expect('{')?;
+        let scope = self.locals.len();
+        let mut guard = MatchGuard(Some(NativeMatch {
+            clauses: Vec::new(),
+            range: start..start,
+        }));
+        let result = (|| {
+            while !self.reader.consume('}') {
+                self.reader.skip_whitespace();
+                let clause_start = self.reader.position();
+                self.slots::<Located<MatchClause<ReadExpression<H>, H::Predicate>>>(1)?;
+                let word = self.reader.word()?;
+                let (clause, name) = match word.value {
+                    "from" | "bind" => {
+                        let name = self.name()?;
+                        if word.value == "from" {
+                            if !self.reader.keyword("in") {
+                                return Err(self.reader.error("expected `in` after capture name"));
+                            }
+                        } else {
+                            self.reader.expect('=')?;
+                        }
+                        let source = self.native_expression(depth + 1)?;
+                        let local = &self.reader.source()[name.range.clone()];
+                        let clause = if word.value == "from" {
+                            MatchClause::From { name, source }
+                        } else {
+                            MatchClause::Bind {
+                                name,
+                                value: source,
+                            }
+                        };
+                        (clause, Some(local))
+                    }
+                    "where" => (
+                        MatchClause::Where {
+                            predicate: self.predicate_or(depth + 1)?,
+                        },
+                        None,
+                    ),
+                    _ => {
+                        return Err(QueryError::query(
+                            word.range,
+                            "expected from, bind or where clause",
+                        ));
+                    }
+                };
+                // Retain before checking the terminator so failure drops native
+                // operands through the common iterative release path.
+                guard
+                    .0
+                    .as_mut()
+                    .expect("retained match")
+                    .clauses
+                    .push(Located::new(clause, clause_start..self.reader.position()));
+                self.reader.expect(';')?;
+                if let Some(name) = name {
+                    self.slots::<&str>(1)?;
+                    self.locals.push(name);
+                }
+                let matching = guard.0.as_ref().expect("retained match");
+                self.depth(depth + matching.clauses.len())?;
+            }
+            let mut matching = guard.0.take().expect("retained match");
+            matching.range = start..self.reader.position();
+            Ok(matching)
+        })();
+        self.locals.truncate(scope);
+        result
     }
     fn predicate_or(&mut self, depth: usize) -> Result<Predicate<H::Predicate>, QueryError> {
         let first = self.predicate_and(depth)?;
@@ -928,8 +1137,106 @@ impl<S, O, E> Drop for NativeGuard<S, O, E> {
         }
     }
 }
+// A rejected native source can contain scalar wrappers around flat native sets.
+// Visit those wrappers too, so error cleanup does not recursively drop that spine.
 fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>) {
-    if let K::NativeQuery(query) = value.value {
-        crate::dispose_expression(*query);
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        let clauses = match value.value {
+            K::Literal(_) | K::Name(_) => continue,
+            K::NativeQuery(query) => {
+                crate::dispose_expression(*query);
+                continue;
+            }
+            K::One(child)
+            | K::IndexSet(child)
+            | K::Unary { operand: child, .. }
+            | K::Field { value: child, .. }
+            | K::TupleAccess { value: child, .. }
+            | K::Reduce { array: child, .. } => {
+                pending.push(*child);
+                continue;
+            }
+            K::Binary { left, right, .. }
+            | K::ArrayAccess {
+                array: left,
+                index: right,
+            }
+            | K::Range {
+                lower: left,
+                upper: right,
+            }
+            | K::Require {
+                condition: left,
+                value: right,
+                ..
+            } => {
+                pending.push(*left);
+                pending.push(*right);
+                continue;
+            }
+            K::Array(values) | K::Tuple(values) | K::Set(values) => {
+                pending.extend(values);
+                continue;
+            }
+            K::Record(fields) => {
+                pending.extend(fields.into_iter().map(|(_, value)| value));
+                continue;
+            }
+            K::KeyedArray { entries, .. } => {
+                for (key, value) in entries {
+                    pending.push(key);
+                    pending.push(value);
+                }
+                continue;
+            }
+            K::Conditional {
+                branches,
+                otherwise,
+            } => {
+                pending.push(*otherwise);
+                for (condition, value) in branches {
+                    pending.push(condition);
+                    pending.push(value);
+                }
+                continue;
+            }
+            K::Comprehension { clauses, head, .. } => {
+                pending.push(*head);
+                clauses
+            }
+            K::KeyedComprehension {
+                clauses,
+                key,
+                head,
+                empty_axis_sources,
+            } => {
+                pending.push(*key);
+                pending.push(*head);
+                pending.extend(empty_axis_sources.into_iter().flatten());
+                clauses
+            }
+        };
+        for clause in clauses {
+            let (source, filter) = match clause.value {
+                ValueGenerator::In { source, filter, .. }
+                | ValueGenerator::Bind {
+                    value: source,
+                    filter,
+                    ..
+                } => (source, filter),
+            };
+            pending.push(source);
+            pending.extend(filter);
+        }
+    }
+}
+
+struct MatchGuard<S, O, E, P>(Option<NativeMatch<Expression<S, O, E>, P>>);
+impl<S, O, E, P> Drop for MatchGuard<S, O, E, P> {
+    fn drop(&mut self) {
+        if let Some(matching) = self.0.take() {
+            crate::dispose_match(matching);
+        }
     }
 }

@@ -64,6 +64,23 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Vec<Self::Value>, EvaluationError<Self::Error>>;
+    /// Declared singleton kind yielded by subjects, checked even for empty input.
+    /// The default preserves hosts whose stream and singleton share one kind.
+    fn subject_kind(
+        &self,
+        input: &Self::Kind,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Ok(input.clone())
+    }
+    /// Borrow the declared capture fields, including an empty collection schema.
+    fn capture_record_kind<'k>(
+        &self,
+        _kind: &'k Self::Kind,
+    ) -> Option<&'k crate::NativeCapture<Self::Kind>> {
+        None
+    }
     fn project_value(
         &self,
         value: Self::Value,
@@ -106,6 +123,16 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
             }),
             ExpressionKind::Group(child) => {
                 native_expression_kind(child, host, input, scope, budget)
+            }
+            ExpressionKind::Field { value, field } => {
+                let kind = native_expression_kind(value, host, input, scope, budget)?;
+                let record = host.capture_record_kind(&kind).ok_or_else(|| {
+                    QueryError::query(
+                        field.range.clone(),
+                        "field access requires a native capture",
+                    )
+                })?;
+                Ok(record.get(field, budget)?.clone())
             }
             ExpressionKind::Sequence {
                 input: source,
@@ -179,7 +206,7 @@ fn admit_slots<T>(len: usize, budget: &mut Budget, range: &Range<usize>) -> Resu
     budget.charge(len, Location::Query(range.clone()))
 }
 
-fn copy_scope<C, H: ProjectionHost<C>>(
+pub(crate) fn copy_scope<C, H: ProjectionHost<C>>(
     scope: &BTreeMap<String, H::Kind>,
     budget: &mut Budget,
     range: &Range<usize>,
@@ -194,7 +221,7 @@ fn copy_scope<C, H: ProjectionHost<C>>(
     Ok(scope.clone())
 }
 
-fn scope_kinds<C, H: ProjectionHost<C>>(
+pub(crate) fn scope_kinds<C, H: ProjectionHost<C>>(
     host: &H,
     bindings: &Bindings<H::Value>,
     budget: &mut Budget,
@@ -378,11 +405,12 @@ pub fn projection_types<C, H: ProjectionHost<C>>(
         projection.subject.value.len() + 1,
         Location::Query(range.clone()),
     )?;
-    scope.insert(projection.subject.value.clone(), input.clone());
+    let subject_kind = host.subject_kind(&input, budget, range)?;
+    scope.insert(projection.subject.value.clone(), subject_kind.clone());
     let facts = value_facts(host, &scope, budget, range)?;
     let mut queries = NativeValues::<C, H> {
         host,
-        input_kind: input,
+        input_kind: subject_kind,
         input: None,
         context: None,
         bindings: None,
@@ -444,6 +472,7 @@ pub fn evaluate_projection<C, H: ProjectionHost<C>>(
         let input_kind = host.kind(&input, budget, range)?;
         let scope = scope_kinds(host, bindings, budget, range)?;
         projection_types(projection, host, input_kind.clone(), scope, budget)?;
+        let subject_kind = host.subject_kind(&input_kind, budget, range)?;
         let subjects = host.subjects(input, context, budget, range)?;
         budget.charge_results(
             subjects
@@ -469,7 +498,7 @@ pub fn evaluate_projection<C, H: ProjectionHost<C>>(
             let facts = value_facts(host, &scope, budget, range)?;
             let mut queries = NativeValues {
                 host,
-                input_kind: input_kind.clone(),
+                input_kind: subject_kind.clone(),
                 input: Some(input),
                 context: Some(&mut *context),
                 bindings: Some(&local),

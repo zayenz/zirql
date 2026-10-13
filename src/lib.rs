@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod eval;
+mod matching;
 mod parser;
 mod program;
 mod projection;
@@ -14,6 +15,9 @@ pub use eval::{
     Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, ProgramLimits,
     Truth, evaluate,
 };
+pub use matching::{
+    MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match, match_types,
+};
 pub use parser::{ArgumentReader, parse_pipeline};
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, ParameterDeclaration,
@@ -26,8 +30,8 @@ pub use projection::{
     projection_types,
 };
 pub use reader::{
-    CommonStatement, ReadExpression, ValueReaderHost, read_projection, read_statement_prefix,
-    read_value_expression,
+    CommonStatement, ReadExpression, ValueReaderHost, read_match, read_native_expression,
+    read_projection, read_statement_prefix, read_value_expression,
 };
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
