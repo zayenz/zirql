@@ -1686,6 +1686,22 @@ mod projection {
                 .contains("work limit")
         );
         let source = r#"project(f, {"name": f | names | one, "n": f | count})"#;
+        let mut reader =
+            zirql::ArgumentReader::new("[names for names in [1] if names == 1]", 0).unwrap();
+        let expression =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        assert_eq!(
+            zirql::evaluate_native_value(
+                &expression,
+                &Host,
+                Value::Subjects(vec!["alpha"]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance,
+            )
+            .unwrap(),
+            V::Array(vec![V::Integer(1)])
+        );
         let mut allowance = budget();
         let projection = parse(source, &mut allowance);
         let result = zirql::evaluate_projection(

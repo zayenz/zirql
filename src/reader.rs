@@ -103,6 +103,7 @@ pub fn read_value_expression<H: ValueReaderHost>(
         host,
         budget,
         nesting: nesting.min(crate::MAX_NESTING),
+        locals: Vec::new(),
     }
     .expression(0, 0)
 }
@@ -122,6 +123,7 @@ pub fn read_projection<H: ValueReaderHost>(
         host,
         budget,
         nesting: nesting.min(crate::MAX_NESTING),
+        locals: Vec::new(),
     }
     .projection(0)
 }
@@ -131,9 +133,10 @@ struct Reader<'a, 's, 'h, H> {
     host: &'h mut H,
     budget: &'h mut Budget,
     nesting: usize,
+    locals: Vec<&'s str>,
 }
 
-impl<H: ValueReaderHost> Reader<'_, '_, '_, H> {
+impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
     fn location(&self) -> Location {
         Location::Query(self.reader.position()..self.reader.position())
     }
@@ -217,6 +220,18 @@ impl<H: ValueReaderHost> Reader<'_, '_, '_, H> {
             .word()
             .is_ok_and(|word| word.value == "project" && self.host.is_stage(word.value))
             && probe.consume('(')
+    }
+    fn is_local(&mut self, name: &str, range: &Range<usize>) -> Result<bool, QueryError> {
+        for local in self.locals.iter().rev() {
+            self.budget.charge(
+                1 + name.len().min(local.len()),
+                Location::Query(range.clone()),
+            )?;
+            if *local == name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     fn expression(
         &mut self,
@@ -385,9 +400,10 @@ impl<H: ValueReaderHost> Reader<'_, '_, '_, H> {
         let mut probe = ArgumentReader::new(self.reader.source(), start)?;
         let word = probe.word()?;
         probe.skip_whitespace();
+        let local = self.is_local(word.value, &word.range)?;
         if (self.host.is_stage(word.value)
-            && (!self.host.is_binding(word.value) || self.projection_call()))
-            || word.value == "input"
+            && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
+            || (word.value == "input" && !local)
             || probe.remaining().starts_with('|')
         {
             return self.native(depth);
@@ -475,50 +491,64 @@ impl<H: ValueReaderHost> Reader<'_, '_, '_, H> {
         if self.reader.consume(']') {
             return self.node(K::Array(values), start..self.reader.position());
         }
-        let head = self.expression(0, depth + 1)?;
+        let scope = self.locals.len();
+        let binders = self.array_binders()?;
+        self.slots::<&str>(binders.len())?;
+        self.locals.extend(binders);
+        let head = self.expression(0, depth + 1);
+        self.locals.truncate(scope);
+        let head = head?;
         if self.word_is("for") {
-            let mut clauses = Vec::new();
-            while self.reader.keyword("for") {
-                let clause_start = self.reader.position();
-                let name = self.name()?;
-                if !self.reader.keyword("in") {
-                    return Err(self
-                        .reader
-                        .error("expected `in` after comprehension binder"));
+            let result = (|| {
+                let mut clauses = Vec::new();
+                while self.reader.keyword("for") {
+                    let clause_start = self.reader.position();
+                    let name = self.name()?;
+                    if !self.reader.keyword("in") {
+                        return Err(self
+                            .reader
+                            .error("expected `in` after comprehension binder"));
+                    }
+                    let source = self.expression(0, depth + 1)?;
+                    if name.value != "_" {
+                        self.slots::<&str>(1)?;
+                        self.locals.push(&self.reader.source()[name.range.clone()]);
+                    }
+                    let filter = if self.reader.keyword("if") {
+                        Some(self.expression(0, depth + 1)?)
+                    } else {
+                        None
+                    };
+                    let end = filter
+                        .as_ref()
+                        .map_or(source.range.end, |value| value.range.end);
+                    self.slots::<Located<ValueGenerator<ReadExpression<H>>>>(1)?;
+                    self.slots::<Located<Option<String>>>(1)?;
+                    clauses.push(Located::new(
+                        ValueGenerator::In {
+                            binders: vec![Located::new(
+                                (name.value != "_").then_some(name.value),
+                                name.range,
+                            )],
+                            source,
+                            filter,
+                        },
+                        clause_start..end,
+                    ));
+                    self.depth(depth + clauses.len())?;
                 }
-                let source = self.expression(0, depth + 1)?;
-                let filter = if self.reader.keyword("if") {
-                    Some(self.expression(0, depth + 1)?)
-                } else {
-                    None
-                };
-                let end = filter
-                    .as_ref()
-                    .map_or(source.range.end, |value| value.range.end);
-                self.slots::<Located<ValueGenerator<ReadExpression<H>>>>(1)?;
-                self.slots::<Located<Option<String>>>(1)?;
-                clauses.push(Located::new(
-                    ValueGenerator::In {
-                        binders: vec![Located::new(
-                            (name.value != "_").then_some(name.value),
-                            name.range,
-                        )],
-                        source,
-                        filter,
+                self.reader.expect(']')?;
+                self.node(
+                    K::Comprehension {
+                        constructor: ValueConstructor::Array,
+                        clauses,
+                        head: Box::new(head),
                     },
-                    clause_start..end,
-                ));
-                self.depth(depth + clauses.len())?;
-            }
-            self.reader.expect(']')?;
-            return self.node(
-                K::Comprehension {
-                    constructor: ValueConstructor::Array,
-                    clauses,
-                    head: Box::new(head),
-                },
-                start..self.reader.position(),
-            );
+                    start..self.reader.position(),
+                )
+            })();
+            self.locals.truncate(scope);
+            return result;
         }
         self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
         values.push(head);
@@ -529,6 +559,66 @@ impl<H: ValueReaderHost> Reader<'_, '_, '_, H> {
         }
         self.reader.expect(']')?;
         self.node(K::Array(values), start..self.reader.position())
+    }
+    // The head precedes its declarations. Inspect only this array's own level;
+    // the normal parser still owns grammar and diagnostics.
+    fn array_binders(&mut self) -> Result<Vec<&'s str>, QueryError> {
+        let source = self.reader.source();
+        let mut probe = ArgumentReader::new(source, self.reader.position())?;
+        let mut names = Vec::new();
+        let mut nested = 0usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut comment = false;
+        while let Some(character) = probe.remaining().chars().next() {
+            let start = probe.position();
+            self.budget.charge(
+                character.len_utf8(),
+                Location::Query(start..start + character.len_utf8()),
+            )?;
+            if comment {
+                comment = character != '\n';
+            } else if quoted {
+                if character == '"' && !escaped {
+                    quoted = false;
+                }
+                escaped = character == '\\' && !escaped;
+            } else {
+                match character {
+                    '"' => quoted = true,
+                    '#' => comment = true,
+                    '(' | '[' | '{' => nested += 1,
+                    ']' if nested == 0 => break,
+                    ')' | ']' | '}' => nested = nested.saturating_sub(1),
+                    character
+                        if nested == 0 && (character.is_ascii_alphabetic() || character == '_') =>
+                    {
+                        let word = probe.word()?;
+                        self.budget.charge(
+                            word.range.len().saturating_sub(1),
+                            Location::Query(word.range.clone()),
+                        )?;
+                        if word.value == "for" {
+                            let mut next = ArgumentReader::new(source, probe.position())?;
+                            let name = next.word().ok();
+                            let generator = next.keyword("in");
+                            self.budget.charge(
+                                next.position() - probe.position(),
+                                Location::Query(probe.position()..next.position()),
+                            )?;
+                            if let Some(name) = name.filter(|name| generator && name.value != "_") {
+                                self.slots::<&str>(1)?;
+                                names.push(name.value);
+                            }
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            probe.advance(character.len_utf8())?;
+        }
+        Ok(names)
     }
     fn projection(&mut self, depth: usize) -> Result<Projection<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
@@ -633,12 +723,12 @@ impl<H: ValueReaderHost> Reader<'_, '_, '_, H> {
             let first = probe.word()?;
             probe.skip_whitespace();
             let projection_call = self.projection_call();
-            if first.value == "input" {
+            let binding =
+                self.is_local(first.value, &first.range)? || self.host.is_binding(first.value);
+            if first.value == "input" && !binding {
                 self.reader.advance(probe.position() - start)?;
                 Located::new(ExpressionKind::Input, first.range)
-            } else if !projection_call
-                && (self.host.is_binding(first.value) || !self.host.is_stage(first.value))
-            {
+            } else if !projection_call && (binding || !self.host.is_stage(first.value)) {
                 self.reader.advance(probe.position() - start)?;
                 self.budget
                     .charge(first.value.len(), Location::Query(first.range.clone()))?;
