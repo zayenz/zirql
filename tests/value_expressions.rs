@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use zirql::{
-    ArrayType, Bindings, Budget, ConstructedValue as V, Limits, Located, Location, ProgramLimits,
+    ArrayType, Bindings, Budget, ConstructedValue as V, KeyAxis, KeyedArrayType, KeyedEntry,
+    Limits, Located, Location, NominalMember, NominalMemberId, NominalTypeId, ProgramLimits,
     SetElementType, ValueBinaryOperator as B, ValueConstructor, ValueExpression as E,
-    ValueExpressionKind as K, ValueGenerator as G, ValueType, ValueUnaryOperator as U,
-    constructed_value_type, copy_constructed_value, evaluate_value, free_value_names,
-    validate_value_expression,
+    ValueExpressionKind as K, ValueGenerator as G, ValueKey, ValueKeyType, ValueType,
+    ValueUnaryOperator as U, constructed_value_type, copy_constructed_value, evaluate_value,
+    free_value_names, validate_value_expression,
 };
 
 fn e(kind: K) -> E {
@@ -515,5 +516,647 @@ fn grouped_candidates_are_admitted_before_a_false_filter() {
     assert_eq!(
         evaluate_value(&int(1), &Bindings::default(), &mut allowance).unwrap(),
         V::Integer(1)
+    );
+}
+
+fn member(id: u64, order: usize) -> NominalMember {
+    NominalMember {
+        type_id: NominalTypeId(7),
+        member_id: NominalMemberId(id),
+        declaration_order: order,
+        type_name: "Guests".into(),
+        member_name: "same".into(),
+    }
+}
+fn member_expression(id: u64, order: usize) -> E {
+    literal(V::Member(member(id, order)))
+}
+fn integer_axis(keys: &[i64]) -> KeyAxis {
+    KeyAxis {
+        key_type: ValueKeyType::Integer,
+        keys: keys.iter().copied().map(ValueKey::Integer).collect(),
+    }
+}
+fn empty_keyed(sources: Option<Vec<E>>) -> E {
+    e(K::KeyedComprehension {
+        clauses: vec![
+            clause(G::In {
+                binders: vec![binder("i")],
+                source: e(K::Range {
+                    lower: Box::new(int(2)),
+                    upper: Box::new(int(1)),
+                }),
+                filter: None,
+            }),
+            clause(G::In {
+                binders: vec![binder("m")],
+                source: name("empty_members"),
+                filter: None,
+            }),
+        ],
+        key: Box::new(e(K::Tuple(vec![name("i"), name("m")]))),
+        head: Box::new(int(1)),
+        empty_axis_sources: sources,
+    })
+}
+
+#[test]
+fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
+    let mut allowance = ample();
+    let members = evaluate_value(
+        &e(K::Set(vec![
+            member_expression(22, 4),
+            member_expression(11, 1),
+            member_expression(22, 4),
+        ])),
+        &Bindings::default(),
+        &mut allowance,
+    )
+    .unwrap();
+    assert_eq!(
+        members,
+        V::Set {
+            element_type: Some(SetElementType::Member(NominalTypeId(7))),
+            elements: vec![V::Member(member(11, 1)), V::Member(member(22, 4))]
+        }
+    );
+    assert_eq!(
+        evaluate(&binary(
+            B::Equal,
+            member_expression(11, 1),
+            member_expression(22, 4)
+        ))
+        .unwrap(),
+        V::Boolean(false)
+    );
+    assert_eq!(
+        evaluate(&binary(
+            B::In,
+            member_expression(22, 4),
+            literal(
+                copy_constructed_value(&members, &mut allowance, Location::Source(1..2)).unwrap()
+            )
+        ))
+        .unwrap(),
+        V::Boolean(true)
+    );
+
+    let expression = e(K::KeyedComprehension {
+        clauses: vec![
+            clause(G::In {
+                binders: vec![binder("i")],
+                source: e(K::Array(vec![int(9), int(3)])),
+                filter: None,
+            }),
+            clause(G::In {
+                binders: vec![binder("m")],
+                source: Located::new(K::Name("members".into()), 20..27),
+                filter: Some(binary(
+                    B::Or,
+                    binary(B::Equal, name("i"), int(3)),
+                    binary(B::Equal, name("m"), member_expression(11, 1)),
+                )),
+            }),
+        ],
+        key: Box::new(e(K::Tuple(vec![name("i"), name("m")]))),
+        head: Box::new(name("i")),
+        // This arithmetic failure is validated but unused for nonempty output.
+        empty_axis_sources: Some(vec![
+            e(K::Range {
+                lower: Box::new(binary(B::IntegerDivide, int(1), int(0))),
+                upper: Box::new(int(0)),
+            }),
+            name("members"),
+        ]),
+    });
+    let declared = BTreeMap::from([(
+        "members".into(),
+        ValueType::Set(Some(SetElementType::Member(NominalTypeId(7)))),
+    )]);
+    assert_eq!(
+        free_value_names(&expression, &declared, &mut allowance).unwrap(),
+        vec![Located::new("members".into(), 0..1)]
+    );
+    let ty = constructed_value_type(&members, &mut allowance, Location::Source(2..20)).unwrap();
+    validate_value_expression(
+        &expression,
+        &BTreeMap::from([("members".into(), ty)]),
+        &mut allowance,
+    )
+    .unwrap();
+    let bindings = Bindings::new([(Located::new("members".into(), 0..7), members)]).unwrap();
+    let result = evaluate_value(&expression, &bindings, &mut allowance).unwrap();
+    let expected_axes = || {
+        vec![
+            integer_axis(&[3, 9]),
+            KeyAxis {
+                key_type: ValueKeyType::Member(NominalTypeId(7)),
+                keys: vec![
+                    ValueKey::Member(member(11, 1)),
+                    ValueKey::Member(member(22, 4)),
+                ],
+            },
+        ]
+    };
+    let expected_entries = || {
+        [(3, 11, 1), (3, 22, 4), (9, 11, 1)]
+            .into_iter()
+            .map(|(i, id, order)| KeyedEntry {
+                key: vec![ValueKey::Integer(i), ValueKey::Member(member(id, order))],
+                value: V::Integer(i),
+            })
+            .collect()
+    };
+    assert_eq!(
+        result,
+        V::KeyedArray {
+            axes: expected_axes(),
+            entries: expected_entries()
+        }
+    );
+    assert_eq!(
+        constructed_value_type(&result, &mut allowance, Location::Query(0..1)).unwrap(),
+        ValueType::KeyedArray(KeyedArrayType {
+            axes: Some(vec![
+                ValueKeyType::Integer,
+                ValueKeyType::Member(NominalTypeId(7))
+            ]),
+            elements: vec![ValueType::Integer, ValueType::Integer, ValueType::Integer]
+        })
+    );
+    let before = allowance.remaining_results().unwrap();
+    let copied = copy_constructed_value(&result, &mut allowance, Location::Source(40..50)).unwrap();
+    assert!(allowance.remaining_results().unwrap() < before);
+    assert_eq!(copied, result);
+    if let V::KeyedArray { axes, entries } = &copied {
+        let ValueKey::Member(retained) = &axes[1].keys[0] else {
+            panic!("member key");
+        };
+        assert_eq!(
+            (
+                &retained.type_name,
+                &retained.member_name,
+                retained.declaration_order
+            ),
+            (&"Guests".into(), &"same".into(), 1)
+        );
+        assert_eq!(entries.len(), 3);
+    }
+    let keyed_bindings = Bindings::new([(Located::new("a".into(), 0..1), copied)]).unwrap();
+    assert_eq!(
+        evaluate_value(
+            &access(
+                name("a"),
+                e(K::Tuple(vec![int(3), member_expression(22, 4)]))
+            ),
+            &keyed_bindings,
+            &mut allowance
+        )
+        .unwrap(),
+        V::Integer(3)
+    );
+    assert_eq!(
+        evaluate_value(
+            &binary(B::Equal, name("a"), name("a")),
+            &keyed_bindings,
+            &mut allowance
+        )
+        .unwrap(),
+        V::Boolean(true)
+    );
+    let iterated = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("v")],
+            source: name("a"),
+            filter: None,
+        })],
+        head: Box::new(name("v")),
+    });
+    assert_eq!(
+        evaluate_value(&iterated, &keyed_bindings, &mut allowance).unwrap(),
+        V::Array(vec![V::Integer(3), V::Integer(3), V::Integer(9)])
+    );
+    let missing = choose(access(
+        name("a"),
+        e(K::Tuple(vec![int(9), member_expression(22, 4)])),
+    ));
+    assert_eq!(
+        evaluate_value(&missing, &keyed_bindings, &mut allowance).unwrap(),
+        V::Integer(7)
+    );
+
+    let supplied = e(K::KeyedArray {
+        axes: Some(vec![
+            integer_axis(&[9, 3]),
+            KeyAxis {
+                key_type: ValueKeyType::Member(NominalTypeId(7)),
+                keys: vec![
+                    ValueKey::Member(member(22, 4)),
+                    ValueKey::Member(member(11, 1)),
+                ],
+            },
+        ]),
+        entries: vec![
+            (e(K::Tuple(vec![int(3), member_expression(11, 1)])), int(31)),
+            (e(K::Tuple(vec![int(9), member_expression(11, 1)])), int(91)),
+            (e(K::Tuple(vec![int(9), member_expression(22, 4)])), int(92)),
+        ],
+    });
+    let V::KeyedArray { axes, entries } =
+        evaluate_value(&supplied, &Bindings::default(), &mut allowance).unwrap()
+    else {
+        panic!("keyed array");
+    };
+    assert_eq!(axes[0], integer_axis(&[9, 3]));
+    assert_eq!(
+        entries
+            .into_iter()
+            .map(|entry| entry.value)
+            .collect::<Vec<_>>(),
+        vec![V::Integer(92), V::Integer(91), V::Integer(31)]
+    );
+    let one = e(K::KeyedArray {
+        axes: Some(vec![KeyAxis {
+            key_type: ValueKeyType::Member(NominalTypeId(7)),
+            keys: vec![
+                ValueKey::Member(member(22, 4)),
+                ValueKey::Member(member(11, 1)),
+            ],
+        }]),
+        entries: vec![
+            (member_expression(11, 1), int(1)),
+            (member_expression(22, 4), int(2)),
+        ],
+    });
+    assert_eq!(
+        evaluate(&access(one, member_expression(11, 1))).unwrap(),
+        V::Integer(1)
+    );
+    let nested = V::KeyedArray {
+        axes: vec![integer_axis(&[9, 3])],
+        entries: vec![
+            KeyedEntry {
+                key: vec![ValueKey::Integer(9)],
+                value: V::Array(vec![V::Integer(1)]),
+            },
+            KeyedEntry {
+                key: vec![ValueKey::Integer(3)],
+                value: V::Integer(3),
+            },
+        ],
+    };
+    let nested_bindings = Bindings::new([(Located::new("nested".into(), 0..6), nested)]).unwrap();
+    assert_eq!(
+        evaluate_value(
+            &binary(B::Equal, name("nested"), name("nested")),
+            &nested_bindings,
+            &mut allowance
+        )
+        .unwrap(),
+        V::Boolean(true)
+    );
+    let arrays = literal(V::KeyedArray {
+        axes: vec![integer_axis(&[9, 3])],
+        entries: vec![KeyedEntry {
+            key: vec![ValueKey::Integer(9)],
+            value: V::Array(vec![V::Integer(1)]),
+        }],
+    });
+    assert_eq!(
+        evaluate(&access(access(arrays, e(K::Tuple(vec![int(9)]))), int(1))).unwrap(),
+        V::Integer(1)
+    );
+    assert_eq!(
+        evaluate(&e(K::IndexSet(Box::new(literal(V::KeyedArray {
+            axes: vec![integer_axis(&[9, 3])],
+            entries: vec![]
+        })))))
+        .unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::Integer),
+            elements: vec![V::Integer(3), V::Integer(9)]
+        }
+    );
+    assert_eq!(
+        evaluate(&e(K::IndexSet(Box::new(literal(V::KeyedArray {
+            axes: vec![KeyAxis {
+                key_type: ValueKeyType::Member(NominalTypeId(7)),
+                keys: vec![
+                    ValueKey::Member(member(22, 4)),
+                    ValueKey::Member(member(11, 1))
+                ]
+            }],
+            entries: vec![]
+        })))))
+        .unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::Member(NominalTypeId(7))),
+            elements: vec![V::Member(member(11, 1)), V::Member(member(22, 4))]
+        }
+    );
+
+    let empty_bindings = Bindings::new([(
+        Located::new("empty_members".into(), 0..13),
+        V::Set {
+            element_type: Some(SetElementType::Member(NominalTypeId(7))),
+            elements: vec![],
+        },
+    )])
+    .unwrap();
+    let empty = empty_keyed(Some(vec![
+        e(K::Range {
+            lower: Box::new(int(2)),
+            upper: Box::new(int(1)),
+        }),
+        name("empty_members"),
+    ]));
+    assert_eq!(
+        evaluate_value(&empty, &empty_bindings, &mut allowance).unwrap(),
+        V::KeyedArray {
+            axes: vec![
+                integer_axis(&[]),
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![]
+                }
+            ],
+            entries: vec![]
+        }
+    );
+    // The second fallback still runs although the first axis/product is empty.
+    let later = empty_keyed(Some(vec![
+        e(K::Range {
+            lower: Box::new(int(2)),
+            upper: Box::new(int(1)),
+        }),
+        e(K::KeyedArray {
+            axes: None,
+            entries: vec![(int(9), member_expression(22, 4))],
+        }),
+    ]));
+    assert_eq!(
+        evaluate_value(&later, &empty_bindings, &mut allowance).unwrap(),
+        V::KeyedArray {
+            axes: vec![
+                integer_axis(&[]),
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![ValueKey::Member(member(22, 4))]
+                }
+            ],
+            entries: vec![]
+        }
+    );
+    let fail_later = empty_keyed(Some(vec![
+        e(K::Range {
+            lower: Box::new(int(2)),
+            upper: Box::new(int(1)),
+        }),
+        e(K::Array(vec![Located::new(
+            K::ArrayAccess {
+                array: Box::new(e(K::Array(vec![member_expression(11, 1)]))),
+                index: Box::new(int(4)),
+            },
+            120..130,
+        )])),
+    ]));
+    assert_eq!(
+        evaluate_value(&fail_later, &empty_bindings, &mut allowance)
+            .unwrap_err()
+            .location,
+        Location::Query(120..130)
+    );
+    let skipped_key = e(K::KeyedComprehension {
+        clauses: vec![clause(G::In {
+            binders: vec![binder("i")],
+            source: e(K::Array(vec![int(1)])),
+            filter: Some(literal(V::Boolean(false))),
+        })],
+        key: Box::new(binary(B::IntegerDivide, int(1), int(0))),
+        head: Box::new(access(e(K::Array(vec![int(1)])), int(4))),
+        empty_axis_sources: Some(vec![e(K::Range {
+            lower: Box::new(int(1)),
+            upper: Box::new(int(0)),
+        })]),
+    });
+    assert_eq!(
+        evaluate(&skipped_key).unwrap(),
+        V::KeyedArray {
+            axes: vec![integer_axis(&[])],
+            entries: vec![]
+        }
+    );
+}
+
+#[test]
+fn nominal_keyed_duplicate_incompatible_empty_and_budget_refusals_are_located() {
+    let duplicate = e(K::KeyedArray {
+        axes: None,
+        entries: vec![
+            (int(3), int(1)),
+            (Located::new(K::Literal(V::Integer(3)), 140..141), int(2)),
+        ],
+    });
+    let refusal = evaluate(&duplicate).unwrap_err();
+    assert_eq!(refusal.location, Location::Query(140..141));
+    assert!(refusal.message.contains("duplicate"));
+    let mut contradictory = member(11, 2);
+    contradictory.member_name = "changed".into();
+    for kind in [
+        K::Set(vec![
+            member_expression(11, 1),
+            literal(V::Member(contradictory)),
+        ]),
+        K::Set(vec![member_expression(11, 1), member_expression(22, 1)]),
+        K::Binary {
+            operator: B::Add,
+            left: Box::new(member_expression(11, 1)),
+            right: Box::new(int(1)),
+        },
+        K::KeyedArray {
+            axes: None,
+            entries: vec![
+                (int(3), int(1)),
+                (
+                    Located::new(K::Tuple(vec![int(3), int(4)]), 150..160),
+                    int(2),
+                ),
+            ],
+        },
+        K::IndexSet(Box::new(literal(V::KeyedArray {
+            axes: vec![integer_axis(&[]), integer_axis(&[])],
+            entries: vec![],
+        }))),
+    ] {
+        assert_eq!(
+            evaluate(&Located::new(kind, 150..160))
+                .unwrap_err()
+                .location,
+            Location::Query(150..160)
+        );
+    }
+    let other = NominalMember {
+        type_id: NominalTypeId(8),
+        ..member(11, 1)
+    };
+    assert_eq!(
+        evaluate(&Located::new(
+            K::Binary {
+                operator: B::Equal,
+                left: Box::new(member_expression(11, 1)),
+                right: Box::new(literal(V::Member(other)))
+            },
+            161..170
+        ))
+        .unwrap_err()
+        .location,
+        Location::Query(161..170)
+    );
+    let wrong = access(
+        literal(V::KeyedArray {
+            axes: vec![integer_axis(&[3])],
+            entries: vec![],
+        }),
+        member_expression(11, 1),
+    );
+    assert_eq!(
+        evaluate(&Located::new(wrong.value, 171..180))
+            .unwrap_err()
+            .location,
+        Location::Query(171..180)
+    );
+    let native_bad = V::KeyedArray {
+        axes: vec![integer_axis(&[3, 9])],
+        entries: vec![
+            KeyedEntry {
+                key: vec![ValueKey::Integer(9)],
+                value: V::Integer(1),
+            },
+            KeyedEntry {
+                key: vec![ValueKey::Integer(3)],
+                value: V::Integer(2),
+            },
+        ],
+    };
+    assert_eq!(
+        constructed_value_type(&native_bad, &mut ample(), Location::Source(181..190))
+            .unwrap_err()
+            .location,
+        Location::Source(181..190)
+    );
+    let empty_bindings = Bindings::new([(
+        Located::new("empty_members".into(), 0..13),
+        V::Set {
+            element_type: Some(SetElementType::Member(NominalTypeId(7))),
+            elements: vec![],
+        },
+    )])
+    .unwrap();
+    assert_eq!(
+        evaluate_value(
+            &Located::new(empty_keyed(None).value, 191..200),
+            &empty_bindings,
+            &mut ample()
+        )
+        .unwrap_err()
+        .location,
+        Location::Query(191..200)
+    );
+    let untyped = empty_keyed(Some(vec![
+        Located::new(K::Array(vec![]), 201..210),
+        name("empty_members"),
+    ]));
+    assert_eq!(
+        evaluate_value(&untyped, &empty_bindings, &mut ample())
+            .unwrap_err()
+            .location,
+        Location::Query(201..210)
+    );
+    let own_name = empty_keyed(Some(vec![
+        Located::new(K::Name("i".into()), 211..220),
+        name("empty_members"),
+    ]));
+    assert_eq!(
+        evaluate_value(&own_name, &empty_bindings, &mut ample())
+            .unwrap_err()
+            .location,
+        Location::Query(211..220)
+    );
+    let value = V::KeyedArray {
+        axes: vec![KeyAxis {
+            key_type: ValueKeyType::Member(NominalTypeId(7)),
+            keys: vec![ValueKey::Member(member(11, 1))],
+        }],
+        entries: vec![KeyedEntry {
+            key: vec![ValueKey::Member(member(11, 1))],
+            value: V::Integer(1),
+        }],
+    };
+    let comparison_data = V::KeyedArray {
+        axes: vec![integer_axis(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9])],
+        entries: vec![],
+    };
+    let mut comparison_allowance = budget(30, 100, 64);
+    let comparison_refusal = constructed_value_type(
+        &comparison_data,
+        &mut comparison_allowance,
+        Location::Source(231..240),
+    )
+    .unwrap_err();
+    assert_eq!(comparison_refusal.location, Location::Source(231..240));
+    assert!(comparison_refusal.message.contains("work limit"));
+    let analysis = Located::new(
+        K::KeyedArray {
+            axes: Some(vec![integer_axis(&[1, 2, 3])]),
+            entries: vec![],
+        },
+        241..250,
+    );
+    let mut analysis_allowance = budget(3, 100, 64);
+    assert_eq!(
+        validate_value_expression(&analysis, &BTreeMap::new(), &mut analysis_allowance)
+            .unwrap_err()
+            .location,
+        Location::Query(241..250)
+    );
+    let location = Location::Source(221..230);
+    let mut low = budget(8, 100, 64);
+    assert_eq!(
+        constructed_value_type(&value, &mut low, location.clone())
+            .unwrap_err()
+            .location,
+        location
+    );
+    assert!(low.remaining_work() < 8);
+    let mut no_results = budget(10_000, 1, 64);
+    assert_eq!(
+        copy_constructed_value(&value, &mut no_results, location.clone())
+            .unwrap_err()
+            .location,
+        location
+    );
+    let mut shallow = budget(10_000, 100, 1);
+    assert_eq!(
+        copy_constructed_value(&value, &mut shallow, location.clone())
+            .unwrap_err()
+            .location,
+        location
+    );
+    assert_eq!(
+        copy_constructed_value(&V::Integer(7), &mut shallow, location.clone()).unwrap(),
+        V::Integer(7)
+    );
+    let mut repeated = budget(10_000, 20, 64);
+    let snapshot = copy_constructed_value(&value, &mut repeated, location.clone()).unwrap();
+    assert_eq!(snapshot, value);
+    let before = repeated.remaining_results().unwrap();
+    copy_constructed_value(&value, &mut repeated, location.clone()).unwrap();
+    assert!(repeated.remaining_results().unwrap() < before);
+    assert!(
+        copy_constructed_value(&value, &mut repeated, location)
+            .unwrap_err()
+            .message
+            .contains("result limit")
     );
 }

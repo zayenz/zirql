@@ -18,10 +18,11 @@ pub use program::{
     Statement, evaluate_expression, evaluate_program,
 };
 pub use value::{
-    ArrayType, ConstructedValue, SetElementType, ValueBinaryOperator, ValueConstructor,
-    ValueExpression, ValueExpressionKind, ValueGenerator, ValueType, ValueUnaryOperator,
-    constructed_value_type, copy_constructed_value, evaluate_value, free_value_names,
-    validate_value_expression,
+    ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
+    NominalMemberId, NominalTypeId, SetElementType, ValueBinaryOperator, ValueConstructor,
+    ValueExpression, ValueExpressionKind, ValueGenerator, ValueKey, ValueKeyType, ValueType,
+    ValueUnaryOperator, constructed_value_type, copy_constructed_value, evaluate_value,
+    free_value_names, validate_value_expression,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.

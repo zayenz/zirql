@@ -1,7 +1,7 @@
 # Zirql
 
 Zirql is a Rust library for bounded query pipelines, native programs and
-constructed scalar and positional comprehension values.
+constructed scalar, nominal and keyed comprehension values.
 Zirql sequences filtering, head, count, stable unique, string tally and typed
 host stages. Hosts parse their syntax, evaluate predicate leaves and execute
 native navigation and projections. The common text reader supports
@@ -395,16 +395,52 @@ facts and fail if accessed at runtime. Boolean operations short-circuit and
 conditionals execute only the chosen branch, so skipped missing access and
 zero division remain unevaluated. Every referenced actual value is checked,
 including nonfinite floats, duplicate record labels and malformed sets.
-Enum identities, explicitly keyed/multidimensional arrays, model execution
-and data-edit policy remain with future host work.
+Resolved nominal members and explicitly keyed arrays are also callable native
+values. Hosts supply `NominalTypeId` and `NominalMemberId` within one immutable
+host context for the request, plus retained type/member names and declaration
+order. Member equality and set deduplication use IDs; identical spelling does
+not establish identity. Member sets use declaration order. The core rejects
+contradictory names/order, incompatible enum types and member arithmetic.
+Hosts retain member resolution, model execution, rendering and data-edit policy.
+
+`KeyAxis` retains a dimension's integer/member type and ordered `ValueKey`s;
+`KeyedEntry` retains a full key and native value. `ConstructedValue::KeyedArray`
+is distinct from positional and nested arrays. `KeyedArrayType` retains axis
+identities/rank and possible element types. All five value APIs validate and
+copy these forms. Public native entries must be unique and in row-major axis
+order, with the rightmost dimension fastest. `ValueExpressionKind::KeyedArray`
+accepts located unordered key/value pairs and optional supplied axes.
+`KeyedComprehension` shares the positional evaluator and generator clause chain,
+with a key and head evaluated after filters. Integer/member scalar keys establish
+rank one; nonempty flat tuples establish larger ranks. Inferred axes use numeric
+or member declaration order; supplied axes preserve their explicit order.
+Sparse entries and noncontiguous axes are valid. Zincite owns MiniZinc contiguous
+axes, rectangular coverage, target compatibility and source diagnostics.
+
+Array access accepts a matching scalar or one-component tuple key for rank one
+and a matching tuple for larger ranks. Nested access remains nested. `index_set`
+requires rank one and returns the established typed axis as a set in numeric or
+declaration order, including typed empty axes. Empty native keyed arrays retain
+all supplied axes. When a keyed comprehension produces zero entries,
+`empty_axis_sources` can establish typed axes from integer/member arrays or sets.
+Every fallback runs in the surrounding scope, outside this comprehension's
+binders, including later sources skipped by an empty product. An empty range
+retains integer identity, and an empty typed member set retains its nominal ID.
+An empty positional array or untyped set establishes no key identity. Missing
+fallback rank/types/axes receive a located refusal. Nonempty results do not
+evaluate or apply fallback axes.
 
 Value operations share the active `Budget`, including its remaining work,
 aggregate results and nesting. Work pays expression/value/type visits,
 validation metadata slots, known collection allocation, candidates before
 filters, copied UTF-8 name/label/string bytes and compatibility/equality
 comparisons. Results pay each new/copied scalar or container and each
-collection/record entry slot. Children already admitted by evaluation move
-into slots without another value admission. A snapshot scans its full size
+collection/record entry slot. A nominal value or key pays one result unit;
+each keyed axis, entry, axis-key slot and entry-key slot pays one, as does the
+keyed container. Retained member/type names charge copied UTF-8 bytes, while
+axis/type/position metadata, key comparisons and ordering movements charge work.
+Children already admitted by evaluation move into slots without another value
+admission. A snapshot scans its full size
 and invariants, admits its result units and bytes, then builds the copy. Each
 recursive expression/value/type walk retains active nesting. Both Result
 outcomes restore nesting/call state; spending is never refunded.

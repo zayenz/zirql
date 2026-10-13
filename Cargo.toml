@@ -1,10 +1,10 @@
 [package]
 name = "zirql"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-description = "Bounded native query programs and positional value comprehensions"
+description = "Bounded native query programs and nominal/keyed value comprehensions"
 repository = "https://github.com/zayenz/zirql"
 readme = "README.md"
 include = [
