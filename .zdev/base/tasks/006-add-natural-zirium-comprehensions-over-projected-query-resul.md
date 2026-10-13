@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-006"
 key = "zirium-comprehension-reports"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -27,13 +27,25 @@ Read background/comprehensions.md, the implemented shared expression API, Zirium
 
 ## Done when
 
-- [ ] The proposed syntax parses and lowers located head/source/filter expressions and dependent generators to shared Zirql nodes.
-- [ ] Existing binding, literal, interpolation and JSON output programs remain compatible; record keys and bound string values remain distinct.
-- [ ] Equivalent MiniZinc and Zirium forms produce the same ordered native constructed values before their host-specific renderers.
-- [ ] Scope, numeric refusals, short-circuit execution and aggregate expansion limits are shared; surface diagnostics point to the original Zirium query.
-- [ ] Documentation demonstrates one complete query-to-comprehension-to-JSON report and clearly states its supported operations.
+- [x] The proposed syntax parses and lowers located head/source/filter expressions and dependent generators to shared Zirql nodes.
+- [x] Existing binding, literal, interpolation and JSON output programs remain compatible; record keys and bound string values remain distinct.
+- [x] Equivalent MiniZinc and Zirium forms produce the same ordered native constructed values before their host-specific renderers.
+- [x] Scope, numeric refusals, short-circuit execution and aggregate expansion limits are shared; surface diagnostics point to the original Zirium query.
+- [x] Documentation demonstrates one complete query-to-comprehension-to-JSON report and clearly states its supported operations.
 
 ## Validation
 
 - Reuse the shared positional controls through both frontends and one existing legacy-literal/interpolation regression control.
 - Run Zirql and Zirium required Rust checks and affected Python query tests; avoid duplicate test implementations for the evaluator.
+
+## Result
+
+Zirium now lowers contextual JSON-shaped comprehensions to the shared Zirql alpha.4 evaluator, retains ordered native constructed reports, and carries one allowance through evaluation and CLI rendering. Legacy literals, bindable for/if names and typed MLIR results remain compatible. Consumer source commit: d7869d3b8b74a727bdd2f8a03865724b7ffe3b90.
+
+Validation:
+
+- Independent whole-task v3 review passed all five completion conditions and the rendering, unary-sign and contextual-subtraction corrections; no findings or repository validation writes.
+- Simple and dependent reports through actual Zincite and Zirium APIs produced equal ordered native constructed values before either renderer; host JSON/tagged output checked separately.
+- Zirql checks and Zirium Rust 1.88/stable tests, Clippy with warnings denied, formatting, doctests and documentation passed.
+- Rebuilt CPython 3.11 through 3.14 suites passed with 165 tests and two existing skips each. Fresh macOS arm64 cp314 wheel and sdist build, metadata checks, installations and native query smokes passed.
+- Clean cargo package -p zirium --locked passed after the reviewed consumer commit. The normalized package compiles against exact registry alpha.4, its checksum matches the verified publication, and all 43 production sources match the reviewed candidate.

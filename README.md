@@ -295,6 +295,10 @@ value types and keep positive `1..n` positions in generation order. Tuples and
 records retain declaration order. Sets deduplicate by typed identity and use
 `false` before `true` or numeric order. Empty arrays and sets are valid.
 
+Zincite's MiniZinc-shaped reports and Zirium's JSON-shaped comprehensions use
+this evaluator. Both frontends project native names and retain constructed
+values for inspection before their own renderers run.
+
 A normalized comprehension chooses `ValueConstructor::Array` or `Set`, supplies
 ordered `ValueGenerator` clauses and a located head. `In` yields source values;
 use `IndexSet` and `ArrayAccess` when positions matter. Grouped binders evaluate

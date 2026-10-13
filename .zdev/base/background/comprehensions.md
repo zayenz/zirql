@@ -9,7 +9,8 @@ Read this design when working on value expressions, either comprehension
 frontend, structured reports or constructed data. The base brief owns framework
 boundaries. Zincite's `docs/query-comprehension-contract.md` owns its current
 proposal for model-backed data edits and must be read before that integration.
-Examples here are proposed syntax, not working commands.
+The positional report examples work through both host frontends. Keyed arrays
+and data-edit examples describe future host work.
 
 ## Equivalent positional reports
 
@@ -21,7 +22,7 @@ source labels = query("names");
 report [(name: n, label: "data:" ++ n) | n in labels];
 ```
 
-The proposed Zirium form keeps its existing binding and object notation:
+Zirium keeps its existing binding and object notation:
 
 ```text
 labels = names;
