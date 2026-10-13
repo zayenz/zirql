@@ -7,6 +7,11 @@ site tooling remains independent of Cargo. The sidebar separates language
 reference, worked examples and Rust embedding guides; all retain `/guides/`
 routes.
 
+The landing page and main examples use a borrowed-word host. The semantic model
+integration guide explains Zincite and Zirium's native items, predicates,
+identity and rendering separately. Design sketches also use the word domain
+and remain labelled as unimplemented forms.
+
 The selected Zirql logo supplies the navy, royal blue and pale steel palette.
 The header uses transparent SVGs from `../assets/logo/vector-v1/`, with pale
 lettering in the dark theme and navy lettering in the light theme. Both retain

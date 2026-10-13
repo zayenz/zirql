@@ -65,7 +65,7 @@ let pipeline = parse_pipeline(query, |reader| {
     Ok(prefix)
 }, 8)?;
 
-let source = String::from("birch apple ash");
+let source = String::from("birch apple ash apple");
 let mut budget = Budget::new(Limits { work: 100, items: 10, nesting: 8 });
 let input = NativeInput::collect(
     (), source.split_whitespace(), &mut budget, Location::Source(0..source.len()),

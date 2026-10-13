@@ -28,7 +28,7 @@ export default defineConfig({
     sidebar: [
       { label: 'Language reference', items: ['guides/shared-concepts', 'guides/native-programs', 'guides/values', 'guides/diagnostics-and-limits'] },
       { label: 'Examples', items: ['guides/examples', 'guides/language-direction'] },
-      { label: 'Embedding in Rust', items: ['guides/getting-started', 'guides/host-integration', 'guides/embedding-programs'] },
+      { label: 'Embedding in Rust', items: ['guides/getting-started', 'guides/host-integration', 'guides/embedding-programs', 'guides/semantic-models'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql' },
       { label: 'Zincite guides', link: 'https://zayenz.se/zincite/' },
       { label: 'Zirium guides', link: 'https://zayenz.se/zirium/' },

@@ -1,49 +1,19 @@
 # Query examples
 
-These examples show the data a query starts with and the value it produces.
-The word pipeline uses Zirql's common text reader. The MLIR query and report
-examples use the Zincite and Zirium frontends, which lower their different
-syntax to shared evaluation.
-
-## Count MLIR operations by name
-
-Save this complete input as `operations.mlir`:
+The word host reads `birch apple ash apple` with `split_whitespace`. Its input
+is an ordered stream of borrowed string slices:
 
 ```text
-func.func @mix(%x: i32, %y: i32) -> i32 {
-  %a = arith.addi %x, %y : i32
-  %b = "arith.muli"(%a, %y) : (i32, i32) -> i32
-  %c = arith.addi %b, %x : i32
-  func.return %c : i32
-}
+birch, apple, ash, apple
 ```
 
-Select the arithmetic operations and count their names:
-
-```sh
-zirium 'filter(dialect("arith")) | names | tally | json' operations.mlir
-```
-
-`names` is Zirium's projection from operation handles to strings. `tally` counts
-those strings and returns keys in sorted order. `json` is Zirium's emitter:
-
-```json
-{"arith.addi": 2, "arith.muli": 1}
-```
-
-The count uses printed operation names because those are the explicitly
-projected keys. It does not claim that the two additions are the same operation.
-A native `unique` query would instead use the host's operation identity.
-
-This syntax belongs to Zirium's frontend. Zirql's common text reader does not
-parse `names`, `tally` or `json`; the host lowers its query to typed stages.
-See the [Zirium query guide](https://github.com/zayenz/zirium/blob/main/docs/query-language.md)
-for the domain stages.
+There are four entries, including two occurrences of `apple`. This host defines
+`prefix("text")` as a case-sensitive `starts_with` test. Every word has a known
+answer, so its predicates return True or False. Zirql combines those answers
+and runs the shared stages. No compiler, file-format parser or renderer is
+needed for these queries.
 
 ## Select and count borrowed words
-
-The input is an ordered sequence of words borrowed from `birch apple ash`.
-The host defines `prefix("a")` as a test of whether a word starts with `a`.
 
 ```text
 filter(prefix("a")) | head(1) | count
@@ -51,93 +21,119 @@ filter(prefix("a")) | head(1) | count
 
 | Step | Result |
 | --- | --- |
-| Input | `birch`, `apple`, `ash` |
-| `filter(prefix("a"))` | `apple`, `ash` |
+| Input | `birch`, `apple`, `ash`, `apple` |
+| `filter(prefix("a"))` | `apple`, `ash`, `apple` |
 | `head(1)` | `apple` |
 | `count` | `Count(1)` |
 
-The input order determines which word `head(1)` keeps. Filtering selects only
-known true predicate answers; an Unknown answer would not keep a word.
-`count` is terminal, so another stage after it is rejected before evaluation.
+The [complete Rust host example](../README.md#a-borrowed-source-query) supplies
+this predicate and its parser callback, admits the words with a budget and
+evaluates the pipeline. It returns the native count before any rendering.
 
-The [complete Rust host example](../README.md#a-borrowed-source-query) implements
-this predicate and parser callback, admits the input with a budget and evaluates
-the pipeline. It returns a native count before any rendering. See
-[pipelines](shared-concepts.md) for the language rules and
-[embedding in Rust](host-integration.md) for the adapter requirements.
+## Combine predicates
 
-## Build records from labels
-
-For Zirium, save this complete input as `labels.mlir`:
+Keep words beginning with `a`, except those beginning with `ap`:
 
 ```text
-"alpha"() : () -> ()
-"beta"() : () -> ()
+filter(prefix("a") and not prefix("ap"))
 ```
 
-For Zincite, save `alpha = 1; beta = 2;` as `labels.dzn`. Its `names` query
-projects the assignment names in source order. Save this program as
-`labels.zq`:
+The returned stream contains `ash`. Adding `| count` returns `Count(1)`.
+Using `or` instead gives a different selection:
 
 ```text
-source labels = query("names");
-report [(name: n, label: "data:" ++ n) | n in labels];
+filter(prefix("ap") or prefix("b"))
 ```
 
-Run `zincite query --program-file labels.zq labels.dzn`.
-Zirium accepts the program inline:
+The result is `birch`, `apple`, `apple`, in input order. The host evaluates each
+prefix test. Zirql handles `and`, `or`, negation and short-circuiting. Hosts
+with incomplete facts may also return Unknown; filtering keeps only known
+true answers, and negation preserves Unknown.
+
+## Change the stage order
 
 ```text
-labels = names;
-[{"name": n, "label": "data:" ++ n} for n in labels] | json
+filter(prefix("a")) | head(2)
 ```
 
-```sh
-zirium 'labels = names; [{"name": n, "label": "data:" ++ n} for n in labels] | json' labels.mlir
+This keeps `apple`, `ash`. Filtering first makes `head` take the first two
+matching words. Swapping the stages:
+
+```text
+head(2) | filter(prefix("a"))
 ```
 
-Both construct this ordered value, shown as JSON for readability:
+The head is `birch`, `apple`, so filtering it leaves only `apple`. Neither
+query sorts the input. Duplicates survive unless an explicit stage removes them.
+
+## Count an empty selection
+
+```text
+filter(prefix("z")) | count
+```
+
+No word matches, so the result is `Count(0)`. An empty input also returns zero.
+`count` is terminal: `count | head(1)` is rejected before evaluation.
+
+## Build records from words
+
+Native streams and constructed arrays have different representations. To build
+a scalar report, the word host explicitly projects the filtered slices to
+`ConstructedValue::String` values in a positional array. That gives a constructed
+binding `words = ["apple", "ash", "apple"]`.
+
+This notation describes a comprehension over that binding:
+
+```text
+[{word: w, label: "word:" ++ w} for w in words]
+```
+
+Each candidate binds `w` to one string. The head creates a record with `word`
+first and `label` second; `++` concatenates strings. The returned data, rendered
+here as JSON for readability, is:
 
 ```json
 [
-  {"name": "alpha", "label": "data:alpha"},
-  {"name": "beta", "label": "data:beta"}
+  {"word": "apple", "label": "word:apple"},
+  {"word": "ash", "label": "word:ash"},
+  {"word": "apple", "label": "word:apple"}
 ]
 ```
 
-Each generator binds `n` to one projected string. The head creates a record
-with `name` first and `label` second; `++` concatenates strings. Array order
-follows the source. A native operation handle must be projected to a string
-before this expression can concatenate it.
+The repeated word produces a repeated record. Array order follows generation
+order. The core returns constructed values, while the host decides whether
+to print JSON, return a Rust value or use another representation.
 
-The constructed records agree before rendering. Zincite's report renderer
-retains its tagged envelope and completeness information; Zirium's JSON emitter
-renders ordinary JSON. The core evaluates the lowered value expression, while
-the hosts parse these surfaces and choose their output formats.
+The comprehension is notation for `ValueExpression`, not syntax accepted by
+`parse_pipeline`. See [values and comprehensions](values.md) for the callable
+representation and [embedding in Rust](host-integration.md#constructed-value-apis)
+for its evaluation and copy boundaries.
 
 ## Filter before constructing a value
 
-For the integer array `[2, 3, 4]`, this expression-tree notation filters values
-larger than 2, then doubles each surviving value:
+The host can also project the four word lengths in UTF-8 bytes. These ASCII
+words give `sizes = [5, 5, 3, 5]`. In expression-tree notation:
 
 ```text
-[x * 2 for x in [2, 3, 4] if x > 2]
+[n * 2 for n in sizes if n > 3]
 ```
 
-The result is the positional array `[6, 8]`. Its positions are 1 and 2; the
-filter does not preserve the input positions 2 and 3 as keys. Use explicitly
-[keyed arrays](values.md#keyed-arrays) when index identity must survive.
+The result is `[10, 10, 10]`. Its positions are 1, 2 and 3, newly assigned by
+the positional constructor. They do not retain input positions 1, 2 and 4.
+Use explicitly [keyed arrays](values.md#keyed-arrays) when those positions need
+to survive as keys.
 
-This is notation for the supported Rust comprehension representation, not
-syntax accepted by `parse_pipeline`. A frontend supplies the text syntax.
-The evaluator charges all three generator candidates, including the rejected
-value 2, before evaluating the two heads. See
-[values and comprehensions](values.md) for scope and arithmetic rules.
+All four candidates are charged before filtering, including the rejected
+size 3. The head runs only for the three survivors.
 
-## Examples of unimplemented language forms
+## Integrate another semantic model
 
-The [design examples](language-direction.md) explore per-function operation
-reports, capacity checks, native captures, grouping and bounded explanatory
-paths. Their projection, reducer, parameter, requirement, match and path forms
-are not implemented. They describe the intended language direction, rather
-than commands to run against the current library.
+<span id="count-mlir-operations-by-name"></span>
+<span id="build-records-from-labels"></span>
+
+[Semantic model integrations](semantic-models.md) applies these language rules
+to Zincite and Zirium. Its operation-count and label-report examples use each
+host's own inputs and syntax.
+
+For proposed projection, reducers, parameters, matching and paths, read the
+[design examples](language-direction.md). Those forms are not implemented.

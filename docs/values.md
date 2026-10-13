@@ -46,12 +46,13 @@ source before introducing its own binders and evaluates the head after filters.
 Later clauses can refer to earlier binders. Local binders are restored on success
 and failure.
 
-A comprehension over `[2, 3, 4]` can filter out `2` and double the remaining
-values. Written here as notation for the expression tree:
+A word host can project `birch apple ash apple` to UTF-8 byte lengths
+`[5, 5, 3, 5]`. A comprehension can filter out the short word and double the
+remaining lengths. Written here as notation for the expression tree:
 
 ```text
-[x * 2 for x in [2, 3, 4] if x > 2]
-→ [6, 8]
+[n * 2 for n in [5, 5, 3, 5] if n > 3]
+→ [10, 10, 10]
 ```
 
 The current Rust representation uses `ValueExpressionKind::Comprehension` with
@@ -72,7 +73,8 @@ one immutable host context for the request. Equal names do not establish identit
 Member sets use declaration order. Contradictory metadata, mixed nominal types
 and member arithmetic fail.
 
-The host resolves members. Zirql does not execute a MiniZinc model to find them.
+The host establishes these members and their identities. Zirql does not load
+or execute a domain model to discover them.
 
 ## Keyed arrays
 
@@ -93,6 +95,7 @@ using the surrounding scope outside this comprehension's binders. Nonempty
 results do not evaluate these fallbacks.
 
 Array access checks key types and rank. `index_set` requires rank one and returns
-the typed axis as a set in numeric or declaration order. MiniZinc requirements
-such as contiguous axes, rectangular coverage and edit-target compatibility
-remain with Zincite. See [host integration](host-integration.md).
+the typed axis as a set in numeric or declaration order. A host may require
+contiguous axes or complete rectangular coverage even though the core supports
+sparse cells. See [semantic model integrations](semantic-models.md) for a
+concrete example of that boundary.

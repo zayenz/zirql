@@ -109,9 +109,12 @@ or emission snapshots.
 
 ## Domain policy
 
-Zincite owns MiniZinc member resolution, data shape and target validation.
-Zirium owns MLIR dialect semantics, operation identity and live edit behavior.
-Zirql has no dependency on either consumer crate.
+The host defines its predicates, native identity, navigation and permitted
+values. In the [word model](examples.md), `prefix` is an exact string test and
+the input remains borrowed text. A document host can instead retain handles
+and resolve their properties from its owning context. The
+[Zincite and Zirium integrations](semantic-models.md) show how those choices
+affect queries, completeness and rendering.
 
 The core can represent generic sparse keyed values. A consumer may support a
 narrower subset. Validate that subset at the boundaries required by the consumer;

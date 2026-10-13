@@ -1,9 +1,8 @@
 # Getting started
 
-To query an MLIR or MiniZinc file from a terminal, use
-[Zirium](https://github.com/zayenz/zirium) or
-[Zincite](https://zayenz.se/zincite/). For a Rust integration, begin with a
-constructed value. The example below needs only a Cargo project.
+Begin with a constructed value in a Cargo project. This example calls Zirql
+directly, without a domain parser or renderer. The [word examples](examples.md)
+then introduce a small host for queries over native data.
 
 ## Add a pinned dependency
 

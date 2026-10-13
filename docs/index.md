@@ -1,80 +1,76 @@
 # Zirql
 
-Zirql is a Rust library for query languages over native data. It evaluates
-pipelines, programs and comprehensions for tools such as
-[Zirium](https://github.com/zayenz/zirium) and
-[Zincite](https://zayenz.se/zincite/). A host supplies domain operations and
-retains ownership of its source objects.
+Zirql is a Rust library for query languages over native data. A host supplies
+the data and its domain operations. Zirql evaluates pipelines, programs and
+comprehensions, keeping native results available to the caller.
 
-## Count MLIR operations by name
-
-Suppose a Zirium selection contains two `arith.addi` operations and one
-`arith.muli`. This query projects their names and counts each name:
-
-```text
-names | tally | json
-```
-
-```json
-{"arith.addi": 2, "arith.muli": 1}
-```
-
-Zirium supplies `names` and the JSON emitter. Zirql supplies the string tally.
-The [worked operation example](examples.md#count-mlir-operations-by-name)
-explains that boundary.
+The examples start with a small word host. It splits `birch apple ash apple`
+into borrowed words in source order and defines `prefix("a")` as an exact,
+case-sensitive prefix test. Repeated words remain separate stream entries.
 
 ## Select and count words
-
-Given the borrowed words `birch apple ash`, a host that implements `prefix`
-can run this pipeline:
 
 ```text
 filter(prefix("a")) | head(1) | count
 ```
 
-Filtering keeps `apple` and `ash`. Taking the first leaves `apple`, so the native
-result is `Count(1)`. The words still borrow their source text. See the
-[worked pipeline example](examples.md#select-and-count-borrowed-words).
+Filtering keeps `apple`, `ash`, `apple`. Taking the first leaves `apple`, so
+the result is `Count(1)`. The words still borrow the source text. The host
+implements `prefix`; Zirql supplies filtering, ordering, truncation and count.
 
-## Construct a report
+## Keep input order
 
-For `labels = ["alpha", "beta"]`, Zincite and Zirium can construct the same
-records with their own syntax. Zirium writes:
+Changing the stage order changes which words reach the filter:
+
+| Pipeline | Returned words |
+| --- | --- |
+| `filter(prefix("a")) \| head(2)` | `apple`, `ash` |
+| `head(2) \| filter(prefix("a"))` | `apple` |
+
+These are native streams. A caller can inspect them directly or ask its host
+to render them. Zirql does not choose an output format.
+
+## Construct word records
+
+After a host explicitly projects the selected words to the string array
+`["apple", "ash", "apple"]`, a comprehension can construct labelled records.
+Written as expression-tree notation:
 
 ```text
-labels = names;
-[{"name": n, "label": "data:" ++ n} for n in labels] | json
+[{word: w, label: "word:" ++ w} for w in words]
 ```
 
-The constructed value, rendered here as JSON, is:
+The returned data, shown here as JSON, is:
 
 ```json
 [
-  {"name": "alpha", "label": "data:alpha"},
-  {"name": "beta", "label": "data:beta"}
+  {"word": "apple", "label": "word:apple"},
+  {"word": "ash", "label": "word:ash"},
+  {"word": "apple", "label": "word:apple"}
 ]
 ```
 
-The [comprehension example](examples.md#build-records-from-labels) explains the
-input, ordering and equivalent Zincite spelling. These host frontends use the
-shared value evaluator; the core does not parse this report syntax itself.
+The [worked examples](examples.md) explain the word model and these results.
+The common text reader accepts the pipelines above. Comprehensions use the
+Rust value representation; a frontend supplies their text syntax.
 
 ## Read the documentation
 
 - [Language reference](shared-concepts.md) explains pipelines, predicates,
   programs, values and evaluation limits.
-- [Examples](examples.md) follows concrete inputs through queries to results.
-  The separate [design examples](language-direction.md) cover unimplemented
-  language forms.
+- [Examples](examples.md) follows words through queries to native results and
+  constructed data. [Design examples](language-direction.md) use the same
+  small domain to explain unimplemented language forms.
 - [Embedding in Rust](host-integration.md) explains what an integration needs.
   [Getting started](getting-started.md) has a pinned dependency and a runnable
   scalar expression.
 
-For queries over MLIR or MiniZinc files, read the
-[Zirium documentation](https://github.com/zayenz/zirium) or
-[Zincite guides](https://zayenz.se/zincite/). For Rust signatures, use
-`cargo doc --open` for your pinned revision. [docs.rs](https://docs.rs/zirql)
-covers published versions.
+[Semantic model integrations](semantic-models.md) shows how Zincite and Zirium
+adapt the shared evaluator to source selections and operation handles. Their
+predicates, syntax, identity rules and renderers belong to those hosts.
+
+For Rust signatures, use `cargo doc --open` for your pinned revision.
+[docs.rs](https://docs.rs/zirql) covers published versions.
 
 Zirql is developed by [Mikael Zayenz Lagerkvist](https://zayenz.se/).
 [Source on GitHub](https://github.com/zayenz/zirql) · MIT OR Apache-2.0

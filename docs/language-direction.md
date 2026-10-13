@@ -1,189 +1,174 @@
 # Design examples
 
-A function report needs to keep names and counts together. A capacity report
-needs to compare matching cells, even when the totals look sufficient. These
-examples explain the language being designed for those queries.
+The current [word examples](examples.md) select words and construct values.
+These sketches use that small domain to explain proposed projection, reducers,
+parameters, grouping, native captures and bounded paths.
 
-The programs on this page are design sketches. They explain the planned shape
-of the language; current parsers do not execute them. Syntax, supported subsets
-and delivery can change. For callable behavior today, use the
-[current Rust guides](getting-started.md).
+The forms on this page are not implemented. They describe the language being
+designed, rather than programs to run with the current parser. Syntax and
+supported subsets can change. Callable behavior is covered by the
+[Rust guides](getting-started.md).
 
-## Short queries in the terminal
+## Correlate fields with one native word
 
-The proposed command forms accept a short query directly:
-
-```sh
-zirium 'filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json' input.mlir
-zincite-query --program 'source d = literal("demand"); report sum(d);' data.dzn
-```
-
-Zirium would keep its inline query argument. Zincite would accept explicit
-`--program` text alongside a file form, preserving its legacy positional query.
-Inline and file programs would use the same evaluation, native results,
-diagnostics and limits. A file is useful for reuse and editing a longer report.
-
-## Correlate fields with one native subject
-
-Suppose an MLIR module has functions `double`, `mix` and `plain`, containing 2, 3
-and 1 body operations respectively. The first two each contain one `arith.addi`.
-A report should keep each function's name and counts together.
+Start with `birch apple ash apple`. For this sketch, the word host supplies two
+explicit projections: `text` returns a word's string, and `byte_length` returns
+its UTF-8 byte count. Each produces exactly one scalar for one word.
 
 ```text
-param operation_name: string;
-param minimum_ops: int;
+param prefix_text: string;
+param minimum_bytes: int;
 
-let threshold = require(minimum_ops >= 0, minimum_ops,
-                        "minimum_ops must be nonnegative");
-let functions = input | filter(op("func.func"));
-let rows = functions | project(f, {
-  "name": f | attr("sym_name") | one,
-  "operations": f | children | subtree | count,
-  "matches": f | children | subtree
-               | filter(op(operation_name)) | count
+let minimum = require(minimum_bytes >= 0, minimum_bytes,
+                      "minimum_bytes must be nonnegative");
+let selected = input | filter(prefix(prefix_text));
+let rows = selected | project(w, {
+  "word": w | text | one,
+  "bytes": w | byte_length | one
 });
-let selected = [r for r in rows if r.operations >= threshold];
+let long_words = [r for r in rows if r.bytes >= minimum];
 
 report {
-  "functions": selected,
-  "total_operations": sum([r.operations for r in selected]),
-  "total_matches": sum([r.matches for r in selected])
+  "words": long_words,
+  "count": length(long_words),
+  "total_bytes": sum([r.bytes for r in long_words])
 };
 ```
 
-With `operation_name = "arith.addi"` and `minimum_ops = 2`, the intended result is:
+With `prefix_text = "a"` and `minimum_bytes = 4`, the intended result is:
 
 ```json
 {
-  "functions": [
-    {"name": "double", "operations": 2, "matches": 1},
-    {"name": "mix", "operations": 3, "matches": 1}
+  "words": [
+    {"word": "apple", "bytes": 5},
+    {"word": "apple", "bytes": 5}
   ],
-  "total_operations": 5,
-  "total_matches": 2
+  "count": 2,
+  "total_bytes": 10
 }
 ```
 
-`project(f, {fields})` would bind each native function to `f`, evaluate fields in
-written order and produce one record per input item. Input order and duplicates
-remain observable. The subject binding is scoped to the projection.
-`one` would require exactly one value. A missing or ambiguous name would fail.
-Two distinct functions sharing a name would still produce two rows.
+`project(w, {fields})` would bind each native word to `w`, evaluate the fields
+in written order and produce one record for that word. The subject binding
+would be local to the projection. Both occurrences of `apple` remain present.
+`one` would require exactly one value and fail for an empty or ambiguous result.
 
-Zirql would own the projection and composition rules. Zirium would own `op`,
-`attr`, navigation and operation identity. Only explicit projections such as
-`attr` convert native facts into constructed scalar values.
+Zirql would own projection, field correlation and cardinality. The host would
+own `prefix`, `text` and `byte_length`. An application could accept a short
+query or load a program file; embedding does not require a Zirql executable.
 
-## Required parameters
+## Required parameters and reductions
 
-A reusable report can declare required `int`, `string` and `bool` inputs with
-`param`. The candidate CLI spelling is repeated `--param name=value`, for example
-`--param operation_name=arith.addi --param minimum_ops=2`. Library callers would
-supply typed values directly.
-
-The intended rules reject missing, duplicate, extra or incompatible inputs
-before domain execution. Strings stay verbatim, integers are checked decimal
-`i64`, and Booleans are exactly `true` or `false`. Parameters would not perform
-query-text substitution. Parameter defaults and named result schemas are outside
-this initial design.
-
-## Capacity at each position
+The proposed `param` declarations accept required `int`, `string` or `bool`
+inputs. Library callers would supply typed values. A CLI could use repeated
+`--param name=value` arguments. Missing, duplicate, extra or incompatible inputs
+would fail before domain execution, without query-text substitution. Defaults
+and named result schemas are outside this design.
 
 The candidate reducers `sum`, `length`, `forall` and `exists` operate on evaluated
-arrays. Integer sums are checked. Quantifiers accept known Booleans. Starting
-with eager arrays keeps errors and budget spending consistent with ordinary
-comprehensions; lazy generator reduction would need a separate contract.
+arrays. Integer sums are checked; quantifiers require known Booleans. These are
+eager arrays, so candidate visits and construction costs remain visible in the
+request budget.
 
-`require(condition, value, message)` would validate all operands, then evaluate
-the condition. On true it evaluates the value; on false it fails at the
-requirement with the message. Only the selected value is evaluated.
+`require(condition, value, message)` would preflight all operands and evaluate
+the condition first. A true condition evaluates the value. A false condition
+fails at the requirement with its literal string message. The unselected value
+is not evaluated.
 
-For MiniZinc data `demand = [2, 3, 4]` and `capacity = [6, 8, 5]`, scaling demand
-by 2 gives `[4, 6, 8]`. Totals fit (18 ≤ 19), but the third cell does not.
-The following proposed fragment makes that distinction explicit:
+## Compare values at matching positions
+
+Suppose the word host projects byte lengths `sizes = [5, 5, 3, 5]`. A caller
+supplies per-position capacities `[5, 5, 2, 6]`. Both totals are 18, but position
+3 is too small for `ash`. A proposed report could distinguish those questions:
 
 ```text
-let aligned_capacity = require(
-  index_set(demand) = index_set(capacity), capacity,
-  "demand and capacity must have the same index set"
+let aligned = require(
+  index_set(sizes) == index_set(capacity), capacity,
+  "sizes and capacity must have the same index set"
 );
-let scaled = [2 * d | d in demand];
 let rows = [
-  (index: i, demand: scaled[i], capacity: aligned_capacity[i])
-  | i in index_set(demand)
+  {position: i, bytes: sizes[i], capacity: aligned[i]}
+  for i in index_set(sizes)
 ];
-report (
-  totals_fit: sum(scaled) <= sum(aligned_capacity),
-  cells_fit: forall([r.demand <= r.capacity | r in rows]),
-  violations: [r | r in rows where r.demand > r.capacity]
-);
+report {
+  "totals_fit": sum(sizes) <= sum(aligned),
+  "positions_fit": forall([r.bytes <= r.capacity for r in rows]),
+  "violations": [r for r in rows if r.bytes > r.capacity]
+};
 ```
 
-This uses MiniZinc-style expression notation within a candidate Zincite program.
-The intended report succeeds with `cells_fit = false` and one violation.
-Insufficient capacity is report data. A failed requirement, invalid access or
-arithmetic overflow is an execution error. Host rendering would retain Zincite's
-completeness and limitations information.
+The intended report has `totals_fit = true`, `positions_fit = false` and one
+violation at position 3. Insufficient capacity is report data. A failed
+alignment requirement or arithmetic overflow is an execution error.
+
+This is proposed expression notation. A host frontend chooses its spelling and
+renderer; no particular source-file format is implied by these arrays.
 
 ## Group rows and align keyed cells
 
-`group_by(rows, "matches")` would return records with `key` and `items`. Applied
-to the function rows above, it would put `double` and `mix` in the group keyed by
-integer 1, then `plain` in the group keyed by integer 0. Groups follow first
-occurrence; members keep their row order. Keys retain their value type.
+Applied to all four word records, `group_by(rows, "bytes")` would produce a
+group keyed by integer 5 containing `birch`, `apple`, `apple`, followed by a
+group keyed by integer 3 containing `ash`. Groups follow first occurrence;
+members retain their row order. Keys retain their value type.
 
-Positional comprehensions construct new one-based positions. They cannot
-preserve arbitrary integer or nominal keys merely by iterating the values.
-The candidate `entries(a)` helper would expose keyed cells.
-`zip_exact(a, b)` would align two keyed arrays only when their ordered axes and
-present full keys match. Equal lengths alone are insufficient, especially for
-sparse arrays. Missing or incompatible keys should fail before cell arithmetic.
-These helpers would build on the [current keyed value representation](values.md#keyed-arrays).
+Positional comprehensions create new one-based positions. To retain explicit
+keys, the proposed `entries(a)` helper would expose keyed cells.
+`zip_exact(a, b)` would align arrays only when their ordered axes and present
+full keys match, returning two-element tuple cells. Equal lengths alone are
+insufficient. Two sparse arrays with keys `[1, 4]` and `[1, 3]` cannot be paired
+by silently matching their second entries.
 
-## Match operations and retain their operands
+These helpers would use the [current keyed value representation](values.md#keyed-arrays).
+Domain restrictions on the allowed axes or missing cells remain host policy.
 
-A structural query should retain the operation and operand handles long enough
-to ask further questions about them. This proposed match finds additions using
-the same SSA value twice:
+## Match neighbouring word occurrences
+
+For a structural example, extend the word host with handles identifying
+individual occurrences and their source positions. In `ash apple apple birch`,
+the two `apple` handles are distinct. The host supplies `has_next`, `next_word`
+and a `same_text` guard that compares spellings:
 
 ```text
 let matches = match {
-  from add in (input | filter(op("arith.addi")));
-  bind lhs = operand(add, 0);
-  bind rhs = operand(add, 1);
-  where same_value(lhs, rhs);
+  from word in (input | filter(has_next));
+  bind following = next_word(word);
+  where same_text(word, following);
 };
 
 let rows = matches | project(m, {
-  "function": m.add | root(op("func.func")) | attr("sym_name") | one,
-  "operation": m.add | names | one
+  "word": m.word | text | one,
+  "position": m.word | position | one
 });
 report {"matches": rows, "count": length(rows)};
 ```
 
-`from` would enumerate native candidates, `bind` would retain one value per
-candidate and `where` would guard the match. Later clauses see earlier bindings.
-Each match returns a native capture record; field access such as `m.add` retains
-the operation type. The final projection constructs scalar report rows.
+Using one-based word positions, the intended report contains the occurrence
+`apple` at position 2 and a count of 1. Captures would retain both native
+handles; projecting the report would not turn their matching spellings into
+native identity.
 
-For an addition of `%x` to itself in `double`, the intended result contains one
-match. Equal printed SSA names in different scopes do not establish equality.
-Two results of one multi-result operation also remain distinct.
-Zirium would supply operand lookup and SSA identity; the base would own clause
-scope, enumeration and budget propagation.
-
-An Unknown required guard needs a located refusal with the host's reason.
-Silently discarding it would hide uncertainty. This observation also says
-nothing about whether rewriting the addition is legal.
+`from` would enumerate candidates, `bind` would retain a native value per
+candidate and `where` would guard the match. Later clauses would see earlier
+bindings. Zirql would own that scope and enumeration; the word host would own
+adjacency, source positions and text comparison. An Unknown required guard
+would fail with the host's reason instead of silently discarding a candidate.
 
 ## Explain a connection with a bounded path
 
-The path direction is one deterministic shortest witness per reachable
-source/sink pair within an explicit edge-depth bound. A host would supply edges
-and native identity; the base would own bounded traversal and selection of the
-witness. It would preserve host uncertainty and diff-side rules.
+An occurrence host can define a `next_word` edge between adjacent words. For
+`ash apple birch`, a path from `ash` to `birch` needs two edges:
 
-For edges `a → b`, `b → c` and `a → c`, a bound of one can report the direct
-`a → c` witness. Removing that edge requires a bound of at least two to expose
-`a → b → c`. The query would not enumerate every possible path. Edge meanings
-and the surface spelling still need concrete host choices.
+```text
+filter(prefix("ash"))
+| paths(next_word, to=prefix("birch"), max_depth=2)
+```
+
+The proposed result has one witness with steps `[ash, apple, birch]`, including
+both endpoints. A bound of one gives no witness for that pair. The selected
+direction is one deterministic shortest witness per reachable source/sink pair
+within the explicit edge bound, rather than an enumeration of every path.
+
+The host would supply edges and occurrence identity. Zirql would own bounded
+traversal and witness selection, preserving host uncertainty. The query would
+be read-only. [Semantic model integrations](semantic-models.md) explains why a
+different host can give the same language constructs different domain meanings.
