@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 15
+- Total: 16
 - Ready: 2
-- Blocked: 2
+- Blocked: 3
 - Done: 11
 
 | ID | Task | State | Blocked by |
@@ -15,7 +15,7 @@
 | [base-004](tasks/004-share-query-programs-bindings-and-nested-structured-reports.md) | Share query programs, bindings and nested structured reports | done | base-002, base-003, base-013, base-014 |
 | [base-005](tasks/005-build-zincite-positional-reports-with-the-shared-comprehensi.md) | Build Zincite positional reports with the shared comprehension evaluator | done | base-004, base-015 |
 | [base-006](tasks/006-add-natural-zirium-comprehensions-over-projected-query-resul.md) | Add natural Zirium comprehensions over projected query results | done | base-005 |
-| [base-007](tasks/007-construct-enum-aware-keyed-and-multidimensional-zincite-repo.md) | Construct enum-aware keyed and multidimensional Zincite reports | ready | base-005 |
+| [base-007](tasks/007-construct-enum-aware-keyed-and-multidimensional-zincite-repo.md) | Construct enum-aware keyed and multidimensional Zincite reports | blocked | base-005, base-016 |
 | [base-008](tasks/008-use-shared-comprehensions-for-atomic-zincite-data-constructi.md) | Use shared comprehensions for atomic Zincite data construction | blocked | base-007 |
 | [base-009](tasks/009-complete-zirium-diff-fixed-point-and-live-edit-integration.md) | Complete Zirium diff, fixed-point and live-edit integration | ready | base-004 |
 | [base-010](tasks/010-finish-adoption-and-measure-multi-feature-report-reuse.md) | Finish adoption and measure multi-feature report reuse | blocked | base-006, base-008, base-009 |
@@ -24,3 +24,4 @@
 | [base-013](tasks/013-add-the-native-program-runtime-prerequisite-for-host-integra.md) | Add the native program runtime prerequisite for host integration | done | — |
 | [base-014](tasks/014-preserve-flat-native-set-sequencing-and-publish-the-compatib.md) | Preserve flat native set sequencing and publish the compatible runtime | done | base-013 |
 | [base-015](tasks/015-deliver-the-bounded-positional-value-evaluator-and-usable-pr.md) | Deliver the bounded positional value evaluator and usable prerelease | done | — |
+| [base-016](tasks/016-deliver-nominal-keyed-value-construction-and-a-usable-prerel.md) | Deliver nominal keyed value construction and a usable prerelease | ready | — |

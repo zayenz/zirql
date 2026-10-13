@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "normal"
-blocked_by = ["base-005"]
+blocked_by = ["base-005", "base-016"]
 +++
 # Construct enum-aware keyed and multidimensional Zincite reports
 
