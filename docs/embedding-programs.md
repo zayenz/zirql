@@ -188,3 +188,27 @@ active metadata allowance before growth. The common reader also pays for this
 metadata when resolving an owned declaration immediately. Requests near an
 earlier work/result threshold may therefore fail earlier during preparation;
 defaults and execution charges are unchanged.
+
+An immutable native host can opt into `FunctionHost::retains_native_admission`.
+After the first whole-value check, an unchanged value passed under an equivalent
+contract keeps its admission during that request. The host must guarantee stable
+ownership, coordinates, contents and handle validity. The default continues to
+check native values at every boundary. Fresh native results and changed contracts
+still receive whole admission. This removes repeated native scans for opted-in
+hosts; it does not increase the work/result defaults or skip producer charges.
+
+Native matching inside a function uses `evaluate_match_with_arguments` to keep
+the active runner while the common clause executor introduces captures. Its
+source and guard hooks receive the current immutable clause bindings. A selected
+embedded value runs through `NativeArguments::evaluate_match_value`; it does not
+start another function request. `ProjectionHost::scoped_value_arguments` supplies
+each written value's additional lexical names and optional relative input during
+preparation. Earlier capture names are available to later sources and guards;
+forward names and shadowing fail before execution. Ordinary arguments keep their
+existing relative-input behavior and no additional names by default.
+
+The same clause executor handles direct and function-bearing requests. It still
+checks all written clauses, spends work on candidate/guard inspection, skips
+later sources after a false guard and refuses a final Unknown. Captures share
+their original outer binding map. Scoped preparation and the small clause-local
+binding metadata spend the continuing request allowance before growth.

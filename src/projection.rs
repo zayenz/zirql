@@ -32,6 +32,17 @@ pub type NativeValueArguments<'s, C, H> = Vec<(
     <H as ProjectionHost<C>>::Kind,
 )>;
 
+/// One embedded value with additional lexical names introduced by its native
+/// construct. For example, a match source sees only earlier capture clauses.
+/// These are preparation facts, not caller values or a replacement environment.
+pub struct ScopedNativeArgument<'a, Q, K> {
+    pub expression: &'a ValueExpression<Q>,
+    pub relative: Option<K>,
+    pub locals: Vec<(Located<String>, K)>,
+}
+pub type ScopedNativeValueArguments<'a, C, H> =
+    Vec<ScopedNativeArgument<'a, NativeExpression<C, H>, <H as ProjectionHost<C>>::Kind>>;
+
 /// An immutable native argument retaining its owner after a function frame ends.
 /// Declaration metadata describes the whole admitted value; it does not replace
 /// the host's current-document checks at a later native boundary.
@@ -87,6 +98,30 @@ pub trait NativeArguments<C, H: ProjectionHost<C>> {
         )
         .into())
     }
+
+    /// Evaluate a declared match source or guard against the common match
+    /// executor's immutable clause bindings, retaining this active runner.
+    /// The corresponding scoped argument must declare every extra name.
+    ///
+    /// # Errors
+    /// Unsupported runners, undeclared values, scope and resource failures retain locations.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The argument retains the adapter's native value, kind and error types"
+    )]
+    fn evaluate_match_value(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        _relative_input: H::Value,
+        _bindings: &Bindings<H::Value>,
+        _budget: &mut Budget,
+    ) -> Result<NativeRead<H::Value, H::Kind>, EvaluationError<H::Error>> {
+        Err(QueryError::query(
+            expression.range.clone(),
+            "match arguments require a prepared function program",
+        )
+        .into())
+    }
 }
 
 /// Domain facts and explicit scalar conversions for shared native projection.
@@ -102,6 +137,31 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         _range: &Range<usize>,
     ) -> Result<NativeValueArguments<'s, C, Self>, QueryError> {
         Ok(Vec::new())
+    }
+    /// Describe exact clause-local scope for declared native arguments. Ordinary
+    /// stages retain their current arguments and relative-input policy.
+    fn scoped_value_arguments<'s>(
+        &self,
+        stage: &'s Self::Stage,
+        _input: &Self::Kind,
+        _scope: &BTreeMap<String, Self::Kind>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<ScopedNativeValueArguments<'s, C, Self>, QueryError> {
+        let arguments = self.value_arguments(stage, budget, range)?;
+        admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, Self>, Self::Kind>>(
+            arguments.len(),
+            budget,
+            range,
+        )?;
+        Ok(arguments
+            .into_iter()
+            .map(|(expression, kind)| ScopedNativeArgument {
+                expression,
+                relative: (!self.is_explicit_source(stage)).then_some(kind),
+                locals: Vec::new(),
+            })
+            .collect())
     }
     /// Execute a stage with its invocation-local prepared argument runner.
     /// Existing hosts keep their ordinary stage implementation.
@@ -482,6 +542,99 @@ pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
                     );
                 }
             },
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn scoped_arguments<'q, C, H: ProjectionHost<C>>(
+    query: &'q NativeExpression<C, H>,
+    host: &H,
+    input: &H::Kind,
+    scope: &BTreeMap<String, H::Kind>,
+    budget: &mut Budget,
+) -> Result<ScopedNativeValueArguments<'q, C, H>, QueryError> {
+    enum Pending<'q, S, O, E, K> {
+        Expression(&'q Expression<S, O, E>, K),
+        Stage(&'q Located<ExpressionStep<S, E>>, K),
+    }
+    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter, H::Kind>>(
+        1,
+        budget,
+        &query.range,
+    )?;
+    let mut pending = vec![Pending::Expression(query, input.clone())];
+    let mut result = Vec::new();
+    while let Some(next) = pending.pop() {
+        match next {
+            Pending::Stage(step, kind) => {
+                if let ExpressionStep::Stage(stage) = &step.value {
+                    let arguments =
+                        host.scoped_value_arguments(stage, &kind, scope, budget, &step.range)?;
+                    admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
+                        arguments.len(),
+                        budget,
+                        &step.range,
+                    )?;
+                    result.extend(arguments);
+                }
+            }
+            Pending::Expression(expression, input) => {
+                budget.charge(1, Location::Query(expression.range.clone()))?;
+                let count = match &expression.value {
+                    ExpressionKind::Sequence { steps, .. } => steps.len() + 1,
+                    ExpressionKind::Set { .. } => 2,
+                    ExpressionKind::Record(fields) => fields.len(),
+                    ExpressionKind::Group(_) | ExpressionKind::Field { .. } => 1,
+                    _ => 0,
+                };
+                admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter, H::Kind>>(
+                    count,
+                    budget,
+                    &expression.range,
+                )?;
+                match &expression.value {
+                    ExpressionKind::Sequence {
+                        input: source,
+                        steps,
+                    } => {
+                        let mut stages = Vec::new();
+                        admit_slots::<(&Located<ExpressionStep<H::Stage, H::Emitter>>, H::Kind)>(
+                            steps.len(),
+                            budget,
+                            &expression.range,
+                        )?;
+                        let mut kind = native_expression_kind(source, host, &input, scope, budget)?;
+                        for step in steps {
+                            if let ExpressionStep::Stage(stage) = &step.value {
+                                stages.push((step, kind.clone()));
+                                kind = host.stage_kind(stage, &kind, scope, budget, &step.range)?;
+                            }
+                        }
+                        pending.extend(
+                            stages
+                                .into_iter()
+                                .rev()
+                                .map(|(step, kind)| Pending::Stage(step, kind)),
+                        );
+                        pending.push(Pending::Expression(source, input));
+                    }
+                    ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => {
+                        pending.push(Pending::Expression(value, input))
+                    }
+                    ExpressionKind::Set { left, right, .. } => {
+                        pending.push(Pending::Expression(right, input.clone()));
+                        pending.push(Pending::Expression(left, input));
+                    }
+                    ExpressionKind::Record(fields) => pending.extend(
+                        fields
+                            .iter()
+                            .rev()
+                            .map(|(_, value)| Pending::Expression(value, input.clone())),
+                    ),
+                    ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+                }
+            }
         }
     }
     Ok(result)

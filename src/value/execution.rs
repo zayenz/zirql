@@ -94,6 +94,9 @@ pub(crate) trait Host<'a, Q> {
     type Native;
     type Kind: PartialEq;
     type Error: From<QueryError>;
+    fn retains_native_admission(&self) -> bool {
+        false
+    }
     fn outer(
         &mut self,
         slot: usize,
@@ -1221,23 +1224,19 @@ fn admit<'a, Q, H: Host<'a, Q>>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), H::Error> {
+    let reusable = matches!(value.data, Data::Constructed(_)) || host.retains_native_admission();
+    if reusable
+        && let Some(previous) = value.contract
+        && (std::ptr::eq(previous, expected)
+            || crate::runtime_types::same_declaration(previous, expected, budget, location)?)
+    {
+        value.contract = Some(expected);
+        return Ok(());
+    }
     match &value.data {
         Data::Native(value) => host.admit_native(value, expected, budget, location.clone())?,
         Data::Constructed(data) => {
-            if !value
-                .contract
-                .is_some_and(|previous| std::ptr::eq(previous, expected))
-            {
-                let admitted = match value.contract {
-                    Some(previous) => crate::runtime_types::same_declaration(
-                        previous, expected, budget, location,
-                    )?,
-                    None => false,
-                };
-                if !admitted {
-                    crate::admit_constructed(data.as_ref(), expected, budget, location.clone())?;
-                }
-            }
+            crate::admit_constructed(data.as_ref(), expected, budget, location.clone())?;
         }
     }
     value.contract = Some(expected);

@@ -1,9 +1,9 @@
 use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
-    Bindings, Budget, EvaluationError, Located, Location, NativeExpression, Predicate,
-    PredicateKind, ProjectionHost, QueryError, QueryErrorCategory, Truth, evaluate_expression,
-    native_expression_kind,
+    Bindings, Budget, EvaluationError, Located, Location, NativeArguments, NativeExpression,
+    Predicate, PredicateKind, ProjectionHost, QueryError, QueryErrorCategory, Truth,
+    evaluate_expression, native_expression_kind,
 };
 
 /// Ordered native fields. Values retain their host handles and source coordinates.
@@ -75,6 +75,38 @@ pub trait MatchHost<C>: ProjectionHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Truth, EvaluationError<Self::Error>>;
+
+    /// Run a selected source through an enclosing prepared argument runner.
+    /// Clause bindings contain earlier captures and share the original outer map.
+    fn evaluate_match_source_with_arguments(
+        &self,
+        source: &NativeExpression<C, Self>,
+        input: Self::Value,
+        bindings: &Bindings<Self::Value>,
+        arguments: &mut dyn NativeArguments<C, Self>,
+        budget: &mut Budget,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        evaluate_expression(source, self, input, arguments.parts().0, bindings, budget)
+    }
+
+    /// Run a selected guard with the same active calls and clause bindings.
+    fn evaluate_guard_leaf_with_arguments(
+        &self,
+        guard: &Self::Guard,
+        input: &Self::Value,
+        bindings: &Bindings<Self::Value>,
+        arguments: &mut dyn NativeArguments<C, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Truth, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        self.evaluate_guard_leaf(guard, input, arguments.parts().0, bindings, budget, range)
+    }
 }
 
 /// Preflight every clause without obtaining subjects, including unreachable ones.
@@ -198,6 +230,94 @@ pub fn evaluate_match<C, H: MatchHost<C>>(
     bindings: &Bindings<H::Value>,
     budget: &mut Budget,
 ) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
+    evaluate_match_context(
+        matching,
+        host,
+        input,
+        &mut MatchContext::Direct { context, bindings },
+        budget,
+    )
+}
+
+/// Execute the same dependent clause chain with an active function argument
+/// runner. Scoped argument metadata declares earlier capture names before any
+/// source executes; false/Unknown guards retain ordinary matching behavior.
+///
+/// # Errors
+/// Source, guard, function and resource failures retain their original locations.
+pub fn evaluate_match_with_arguments<C, H: MatchHost<C>>(
+    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+    host: &H,
+    input: H::Value,
+    arguments: &mut dyn NativeArguments<C, H>,
+    budget: &mut Budget,
+) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
+    evaluate_match_context(
+        matching,
+        host,
+        input,
+        &mut MatchContext::Arguments(arguments),
+        budget,
+    )
+}
+
+enum MatchContext<'a, C, H: MatchHost<C>> {
+    Direct {
+        context: &'a mut C,
+        bindings: &'a Bindings<H::Value>,
+    },
+    Arguments(&'a mut dyn NativeArguments<C, H>),
+}
+impl<C, H: MatchHost<C>> MatchContext<'_, C, H> {
+    fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
+        match self {
+            Self::Direct { context, bindings } => (context, bindings),
+            Self::Arguments(arguments) => arguments.parts(),
+        }
+    }
+    fn source(
+        &mut self,
+        host: &H,
+        source: &NativeExpression<C, H>,
+        input: H::Value,
+        bindings: &Bindings<H::Value>,
+        budget: &mut Budget,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        match self {
+            Self::Direct { context, .. } => {
+                evaluate_expression(source, host, input, context, bindings, budget)
+            }
+            Self::Arguments(arguments) => host
+                .evaluate_match_source_with_arguments(source, input, bindings, *arguments, budget),
+        }
+    }
+    fn guard(
+        &mut self,
+        host: &H,
+        guard: &H::Guard,
+        input: &H::Value,
+        bindings: &Bindings<H::Value>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Truth, EvaluationError<H::Error>> {
+        match self {
+            Self::Direct { context, .. } => {
+                host.evaluate_guard_leaf(guard, input, context, bindings, budget, range)
+            }
+            Self::Arguments(arguments) => host.evaluate_guard_leaf_with_arguments(
+                guard, input, bindings, *arguments, budget, range,
+            ),
+        }
+    }
+}
+
+fn evaluate_match_context<C, H: MatchHost<C>>(
+    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+    host: &H,
+    input: H::Value,
+    context: &mut MatchContext<'_, C, H>,
+    budget: &mut Budget,
+) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
     if budget.remaining_results().is_none() {
         return Err(QueryError::query(
             matching.range.clone(),
@@ -207,12 +327,17 @@ pub fn evaluate_match<C, H: MatchHost<C>>(
     }
     budget.within_evaluation(1, Location::Query(matching.range.clone()), |budget| {
         let input_kind = host.kind(&input, budget, &matching.range)?;
-        let scope = crate::projection::scope_kinds(host, bindings, budget, &matching.range)?;
+        let bindings =
+            context
+                .parts()
+                .1
+                .with_shared_values(BTreeMap::new(), budget, &matching.range)?;
+        let scope = crate::projection::scope_kinds(host, &bindings, budget, &matching.range)?;
         let schema = match_types(matching, host, &input_kind, &scope, budget)?;
         slots::<H::Value>(1, budget, &matching.range, true)?;
         let mut rows = Vec::new();
         run_clauses(
-            matching, 0, &schema, host, &input, context, bindings, budget, &mut rows,
+            matching, 0, &schema, host, &input, context, &bindings, budget, &mut rows,
         )?;
         Ok(rows)
     })
@@ -230,7 +355,7 @@ fn run_clauses<C, H: MatchHost<C>>(
     schema: &NativeCapture<H::Kind>,
     host: &H,
     input: &H::Value,
-    context: &mut C,
+    context: &mut MatchContext<'_, C, H>,
     bindings: &Bindings<H::Value>,
     budget: &mut Budget,
     rows: &mut Vec<H::Value>,
@@ -260,11 +385,15 @@ fn run_clauses<C, H: MatchHost<C>>(
             let mut fields = Vec::with_capacity(schema.fields.len());
             for (name, _) in &schema.fields {
                 budget.charge(name.len(), Location::Query(range.clone()))?;
-                let value =
-                    host.copy_value(bindings.get(name, range.clone())?, context, budget, range)?;
+                let value = host.copy_value(
+                    bindings.get(name, range.clone())?,
+                    context.parts().0,
+                    budget,
+                    range,
+                )?;
                 fields.push((name.clone(), value));
             }
-            rows.push(host.construct_record(fields, context, budget, range)?);
+            rows.push(host.construct_record(fields, context.parts().0, budget, range)?);
             return Ok(());
         };
         match &clause.value {
@@ -273,9 +402,9 @@ fn run_clauses<C, H: MatchHost<C>>(
                 name,
                 value: source,
             } => {
-                let relative = host.copy_value(input, context, budget, &source.range)?;
-                let value = evaluate_expression(source, host, relative, context, bindings, budget)?;
-                let subjects = host.subjects(value, context, budget, &source.range)?;
+                let relative = host.copy_value(input, context.parts().0, budget, &source.range)?;
+                let value = context.source(host, source, relative, bindings, budget)?;
+                let subjects = host.subjects(value, context.parts().0, budget, &source.range)?;
                 budget.check_items(subjects.len(), Location::Query(source.range.clone()))?;
                 if matches!(clause.value, MatchClause::Bind { .. }) && subjects.len() != 1 {
                     return Err(QueryError::query(
@@ -308,7 +437,7 @@ fn run_clauses<C, H: MatchHost<C>>(
                     crate::Nesting::Nodes,
                     budget,
                     |guard, budget, range| {
-                        host.evaluate_guard_leaf(guard, input, context, bindings, budget, range)
+                        context.guard(host, guard, input, bindings, budget, range)
                     },
                 )? {
                     Truth::True => run_clauses(

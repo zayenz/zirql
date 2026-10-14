@@ -1715,6 +1715,16 @@ mod projection {
     }
     struct Host;
 
+    fn match_argument(source: &Query) -> Option<&zirql::ValueExpression<Query>> {
+        if let ExpressionKind::Sequence { steps, .. } = &source.value
+            && let [step] = steps.as_slice()
+            && let ExpressionStep::Stage(Stage::NativeArgument(value)) = &step.value
+        {
+            return Some(value);
+        }
+        None
+    }
+
     impl zirql::RuntimeTypeHost<()> for Host {
         type Kind = Kind;
 
@@ -1947,6 +1957,21 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<zirql::NativeValueArguments<'s, (), Self>, QueryError> {
+            if let Stage::Match(matching) = stage {
+                let mut values = Vec::new();
+                for clause in &matching.clauses {
+                    let source = match &clause.value {
+                        zirql::MatchClause::From { source, .. }
+                        | zirql::MatchClause::Bind { value: source, .. } => source,
+                        zirql::MatchClause::Where { .. } => continue,
+                    };
+                    if let Some(value) = match_argument(source) {
+                        values.push((value, Kind::Subjects));
+                    }
+                }
+                budget.charge(values.len(), Location::Query(range.clone()))?;
+                return Ok(values);
+            }
             if let Stage::NativeArgument(value) = stage {
                 budget.charge(1, Location::Query(range.clone()))?;
                 Ok(vec![(value.as_ref(), Kind::Subjects)])
@@ -1957,6 +1982,48 @@ mod projection {
                 Ok(vec![])
             }
         }
+        fn scoped_value_arguments<'s>(
+            &self,
+            stage: &'s Stage,
+            _: &Kind,
+            _: &BTreeMap<String, Kind>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Vec<zirql::ScopedNativeArgument<'s, Query, Kind>>, QueryError> {
+            if let Stage::Match(matching) = stage {
+                let mut locals: Vec<(Located<String>, Kind)> = Vec::new();
+                let mut arguments = Vec::new();
+                for clause in &matching.clauses {
+                    let (name, source) = match &clause.value {
+                        zirql::MatchClause::From { name, source }
+                        | zirql::MatchClause::Bind {
+                            name,
+                            value: source,
+                        } => (name, source),
+                        zirql::MatchClause::Where { .. } => continue,
+                    };
+                    if let Some(expression) = match_argument(source) {
+                        budget.charge(locals.len() + 1, Location::Query(source.range.clone()))?;
+                        arguments.push(zirql::ScopedNativeArgument {
+                            expression,
+                            relative: None,
+                            locals: locals.clone(),
+                        });
+                    }
+                    locals.push((name.clone(), Kind::Subjects));
+                }
+                return Ok(arguments);
+            }
+            Ok(self
+                .value_arguments(stage, budget, range)?
+                .into_iter()
+                .map(|(expression, kind)| zirql::ScopedNativeArgument {
+                    expression,
+                    relative: (!self.is_explicit_source(stage)).then_some(kind),
+                    locals: vec![],
+                })
+                .collect())
+        }
         fn evaluate_stage_with_arguments(
             &self,
             stage: &Stage,
@@ -1965,6 +2032,25 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
+            if let Stage::Match(matching) = stage {
+                let (context, bindings) = arguments.parts();
+                let input_kind = self.kind(&input, budget, range)?;
+                let mut scope = BTreeMap::new();
+                for (name, value) in bindings.iter() {
+                    scope.insert(name.to_owned(), self.kind(value, budget, range)?);
+                }
+                let schema = Arc::new(zirql::match_types(
+                    matching,
+                    self,
+                    &input_kind,
+                    &scope,
+                    budget,
+                )?);
+                let _ = context;
+                let rows =
+                    zirql::evaluate_match_with_arguments(matching, self, input, arguments, budget)?;
+                return Ok(Value::Captures { rows, schema });
+            }
             if let Stage::Paths(paths) = stage {
                 let input_kind = self.kind(&input, budget, range)?;
                 let schema = Arc::new(zirql::path_types(
@@ -2148,7 +2234,7 @@ mod projection {
             }
         }
         fn is_explicit_source(&self, stage: &Stage) -> bool {
-            matches!(stage, Stage::NativeArgument(_))
+            matches!(stage, Stage::NativeArgument(_) | Stage::Match(_))
         }
         fn is_pure(&self, stage: &Stage) -> bool {
             *stage != Stage::Edit
@@ -2254,6 +2340,9 @@ mod projection {
         }
     }
     impl zirql::FunctionHost<()> for Host {
+        fn retains_native_admission(&self) -> bool {
+            true
+        }
         fn declaration_kind(
             &self,
             d: &zirql::DeclaredType<Kind>,
@@ -2866,6 +2955,163 @@ mod projection {
     }
 
     #[test]
+    fn dependent_match_arguments_keep_clause_scope_active_calls_and_guard_laziness() {
+        use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest, MatchClause as C};
+        let make = |guard, source_name: &str| {
+            let mut identity = native_function("identity", fn_name("xs"));
+            identity.parameters.remove(0);
+            let mut clauses = vec![super::at(
+                C::From {
+                    name: super::at("first".into(), 10),
+                    source: super::at(ExpressionKind::Binding("xs".into()), 11),
+                },
+                10,
+            )];
+            if let Some(guard) = guard {
+                clauses.push(super::at(
+                    C::Where {
+                        predicate: super::at(zirql::PredicateKind::Leaf(guard), 12),
+                    },
+                    12,
+                ));
+            }
+            clauses.push(super::at(
+                C::Bind {
+                    name: super::at("second".into(), 13),
+                    value: super::sequence(
+                        super::at(ExpressionKind::Input, 14),
+                        vec![super::at(
+                            ExpressionStep::Stage(Stage::NativeArgument(Arc::new(function_call(
+                                "identity",
+                                vec![fn_name(source_name)],
+                            )))),
+                            14,
+                        )],
+                    ),
+                },
+                13,
+            ));
+            let source = function_value(K::NativeValue(Box::new(super::sequence(
+                super::at(ExpressionKind::Input, 15),
+                vec![super::at(
+                    ExpressionStep::Stage(Stage::Match(Box::new(NativeMatch {
+                        clauses,
+                        range: 10..20,
+                    }))),
+                    15,
+                )],
+            ))));
+            let values = function_value(K::Comprehension {
+                constructor: zirql::ValueConstructor::Array,
+                clauses: vec![super::at(
+                    zirql::ValueGenerator::In {
+                        binders: vec![super::at(Some("row".into()), 21)],
+                        source,
+                        filter: None,
+                    },
+                    21,
+                )],
+                head: Box::new(fn_int(1)),
+            });
+            let mut capture = native_function(
+                "capture",
+                function_value(K::Reduce {
+                    operator: zirql::ValueReducer::Sum,
+                    array: Box::new(values),
+                }),
+            );
+            capture.result = super::at(D::Integer, 4);
+            vec![identity, capture]
+        };
+        let entry = function_call(
+            "capture",
+            vec![
+                fn_int(0),
+                function_value(K::NativeValue(Box::new(super::at(
+                    ExpressionKind::Binding("input".into()),
+                    30,
+                )))),
+            ],
+        );
+        let bindings = Bindings::new([(
+            super::at("input".into(), 31),
+            Value::Subjects(vec!["alpha", "beta"]),
+        )])
+        .unwrap();
+        let declarations = make(None, "first");
+        let mut budget = function_budget();
+        let result = FunctionRequest::prepare(
+            &declarations,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap();
+        assert!(matches!(result,Value::Constructed(value) if value.data()==&V::Integer(2)));
+        let error = FunctionRequest::prepare(
+            &declarations,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap_err();
+        assert!(error.to_string().contains("active function depth"));
+        let skipped = make(Some(Truth::False), "first");
+        let result = FunctionRequest::prepare(
+            &skipped,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap();
+        assert!(matches!(result,Value::Constructed(value) if value.data()==&V::Integer(0)));
+        let unknown = make(Some(Truth::Unknown), "first");
+        let error = FunctionRequest::prepare(
+            &unknown,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap_err();
+        assert!(
+            matches!(error.error,EvaluationError::Core(ref error) if error.category==QueryErrorCategory::UnknownPredicate)
+        );
+        let invalid = make(None, "later");
+        assert!(
+            FunctionRequest::prepare(
+                &invalid,
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 2 }
+            )
+            .is_err()
+        );
+        let good = FunctionRequest::prepare(
+            &declarations,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings);
+        assert!(good.is_ok());
+    }
+
+    #[test]
     fn shared_native_argument_trees_keep_each_function_lexical_kind() {
         use zirql::{
             DeclaredType as D, FunctionDeclaration, FunctionLimits, FunctionParameter,
@@ -3192,6 +3438,25 @@ mod projection {
     }
     impl MatchHost<()> for Host {
         type Guard = Truth;
+        fn evaluate_match_source_with_arguments(
+            &self,
+            source: &Query,
+            input: Value,
+            bindings: &Bindings<Value>,
+            arguments: &mut dyn zirql::NativeArguments<(), Self>,
+            budget: &mut Budget,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            if let Some(value) = match_argument(source) {
+                let selected = arguments.evaluate_match_value(value, input, bindings, budget)?;
+                return self.copy_value(
+                    selected.value(),
+                    arguments.parts().0,
+                    budget,
+                    &source.range,
+                );
+            }
+            zirql::evaluate_expression(source, self, input, arguments.parts().0, bindings, budget)
+        }
         fn validate_guard_leaf(
             &self,
             _: &Truth,

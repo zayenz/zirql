@@ -24,7 +24,8 @@ pub use functions::{
     dispose_functions, evaluate_functions,
 };
 pub use matching::{
-    MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match, match_types,
+    MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
+    evaluate_match_with_arguments, match_types,
 };
 pub use parser::{ArgumentReader, parse_pipeline};
 pub use paths::{
@@ -37,9 +38,10 @@ pub use program::{
 };
 pub use projection::{
     ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeRead,
-    NativeValueArguments, Projection, ProjectionFields, ProjectionHost, evaluate_native_value,
-    evaluate_native_value_with_types, evaluate_projection, evaluate_projection_with_types,
-    native_expression_kind, native_value_types, projection_types,
+    NativeValueArguments, Projection, ProjectionFields, ProjectionHost, ScopedNativeArgument,
+    ScopedNativeValueArguments, evaluate_native_value, evaluate_native_value_with_types,
+    evaluate_projection, evaluate_projection_with_types, native_expression_kind,
+    native_value_types, projection_types,
 };
 pub use reader::{
     CommonStatement, ReadExpression, ResolvedFunctionSignature, SignatureType,
