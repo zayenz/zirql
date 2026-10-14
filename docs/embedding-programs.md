@@ -163,8 +163,8 @@ Bodies contain ordered `let name = expression;` bindings and a final expression.
 Ordinary calls accept zero or more positional arguments. Conditionals use
 `if condition { expression } else { expression }`, with optional `else if`
 branches and a required final `else`. Both written branches are preflighted;
-only the selected result executes. Branch-local blocks belong to the later
-patterns/control-flow work.
+only the selected result executes. Callable expression blocks support lexical
+pattern bindings; their textual frontend syntax belongs to later host work.
 
 Hosts with their own expression parser can implement
 `ValueReaderHost::parse_function_value`. It receives the original cursor and
@@ -212,3 +212,49 @@ checks all written clauses, spends work on candidate/guard inspection, skips
 later sources after a false guard and refuses a final Unknown. Captures share
 their original outer binding map. Scoped preparation and the small clause-local
 binding metadata spend the continuing request allowance before growth.
+
+
+## Destructure values and select match arms
+
+`Pattern` is a located `PatternKind`: a name, wildcard, fixed tuple, record,
+scalar literal, `Present(child)` or `Absent`. A record contains located static
+labels paired with child patterns. Use `ignore_rest: true` to ignore additional
+stored fields. Renaming is the label/name pair; no rest value is allocated.
+
+`ValueExpressionKind::Block { bindings, value }` contains ordered pattern/value
+pairs and a final expression. Each initializer sees earlier bindings and the
+outer scope. It evaluates once; all of its pattern must match before any of its
+names become visible. Names disappear when the block finishes. Duplicate names
+and shadowing fail during preparation, including in unused arms.
+
+`PatternFunctionDeclaration` accepts `PatternParameter { pattern, declaration }`.
+The declaration describes the whole argument. Use `evaluate_pattern_functions`
+for constructed values, or `PreparedFunctions::prepare_patterns` and
+`FunctionRequest::prepare_patterns` for a native host. These enter the same
+runner as the existing name-only declarations. All arguments evaluate once,
+left-to-right; all whole arguments are admitted before any parameter pattern
+installs names. A mismatch points to its parameter pattern. Blocks hold local
+pattern bindings in these declarations.
+
+`ValueExpressionKind::ValueMatch { subject, arms }` uses ordered
+`ValueMatchArm { pattern, guard, value }` entries. It evaluates the subject once.
+A matching arm binds names only for its guard and value. A false guard continues;
+a true guard selects that value. Guard errors, Unknown and non-Booleans fail.
+Exactly one final unguarded `Wildcard` supplies the fallback. Only the selected
+value executes. Selected final arms and block values preserve compatible tail
+calls after pattern and guard work finishes.
+
+Native records use `ProgramHost::capture_record` and
+`ProjectionHost::capture_record_kind`. Native tuples can opt into `tuple_view`
+and `tuple_view_kind`; their defaults expose no tuple. These views borrow an
+immutable layout containing actual native children. They must remain stable
+while the owner is retained. Hosts keep handle validity and source coordinates;
+view access does not reflect Rust fields. Child selections retain the original
+owner and any declared field/position contract. Host calls and returned owned
+results use the existing charged materialization boundaries.
+
+The common reader retains its current simple bindings, records, native capture
+matches and conditionals. Host text syntax for patterns, blocks and value
+matching is separate work. When releasing lowered native trees, use
+`dispose_native_value` or `dispose_pattern_functions`; `dispose_pattern` releases
+a standalone nested pattern iteratively.

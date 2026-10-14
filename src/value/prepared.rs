@@ -136,11 +136,25 @@ pub(crate) enum PreparedKind<'a, Q> {
         branches: Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>,
         otherwise: Box<PreparedValue<'a, Q>>,
     },
+    Block {
+        bindings: Vec<(&'a Pattern, PreparedValue<'a, Q>)>,
+        value: Box<PreparedValue<'a, Q>>,
+    },
+    ValueMatch {
+        subject: Box<PreparedValue<'a, Q>>,
+        arms: Vec<PreparedArm<'a, Q>>,
+    },
     Comprehension {
         constructor: ValueConstructor,
         clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
         head: Box<PreparedValue<'a, Q>>,
     },
+}
+
+pub(crate) struct PreparedArm<'a, Q> {
+    pub pattern: &'a Pattern,
+    pub guard: Option<PreparedValue<'a, Q>>,
+    pub value: PreparedValue<'a, Q>,
 }
 
 /// Ordered generator clauses. None discards a value without installing a name.
@@ -393,6 +407,45 @@ impl<'a> Preparation<'a> {
                         otherwise: Box::new(self.resolve(otherwise, queries, budget)?),
                     }
                 }
+                ValueExpressionKind::Block { bindings, value } => {
+                    let saved = self.locals.len();
+                    let mut resolved = metadata_vec(bindings.len(), budget, &location)?;
+                    for (pattern, value) in bindings {
+                        let value = self.resolve(value, queries, budget)?;
+                        pattern::names(pattern, &mut self.locals, budget)?;
+                        resolved.push((pattern, value));
+                    }
+                    let value = Box::new(self.resolve(value, queries, budget)?);
+                    self.locals.truncate(saved);
+                    PreparedKind::Block {
+                        bindings: resolved,
+                        value,
+                    }
+                }
+                ValueExpressionKind::ValueMatch { subject, arms } => {
+                    let subject = Box::new(self.resolve(subject, queries, budget)?);
+                    let mut resolved = metadata_vec(arms.len(), budget, &location)?;
+                    for arm in arms {
+                        let saved = self.locals.len();
+                        pattern::names(&arm.pattern, &mut self.locals, budget)?;
+                        let guard = arm
+                            .guard
+                            .as_ref()
+                            .map(|v| self.resolve(v, queries, budget))
+                            .transpose()?;
+                        let value = self.resolve(&arm.value, queries, budget)?;
+                        self.locals.truncate(saved);
+                        resolved.push(PreparedArm {
+                            pattern: &arm.pattern,
+                            guard,
+                            value,
+                        });
+                    }
+                    PreparedKind::ValueMatch {
+                        subject,
+                        arms: resolved,
+                    }
+                }
                 ValueExpressionKind::Comprehension {
                     constructor,
                     clauses,
@@ -508,6 +561,7 @@ pub(crate) enum RuntimeValue {
     Shared {
         owner: Arc<ConstructedValue>,
         path: Vec<usize>,
+        declaration: Option<Arc<DeclaredType<()>>>,
     },
 }
 
@@ -516,12 +570,13 @@ impl RuntimeValue {
         Self::Shared {
             owner,
             path: Vec::new(),
+            declaration: None,
         }
     }
     pub fn as_ref(&self) -> &ConstructedValue {
         match self {
             Self::Owned(value) => value,
-            Self::Shared { owner, path } => {
+            Self::Shared { owner, path, .. } => {
                 let mut value = owner.as_ref();
                 for index in path {
                     value = match value {
@@ -547,7 +602,23 @@ impl RuntimeValue {
     ) -> Result<ConstructedValue, QueryError> {
         match self {
             Self::Owned(value) => Ok(value),
-            shared => copy_constructed_value(shared.as_ref(), budget, location.clone()),
+            shared => {
+                let value = copy_constructed_value(shared.as_ref(), budget, location.clone())?;
+                if let Self::Shared {
+                    declaration: Some(declaration),
+                    ..
+                } = shared
+                {
+                    annotate(
+                        value,
+                        copy_declaration(&declaration, budget, location)?,
+                        budget,
+                        location,
+                    )
+                } else {
+                    Ok(value)
+                }
+            }
         }
     }
     pub fn into_shared(
@@ -555,11 +626,20 @@ impl RuntimeValue {
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Arc<ConstructedValue>, QueryError> {
-        if let Self::Shared { owner, path } = self {
-            if path.is_empty() {
+        if let Self::Shared {
+            owner,
+            path,
+            declaration,
+        } = self
+        {
+            if path.is_empty() && declaration.is_none() {
                 return Ok(owner);
             }
-            let view = Self::Shared { owner, path };
+            let view = Self::Shared {
+                owner,
+                path,
+                declaration,
+            };
             let value = view.materialize(budget, location)?;
             budget.charge(1, location.clone())?;
             Ok(Arc::new(value))
@@ -577,13 +657,19 @@ impl RuntimeValue {
             };
             *self = Self::shared(Arc::new(value));
         }
-        let Self::Shared { owner, path } = self else {
+        let Self::Shared {
+            owner,
+            path,
+            declaration,
+        } = self
+        else {
             unreachable!()
         };
         budget.charge(path.len() + 1, location.clone())?;
         Ok(Self::Shared {
             owner: Arc::clone(owner),
             path: path.clone(),
+            declaration: declaration.as_ref().map(Arc::clone),
         })
     }
     pub fn into_data(
@@ -607,12 +693,96 @@ impl RuntimeValue {
         }
         Ok(self)
     }
+    pub fn into_present(
+        self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        let inherited = match &self {
+            Self::Shared { declaration, .. } => declaration.as_deref(),
+            _ => None,
+        };
+        let contract = super::declaration(self.as_ref())
+            .or(inherited)
+            .map(underlying)
+            .map(|d| copy_declaration(d, budget, location))
+            .transpose()?;
+        let value = self.into_data(budget, location)?;
+        Ok(match (value, contract) {
+            (Self::Owned(value), Some(contract)) => {
+                Self::Owned(annotate(value, contract, budget, location)?)
+            }
+            (Self::Shared { owner, path, .. }, contract) => Self::Shared {
+                owner,
+                path,
+                declaration: contract.map(Arc::new),
+            },
+            (value, None) => value,
+        })
+    }
+    pub fn pattern_child(
+        &mut self,
+        index: usize,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        let inherited = match &*self {
+            Self::Shared { declaration, .. } => declaration.as_deref(),
+            _ => None,
+        };
+        let contract = super::declaration(self.as_ref())
+            .or(inherited)
+            .map(underlying);
+        let child = match (contract, self.as_ref().data()) {
+            (Some(DeclaredType::Tuple(children)), ConstructedValue::Tuple(_)) => {
+                children.get(index)
+            }
+            (Some(DeclaredType::Record(fields)), ConstructedValue::Record(values)) => Some(
+                record_declaration(fields, &values[index].0, budget, location)?,
+            ),
+            _ => None,
+        }
+        .map(|child| copy_declaration(child, budget, location))
+        .transpose()?;
+        let mut value = self.share(budget, location)?.into_data(budget, location)?;
+        // This path already selected the contract above. Ordinary child access
+        // below selects inherited contracts itself.
+        if let Self::Shared { declaration, .. } = &mut value {
+            *declaration = None;
+        }
+        let mut value = value.child(index, budget, location)?;
+        if let Self::Shared { declaration, .. } = &mut value {
+            *declaration = child.map(Arc::new);
+        }
+        Ok(value)
+    }
     pub fn child(
         mut self,
         index: usize,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Self, QueryError> {
+        let inherited = match &self {
+            Self::Shared { declaration, .. } => declaration.as_deref().map(underlying),
+            _ => None,
+        };
+        let contract = match (inherited, self.as_ref().data()) {
+            (Some(DeclaredType::Tuple(children)), _) => children.get(index),
+            (Some(DeclaredType::Record(fields)), ConstructedValue::Record(values)) => Some(
+                record_declaration(fields, &values[index].0, budget, location)?,
+            ),
+            (
+                Some(
+                    DeclaredType::Array(child)
+                    | DeclaredType::Sequence(child)
+                    | DeclaredType::Keyed(child),
+                ),
+                _,
+            ) => Some(child.as_ref()),
+            _ => None,
+        }
+        .map(|child| copy_declaration(child, budget, location))
+        .transpose()?;
         match &mut self {
             Self::Owned(value) => {
                 let value = std::mem::replace(value, ConstructedValue::Absent);
@@ -632,8 +802,11 @@ impl RuntimeValue {
                 };
                 Ok(Self::Owned(selected))
             }
-            Self::Shared { path, .. } => {
+            Self::Shared {
+                path, declaration, ..
+            } => {
                 push_metadata(path, index, budget, location)?;
+                *declaration = contract.map(Arc::new);
                 Ok(self)
             }
         }

@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 pub(crate) mod execution;
+pub(crate) mod pattern;
+pub use pattern::{Pattern, PatternKind, dispose_pattern};
 pub(crate) mod prepared;
 use prepared::{
     Frame, Preparation, PreparedArgument, PreparedGenerator, PreparedKind, PreparedValue,
@@ -343,11 +345,29 @@ pub enum ValueExpressionKind<Q = ()> {
         branches: Vec<(ValueExpression<Q>, ValueExpression<Q>)>,
         otherwise: Box<ValueExpression<Q>>,
     },
+    /// Ordered lexical bindings and a final pure expression.
+    Block {
+        bindings: Vec<(Pattern, ValueExpression<Q>)>,
+        value: Box<ValueExpression<Q>>,
+    },
+    /// First successful pattern/guard, with one final unguarded wildcard.
+    ValueMatch {
+        subject: Box<ValueExpression<Q>>,
+        arms: Vec<ValueMatchArm<Q>>,
+    },
     Comprehension {
         constructor: ValueConstructor,
         clauses: Vec<Located<ValueGenerator<Q>>>,
         head: Box<ValueExpression<Q>>,
     },
+}
+
+/// One ordered value-match arm; bindings are local to its guard and result.
+#[derive(Debug, PartialEq)]
+pub struct ValueMatchArm<Q = ()> {
+    pub pattern: Pattern,
+    pub guard: Option<ValueExpression<Q>>,
+    pub value: ValueExpression<Q>,
 }
 
 /// Ordered generator clauses. None discards a value without installing a name.
@@ -461,6 +481,24 @@ pub trait ValueQueryHost<Q> {
             range.clone(),
             "native values require a function request",
         ))
+    }
+    /// Save/restore host kind facts alongside lexical value scopes.
+    fn enter_scope(
+        &mut self,
+        _budget: &mut Budget,
+        _range: &std::ops::Range<usize>,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
+    fn leave_scope(&mut self) {}
+    /// Retain explicitly exposed native child kinds for pattern names.
+    fn prepare_pattern(
+        &mut self,
+        _pattern: &Pattern,
+        _source: &ValueExpression<Q>,
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
     }
     fn prepare_local(
         &mut self,
@@ -3347,6 +3385,62 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 append_types(&mut types, self.walk(otherwise, budget)?, budget, location)?;
                 Ok(types)
             }
+            ValueExpressionKind::Block { bindings, value } => {
+                let saved = self.locals.len();
+                self.queries.enter_scope(budget, &expression.range)?;
+                let result = (|| {
+                    for (pattern, value) in bindings {
+                        let types = self.walk(value, budget)?;
+                        self.pattern(pattern, &types, budget)?;
+                        self.queries.prepare_pattern(pattern, value, budget)?;
+                    }
+                    self.walk(value, budget)
+                })();
+                self.locals.truncate(saved);
+                self.queries.leave_scope();
+                result
+            }
+            ValueExpressionKind::ValueMatch { subject, arms } => {
+                if arms.is_empty()
+                    || !matches!(
+                        arms.last().map(|a| (&a.pattern.value, &a.guard)),
+                        Some((PatternKind::Wildcard, None))
+                    )
+                {
+                    return Err(error(
+                        location,
+                        "value match needs a final unguarded wildcard",
+                    ));
+                }
+                let facts = self.walk(subject, budget)?;
+                let mut types = Vec::new();
+                for (index, arm) in arms.iter().enumerate() {
+                    if index + 1 < arms.len()
+                        && matches!(arm.pattern.value, PatternKind::Wildcard)
+                        && arm.guard.is_none()
+                    {
+                        return Err(error(
+                            &Location::Query(arm.pattern.range.clone()),
+                            "unguarded wildcard must be the final arm",
+                        ));
+                    }
+                    let saved = self.locals.len();
+                    self.queries.enter_scope(budget, &arm.pattern.range)?;
+                    let result = (|| {
+                        self.pattern(&arm.pattern, &facts, budget)?;
+                        self.queries
+                            .prepare_pattern(&arm.pattern, subject, budget)?;
+                        if let Some(guard) = &arm.guard {
+                            self.condition(guard, budget)?;
+                        }
+                        self.walk(&arm.value, budget)
+                    })();
+                    self.locals.truncate(saved);
+                    self.queries.leave_scope();
+                    append_types(&mut types, result?, budget, location)?;
+                }
+                Ok(types)
+            }
             ValueExpressionKind::Comprehension {
                 constructor,
                 clauses,
@@ -3370,6 +3464,32 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 result
             }
         }
+    }
+
+    fn pattern(
+        &mut self,
+        pattern: &'a Pattern,
+        facts: &[ValueType],
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let names = pattern::facts(pattern, facts, budget)?;
+        for (name, facts) in names {
+            let location = Location::Query(name.range.clone());
+            function_local(name, &self.locals, budget)?;
+            if self.global_exists(&name.value, name.range.clone(), budget)? {
+                return Err(error(
+                    &location,
+                    "binding shadows an existing source or let",
+                ));
+            }
+            push_metadata(
+                &mut self.locals,
+                (name.value.as_str(), facts),
+                budget,
+                &location,
+            )?;
+        }
+        Ok(())
     }
 
     fn clauses(
@@ -5329,33 +5449,40 @@ pub(crate) fn function_facts<K>(
 }
 
 pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
-    declaration: crate::FunctionDeclarationRef<'a, Q, K>,
+    declaration: crate::functions::DeclarationRef<'a, Q, K>,
     queries: &mut H,
     budget: &mut Budget,
 ) -> Result<execution::Body<'a, Q, K>, QueryError> {
     let globals = BTreeMap::new();
     let mut analysis = Analysis::new(Globals::Facts(&globals), queries);
     let mut preparation = Preparation::new();
-    for parameter in declaration.parameters {
-        let name = &parameter.value.name;
-        function_local(name, &analysis.locals, budget)?;
+    for parameter in declaration.parameters.iter() {
         let types = function_facts(
-            &parameter.value.declaration,
+            parameter.declaration,
             budget,
             &Location::Query(parameter.range.clone()),
         )?;
-        push_metadata(
-            &mut analysis.locals,
-            (name.value.as_str(), types),
-            budget,
-            &Location::Query(name.range.clone()),
-        )?;
-        push_metadata(
-            &mut preparation.locals,
-            name.value.as_str(),
-            budget,
-            &Location::Query(name.range.clone()),
-        )?;
+        match parameter.pattern {
+            pattern::PatternRef::Name(name) => {
+                function_local(name, &analysis.locals, budget)?;
+                push_metadata(
+                    &mut analysis.locals,
+                    (name.value.as_str(), types),
+                    budget,
+                    &Location::Query(name.range.clone()),
+                )?;
+                push_metadata(
+                    &mut preparation.locals,
+                    name.value.as_str(),
+                    budget,
+                    &Location::Query(name.range.clone()),
+                )?;
+            }
+            pattern::PatternRef::Pattern(pattern) => {
+                analysis.pattern(pattern, &types, budget)?;
+                pattern::names(pattern, &mut preparation.locals, budget)?;
+            }
+        }
     }
     let mut bindings = metadata_vec(
         declaration.bindings.len(),
@@ -5416,6 +5543,24 @@ pub(crate) fn run_functions(
     budget: &mut Budget,
     limits: crate::FunctionLimits,
 ) -> Result<ConstructedValue, crate::FunctionError<QueryError>> {
+    let mut retained = Vec::new();
+    for d in declarations {
+        crate::projection::admit_slots::<crate::functions::DeclarationRef<'_, (), ()>>(
+            1,
+            budget,
+            &d.name.range,
+        )?;
+        retained.push(d.as_borrowed().into());
+    }
+    run_function_refs(&retained, entry, bindings, budget, limits)
+}
+pub(crate) fn run_function_refs(
+    declarations: &[crate::functions::DeclarationRef<'_, (), ()>],
+    entry: &ValueExpression,
+    bindings: &Bindings<ConstructedValue>,
+    budget: &mut Budget,
+    limits: crate::FunctionLimits,
+) -> Result<ConstructedValue, crate::FunctionError<QueryError>> {
     let mut queries = NoQueries {
         bindings: Some(bindings),
     };
@@ -5426,11 +5571,7 @@ pub(crate) fn run_functions(
     let location = Location::Query(entry.range.clone());
     let mut bodies = metadata_vec(declarations.len(), budget, &location)?;
     for declaration in declarations {
-        bodies.push(prepare_function_body(
-            declaration.as_borrowed(),
-            &mut resolver,
-            budget,
-        )?);
+        bodies.push(prepare_function_body(*declaration, &mut resolver, budget)?);
     }
     Analysis::new(Globals::Available(bindings), &mut resolver).walk(entry, budget)?;
     let mut preparation = Preparation::new();

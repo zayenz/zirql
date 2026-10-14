@@ -1,6 +1,8 @@
 //! Request-local named pure functions. Frontends supply located declarations;
 //! calls use the ordinary value evaluator and retain native host values.
-use crate::value::execution::{self, Body, Data, Value};
+use crate::Pattern;
+use crate::value::execution::{self, Body, Data, NativeStep, NativeView, Value};
+use crate::value::pattern::PatternRef;
 use crate::value::prepared::{Preparation, PreparedArgument, RuntimeValue};
 use crate::{
     Bindings, Budget, ConstructedRead, ConstructedValue, DeclaredType, EvaluationError, Expression,
@@ -53,6 +55,96 @@ impl<Q, K> FunctionDeclaration<Q, K> {
         }
     }
 }
+/// A whole typed argument destructured only after all argument admission.
+#[derive(Debug, PartialEq)]
+pub struct PatternParameter<K> {
+    pub pattern: Pattern,
+    pub declaration: DeclaredType<K>,
+}
+
+/// Pattern-capable declarations use lexical `Block` values for local lets.
+/// Existing name-only declarations remain accepted by their original APIs.
+#[derive(Debug, PartialEq)]
+pub struct PatternFunctionDeclaration<Q = (), K = ()> {
+    pub name: Located<String>,
+    pub parameters: Vec<Located<PatternParameter<K>>>,
+    pub result: Located<DeclaredType<K>>,
+    pub value: ValueExpression<Q>,
+}
+
+pub(crate) enum Parameters<'a, K> {
+    Names(&'a [Located<FunctionParameter<K>>]),
+    Patterns(&'a [Located<PatternParameter<K>>]),
+}
+impl<K> Copy for Parameters<'_, K> {}
+impl<K> Clone for Parameters<'_, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+pub(crate) struct ParameterRef<'a, K> {
+    pub pattern: PatternRef<'a>,
+    pub declaration: &'a DeclaredType<K>,
+    pub range: &'a Range<usize>,
+}
+impl<'a, K> Parameters<'a, K> {
+    pub fn len(self) -> usize {
+        match self {
+            Self::Names(v) => v.len(),
+            Self::Patterns(v) => v.len(),
+        }
+    }
+    pub fn iter(self) -> impl Iterator<Item = ParameterRef<'a, K>> {
+        (0..self.len()).map(move |index| match self {
+            Self::Names(v) => ParameterRef {
+                pattern: PatternRef::Name(&v[index].value.name),
+                declaration: &v[index].value.declaration,
+                range: &v[index].range,
+            },
+            Self::Patterns(v) => ParameterRef {
+                pattern: PatternRef::Pattern(&v[index].value.pattern),
+                declaration: &v[index].value.declaration,
+                range: &v[index].range,
+            },
+        })
+    }
+}
+pub(crate) struct DeclarationRef<'a, Q, K> {
+    pub name: &'a Located<String>,
+    pub parameters: Parameters<'a, K>,
+    pub result: &'a Located<DeclaredType<K>>,
+    pub bindings: &'a [(Located<String>, ValueExpression<Q>)],
+    pub value: &'a ValueExpression<Q>,
+}
+impl<Q, K> Copy for DeclarationRef<'_, Q, K> {}
+impl<Q, K> Clone for DeclarationRef<'_, Q, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'a, Q, K> From<FunctionDeclarationRef<'a, Q, K>> for DeclarationRef<'a, Q, K> {
+    fn from(d: FunctionDeclarationRef<'a, Q, K>) -> Self {
+        Self {
+            name: d.name,
+            parameters: Parameters::Names(d.parameters),
+            result: d.result,
+            bindings: d.bindings,
+            value: d.value,
+        }
+    }
+}
+impl<Q, K> PatternFunctionDeclaration<Q, K> {
+    pub(crate) fn as_borrowed(&self) -> DeclarationRef<'_, Q, K> {
+        DeclarationRef {
+            name: &self.name,
+            parameters: Parameters::Patterns(&self.parameters),
+            result: &self.result,
+            bindings: &[],
+            value: &self.value,
+        }
+    }
+}
+
 /// The maximum simultaneously active user-function activations. Compatible
 /// tail calls reuse one activation. Expression nesting and host reentry have
 /// separate existing guards in [`Budget`]. Every call still spends work.
@@ -113,7 +205,7 @@ impl CallTrace {
 
 pub(crate) struct Resolver<'h, 'a, Q, K, H> {
     pub queries: &'h mut H,
-    pub declarations: &'a [FunctionDeclaration<Q, K>],
+    pub declarations: &'a [DeclarationRef<'a, Q, K>],
 }
 impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H> {
     type Error = H::Error;
@@ -192,7 +284,7 @@ impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H>
     }
 }
 fn register<'a, Q: 'a, K: 'a>(
-    declarations: impl Clone + Iterator<Item = FunctionDeclarationRef<'a, Q, K>>,
+    declarations: impl Clone + Iterator<Item = DeclarationRef<'a, Q, K>>,
     budget: &mut Budget,
     mut conflict: impl FnMut(&str) -> bool,
 ) -> Result<(), QueryError> {
@@ -217,33 +309,9 @@ fn register<'a, Q: 'a, K: 'a>(
                 ));
             }
         }
-        for (index, p) in d.parameters.iter().enumerate() {
-            budget_name(&p.value.name.value, budget, &p.value.name.range)?;
-            if p.value.name.value == "_" {
-                return Err(QueryError::query(
-                    p.value.name.range.clone(),
-                    "discard name cannot be bound",
-                ));
-            }
-            for previous in &d.parameters[..index] {
-                budget.charge(
-                    1 + p
-                        .value
-                        .name
-                        .value
-                        .len()
-                        .min(previous.value.name.value.len()),
-                    Location::Query(p.value.name.range.clone()),
-                )?;
-                if p.value.name.value == previous.value.name.value {
-                    return Err(QueryError::query(
-                        p.value.name.range.clone(),
-                        "binding is already defined",
-                    ));
-                }
-            }
+        for p in d.parameters.iter() {
             crate::runtime_types::validate_declaration(
-                &p.value.declaration,
+                p.declaration,
                 budget,
                 &Location::Query(p.range.clone()),
             )?;
@@ -340,11 +408,38 @@ pub fn evaluate_functions(
     limits: FunctionLimits,
 ) -> Result<ConstructedValue, FunctionError<QueryError>> {
     register(
-        declarations.iter().map(FunctionDeclaration::as_borrowed),
+        declarations.iter().map(|d| d.as_borrowed().into()),
         budget,
         |_| false,
     )?;
     crate::value::run_functions(declarations, entry, bindings, budget, limits)
+}
+
+/// Execute pattern-capable constructed functions through the ordinary runner.
+///
+/// # Errors
+/// Every declaration is preflighted. Whole argument admission precedes atomic
+/// parameter matching; mismatches fail at the parameter pattern.
+pub fn evaluate_pattern_functions(
+    declarations: &[PatternFunctionDeclaration],
+    entry: &ValueExpression,
+    bindings: &Bindings<ConstructedValue>,
+    budget: &mut Budget,
+    limits: FunctionLimits,
+) -> Result<ConstructedValue, FunctionError<QueryError>> {
+    register(
+        declarations
+            .iter()
+            .map(PatternFunctionDeclaration::as_borrowed),
+        budget,
+        |_| false,
+    )?;
+    let mut retained = Vec::new();
+    for d in declarations {
+        crate::projection::admit_slots::<DeclarationRef<'_, (), ()>>(1, budget, &d.name.range)?;
+        retained.push(d.as_borrowed());
+    }
+    crate::value::run_function_refs(&retained, entry, bindings, budget, limits)
 }
 
 /// Missing concrete function hooks over the existing projection/admission APIs.
@@ -376,6 +471,11 @@ type Query<C, H> = NativeExpression<C, H>;
 type HostValue<'a, C, H> = Value<'a, <H as ProgramHost<C>>::Value, Kind<C, H>>;
 type Bodies<'a, C, H> = [Body<'a, Query<C, H>, Kind<C, H>>];
 type Declaration<C, H> = FunctionDeclaration<Query<C, H>, Kind<C, H>>;
+type PatternDeclaration<C, H> = PatternFunctionDeclaration<Query<C, H>, Kind<C, H>>;
+struct LexicalKinds<K> {
+    scope: BTreeMap<String, K>,
+    generators: BTreeMap<String, K>,
+}
 struct Operand<K> {
     native: crate::projection::prepared::PreparedNative,
     names: Vec<String>,
@@ -383,11 +483,12 @@ struct Operand<K> {
 }
 struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
-    declarations: Vec<FunctionDeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+    declarations: Vec<DeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
     scope: BTreeMap<String, Kind<C, H>>,
     generator_kinds: BTreeMap<String, Kind<C, H>>,
     relative: Option<Kind<C, H>>,
     prepared: BTreeMap<usize, Operand<Kind<C, H>>>,
+    scopes: Vec<LexicalKinds<Kind<C, H>>>,
 }
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
     fn native(
@@ -490,6 +591,123 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
     // Retain already-known native kinds through the same selected-value forms.
     // Unknown scalar/collection facts continue through ordinary value analysis.
+    fn pattern_kind(
+        &mut self,
+        pattern: PatternRef<'_>,
+        kind: Option<Kind<C, H>>,
+        declaration: Option<&DeclaredType<Kind<C, H>>>,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let range = pattern.range();
+        budget.within_evaluation(1, Location::Query(range.clone()), |budget| {
+            budget.charge(1, Location::Query(range.clone()))?;
+            let node = match pattern {
+                PatternRef::Name(name) => {
+                    if let Some(kind) = kind {
+                        budget_name(&name.value, budget, &name.range)?;
+                        self.scope.insert(name.value.clone(), kind);
+                    }
+                    return Ok(());
+                }
+                PatternRef::Pattern(p) => &p.value,
+            };
+            match node {
+                crate::PatternKind::Name(name) => {
+                    if let Some(kind) = kind {
+                        budget_name(&name.value, budget, &name.range)?;
+                        self.scope.insert(name.value.clone(), kind);
+                    }
+                }
+                crate::PatternKind::Present(child) => {
+                    let declaration = match declaration {
+                        Some(DeclaredType::Optional(child)) => Some(child.as_ref()),
+                        other => other,
+                    };
+                    let kind = declaration
+                        .map(|d| self.host.declaration_kind(d, budget, range))
+                        .transpose()?
+                        .or(kind);
+                    self.pattern_kind(PatternRef::Pattern(child), kind, declaration, budget)?;
+                }
+                crate::PatternKind::Tuple(children) => {
+                    let declaration = declaration.map(|mut d| {
+                        while let DeclaredType::Optional(child) = d {
+                            d = child;
+                        }
+                        d
+                    });
+                    for (index, child) in children.iter().enumerate() {
+                        let d = match declaration {
+                            Some(DeclaredType::Tuple(v)) => v.get(index),
+                            _ => None,
+                        };
+                        let k = match d {
+                            Some(d) => Some(self.host.declaration_kind(d, budget, range)?),
+                            None => kind
+                                .as_ref()
+                                .and_then(|k| self.host.tuple_view_kind(k))
+                                .and_then(|v| v.get(index))
+                                .cloned(),
+                        };
+                        self.pattern_kind(PatternRef::Pattern(child), k, d, budget)?;
+                    }
+                }
+                crate::PatternKind::Record { fields, .. } => {
+                    let declaration = declaration.map(|mut d| {
+                        while let DeclaredType::Optional(child) = d {
+                            d = child;
+                        }
+                        d
+                    });
+                    for (label, child) in fields {
+                        let d = match declaration {
+                            Some(DeclaredType::Record(v)) => {
+                                let mut found = None;
+                                for (name, d) in v {
+                                    budget.charge(
+                                        1 + name.len().min(label.value.len()),
+                                        Location::Query(label.range.clone()),
+                                    )?;
+                                    if name == &label.value {
+                                        found = Some(d);
+                                        break;
+                                    }
+                                }
+                                found
+                            }
+                            _ => None,
+                        };
+                        let k = if let Some(d) = d {
+                            Some(self.host.declaration_kind(d, budget, &label.range)?)
+                        } else {
+                            let mut found = None;
+                            if let Some(fields) =
+                                kind.as_ref().and_then(|k| self.host.capture_record_kind(k))
+                            {
+                                for (name, k) in &fields.fields {
+                                    budget.charge(
+                                        1 + name.len().min(label.value.len()),
+                                        Location::Query(label.range.clone()),
+                                    )?;
+                                    if name == &label.value {
+                                        found = Some(k.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                            found
+                        };
+                        self.pattern_kind(PatternRef::Pattern(child), k, d, budget)?;
+                    }
+                }
+                crate::PatternKind::Wildcard
+                | crate::PatternKind::Literal(_)
+                | crate::PatternKind::Absent => {}
+            }
+            Ok(())
+        })
+    }
+
     fn local_kind(
         &mut self,
         value: &ValueExpression<Query<C, H>>,
@@ -518,6 +736,41 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     .get(name)
                     .or_else(|| self.generator_kinds.get(name))
                     .cloned(),
+                ValueExpressionKind::Block { bindings, value } => {
+                    self.enter_scope(budget, &value.range)?;
+                    let result = (|| {
+                        for (pattern, source) in bindings {
+                            let kind = self.local_kind(source, budget)?;
+                            self.pattern_kind(PatternRef::Pattern(pattern), kind, None, budget)?;
+                        }
+                        self.local_kind(value, budget)
+                    })();
+                    self.leave_scope();
+                    result?
+                }
+                ValueExpressionKind::ValueMatch { subject, arms } => {
+                    let subject = self.local_kind(subject, budget)?;
+                    let mut selected = None;
+                    for (index, arm) in arms.iter().enumerate() {
+                        self.enter_scope(budget, &arm.pattern.range)?;
+                        let result = (|| {
+                            self.pattern_kind(
+                                PatternRef::Pattern(&arm.pattern),
+                                subject.clone(),
+                                None,
+                                budget,
+                            )?;
+                            self.local_kind(&arm.value, budget)
+                        })();
+                        self.leave_scope();
+                        let kind = result?;
+                        if index > 0 && selected != kind {
+                            return Ok(None);
+                        }
+                        selected = kind;
+                    }
+                    selected
+                }
                 ValueExpressionKind::Require { value, .. } => self.local_kind(value, budget)?,
                 ValueExpressionKind::Conditional {
                     branches,
@@ -643,6 +896,28 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         _: &Range<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
         self.native(q, l, b, false)
+    }
+    fn enter_scope(&mut self, budget: &mut Budget, range: &Range<usize>) -> Result<(), QueryError> {
+        let scope = crate::projection::copy_scope::<C, H>(&self.scope, budget, range)?;
+        let generators =
+            crate::projection::copy_scope::<C, H>(&self.generator_kinds, budget, range)?;
+        crate::projection::admit_slots::<LexicalKinds<Kind<C, H>>>(1, budget, range)?;
+        self.scopes.push(LexicalKinds { scope, generators });
+        Ok(())
+    }
+    fn leave_scope(&mut self) {
+        let saved = self.scopes.pop().expect("entered lexical scope");
+        self.scope = saved.scope;
+        self.generator_kinds = saved.generators;
+    }
+    fn prepare_pattern(
+        &mut self,
+        pattern: &Pattern,
+        source: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let kind = self.local_kind(source, budget)?;
+        self.pattern_kind(PatternRef::Pattern(pattern), kind, None, budget)
     }
     fn prepare_local(
         &mut self,
@@ -780,9 +1055,39 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         host: &'h H,
         budget: &mut Budget,
     ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        Self::prepare_headers(
+            declarations.into_iter().map(DeclarationRef::from),
+            host,
+            budget,
+        )
+    }
+
+    /// Prepare native functions with destructured whole typed parameters.
+    ///
+    /// # Errors
+    /// Scope, views, purity and contracts are checked before execution.
+    pub fn prepare_patterns(
+        declarations: impl IntoIterator<Item = &'a PatternFunctionDeclaration<Query<C, H>, Kind<C, H>>>,
+        host: &'h H,
+        budget: &mut Budget,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        Self::prepare_headers(
+            declarations
+                .into_iter()
+                .map(PatternFunctionDeclaration::as_borrowed),
+            host,
+            budget,
+        )
+    }
+
+    fn prepare_headers(
+        declarations: impl IntoIterator<Item = DeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+        host: &'h H,
+        budget: &mut Budget,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
         let mut retained = Vec::new();
         for declaration in declarations {
-            crate::projection::admit_slots::<FunctionDeclarationRef<'_, Query<C, H>, Kind<C, H>>>(
+            crate::projection::admit_slots::<DeclarationRef<'_, Query<C, H>, Kind<C, H>>>(
                 1,
                 budget,
                 &declaration.name.range,
@@ -799,6 +1104,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             generator_kinds: BTreeMap::new(),
             relative: None,
             prepared: BTreeMap::new(),
+            scopes: Vec::new(),
         };
         crate::projection::admit_slots::<Body<'_, Query<C, H>, Kind<C, H>>>(
             preflight.declarations.len(),
@@ -816,15 +1122,9 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             let declaration = preflight.declarations[index];
             preflight.scope.clear();
             preflight.generator_kinds.clear();
-            for p in declaration.parameters {
-                budget.charge(
-                    p.value.name.value.len() + 1,
-                    Location::Query(p.range.clone()),
-                )?;
-                preflight.scope.insert(
-                    p.value.name.value.clone(),
-                    host.declaration_kind(&p.value.declaration, budget, &p.range)?,
-                );
+            for p in declaration.parameters.iter() {
+                let kind = host.declaration_kind(p.declaration, budget, p.range)?;
+                preflight.pattern_kind(p.pattern, Some(kind), Some(p.declaration), budget)?;
             }
             bodies.push(crate::value::prepare_function_body(
                 declaration,
@@ -993,6 +1293,26 @@ impl<'a, 'r, C, H: FunctionHost<C>> FunctionRequest<'a, 'r, C, H> {
             limits,
         })
     }
+    /// Prepare pattern-capable functions using the same request runner.
+    ///
+    /// # Errors
+    /// Invalid declarations fail before any operation executes.
+    pub fn prepare_patterns(
+        declarations: &'a [PatternDeclaration<C, H>],
+        host: &'r H,
+        context: &'r mut C,
+        budget: &'r mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        let functions = PreparedFunctions::prepare_patterns(declarations, host, budget)?;
+        Ok(Self {
+            functions,
+            context,
+            budget,
+            limits,
+        })
+    }
+
     /// Prepare and evaluate one entry with explicit input bindings.
     ///
     /// # Errors
@@ -1044,6 +1364,25 @@ struct Runtime<'r, 'a, C, H: FunctionHost<C>> {
     calls: &'r mut CallTrace,
 }
 impl<C, H: FunctionHost<C>> Runtime<'_, '_, C, H> {
+    fn owned_native(
+        &mut self,
+        value: NativeView<H::Value>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<std::sync::Arc<H::Value>, EvaluationError<H::Error>> {
+        if value.path.is_empty() {
+            Ok(value.owner)
+        } else {
+            budget.charge(value.path.len(), Location::Query(range.clone()))?;
+            let value = native_view::<C, H>(&value, self.host);
+            Ok(std::sync::Arc::new(self.host.copy_value(
+                value,
+                self.context,
+                budget,
+                range,
+            )?))
+        }
+    }
     fn retained<'a>(
         &mut self,
         value: std::sync::Arc<H::Value>,
@@ -1066,7 +1405,7 @@ impl<C, H: FunctionHost<C>> Runtime<'_, '_, C, H> {
             Ok(Value::constructed(value))
         } else {
             Ok(Value {
-                data: Data::Native(value),
+                data: Data::Native(NativeView::new(value)),
                 contract: None,
             })
         }
@@ -1081,10 +1420,13 @@ impl<C, H: FunctionHost<C>> Runtime<'_, '_, C, H> {
             Location::Query(r) | Location::Source(r) => r,
         };
         match value.data {
-            Data::Native(value) => match std::sync::Arc::try_unwrap(value) {
-                Ok(value) => Ok(value),
-                Err(value) => self.host.copy_value(&value, self.context, budget, range),
-            },
+            Data::Native(value) => {
+                let value = self.owned_native(value, budget, range)?;
+                match std::sync::Arc::try_unwrap(value) {
+                    Ok(value) => Ok(value),
+                    Err(value) => self.host.copy_value(&value, self.context, budget, range),
+                }
+            }
             Data::Constructed(data) => {
                 let value = Value {
                     data: Data::<H::Value>::Constructed(data),
@@ -1102,6 +1444,38 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     type Native = H::Value;
     type Kind = Kind<C, H>;
     type Error = EvaluationError<H::Error>;
+    fn inspect_pattern(
+        &mut self,
+        value: &HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), Self::Error> {
+        if value.contract.is_none()
+            && let Data::Native(view) = &value.data
+        {
+            let range = match location {
+                Location::Query(r) | Location::Source(r) => r,
+            };
+            budget.charge(view.path.len(), location.clone())?;
+            let value = native_view::<C, H>(view, self.host);
+            let kind = self.host.kind(value, budget, range)?;
+            admit_value(
+                value,
+                &DeclaredType::Native(kind),
+                self.host,
+                self.context,
+                budget,
+                location.clone(),
+            )?;
+        }
+        Ok(())
+    }
+    fn native_record<'v>(&self, value: &'v H::Value) -> Option<&'v crate::NativeCapture<H::Value>> {
+        self.host.capture_record(value)
+    }
+    fn native_tuple<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
+        self.host.tuple_view(value)
+    }
     fn retains_native_admission(&self) -> bool {
         self.host.retains_native_admission()
     }
@@ -1163,7 +1537,10 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
                 contracts.remove(*name);
             }
             let value = match &mut value.data {
-                Data::Native(owner) => std::sync::Arc::clone(owner),
+                Data::Native(owner) => {
+                    let owner = owner.share(budget, &Location::Query(range.clone()))?;
+                    self.owned_native(owner, budget, range)?
+                }
                 Data::Constructed(data) => {
                     let value = data
                         .share(budget, &Location::Query(range.clone()))?
@@ -1256,13 +1633,14 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     }
     fn subjects(
         &mut self,
-        value: std::sync::Arc<H::Value>,
+        value: NativeView<H::Value>,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Vec<H::Value>, Self::Error> {
         let range = match location {
             Location::Query(range) | Location::Source(range) => range,
         };
+        let value = self.owned_native(value, budget, range)?;
         let value = match std::sync::Arc::try_unwrap(value) {
             Ok(value) => value,
             Err(value) => self.host.copy_value(&value, self.context, budget, range)?,
@@ -1281,6 +1659,28 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         self.calls.append(calls, omitted);
     }
 }
+fn native_view<'v, C, H: ProgramHost<C>>(
+    value: &'v NativeView<H::Value>,
+    host: &H,
+) -> &'v H::Value {
+    let mut data = value.owner.as_ref();
+    for step in &value.path {
+        data = match step {
+            NativeStep::Record(index) => {
+                &host
+                    .capture_record(data)
+                    .expect("retained record view")
+                    .fields[*index]
+                    .1
+            }
+            NativeStep::Tuple(index) => {
+                &host.tuple_view(data).expect("retained tuple view")[*index]
+            }
+        };
+    }
+    data
+}
+
 struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
     host: &'r H,
     context: &'r mut C,
@@ -1424,7 +1824,19 @@ impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {
             .map(|contract| crate::runtime_types::copy_declaration(contract, budget, &location))
             .transpose()?;
         let value = match value.data {
-            Data::Native(owner) => owner,
+            Data::Native(owner) => {
+                if owner.path.is_empty() {
+                    owner.owner
+                } else {
+                    budget.charge(owner.path.len(), location.clone())?;
+                    std::sync::Arc::new(self.host.copy_value(
+                        native_view::<C, H>(&owner, self.host),
+                        self.context,
+                        budget,
+                        range,
+                    )?)
+                }
+            }
             Data::Constructed(data) => {
                 let value = Value {
                     data: Data::<H::Value>::Constructed(data),
@@ -1460,6 +1872,20 @@ pub fn dispose_functions<S, O, E, K>(functions: Vec<FunctionDeclaration<Expressi
         dispose_declaration(function.result.value);
     }
 }
+/// Release native pattern-function trees and nested patterns iteratively.
+pub fn dispose_pattern_functions<S, O, E, K>(
+    functions: Vec<PatternFunctionDeclaration<Expression<S, O, E>, K>>,
+) {
+    for function in functions {
+        dispose_native_value(function.value);
+        for parameter in function.parameters {
+            crate::dispose_pattern(parameter.value.pattern);
+            dispose_declaration(parameter.value.declaration);
+        }
+        dispose_declaration(function.result.value);
+    }
+}
+
 fn dispose_declaration<K>(declaration: DeclaredType<K>) {
     let mut pending = vec![declaration];
     while let Some(declaration) = pending.pop() {

@@ -20,8 +20,9 @@ pub use eval::{
 };
 pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
-    FunctionLimits, FunctionParameter, FunctionRequest, PreparedFunctionValue, PreparedFunctions,
-    dispose_functions, evaluate_functions,
+    FunctionLimits, FunctionParameter, FunctionRequest, PatternFunctionDeclaration,
+    PatternParameter, PreparedFunctionValue, PreparedFunctions, dispose_functions,
+    dispose_pattern_functions, evaluate_functions, evaluate_pattern_functions,
 };
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
@@ -56,13 +57,13 @@ pub use runtime_types::{
 };
 pub use value::{
     ArrayType, ConstructedRead, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry,
-    NominalMember, NominalMemberId, NominalTypeId, SetElementType, ValueArguments,
-    ValueBinaryOperator, ValueConstructor, ValueExpression, ValueExpressionKind, ValueExtremum,
-    ValueGenerator, ValueKey, ValueKeyType, ValueQueryHost, ValueReducer, ValueType,
-    ValueUnaryOperator, constructed_value_type, copy_constructed_value, copy_value_types,
-    count_value, evaluate_query_value, evaluate_value, evaluate_value_with_host_validation,
-    free_query_value_names, free_value_names, query_value_types, take_one,
-    validate_value_expression, value_expression_types,
+    NominalMember, NominalMemberId, NominalTypeId, Pattern, PatternKind, SetElementType,
+    ValueArguments, ValueBinaryOperator, ValueConstructor, ValueExpression, ValueExpressionKind,
+    ValueExtremum, ValueGenerator, ValueKey, ValueKeyType, ValueMatchArm, ValueQueryHost,
+    ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value,
+    copy_value_types, count_value, dispose_pattern, evaluate_query_value, evaluate_value,
+    evaluate_value_with_host_validation, free_query_value_names, free_value_names,
+    query_value_types, take_one, validate_value_expression, value_expression_types,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.

@@ -14,14 +14,62 @@ use super::{
 use std::rc::Rc;
 
 pub(crate) struct Body<'a, Q, K> {
-    pub declaration: crate::FunctionDeclarationRef<'a, Q, K>,
+    pub declaration: crate::functions::DeclarationRef<'a, Q, K>,
     pub bindings: Vec<(&'a str, PreparedValue<'a, Q>)>,
     pub value: PreparedValue<'a, Q>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum NativeStep {
+    Record(usize),
+    Tuple(usize),
+}
+impl NativeStep {
+    pub fn index(self) -> usize {
+        match self {
+            Self::Record(i) | Self::Tuple(i) => i,
+        }
+    }
+}
+pub(crate) struct NativeView<N> {
+    pub owner: std::sync::Arc<N>,
+    pub path: Vec<NativeStep>,
+}
+impl<N> NativeView<N> {
+    pub fn new(owner: std::sync::Arc<N>) -> Self {
+        Self {
+            owner,
+            path: Vec::new(),
+        }
+    }
+    pub fn child(
+        &self,
+        step: NativeStep,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        let mut path = metadata_vec(self.path.len() + 1, budget, location)?;
+        path.extend_from_slice(&self.path);
+        path.push(step);
+        Ok(Self {
+            owner: std::sync::Arc::clone(&self.owner),
+            path,
+        })
+    }
+    pub fn share(&self, budget: &mut Budget, location: &Location) -> Result<Self, QueryError> {
+        let mut path = metadata_vec(self.path.len(), budget, location)?;
+        path.extend_from_slice(&self.path);
+        budget.charge(1, location.clone())?;
+        Ok(Self {
+            owner: std::sync::Arc::clone(&self.owner),
+            path,
+        })
+    }
+}
+
 pub(crate) enum Data<N> {
     Constructed(RuntimeValue),
-    Native(std::sync::Arc<N>),
+    Native(NativeView<N>),
 }
 pub(crate) struct Value<'a, N, K> {
     pub data: Data<N>,
@@ -37,10 +85,7 @@ impl<'a, N, K> Value<'a, N, K> {
     pub fn share(&mut self, budget: &mut Budget, location: &Location) -> Result<Self, QueryError> {
         let data = match &mut self.data {
             Data::Constructed(value) => Data::Constructed(value.share(budget, location)?),
-            Data::Native(value) => {
-                budget.charge(1, location.clone())?;
-                Data::Native(std::sync::Arc::clone(value))
-            }
+            Data::Native(value) => Data::Native(value.share(budget, location)?),
         };
         Ok(Self {
             data,
@@ -94,6 +139,47 @@ pub(crate) trait Host<'a, Q> {
     type Native;
     type Kind: PartialEq;
     type Error: From<QueryError>;
+    fn native_record<'v>(
+        &self,
+        _value: &'v Self::Native,
+    ) -> Option<&'v crate::NativeCapture<Self::Native>> {
+        None
+    }
+    fn native_tuple<'v>(&self, _value: &'v Self::Native) -> Option<&'v [Self::Native]> {
+        None
+    }
+    fn native_data<'v>(
+        &self,
+        value: &'v NativeView<Self::Native>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<&'v Self::Native, QueryError> {
+        budget.charge(value.path.len(), location.clone())?;
+        let mut data = value.owner.as_ref();
+        for step in &value.path {
+            data = match step {
+                NativeStep::Record(index) => {
+                    &self
+                        .native_record(data)
+                        .expect("retained record view")
+                        .fields[*index]
+                        .1
+                }
+                NativeStep::Tuple(index) => {
+                    &self.native_tuple(data).expect("retained tuple view")[*index]
+                }
+            };
+        }
+        Ok(data)
+    }
+    fn inspect_pattern(
+        &mut self,
+        _value: &Value<'a, Self::Native, Self::Kind>,
+        _budget: &mut Budget,
+        _location: &Location,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn retains_native_admission(&self) -> bool {
         false
     }
@@ -129,7 +215,7 @@ pub(crate) trait Host<'a, Q> {
     ) -> Result<(), Self::Error>;
     fn subjects(
         &mut self,
-        _value: std::sync::Arc<Self::Native>,
+        _value: NativeView<Self::Native>,
         _budget: &mut Budget,
         location: &Location,
     ) -> Result<Vec<Self::Native>, Self::Error> {
@@ -163,6 +249,22 @@ enum Pending<'a, Q, N, K> {
         Vec<Value<'a, N, K>>,
     ),
     Branch(&'a PreparedValue<'a, Q>, usize, usize, bool),
+    Block(&'a PreparedValue<'a, Q>, usize, usize, bool),
+    Match(
+        &'a PreparedValue<'a, Q>,
+        usize,
+        usize,
+        bool,
+        Option<Value<'a, N, K>>,
+    ),
+    Guard(
+        &'a PreparedValue<'a, Q>,
+        usize,
+        usize,
+        bool,
+        usize,
+        Value<'a, N, K>,
+    ),
     Require(&'a PreparedValue<'a, Q>, usize, bool),
     Default(&'a PreparedValue<'a, Q>, usize, bool),
     Fallback(&'a PreparedValue<'a, Q>, usize, Value<'a, N, K>),
@@ -293,6 +395,9 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     Pending::Eval(e, ..)
                     | Pending::Check(e, ..)
                     | Pending::Apply(e, ..)
+                    | Pending::Block(e, ..)
+                    | Pending::Match(e, ..)
+                    | Pending::Guard(e, ..)
                     | Pending::Branch(e, ..)
                     | Pending::Require(e, ..)
                     | Pending::Default(e, ..)
@@ -307,6 +412,9 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     Pending::Eval(_, depth, _)
                     | Pending::Check(_, depth)
                     | Pending::Apply(_, depth, ..)
+                    | Pending::Block(_, depth, ..)
+                    | Pending::Match(_, depth, ..)
+                    | Pending::Guard(_, depth, ..)
                     | Pending::Branch(_, depth, ..)
                     | Pending::Require(_, depth, _)
                     | Pending::Default(_, depth, _)
@@ -385,6 +493,14 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         if let Some(first) = arguments.first() {
                                             push!(Pending::Eval(first, depth + 1, false));
                                         }
+                                    }
+                                    PreparedKind::Block { .. } => {
+                                        push!(Pending::Restore(frame.locals.len()));
+                                        push!(Pending::Block(expression, depth, 0, tail));
+                                    }
+                                    PreparedKind::ValueMatch { subject, .. } => {
+                                        push!(Pending::Match(expression, depth, 0, tail, None));
+                                        push!(Pending::Eval(subject, depth + 1, false));
                                     }
                                     PreparedKind::Conditional {
                                         branches,
@@ -697,6 +813,125 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     &location
                                 )?);
                             }
+                            Pending::Block(expression, depth, index, tail) => {
+                                let PreparedKind::Block { bindings, value } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                if index > 0 {
+                                    let pattern = bindings[index - 1].0;
+                                    let value = result.take().expect("block let result");
+                                    host.inspect_pattern(
+                                        &value,
+                                        budget,
+                                        &Location::Query(pattern.range.clone()),
+                                    )?;
+                                    let bound = super::pattern::bind(
+                                        super::pattern::PatternRef::Pattern(pattern),
+                                        value,
+                                        host,
+                                        budget,
+                                    )?
+                                    .ok_or_else(|| {
+                                        error(
+                                            &Location::Query(pattern.range.clone()),
+                                            "binding pattern did not match",
+                                        )
+                                    })?;
+                                    for binding in bound {
+                                        push_metadata(
+                                            &mut frame.locals,
+                                            binding,
+                                            budget,
+                                            &location,
+                                        )?;
+                                    }
+                                }
+                                if let Some((_, value)) = bindings.get(index) {
+                                    push!(Pending::Block(expression, depth, index + 1, tail));
+                                    push!(Pending::Eval(value, depth + 1, false));
+                                } else {
+                                    push!(Pending::Eval(value, depth + 1, tail));
+                                }
+                            }
+                            Pending::Match(expression, depth, mut index, tail, subject) => {
+                                let PreparedKind::ValueMatch { arms, .. } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                let mut subject = match subject {
+                                    Some(subject) => subject,
+                                    None => {
+                                        let subject = result.take().expect("match subject");
+                                        host.inspect_pattern(&subject, budget, &location)?;
+                                        subject
+                                    }
+                                };
+                                loop {
+                                    let arm = &arms[index];
+                                    let candidate = subject.share(
+                                        budget,
+                                        &Location::Query(arm.pattern.range.clone()),
+                                    )?;
+                                    if let Some(bound) = super::pattern::bind(
+                                        super::pattern::PatternRef::Pattern(arm.pattern),
+                                        candidate,
+                                        host,
+                                        budget,
+                                    )? {
+                                        let saved = frame.locals.len();
+                                        for binding in bound {
+                                            push_metadata(
+                                                &mut frame.locals,
+                                                binding,
+                                                budget,
+                                                &location,
+                                            )?;
+                                        }
+                                        if let Some(guard) = &arm.guard {
+                                            push!(Pending::Guard(
+                                                expression, depth, index, tail, saved, subject
+                                            ));
+                                            push!(Pending::Eval(guard, depth + 1, false));
+                                        } else {
+                                            drop(subject);
+                                            push!(Pending::Restore(saved));
+                                            push!(Pending::Eval(&arm.value, depth + 1, tail));
+                                        }
+                                        break;
+                                    }
+                                    index += 1;
+                                }
+                            }
+                            Pending::Guard(expression, depth, index, tail, saved, subject) => {
+                                let PreparedKind::ValueMatch { arms, .. } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                let arm = &arms[index];
+                                let guard = arm.guard.as_ref().expect("guard");
+                                budget.charge(1, Location::Query(guard.range.clone()))?;
+                                if boolean(
+                                    result
+                                        .take()
+                                        .expect("guard result")
+                                        .materialize(budget, &location)?,
+                                    &Location::Query(guard.range.clone()),
+                                )? {
+                                    drop(subject);
+                                    push!(Pending::Restore(saved));
+                                    push!(Pending::Eval(&arm.value, depth + 1, tail));
+                                } else {
+                                    frame.locals.truncate(saved);
+                                    push!(Pending::Match(
+                                        expression,
+                                        depth,
+                                        index + 1,
+                                        tail,
+                                        Some(subject)
+                                    ));
+                                }
+                            }
                             Pending::Call(expression, depth, index, tail, mut arguments) => {
                                 let PreparedKind::Call {
                                     function,
@@ -726,16 +961,36 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 // All arguments still refer to old slots until admission completes.
                                 for ((argument, parameter), source) in arguments
                                     .iter_mut()
-                                    .zip(body.declaration.parameters)
+                                    .zip(body.declaration.parameters.iter())
                                     .zip(sources)
                                 {
                                     admit(
                                         argument,
-                                        &parameter.value.declaration,
+                                        parameter.declaration,
                                         host,
                                         budget,
                                         &Location::Query(source.range.clone()),
                                     )?;
+                                }
+                                let mut locals = Vec::new();
+                                for (parameter, value) in
+                                    body.declaration.parameters.iter().zip(arguments)
+                                {
+                                    let bound = super::pattern::bind(
+                                        parameter.pattern,
+                                        value,
+                                        host,
+                                        budget,
+                                    )?
+                                    .ok_or_else(|| {
+                                        error(
+                                            &Location::Query(parameter.pattern.range().clone()),
+                                            "parameter pattern did not match",
+                                        )
+                                    })?;
+                                    for binding in bound {
+                                        push_metadata(&mut locals, binding, budget, &location)?;
+                                    }
                                 }
                                 let reuse = if tail {
                                     match frame.function {
@@ -754,25 +1009,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     pending.truncate(frame.base);
                                     // Arguments retain any old-slot aliases until admission has
                                     // finished; installing them then releases dead locals.
-                                    frame.locals.clear();
-                                    if frame.locals.capacity()
-                                        < body.declaration.parameters.len() + body.bindings.len()
-                                    {
-                                        budget.charge(
-                                            body.declaration.parameters.len() + body.bindings.len(),
-                                            location.clone(),
-                                        )?;
-                                        frame.locals.reserve(
-                                            body.declaration.parameters.len() + body.bindings.len(),
-                                        );
-                                    }
-                                    frame.locals.extend(
-                                        body.declaration
-                                            .parameters
-                                            .iter()
-                                            .zip(arguments)
-                                            .map(|(p, v)| (p.value.name.value.as_str(), v)),
-                                    );
+                                    frame.locals = locals;
                                     frame.function = Some(*function);
                                     frame.range = expression.range.clone();
                                 } else {
@@ -783,18 +1020,6 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         )
                                         .into());
                                     }
-                                    let mut locals = metadata_vec(
-                                        body.declaration.parameters.len() + body.bindings.len(),
-                                        budget,
-                                        &location,
-                                    )?;
-                                    locals.extend(
-                                        body.declaration
-                                            .parameters
-                                            .iter()
-                                            .zip(arguments)
-                                            .map(|(p, v)| (p.value.name.value.as_str(), v)),
-                                    );
                                     let base = pending.len();
                                     push_metadata(
                                         &mut frames,
@@ -886,10 +1111,15 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                             Pending::Let(function, index) => {
                                 let body = &bodies[function];
                                 if index > 0 {
-                                    frame.locals.push((
-                                        body.bindings[index - 1].0,
-                                        result.take().expect("local let"),
-                                    ));
+                                    push_metadata(
+                                        &mut frame.locals,
+                                        (
+                                            body.bindings[index - 1].0,
+                                            result.take().expect("local let"),
+                                        ),
+                                        budget,
+                                        &location,
+                                    )?;
                                 }
                                 if let Some((_, expression)) = body.bindings.get(index) {
                                     push!(Pending::Let(function, index + 1));
@@ -983,8 +1213,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                                     budget.charge(1, cl.clone())?;
                                                     budget.charge_results(1, cl.clone())?;
                                                     items.push(Value {
-                                                        data: Data::Native(std::sync::Arc::new(
-                                                            value,
+                                                        data: Data::Native(NativeView::new(
+                                                            std::sync::Arc::new(value),
                                                         )),
                                                         contract: element,
                                                     });
@@ -1241,7 +1471,12 @@ fn admit<'a, Q, H: Host<'a, Q>>(
         return Ok(());
     }
     match &value.data {
-        Data::Native(value) => host.admit_native(value, expected, budget, location.clone())?,
+        Data::Native(value) => host.admit_native(
+            host.native_data(value, budget, location)?,
+            expected,
+            budget,
+            location.clone(),
+        )?,
         Data::Constructed(data) => {
             crate::admit_constructed(data.as_ref(), expected, budget, location.clone())?;
         }

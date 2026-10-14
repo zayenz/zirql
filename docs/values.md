@@ -393,3 +393,35 @@ explicit snapshots receive admitted materialization, so changing an owned Rust
 result cannot change an earlier result or binding. Fresh values still receive
 runtime checks. Sharing does not scan or execute a default's unselected fallback;
 all written branches keep their structural and known-type preflight.
+
+
+## Callable patterns and lexical blocks
+
+The Rust value APIs support lexical blocks and first-success value matching.
+A `Block` evaluates immutable pattern bindings in order, then returns its final
+expression. Patterns support nested names, wildcards, exact tuples, records,
+present scalar literals and optional presence/absence. Tuple patterns accept
+tuples of the exact length. They do not accept positional arrays. Record labels
+must actually be stored: an omitted optional field is a shape mismatch. Without
+`ignore_rest`, the stored label set must match exactly; ignored fields are never
+copied into a rest value.
+
+A binding mismatch fails at its pattern without installing any names. In a
+`ValueMatch`, the same mismatch tries the next arm. Literal kinds must agree;
+an integer literal pattern does not match a float. A `Present` pattern views an
+existing present value with its underlying contract. It introduces neither a
+wrapper nor another absence state. `Absent` matches the existing absent value.
+
+Match arms run in written order, require a final unguarded wildcard, and can
+have known-Boolean guards. False continues; Unknown, non-Boolean and evaluation
+errors fail. Only the selected result runs. Arm names remain local to that arm,
+and every written guard and result receives preflight checks. Native capture
+matching still enumerates correlated records through its existing API.
+
+Constructed selections share their retained owner and child path. Native record
+and tuple patterns require explicit host views; native handles keep their
+identity and source coordinates. Typed parameters admit each whole argument
+before matching the complete parameter set. See the
+[embedding guide](embedding-programs.md#destructure-values-and-select-match-arms)
+for the callable types and host hooks. Consumer textual frontends do not yet
+expose these forms.

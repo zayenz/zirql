@@ -259,8 +259,8 @@ bodies retain preflight checks.
 `FunctionLimits { active_depth }` counts active user-function activations.
 The caller supplies it explicitly. A compatible self or mutual tail call reuses
 its activation; each ordinary call adds one. The function's final value, selected
-conditional branch, successful requirement value and untyped default fallback can
-be tail positions. Pending arithmetic, a typed default's remaining admission, or
+conditional branch, selected value-match arm, final block value, successful
+requirement value and untyped default fallback can be tail positions. Pending arithmetic, a typed default's remaining admission, or
 a different complete result declaration keeps the required continuation.
 Optionality and positional/keyed distinctions participate in that comparison.
 
@@ -294,3 +294,27 @@ context is captured once on failure and does not retain completed calls or a
 chain of deferred return checks. Cleanup needs no remaining allowance; subsequent
 operations on the same budget retain the spending but start without active
 function or host guards.
+
+
+## Pattern and guard work
+
+Pattern preparation charges visits, names, static labels, comparisons and local
+metadata. Runtime matching charges each visited pattern, inspected label or
+literal, failed arm, staged binding and retained child path before growth.
+Guards use ordinary expression work plus a Boolean selection check. A failed
+pattern or false guard still spends its work. They never reset the request's
+allowances or turn a host, admission or resource failure into a fallback.
+
+A whole typed argument is admitted at its written argument range. Parameter
+pattern mismatches use the failed parameter pattern; block binding mismatches
+use their binding pattern. Guard failures keep the guard or failing child range,
+and native failures retain their original source coordinates.
+
+Destructuring shares selected constructed/native children. It neither copies
+ignored rest fields nor rescans an already admitted parent to bind each child.
+An unadmitted native subject receives host admission before matching. Native
+views and owned-result boundaries charge their actual inspection and copy work.
+Pattern metadata can increase preparation work for requests near an earlier
+threshold; allowance defaults and result-copy charges are unchanged. Finished
+match/guard work releases its subject before the selected result runs. Compatible
+tail calls discard completed block/arm cleanup when replacing the activation.

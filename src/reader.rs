@@ -2130,6 +2130,23 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 }
                 continue;
             }
+            K::Block { bindings, value } => {
+                pending.push(*value);
+                for (pattern, value) in bindings {
+                    crate::value::pattern::dispose_pattern(pattern);
+                    pending.push(value);
+                }
+                continue;
+            }
+            K::ValueMatch { subject, arms } => {
+                pending.push(*subject);
+                for arm in arms {
+                    crate::value::pattern::dispose_pattern(arm.pattern);
+                    pending.extend(arm.guard);
+                    pending.push(arm.value);
+                }
+                continue;
+            }
             K::Conditional {
                 branches,
                 otherwise,

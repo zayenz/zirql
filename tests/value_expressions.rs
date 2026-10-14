@@ -3623,3 +3623,481 @@ fn ordering_refuses_later_bad_keys_and_known_incompatible_skipped_types_at_the_s
     assert_eq!(failure.category, zirql::QueryErrorCategory::WorkLimit);
     assert_eq!(failure.location, Location::Query(2..40));
 }
+
+fn pattern(kind: zirql::PatternKind) -> zirql::Pattern {
+    Located::new(kind, 70..80)
+}
+fn pattern_name(value: &str) -> zirql::Pattern {
+    pattern(zirql::PatternKind::Name(Located::new(value.into(), 71..72)))
+}
+fn record_pattern(fields: Vec<(&str, zirql::Pattern)>, ignore_rest: bool) -> zirql::Pattern {
+    pattern(zirql::PatternKind::Record {
+        fields: fields
+            .into_iter()
+            .map(|(s, p)| (Located::new(s.into(), 73..74), p))
+            .collect(),
+        ignore_rest,
+    })
+}
+fn block(bindings: Vec<(zirql::Pattern, E)>, value: E) -> E {
+    e(K::Block {
+        bindings,
+        value: Box::new(value),
+    })
+}
+fn arm(pattern: zirql::Pattern, guard: Option<E>, value: E) -> zirql::ValueMatchArm {
+    zirql::ValueMatchArm {
+        pattern,
+        guard,
+        value,
+    }
+}
+fn value_match(subject: E, arms: Vec<zirql::ValueMatchArm>) -> E {
+    e(K::ValueMatch {
+        subject: Box::new(subject),
+        arms,
+    })
+}
+fn fallback(value: E) -> zirql::ValueMatchArm {
+    arm(pattern(zirql::PatternKind::Wildcard), None, value)
+}
+
+#[test]
+fn lexical_patterns_select_nested_reports_without_copying_ignored_data() {
+    use zirql::PatternKind as P;
+    let sources = Bindings::new([(
+        Located::new("report".into(), 1..2),
+        V::Record(vec![
+            ("name".into(), V::String("alpha".into())),
+            (
+                "metrics".into(),
+                V::Tuple(vec![V::Boolean(true), V::Integer(8)]),
+            ),
+            (
+                "ignored".into(),
+                V::Array((0..5000).map(V::Integer).collect()),
+            ),
+        ]),
+    )])
+    .unwrap();
+    let report = block(
+        vec![(
+            record_pattern(
+                vec![
+                    ("name", pattern_name("label")),
+                    (
+                        "metrics",
+                        pattern(P::Tuple(vec![pattern(P::Wildcard), pattern_name("cost")])),
+                    ),
+                ],
+                true,
+            ),
+            name("report"),
+        )],
+        record(vec![("label", name("label")), ("cost", name("cost"))]),
+    );
+    let result = evaluate_value(&report, &sources, &mut budget(1_000_000, 100, 64)).unwrap();
+    assert_eq!(
+        result,
+        V::Record(vec![
+            ("label".into(), V::String("alpha".into())),
+            ("cost".into(), V::Integer(8))
+        ])
+    );
+    assert_eq!(
+        free_value_names(
+            &report,
+            &BTreeMap::from([("report".into(), ValueType::Unestablished)]),
+            &mut ample()
+        )
+        .unwrap()[0]
+            .value,
+        "report"
+    );
+    for bad in [
+        block(
+            vec![(
+                record_pattern(vec![("name", pattern_name("label"))], false),
+                name("report"),
+            )],
+            name("label"),
+        ),
+        block(
+            vec![(
+                record_pattern(vec![("missing", pattern_name("x"))], true),
+                name("report"),
+            )],
+            name("x"),
+        ),
+        block(
+            vec![(
+                pattern(P::Tuple(vec![pattern_name("x")])),
+                e(K::Array(vec![int(1)])),
+            )],
+            name("x"),
+        ),
+    ] {
+        let error = evaluate_value(&bad, &sources, &mut ample()).unwrap_err();
+        assert_eq!(error.location, Location::Query(70..80));
+        assert!(error.message.contains("pattern did not match"));
+    }
+    let declared = zirql::declare_constructed(
+        V::Record(vec![(
+            "row".into(),
+            V::Record(vec![("cost".into(), V::Integer(8))]),
+        )]),
+        D::Record(vec![(
+            "row".into(),
+            D::Record(vec![("cost".into(), D::Integer)]),
+        )]),
+        &mut ample(),
+        Location::Query(4..5),
+    )
+    .unwrap();
+    let retained = block(
+        vec![(
+            record_pattern(vec![("row", pattern_name("row"))], false),
+            literal(declared),
+        )],
+        field(name("row"), "cost"),
+    );
+    let retained = evaluate_value(&retained, &Bindings::default(), &mut ample()).unwrap();
+    assert_eq!(retained.data(), &V::Integer(8));
+    assert!(matches!(
+        constructed_value_type(&retained, &mut ample(), Location::Query(4..5)).unwrap(),
+        ValueType::Declared {
+            declaration: D::Integer,
+            ..
+        }
+    ));
+    let escaped = e(K::Tuple(vec![report, name("label")]));
+    assert!(
+        evaluate_value(&escaped, &sources, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("undefined binding")
+    );
+}
+
+#[test]
+fn guarded_presence_match_uses_written_order_and_only_the_selected_value() {
+    use zirql::PatternKind as P;
+    let classify = |subject| {
+        value_match(
+            subject,
+            vec![
+                arm(pattern(P::Absent), None, int(0)),
+                arm(
+                    pattern(P::Present(Box::new(pattern_name("cost")))),
+                    Some(binary(B::Less, name("cost"), int(0))),
+                    binary(B::IntegerDivide, int(1), int(0)),
+                ),
+                arm(
+                    pattern(P::Present(Box::new(pattern_name("cost")))),
+                    Some(binary(B::GreaterEqual, name("cost"), int(0))),
+                    block(
+                        vec![(pattern_name("answer"), binary(B::Add, name("cost"), int(1)))],
+                        name("answer"),
+                    ),
+                ),
+                fallback(binary(B::IntegerDivide, int(1), int(0))),
+            ],
+        )
+    };
+    assert_eq!(
+        evaluate_value(&classify(int(8)), &Bindings::default(), &mut ample()).unwrap(),
+        V::Integer(9)
+    );
+    assert_eq!(
+        evaluate_value(
+            &classify(literal(V::Absent)),
+            &Bindings::default(),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Integer(0)
+    );
+    let absent = zirql::declare_constructed(
+        V::Absent,
+        D::Optional(Box::new(D::Integer)),
+        &mut ample(),
+        Location::Query(4..5),
+    )
+    .unwrap();
+    assert_eq!(
+        evaluate_value(
+            &classify(literal(absent)),
+            &Bindings::default(),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Integer(0)
+    );
+    // A declared present value keeps its underlying child contract.
+    let functions = [zirql::PatternFunctionDeclaration {
+        name: Located::new("classify".into(), 1..9),
+        parameters: vec![Located::new(
+            zirql::PatternParameter {
+                pattern: pattern_name("input"),
+                declaration: D::Optional(Box::new(D::Integer)),
+            },
+            10..15,
+        )],
+        result: Located::new(D::Integer, 16..20),
+        value: classify(name("input")),
+    }];
+    let value = zirql::evaluate_pattern_functions(
+        &functions,
+        &call("classify", vec![int(8)]),
+        &Bindings::default(),
+        &mut ample(),
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap();
+    assert_eq!(value.data(), &V::Integer(9));
+    let bad_guard = value_match(
+        int(8),
+        vec![
+            arm(pattern_name("x"), Some(int(1)), name("x")),
+            fallback(int(0)),
+        ],
+    );
+    assert!(
+        evaluate_value(&bad_guard, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("Boolean")
+    );
+    let failure = value_match(
+        int(8),
+        vec![
+            arm(
+                pattern_name("x"),
+                Some(binary(
+                    B::Equal,
+                    binary(B::IntegerDivide, int(1), int(0)),
+                    int(0),
+                )),
+                name("x"),
+            ),
+            fallback(int(0)),
+        ],
+    );
+    assert!(
+        evaluate_value(&failure, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("zero")
+    );
+}
+
+#[test]
+fn parameter_patterns_admit_all_whole_arguments_before_binding_and_tail_reuse() {
+    use zirql::PatternKind as P;
+    let functions = [zirql::PatternFunctionDeclaration {
+        name: Located::new("accumulate".into(), 1..9),
+        parameters: vec![Located::new(
+            zirql::PatternParameter {
+                pattern: pattern(P::Tuple(vec![pattern_name("n"), pattern_name("total")])),
+                declaration: D::Tuple(vec![D::Integer, D::Integer]),
+            },
+            10..15,
+        )],
+        result: Located::new(D::Integer, 16..20),
+        value: value_match(
+            name("n"),
+            vec![
+                arm(pattern(P::Literal(V::Integer(0))), None, name("total")),
+                fallback(select_branch(
+                    literal(V::Boolean(true)),
+                    block(
+                        vec![(pattern_name("old"), name("n"))],
+                        call(
+                            "accumulate",
+                            vec![e(K::Tuple(vec![
+                                binary(B::Subtract, name("n"), int(1)),
+                                binary(B::Add, name("total"), name("old")),
+                            ]))],
+                        ),
+                    ),
+                    int(-1),
+                )),
+            ],
+        ),
+    }];
+    let result = zirql::evaluate_pattern_functions(
+        &functions,
+        &call("accumulate", vec![e(K::Tuple(vec![int(10_000), int(0)]))]),
+        &Bindings::default(),
+        &mut budget(30_000_000, 1_000_000, 64),
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap();
+    assert_eq!(result.data(), &V::Integer(50_005_000));
+    let refused = zirql::PatternFunctionDeclaration {
+        name: Located::new("refused".into(), 1..9),
+        parameters: vec![
+            Located::new(
+                zirql::PatternParameter {
+                    pattern: pattern(P::Literal(V::Integer(99))),
+                    declaration: D::Integer,
+                },
+                10..15,
+            ),
+            Located::new(
+                zirql::PatternParameter {
+                    pattern: pattern_name("second"),
+                    declaration: D::Boolean,
+                },
+                20..25,
+            ),
+        ],
+        result: Located::new(D::Integer, 30..35),
+        value: int(0),
+    };
+    let declarations = [refused];
+    let mut allowance = ample();
+    let error = zirql::evaluate_pattern_functions(
+        &declarations,
+        &call(
+            "refused",
+            vec![int(1), Located::new(K::Literal(V::Integer(2)), 90..95)],
+        ),
+        &Bindings::default(),
+        &mut allowance,
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(90..95));
+    let error = zirql::evaluate_pattern_functions(
+        &declarations,
+        &call("refused", vec![int(1), literal(V::Boolean(true))]),
+        &Bindings::default(),
+        &mut allowance,
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(70..80));
+    assert!(error.error.message.contains("parameter pattern"));
+    assert_eq!(
+        evaluate_value(&int(3), &Bindings::default(), &mut allowance).unwrap(),
+        V::Integer(3)
+    );
+}
+
+#[test]
+fn unused_patterns_cannot_hide_scope_or_fallback_errors() {
+    use zirql::PatternKind as P;
+    for arms in [
+        vec![arm(pattern_name("x"), None, int(0))],
+        vec![arm(
+            pattern(P::Wildcard),
+            Some(literal(V::Boolean(true))),
+            int(0),
+        )],
+        vec![fallback(int(1)), fallback(int(2))],
+        vec![
+            arm(
+                pattern(P::Tuple(vec![pattern_name("x"), pattern_name("x")])),
+                None,
+                int(0),
+            ),
+            fallback(int(1)),
+        ],
+        vec![
+            arm(
+                record_pattern(
+                    vec![("a", pattern_name("x")), ("a", pattern_name("y"))],
+                    true,
+                ),
+                None,
+                int(0),
+            ),
+            fallback(int(1)),
+        ],
+    ] {
+        assert!(
+            evaluate_value(
+                &value_match(int(0), arms),
+                &Bindings::default(),
+                &mut ample()
+            )
+            .is_err()
+        );
+    }
+    let bindings = Bindings::new([(Located::new("outer".into(), 1..2), V::Integer(1))]).unwrap();
+    let unused = value_match(
+        int(0),
+        vec![
+            arm(
+                pattern_name("outer"),
+                Some(literal(V::Boolean(false))),
+                int(1),
+            ),
+            fallback(int(2)),
+        ],
+    );
+    assert!(
+        evaluate_value(&unused, &bindings, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("shadows")
+    );
+    let shadow = block(
+        vec![(pattern_name("x"), int(1))],
+        value_match(
+            int(2),
+            vec![arm(pattern_name("x"), None, name("x")), fallback(int(0))],
+        ),
+    );
+    assert!(
+        evaluate_value(&shadow, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("already defined")
+    );
+}
+
+#[test]
+fn pattern_and_guard_work_share_host_validation_allowance() {
+    let binding = block(vec![(pattern_name("x"), int(23))], name("x"));
+    let error = zirql::evaluate_value_with_host_validation(
+        &binding,
+        &Bindings::default(),
+        &mut ample(),
+        |value, budget, location| {
+            if value == &V::Integer(23) {
+                budget.charge(budget.remaining_work(), location.clone())?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    assert_eq!(error.location, Location::Query(70..80));
+    let guarded = value_match(
+        int(23),
+        vec![
+            arm(
+                pattern_name("x"),
+                Some(Located::new(K::Literal(V::Boolean(true)), 85..86)),
+                name("x"),
+            ),
+            fallback(int(0)),
+        ],
+    );
+    let error = zirql::evaluate_value_with_host_validation(
+        &guarded,
+        &Bindings::default(),
+        &mut ample(),
+        |value, budget, location| {
+            if value == &V::Boolean(true) {
+                budget.charge(budget.remaining_work(), location.clone())?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    assert_eq!(error.location, Location::Query(85..86));
+}

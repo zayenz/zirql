@@ -153,7 +153,8 @@ struct Word<'a> {
 enum SourceValue<'a> {
     Words(Vec<Word<'a>>),
     Count(usize),
-    Record(Vec<(String, SourceValue<'a>)>),
+    Record(zirql::NativeCapture<SourceValue<'a>>),
+    Tuple(Vec<SourceValue<'a>>),
 }
 
 type SourceExpression = Expression<SourceStage, (), &'static str>;
@@ -164,6 +165,7 @@ enum SourceStage {
     Pipeline(Pipeline<()>),
     Select(Box<SourceExpression>),
     Fail,
+    UnknownGuard,
 }
 
 struct SourceContext<'a> {
@@ -233,7 +235,8 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                 budget.charge_results(1, location)?;
                 SourceValue::Count(*count)
             }
-            SourceValue::Record(fields) => {
+            SourceValue::Record(record) => {
+                let fields = &record.fields;
                 budget.charge_results(1 + fields.len(), location)?;
                 let mut copied = Vec::with_capacity(fields.len());
                 for (label, value) in fields {
@@ -243,7 +246,16 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                         self.copy_value(value, _context, budget, range)?,
                     ));
                 }
-                SourceValue::Record(copied)
+                SourceValue::Record(zirql::NativeCapture { fields: copied })
+            }
+            SourceValue::Tuple(values) => {
+                budget.charge_results(values.len() + 1, location)?;
+                SourceValue::Tuple(
+                    values
+                        .iter()
+                        .map(|v| self.copy_value(v, _context, budget, range))
+                        .collect::<Result<_, _>>()?,
+                )
             }
         })
     }
@@ -306,6 +318,12 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
             SourceStage::Fail => Err(EvaluationError::Host(SourceFailure::Source(
                 0..context.source.len(),
             ))),
+            SourceStage::UnknownGuard => Err(QueryError::query(
+                range.clone(),
+                "native guard remained Unknown",
+            )
+            .with_category(QueryErrorCategory::UnknownPredicate)
+            .into()),
         }
     }
 
@@ -338,7 +356,23 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
         _range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         // Move the admitted field staging into the native record.
-        Ok(SourceValue::Record(fields))
+        Ok(SourceValue::Record(zirql::NativeCapture { fields }))
+    }
+
+    fn capture_record<'v>(
+        &self,
+        value: &'v SourceValue<'a>,
+    ) -> Option<&'v zirql::NativeCapture<SourceValue<'a>>> {
+        match value {
+            SourceValue::Record(v) => Some(v),
+            _ => None,
+        }
+    }
+    fn tuple_view<'v>(&self, value: &'v SourceValue<'a>) -> Option<&'v [SourceValue<'a>]> {
+        match value {
+            SourceValue::Tuple(v) => Some(v),
+            _ => None,
+        }
     }
 
     fn emit(
@@ -375,6 +409,24 @@ fn source_input<'a>(source: &'a str, budget: &mut Budget) -> SourceValue<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SourceKind {
     Words,
+    Count,
+    Record(zirql::NativeCapture<SourceKind>),
+    Tuple(Vec<SourceKind>),
+}
+fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
+    match kind {
+        SourceKind::Record(record) => DeclaredType::Record(
+            record
+                .fields
+                .iter()
+                .map(|(s, k)| (s.clone(), source_declaration(k)))
+                .collect(),
+        ),
+        SourceKind::Tuple(children) => {
+            DeclaredType::Tuple(children.iter().map(source_declaration).collect())
+        }
+        other => DeclaredType::Native(other.clone()),
+    }
 }
 
 impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
@@ -388,6 +440,36 @@ impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
         budget: &mut Budget,
         location: Location,
     ) -> Result<(), EvaluationError<SourceFailure>> {
+        match (expected, value) {
+            (DeclaredType::Native(kind @ (SourceKind::Record(_) | SourceKind::Tuple(_))), _) => {
+                return self.admit_native(
+                    value,
+                    &source_declaration(kind),
+                    context,
+                    budget,
+                    location,
+                );
+            }
+            (DeclaredType::Tuple(types), SourceValue::Tuple(values))
+                if types.len() == values.len() =>
+            {
+                for (value, ty) in values.iter().zip(types) {
+                    self.admit_native(value, ty, context, budget, location.clone())?;
+                }
+                return Ok(());
+            }
+            (DeclaredType::Record(types), SourceValue::Record(values))
+                if types.len() == values.fields.len() =>
+            {
+                for (label, ty) in types {
+                    let value = values.get(&Located::new(label.as_str(), 0..1), budget)?;
+                    self.admit_native(value, ty, context, budget, location.clone())?;
+                }
+                return Ok(());
+            }
+            (DeclaredType::Native(SourceKind::Count), SourceValue::Count(_)) => return Ok(()),
+            _ => {}
+        }
         let (DeclaredType::Native(SourceKind::Words), SourceValue::Words(words)) =
             (expected, value)
         else {
@@ -426,11 +508,28 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     type Kind = SourceKind;
     fn kind(
         &self,
-        _: &SourceValue<'a>,
-        _: &mut Budget,
-        _: &Range<usize>,
+        value: &SourceValue<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
     ) -> Result<SourceKind, QueryError> {
-        Ok(SourceKind::Words)
+        budget.charge(1, Location::Query(range.clone()))?;
+        Ok(match value {
+            SourceValue::Words(_) => SourceKind::Words,
+            SourceValue::Count(_) => SourceKind::Count,
+            SourceValue::Record(record) => SourceKind::Record(zirql::NativeCapture {
+                fields: record
+                    .fields
+                    .iter()
+                    .map(|(s, v)| Ok((s.clone(), self.kind(v, budget, range)?)))
+                    .collect::<Result<_, QueryError>>()?,
+            }),
+            SourceValue::Tuple(values) => SourceKind::Tuple(
+                values
+                    .iter()
+                    .map(|v| self.kind(v, budget, range))
+                    .collect::<Result<_, _>>()?,
+            ),
+        })
     }
     fn scalar_types(
         &self,
@@ -439,6 +538,21 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
         _: &Range<usize>,
     ) -> Result<Option<Vec<zirql::ValueType>>, QueryError> {
         Ok(None)
+    }
+    fn capture_record_kind<'k>(
+        &self,
+        kind: &'k SourceKind,
+    ) -> Option<&'k zirql::NativeCapture<SourceKind>> {
+        match kind {
+            SourceKind::Record(v) => Some(v),
+            _ => None,
+        }
+    }
+    fn tuple_view_kind<'k>(&self, kind: &'k SourceKind) -> Option<&'k [SourceKind]> {
+        match kind {
+            SourceKind::Tuple(v) => Some(v),
+            _ => None,
+        }
     }
     fn constructed_kind(&self, _: Vec<zirql::ValueType>) -> SourceKind {
         SourceKind::Words
@@ -502,11 +616,27 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
 impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
     fn declaration_kind(
         &self,
-        _: &DeclaredType<SourceKind>,
-        _: &mut Budget,
-        _: &Range<usize>,
+        declaration: &DeclaredType<SourceKind>,
+        budget: &mut Budget,
+        range: &Range<usize>,
     ) -> Result<SourceKind, QueryError> {
-        Ok(SourceKind::Words)
+        budget.charge(1, Location::Query(range.clone()))?;
+        Ok(match declaration {
+            DeclaredType::Native(kind) => kind.clone(),
+            DeclaredType::Tuple(children) => SourceKind::Tuple(
+                children
+                    .iter()
+                    .map(|d| self.declaration_kind(d, budget, range))
+                    .collect::<Result<_, _>>()?,
+            ),
+            DeclaredType::Record(fields) => SourceKind::Record(zirql::NativeCapture {
+                fields: fields
+                    .iter()
+                    .map(|(s, d)| Ok((s.clone(), self.declaration_kind(d, budget, range)?)))
+                    .collect::<Result<_, QueryError>>()?,
+            }),
+            _ => SourceKind::Words,
+        })
     }
     fn is_operation_name(&self, name: &str) -> bool {
         name == "prefix"
@@ -831,9 +961,10 @@ fn borrowed_program_restores_native_bindings_and_relative_input_with_one_context
         ]
     );
     assert_eq!(words[0].text.as_ptr(), source[6..11].as_ptr());
-    let SourceValue::Record(fields) = &context.emissions[2].1 else {
+    let SourceValue::Record(record) = &context.emissions[2].1 else {
         panic!("expected native report")
     };
+    let fields = &record.fields;
     assert_eq!(
         fields
             .iter()
@@ -5338,6 +5469,52 @@ fn shared_reader_releases_native_values_on_errors() {
     zirql::dispose_native_value(value);
     assert!(host.0.borrow().upgrade().is_none());
     let mut reader = zirql::ArgumentReader::new(&prefix, 0).unwrap();
+    let guard = zirql::read_value_expression(
+        &mut reader,
+        &mut host,
+        &mut Budget::for_program(generous),
+        64,
+    )
+    .unwrap();
+    let mut pattern = at(zirql::PatternKind::Wildcard, 0);
+    for _ in 0..20_000 {
+        pattern = at(zirql::PatternKind::Present(Box::new(pattern)), 0);
+    }
+    // Refused callable trees can contain deep patterns and native guard/body
+    // edges even though no text frontend accepts their syntax yet.
+    zirql::dispose_native_value(at(
+        zirql::ValueExpressionKind::ValueMatch {
+            subject: Box::new(at(
+                zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent),
+                0,
+            )),
+            arms: vec![zirql::ValueMatchArm {
+                pattern,
+                guard: Some(guard),
+                value: at(
+                    zirql::ValueExpressionKind::Block {
+                        bindings: vec![(
+                            at(zirql::PatternKind::Wildcard, 0),
+                            at(
+                                zirql::ValueExpressionKind::Literal(
+                                    zirql::ConstructedValue::Absent,
+                                ),
+                                0,
+                            ),
+                        )],
+                        value: Box::new(at(
+                            zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Absent),
+                            0,
+                        )),
+                    },
+                    0,
+                ),
+            }],
+        },
+        0,
+    ));
+    assert!(host.0.borrow().upgrade().is_none());
+    let mut reader = zirql::ArgumentReader::new(&prefix, 0).unwrap();
     let native = zirql::read_native_expression(
         &mut reader,
         &mut host,
@@ -5433,4 +5610,241 @@ fn shared_reader_releases_native_values_on_errors() {
             assert!(host.0.borrow().upgrade().is_none());
         }
     }
+}
+
+#[test]
+fn native_pattern_views_keep_child_handles_coordinates_and_guard_failures() {
+    use zirql::{
+        FunctionLimits, FunctionRequest, PatternFunctionDeclaration, PatternKind as P,
+        PatternParameter, ValueExpressionKind as K, ValueMatchArm,
+    };
+    let p = |kind| at(kind, 70);
+    let name = |s: &str| p(P::Name(at(s.to_owned(), 71)));
+    let native_name = |s: &str| at(K::Name(s.to_owned()), 40);
+    let record_pattern = p(P::Record {
+        fields: vec![(
+            at("selected".into(), 73),
+            p(P::Tuple(vec![name("first"), p(P::Wildcard)])),
+        )],
+        ignore_rest: true,
+    });
+    let value_match = |guard| {
+        at(
+            K::ValueMatch {
+                subject: Box::new(at(K::Literal(zirql::ConstructedValue::Absent), 41)),
+                arms: vec![
+                    ValueMatchArm {
+                        pattern: p(P::Absent),
+                        guard,
+                        value: native_name("first"),
+                    },
+                    ValueMatchArm {
+                        pattern: p(P::Wildcard),
+                        guard: None,
+                        value: native_name("first"),
+                    },
+                ],
+            },
+            42,
+        )
+    };
+    let body = |guard| {
+        at(
+            K::Block {
+                bindings: vec![(
+                    p(P::Record {
+                        fields: vec![(
+                            at("selected".into(), 73),
+                            p(P::Tuple(vec![name("first"), p(P::Wildcard)])),
+                        )],
+                        ignore_rest: true,
+                    }),
+                    native_name("report"),
+                )],
+                value: Box::new(value_match(guard)),
+            },
+            43,
+        )
+    };
+    let report_type = || {
+        DeclaredType::Record(vec![
+            (
+                "selected".into(),
+                DeclaredType::Tuple(vec![
+                    DeclaredType::Native(SourceKind::Words),
+                    DeclaredType::Native(SourceKind::Words),
+                ]),
+            ),
+            ("ignored".into(), DeclaredType::Native(SourceKind::Words)),
+        ])
+    };
+    let function = |value| PatternFunctionDeclaration {
+        name: at("select".into(), 1),
+        parameters: vec![at(
+            PatternParameter {
+                pattern: name("report"),
+                declaration: report_type(),
+            },
+            2,
+        )],
+        result: at(DeclaredType::Native(SourceKind::Words), 3),
+        value,
+    };
+    let source = String::from("alpha beta");
+    let foreign = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let words = |range: Range<usize>| {
+        SourceValue::Words(vec![Word {
+            text: &source[range.clone()],
+            range,
+        }])
+    };
+    let bindings = Bindings::new([(
+        at("input".into(), 1),
+        SourceValue::Record(zirql::NativeCapture {
+            fields: vec![
+                ("ignored".into(), words(6..10)),
+                (
+                    "selected".into(),
+                    SourceValue::Tuple(vec![words(0..5), words(6..10)]),
+                ),
+            ],
+        }),
+    )])
+    .unwrap();
+    let entry = at(
+        K::Call {
+            function: at("select".into(), 30),
+            arguments: vec![at(
+                K::NativeValue(Box::new(at(ExpressionKind::Binding("input".into()), 31))),
+                31,
+            )],
+        },
+        30,
+    );
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 10_000,
+        nesting: 64,
+        ..limits()
+    });
+    let functions = [function(body(None))];
+    let result = FunctionRequest::prepare_patterns(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    let SourceValue::Words(selected) = result else {
+        panic!("native words");
+    };
+    assert_eq!(
+        selected,
+        vec![Word {
+            text: "alpha",
+            range: 0..5
+        }]
+    );
+    assert_eq!(selected[0].text.as_ptr(), source.as_ptr());
+    // Matching the same whole native record directly also uses the exposed
+    // child kinds in its guard/body, without a function-parameter declaration.
+    let functions = [function(at(
+        K::ValueMatch {
+            subject: Box::new(native_name("report")),
+            arms: vec![
+                ValueMatchArm {
+                    pattern: record_pattern,
+                    guard: None,
+                    value: native_name("first"),
+                },
+                ValueMatchArm {
+                    pattern: p(P::Wildcard),
+                    guard: None,
+                    value: at(
+                        K::NativeValue(Box::new(at(ExpressionKind::Binding("report".into()), 50))),
+                        50,
+                    ),
+                },
+            ],
+        },
+        44,
+    ))];
+    // The fallback has the wrong result contract but is never selected.
+    let result = FunctionRequest::prepare_patterns(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    assert!(matches!(result, SourceValue::Words(ref v) if v[0].text.as_ptr() == source.as_ptr()));
+    let guard = at(
+        K::NativeValue(Box::new(sequence(
+            at(ExpressionKind::Binding("first".into()), 60),
+            vec![at(ExpressionStep::Stage(SourceStage::Fail), 61)],
+        ))),
+        60,
+    );
+    let functions = [function(body(Some(guard)))];
+    let error = FunctionRequest::prepare_patterns(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap_err();
+    assert_eq!(
+        error.error,
+        EvaluationError::Host(SourceFailure::Source(0..source.len()))
+    );
+    let unknown = at(
+        K::NativeValue(Box::new(sequence(
+            at(ExpressionKind::Binding("first".into()), 60),
+            vec![at(ExpressionStep::Stage(SourceStage::UnknownGuard), 61)],
+        ))),
+        60,
+    );
+    let unknown_functions = [function(body(Some(unknown)))];
+    let error = FunctionRequest::prepare_patterns(
+        &unknown_functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(ref e) if e.category == QueryErrorCategory::UnknownPredicate && e.location == Location::Query(61..62))
+    );
+    context.source = &foreign;
+    let error = FunctionRequest::prepare_patterns(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap_err();
+    assert_eq!(
+        error.error,
+        EvaluationError::Host(SourceFailure::Source(0..5))
+    );
 }

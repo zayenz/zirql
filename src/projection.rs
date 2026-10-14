@@ -238,6 +238,10 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
     ) -> Option<&'k crate::NativeCapture<Self::Kind>> {
         None
     }
+    /// Declared positions of an explicitly exposed native tuple view.
+    fn tuple_view_kind<'k>(&self, _kind: &'k Self::Kind) -> Option<&'k [Self::Kind]> {
+        None
+    }
     fn project_value(
         &self,
         value: Self::Value,

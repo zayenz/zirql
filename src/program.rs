@@ -584,6 +584,12 @@ pub trait ProgramHost<C> {
         None
     }
 
+    /// Borrow an explicitly exposed immutable tuple. Existing hosts need not
+    /// expose tuple structure; no Rust implementation fields are reflected.
+    fn tuple_view<'v>(&self, _value: &'v Self::Value) -> Option<&'v [Self::Value]> {
+        None
+    }
+
     /// Observe a native value at this written position. Hosts charge retained
     /// snapshots/rendered bytes and own library buffering and effect semantics.
     fn emit(
