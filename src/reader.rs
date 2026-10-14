@@ -34,6 +34,28 @@ pub trait ValueReaderHost {
         reader: &mut ArgumentReader<'_>,
         budget: &mut Budget,
     ) -> Result<Self::Predicate, QueryError>;
+    /// Parse one domain stage in the current lexical scope. An adapter that
+    /// starts a nested common value reader carries these borrowed names into
+    /// that reader's binding facts. This exposes names, never caller values.
+    /// Existing hosts keep their ordinary stage parser.
+    fn parse_stage_in_scope(
+        &mut self,
+        reader: &mut ArgumentReader<'_>,
+        _locals: &[&str],
+        budget: &mut Budget,
+    ) -> Result<ExpressionStep<Self::Stage, Self::Emitter>, QueryError> {
+        self.parse_stage(reader, budget)
+    }
+    /// Preserve the same lexical names when a domain predicate has value
+    /// arguments of its own. Existing predicate parsers remain unchanged.
+    fn parse_predicate_leaf_in_scope(
+        &mut self,
+        reader: &mut ArgumentReader<'_>,
+        _locals: &[&str],
+        budget: &mut Budget,
+    ) -> Result<Self::Predicate, QueryError> {
+        self.parse_predicate_leaf(reader, budget)
+    }
     fn filter(&mut self, predicate: Predicate<Self::Predicate>, range: Range<usize>)
     -> Self::Stage;
     fn projection(
@@ -1397,7 +1419,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         .projection(projection, stage_start..self.reader.position()),
                 )
             } else {
-                self.host.parse_stage(self.reader, self.budget)?
+                self.host
+                    .parse_stage_in_scope(self.reader, &self.locals, self.budget)?
             };
             if self.reader.position() == stage_start {
                 return Err(self
@@ -1588,7 +1611,11 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             self.reader.expect(')')?;
             PredicateKind::Group(Box::new(predicate))
         } else {
-            PredicateKind::Leaf(self.host.parse_predicate_leaf(self.reader, self.budget)?)
+            PredicateKind::Leaf(self.host.parse_predicate_leaf_in_scope(
+                self.reader,
+                &self.locals,
+                self.budget,
+            )?)
         };
         self.slots::<Predicate<H::Predicate>>(1)?;
         Ok(Located::new(value, start..self.reader.position()))

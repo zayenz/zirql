@@ -2620,6 +2620,8 @@ mod projection {
             fn counts(xs: sequence<Subjects>) -> int { sum([identity(item) | count for item in xs]) }
             fn parameter(if: int) -> int { let saved = if; if saved == 0 { if } else { saved } }
             fn local() -> int { let if = 3; if if == 3 { if } else { 0 } }
+            fn forwarded(if: Subjects) -> int { native(if true { if } else { if }) | count }
+            fn forwarded_local(xs: Subjects) -> int { let if = xs; native(if) | count }
             counts(source)
         "#;
         let mut budget = function_budget();
@@ -2713,6 +2715,39 @@ mod projection {
                 .unwrap(),
             Value::Constructed(V::Integer(3))
         );
+        let mut reader =
+            zirql::ArgumentReader::new("forwarded(source) + forwarded_local(source)", 0).unwrap();
+        let forwarded =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let forwarded = functions
+            .prepare_value(&forwarded, &scope, None, &mut budget)
+            .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(&forwarded, &bindings, None, &mut (), &mut budget, limits)
+                .unwrap(),
+            Value::Constructed(V::Integer(6))
+        );
+        let mut reader=zirql::ArgumentReader::new("fn guarded(if: int, xs: Subjects) -> int { xs | paths(neighbors, to=bound(if), max_depth=0) }",0).unwrap();
+        let guarded =
+            zirql::read_function_declaration(&mut reader, &mut Host, &mut budget, 64, |name, _| {
+                Ok::<_, QueryError>(D::Native(match name.value {
+                    "Subjects" => Kind::Subjects,
+                    _ => unreachable!(),
+                }))
+            })
+            .unwrap()
+            .unwrap();
+        let K::NativeQuery(query) = guarded.value.value else {
+            panic!("native guarded query")
+        };
+        let ExpressionKind::Sequence { steps, .. } = query.value else {
+            panic!("guarded native sequence")
+        };
+        let ExpressionStep::Stage(Stage::Paths(paths)) = &steps[0].value else {
+            panic!("guarded paths")
+        };
+        assert_eq!(paths.target.value, zirql::PredicateKind::Leaf(Truth::True));
         // A typed caller may share the same source tree in two lexical scopes.
         let mut reader = zirql::ArgumentReader::new("identity(source) | count", 0).unwrap();
         let pipeline =
@@ -2875,6 +2910,51 @@ mod projection {
         }
     }
 
+    // A concrete opaque argument parser starts a second common reader, just
+    // like a host stage with an explicit native argument.
+    struct ArgumentScope<'a>(&'a [&'a str]);
+    impl ValueReaderHost for ArgumentScope<'_> {
+        type Stage = Stage;
+        type SetOperator = ();
+        type Emitter = ();
+        type Predicate = Truth;
+        fn is_binding(&self, name: &str) -> bool {
+            self.0.contains(&name)
+        }
+        fn is_stage(&self, name: &str) -> bool {
+            Host.is_stage(name)
+        }
+        fn parse_stage(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            budget: &mut Budget,
+        ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
+            Host.parse_stage_in_scope(reader, self.0, budget)
+        }
+        fn parse_predicate_leaf(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            budget: &mut Budget,
+        ) -> Result<Truth, QueryError> {
+            Host.parse_predicate_leaf_in_scope(reader, self.0, budget)
+        }
+        fn filter(&mut self, _: Predicate<Truth>, _: Range<usize>) -> Stage {
+            unreachable!()
+        }
+        fn projection(&mut self, _: Projection<Query>, _: Range<usize>) -> Stage {
+            unreachable!()
+        }
+        fn parse_path_edge(
+            &mut self,
+            edge: Located<&str>,
+            budget: &mut Budget,
+        ) -> Result<Stage, QueryError> {
+            Host.parse_path_edge(edge, budget)
+        }
+        fn set_operator(&self, word: &str) -> Option<()> {
+            Host.set_operator(word)
+        }
+    }
     impl ValueReaderHost for Host {
         type Stage = Stage;
         type SetOperator = ();
@@ -2886,8 +2966,32 @@ mod projection {
         fn is_stage(&self, name: &str) -> bool {
             matches!(
                 name,
-                "names" | "count" | "fail" | "edit" | "project" | "paths"
+                "names" | "count" | "fail" | "edit" | "project" | "paths" | "native"
             )
+        }
+        fn parse_stage_in_scope(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            locals: &[&str],
+            budget: &mut Budget,
+        ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
+            let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
+            if probe.keyword("native") {
+                reader.word()?;
+                reader.expect('(')?;
+                let value =
+                    zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
+                reader.expect(')')?;
+                return Ok(ExpressionStep::Stage(Stage::NativeArgument(Arc::new(
+                    value,
+                ))));
+            }
+            let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
+            if probe.keyword("paths") {
+                return zirql::read_paths(reader, &mut ArgumentScope(locals), budget, 32)
+                    .map(|paths| ExpressionStep::Stage(Stage::Paths(Box::new(paths))));
+            }
+            self.parse_stage(reader, budget)
         }
         fn parse_stage(
             &mut self,
@@ -2908,6 +3012,26 @@ mod projection {
                 _ => return Err(QueryError::query(word.range, "unsupported stage")),
             };
             Ok(ExpressionStep::Stage(stage))
+        }
+        fn parse_predicate_leaf_in_scope(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            locals: &[&str],
+            budget: &mut Budget,
+        ) -> Result<Truth, QueryError> {
+            let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
+            if probe.keyword("bound") {
+                reader.word()?;
+                reader.expect('(')?;
+                let value =
+                    zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
+                reader.expect(')')?;
+                if matches!(value.value,K::Name(ref name) if locals.contains(&name.as_str())) {
+                    return Ok(Truth::True);
+                }
+                return Err(QueryError::query(value.range, "guard needs a lexical name"));
+            }
+            self.parse_predicate_leaf(reader, budget)
         }
         fn parse_predicate_leaf(
             &mut self,
