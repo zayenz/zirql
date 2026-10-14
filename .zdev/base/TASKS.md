@@ -4,8 +4,8 @@
 
 - Total: 46
 - Ready: 3
-- Blocked: 12
-- Done: 31
+- Blocked: 11
+- Done: 32
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -40,8 +40,8 @@
 | [base-029](tasks/029-measure-repeated-evaluation-and-value-ownership-costs.md) | Measure repeated evaluation and value ownership costs | done | — |
 | [base-030](tasks/030-declare-and-enforce-host-runtime-type-contracts.md) | Declare and enforce host runtime type contracts | done | — |
 | [base-031](tasks/031-use-optional-lookup-and-lazy-defaults-in-both-query-language.md) | Use optional lookup and lazy defaults in both query languages | done | base-030 |
-| [base-032](tasks/032-prepare-local-slots-and-share-values-during-repeated-project.md) | Prepare local slots and share values during repeated projections | ready | base-029, base-030 |
-| [base-033](tasks/033-execute-typed-functions-with-bounded-recursion-and-tail-call.md) | Execute typed functions with bounded recursion and tail-call frame reuse | blocked | base-032 |
+| [base-032](tasks/032-prepare-local-slots-and-share-values-during-repeated-project.md) | Prepare local slots and share values during repeated projections | done | base-029, base-030 |
+| [base-033](tasks/033-execute-typed-functions-with-bounded-recursion-and-tail-call.md) | Execute typed functions with bounded recursion and tail-call frame reuse | ready | base-032 |
 | [base-034](tasks/034-expose-typed-recursive-functions-in-zirium-programs.md) | Expose typed recursive functions in Zirium programs | blocked | base-033, base-031 |
 | [base-035](tasks/035-expose-typed-recursive-functions-in-zincite-programs.md) | Expose typed recursive functions in Zincite programs | blocked | base-033, base-031 |
 | [base-036](tasks/036-sort-constructed-reports-and-select-optional-extrema.md) | Sort constructed reports and select optional extrema | ready | base-031 |
