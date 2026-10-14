@@ -1331,7 +1331,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
     while let Some(value) = pending.pop() {
         let clauses = match value.value {
             K::Literal(_) | K::Name(_) => continue,
-            K::NativeQuery(query) => {
+            K::NativeQuery(query) | K::NativeValue(query) => {
                 crate::dispose_expression(*query);
                 continue;
             }
@@ -1379,7 +1379,12 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 pending.push(*right);
                 continue;
             }
-            K::Array(values) | K::Tuple(values) | K::Set(values) => {
+            K::Array(values)
+            | K::Tuple(values)
+            | K::Set(values)
+            | K::Call {
+                arguments: values, ..
+            } => {
                 pending.extend(values);
                 continue;
             }

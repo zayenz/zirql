@@ -231,3 +231,42 @@ inspects it; `into_owned` admits a copy only when that native boundary needs an
 owned value. Argument frames end with the current native invocation. Skipped
 predicate leaves and default fallbacks execute no argument body, while all written
 bodies retain preflight checks.
+
+
+## Function calls and depth
+
+`FunctionLimits { active_depth }` counts active user-function activations.
+The caller supplies it explicitly. A compatible self or mutual tail call reuses
+its activation; each ordinary call adds one. The function's final value, selected
+conditional branch, successful requirement value and untyped default fallback can
+be tail positions. Pending arithmetic, a typed default's remaining admission, or
+a different complete result declaration keeps the required continuation.
+Optionality and positional/keyed distinctions participate in that comparison.
+
+Expression nesting still checks the written tree under the existing budget.
+Native host callbacks retain their separate bounded evaluation-call guard.
+Suspending a function never recursively calls the Rust value runner; synchronous
+native argument callbacks can reenter it only within that host guard. Native
+operations share the same context and cumulative work/results allowance.
+
+Preparation charges signature/declaration visits, name comparisons, slots and
+native metadata. Calls charge a visit, argument/frame slots and continuations
+before growth. Runtime contracts charge scans of fresh data and declarations;
+unchanged immutable constructed owners share admission within the request.
+Native ownership checks remain the host's responsibility on each typed boundary.
+New values, constructed annotations and explicit owned copies retain their result
+charges. Releasing dead locals or returning from a call refunds nothing.
+
+The shared continuation runner also handles function-free expressions. Its
+continuation and operand metadata can increase work spending for a small query,
+so requests near a work threshold can fail earlier. Limit defaults, categories,
+branch demand and eager collection evaluation retain their contracts.
+
+`FunctionError` keeps the original core or native error in `error`. Its `calls`
+contains at most sixteen active locations, innermost first, with function names
+capped at 64 characters; `omitted_calls` counts any remaining active locations.
+A reused tail activation records its current call. This
+context is captured once on failure and does not retain completed calls or a
+chain of deferred return checks. Cleanup needs no remaining allowance; subsequent
+operations on the same budget retain the spending but start without active
+function or host guards.

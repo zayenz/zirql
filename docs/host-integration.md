@@ -251,11 +251,10 @@ runtime checks. The API stores no admission cache.
 Each call performs its checks under the active work and nesting limits.
 
 These declarations and calls are Rust library APIs in the development revision.
-They introduce no type syntax, function declarations or operation registry into
-the existing readers or CLIs. External `param` transport remains `int`, `string`
+The existing readers and CLIs retain their syntax; the named function API below
+accepts lowered declarations. External `param` transport remains `int`, `string`
 and `bool`. Optional report values use the contracts below. Invocation-local
-preparation is available through the report APIs described below; user function
-signatures remain deferred.
+preparation is available through the report APIs described below.
 
 ## Domain policy
 
@@ -481,3 +480,47 @@ invocation; current argument frames, scope references, slot reads, runtime
 admission and native work are charged when used. Current frames release their
 owners when that native invocation ends. The lower-level `ValueQueryHost` bridge
 hooks support this same path; ordinary value hosts keep their defaults.
+
+
+## Prepare a function request
+
+`FunctionHost` opts into named functions over the existing `ProjectionHost` and
+`RuntimeTypeHost` contracts. Its `declaration_kind` hook maps complete signature
+types to the host's preflight kinds. `is_operation_name` reserves registered
+native operation names. The core separately reserves its builtins. Existing
+hosts can continue using their current APIs without implementing these hooks.
+
+`FunctionRequest::prepare` registers every signature before checking bodies. Each
+body can read its parameters and earlier immutable locals. The entry receives
+explicit `Bindings`; functions receive that data through call arguments. Host
+kinds used for native declarations must identify the complete native contract.
+Native kind equality must agree with the host's declaration identity.
+
+Preparation resolves calls, slots and pure native expressions once for this
+request. Native stages expose primitive argument bodies with `value_arguments`;
+the same evaluator executes a selected body with the exact current context and
+budget. `ConstructedRead::declared_type` retains an established function result
+contract beside borrowed argument data; `into_owned` includes its annotation.
+Native signature results require an explicit scalar projection in a constructed
+primitive argument. Pure operations may project or retain handles. Emitters, effects and
+invalid nested selectors fail preflight even in unused or skipped code.
+
+Runtime admission checks every fresh argument and result, including nested
+collections and declared optional fields. An unchanged constructed owner can
+retain admission for an equivalent contract within the request. Native admission
+continues through `admit_value` in the current context, preserving owner and
+stale-handle refusals. No `Clone`, `Send`, `Sync` or `'static` bound is added to
+native values, and rendering is never used to pass them between calls.
+
+The request borrows one host context and budget and is consumed by `evaluate`.
+Prepared values and handles cannot be reused against a different context.
+Normal return and failure release live slots and continuations. Use
+`dispose_functions` for iterative cleanup of lowered native function trees,
+including rejected declarations; hosts still own disposal inside opaque stages.
+
+`ValueExpressionKind` has two new development API variants, `Call` and
+`NativeValue`. A frontend with an exhaustive match must handle them in traversal,
+lowering and disposal. `dispose_native_value` already traverses them. The common
+reader's grammar is unchanged. Zincite and Zirium textual function, type and
+conditional lowering belongs to their later integrations; the published alpha.5
+predates this API.

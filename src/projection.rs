@@ -1,4 +1,4 @@
-mod prepared;
+pub(crate) mod prepared;
 use prepared::PreparedNative;
 
 use std::{collections::BTreeMap, ops::Range};
@@ -270,7 +270,11 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
     })
 }
 
-fn admit_slots<T>(len: usize, budget: &mut Budget, range: &Range<usize>) -> Result<(), QueryError> {
+pub(crate) fn admit_slots<T>(
+    len: usize,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<(), QueryError> {
     if len
         .checked_mul(std::mem::size_of::<T>())
         .is_none_or(|size| size > isize::MAX as usize)
@@ -350,7 +354,7 @@ impl NativePreparation<'_> {
     }
 }
 
-fn declared_arguments<'q, C, H: ProjectionHost<C>>(
+pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
     query: &'q NativeExpression<C, H>,
     host: &H,
     budget: &mut Budget,

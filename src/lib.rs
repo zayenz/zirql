@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod eval;
+mod functions;
 mod matching;
 mod parser;
 mod paths;
@@ -16,6 +17,10 @@ use std::ops::Range;
 pub use eval::{
     Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, ProgramLimits,
     Truth, evaluate,
+};
+pub use functions::{
+    FunctionCall, FunctionDeclaration, FunctionError, FunctionHost, FunctionLimits,
+    FunctionParameter, FunctionRequest, dispose_functions, evaluate_functions,
 };
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match, match_types,

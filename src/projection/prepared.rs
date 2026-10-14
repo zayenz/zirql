@@ -1,12 +1,12 @@
 use super::*;
 
-pub(super) enum NativeRead {
+pub(crate) enum NativeRead {
     Outer(usize),
     Subject,
     Local(usize),
 }
 
-pub(super) enum PreparedNative {
+pub(crate) enum PreparedNative {
     Input,
     Binding(NativeRead),
     Group(Box<Self>),
@@ -133,7 +133,7 @@ impl PreparedNative {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "Resolved native operands retain the current context, slots, scope and active allowance"
+        reason = "Prepared native operands retain explicit context and lexical slots"
     )]
     pub fn run<C, H: ProjectionHost<C>>(
         &self,
@@ -150,29 +150,84 @@ impl PreparedNative {
         scope: &BTreeMap<String, H::Kind>,
         budget: &mut Budget,
     ) -> Result<H::Value, EvaluationError<H::Error>> {
+        self.execute(
+            expression,
+            host,
+            Some(input),
+            context,
+            bindings,
+            outer,
+            Some(subject),
+            locals,
+            &mut |stage, declared, value, context, bindings, budget, range| {
+                let mut arguments = StageArguments {
+                    host,
+                    context,
+                    bindings,
+                    scope,
+                    prepared: native,
+                    declared,
+                    values: arguments,
+                };
+                host.evaluate_stage_with_arguments(stage, value, &mut arguments, budget, range)
+            },
+            budget,
+        )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One native traversal serves ordinary projections and function callbacks"
+    )]
+    pub(crate) fn execute<C, H: ProjectionHost<C>>(
+        &self,
+        expression: &NativeExpression<C, H>,
+        host: &H,
+        input: Option<H::Value>,
+        context: &mut C,
+        bindings: &Bindings<H::Value>,
+        outer: &[&H::Value],
+        subject: Option<&H::Value>,
+        locals: &[&H::Value],
+        run_stage: &mut impl FnMut(
+            &H::Stage,
+            &[usize],
+            H::Value,
+            &mut C,
+            &Bindings<H::Value>,
+            &mut Budget,
+            &Range<usize>,
+        ) -> Result<H::Value, EvaluationError<H::Error>>,
+        budget: &mut Budget,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
         budget.within_evaluation(
             expression.value.depth(),
             Location::Query(expression.range.clone()),
             |budget| {
                 budget.charge_program_work(1, Location::Query(expression.range.clone()))?;
                 match (self, &expression.value) {
-                    (Self::Input, ExpressionKind::Input) => Ok(input),
+                    (Self::Input, ExpressionKind::Input) => input.ok_or_else(|| {
+                        QueryError::query(
+                            expression.range.clone(),
+                            "native input requires an explicit argument input",
+                        )
+                        .into()
+                    }),
                     (Self::Binding(read), ExpressionKind::Binding(_)) => {
                         let value = match *read {
                             NativeRead::Outer(index) => outer[index],
-                            NativeRead::Subject => subject,
+                            NativeRead::Subject => subject.expect("prepared subject"),
                             NativeRead::Local(index) => locals[index],
                         };
                         host.copy_value(value, context, budget, &expression.range)
                     }
-                    (Self::Group(prepared), ExpressionKind::Group(value)) => prepared.run(
-                        value, host, input, context, bindings, outer, subject, locals, arguments,
-                        native, scope, budget,
+                    (Self::Group(prepared), ExpressionKind::Group(value)) => prepared.execute(
+                        value, host, input, context, bindings, outer, subject, locals, run_stage,
+                        budget,
                     ),
                     (Self::Field(prepared), ExpressionKind::Field { value, field }) => {
-                        let value = prepared.run(
+                        let value = prepared.execute(
                             value, host, input, context, bindings, outer, subject, locals,
-                            arguments, native, scope, budget,
+                            run_stage, budget,
                         )?;
                         let record = host.capture_record(&value).ok_or_else(|| {
                             QueryError::query(
@@ -192,27 +247,20 @@ impl PreparedNative {
                             steps,
                         },
                     ) => {
-                        let mut value = prepared.run(
+                        let mut value = prepared.execute(
                             source, host, input, context, bindings, outer, subject, locals,
-                            arguments, native, scope, budget,
+                            run_stage, budget,
                         )?;
                         for (step, declared) in steps.iter().zip(declared) {
                             let ExpressionStep::Stage(stage) = &step.value else {
                                 unreachable!("prepared native query is pure")
                             };
-                            let mut stage_arguments = StageArguments {
-                                host,
-                                context: &mut *context,
-                                bindings,
-                                scope,
-                                prepared: native,
-                                declared,
-                                values: arguments,
-                            };
-                            value = host.evaluate_stage_with_arguments(
+                            value = run_stage(
                                 stage,
+                                declared,
                                 value,
-                                &mut stage_arguments,
+                                context,
+                                bindings,
                                 budget,
                                 &step.range,
                             )?;
@@ -241,24 +289,26 @@ impl PreparedNative {
                             admit_slots::<(
                                 &H::SetOperator,
                                 &NativeExpression<C, H>,
-                                H::Value,
+                                Option<H::Value>,
                                 &Range<usize>,
                                 &Self,
                             )>(1, budget, &operand.range)?;
-                            let left_input =
-                                host.copy_value(&input, context, budget, &left.range)?;
+                            let left_input = input
+                                .as_ref()
+                                .map(|input| host.copy_value(input, context, budget, &left.range))
+                                .transpose()?;
                             pending.push((operator, right, input, &operand.range, prepared));
                             operand = left;
                             input = left_input;
                         }
-                        let mut value = left.run(
+                        let mut value = left.execute(
                             operand, host, input, context, bindings, outer, subject, locals,
-                            arguments, native, scope, budget,
+                            run_stage, budget,
                         )?;
                         while let Some((operator, right, input, range, prepared)) = pending.pop() {
-                            let right = prepared.run(
+                            let right = prepared.execute(
                                 right, host, input, context, bindings, outer, subject, locals,
-                                arguments, native, scope, budget,
+                                run_stage, budget,
                             )?;
                             value = host.combine(operator, value, right, context, budget, range)?;
                         }

@@ -95,3 +95,46 @@ expression, including a nested selector with relative input and the same budget.
 The [host integration guide](host-integration.md) describes validation and
 ownership requirements. The [program reference](native-programs.md) explains
 scope, statement order and emission behavior.
+
+
+## Call typed pure functions
+
+A `FunctionDeclaration` contains a located name, typed named parameters, a result
+contract, ordered local bindings and one final value expression. Use
+`ValueExpressionKind::Call { function, arguments }` at any ordinary expression
+position. Declarations register together before bodies are prepared, so direct
+and mutual recursion use the same path.
+
+For constructed values, `evaluate_functions` takes declarations, an entry
+expression, explicit bindings, the active budget and `FunctionLimits`.
+The [compiled accumulator example in the API source](https://github.com/zayenz/zirql/blob/main/src/functions.rs)
+shows the full declaration construction. It counts down from 100 with an active
+function depth of one. These APIs are available through development Git; the
+published alpha.5 does not include named functions.
+
+For a native host, implement `FunctionHost` alongside `ProjectionHost` and
+`RuntimeTypeHost`. Prepare once, then consume the request with its entry and
+explicit bindings:
+
+```rust
+let request = FunctionRequest::prepare(
+    &functions, &host, &mut context, &mut budget,
+    FunctionLimits { active_depth: 32 },
+)?;
+let result = request.evaluate(&entry, &bindings)?;
+```
+
+`result` is the host's `Value`. `NativeValue(query)` retains a pure native result;
+`NativeQuery(query)` keeps its existing scalar-projection meaning. Native queries
+inside functions read explicit parameters and earlier locals. There is no ambient
+subject or captured program scope. A native stage can supply relative input to
+its declared argument body; a function called there still receives its own inputs
+explicitly. All arguments evaluate once in written order and pass whole-type
+admission before any caller slots are replaced.
+
+Final expressions and selected conditional, successful requirement and untyped
+default branches preserve tail calls when their result declarations are exactly
+equivalent. `1 + recurse(...)`, a typed default's pending fallback check, and an
+incompatible result declaration retain a continuation and consume active depth.
+The [limits guide](diagnostics-and-limits.md#function-calls-and-depth) describes
+the independent guards and failure context.

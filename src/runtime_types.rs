@@ -407,7 +407,7 @@ fn admit_constructed_value<K>(
     })
 }
 
-fn validate_declaration<K>(
+pub(crate) fn validate_declaration<K>(
     expected: &DeclaredType<K>,
     budget: &mut Budget,
     location: &Location,
@@ -702,4 +702,150 @@ fn nested_error(
         None => format!("field {label}: {}", error.message),
     };
     error
+}
+
+// Exact return obligations, unlike the intentionally weaker admission compatibility.
+pub(crate) fn same_declaration<K: PartialEq>(
+    a: &DeclaredType<K>,
+    b: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match (a, b) {
+            (DeclaredType::Optional(a), DeclaredType::Optional(b))
+            | (DeclaredType::Array(a), DeclaredType::Array(b))
+            | (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
+            | (DeclaredType::Keyed(a), DeclaredType::Keyed(b)) => {
+                same_declaration(a, b, budget, location)?
+            }
+            (DeclaredType::Tuple(a), DeclaredType::Tuple(b)) if a.len() == b.len() => {
+                for (a, b) in a.iter().zip(b) {
+                    if !same_declaration(a, b, budget, location)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            (DeclaredType::Record(a), DeclaredType::Record(b)) if a.len() == b.len() => {
+                for (label, a) in a {
+                    let mut found = None;
+                    for (name, b) in b {
+                        budget.charge(1 + label.len().min(name.len()), location.clone())?;
+                        if label == name {
+                            found = Some(b);
+                            break;
+                        }
+                    }
+                    if let Some(b) = found {
+                        if !same_declaration(a, b, budget, location)? {
+                            return Ok(false);
+                        }
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            (DeclaredType::Native(a), DeclaredType::Native(b)) => a == b,
+            (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
+            (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
+            (DeclaredType::Boolean, DeclaredType::Boolean)
+            | (DeclaredType::Integer, DeclaredType::Integer)
+            | (DeclaredType::Float, DeclaredType::Float)
+            | (DeclaredType::String, DeclaredType::String) => true,
+            _ => false,
+        })
+    })
+}
+pub(crate) fn constructed_declaration<K>(
+    declaration: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<DeclaredType<()>, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match declaration {
+            DeclaredType::Optional(c) => {
+                DeclaredType::Optional(Box::new(constructed_declaration(c, budget, location)?))
+            }
+            DeclaredType::Array(c) => {
+                DeclaredType::Array(Box::new(constructed_declaration(c, budget, location)?))
+            }
+            DeclaredType::Sequence(c) => {
+                DeclaredType::Sequence(Box::new(constructed_declaration(c, budget, location)?))
+            }
+            DeclaredType::Keyed(c) => {
+                DeclaredType::Keyed(Box::new(constructed_declaration(c, budget, location)?))
+            }
+            DeclaredType::Tuple(c) => {
+                budget.charge(c.len(), location.clone())?;
+                DeclaredType::Tuple(
+                    c.iter()
+                        .map(|c| constructed_declaration(c, budget, location))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
+            DeclaredType::Record(c) => {
+                budget.charge(c.len(), location.clone())?;
+                DeclaredType::Record(
+                    c.iter()
+                        .map(|(s, c)| {
+                            budget.charge(s.len(), location.clone())?;
+                            Ok((s.clone(), constructed_declaration(c, budget, location)?))
+                        })
+                        .collect::<Result<_, QueryError>>()?,
+                )
+            }
+            DeclaredType::Boolean => DeclaredType::Boolean,
+            DeclaredType::Integer => DeclaredType::Integer,
+            DeclaredType::Float => DeclaredType::Float,
+            DeclaredType::String => DeclaredType::String,
+            DeclaredType::Member(id) => DeclaredType::Member(*id),
+            DeclaredType::Set(t) => DeclaredType::Set(*t),
+            DeclaredType::Native(_) => {
+                return Err(QueryError::query(
+                    match location {
+                        Location::Query(r) | Location::Source(r) => r.clone(),
+                    },
+                    "native declaration requires a native value",
+                ));
+            }
+        })
+    })
+}
+
+pub(crate) fn contains_native<K>(
+    declaration: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match declaration {
+            DeclaredType::Native(_) => true,
+            DeclaredType::Optional(child)
+            | DeclaredType::Array(child)
+            | DeclaredType::Sequence(child)
+            | DeclaredType::Keyed(child) => contains_native(child, budget, location)?,
+            DeclaredType::Tuple(children) => {
+                for child in children {
+                    if contains_native(child, budget, location)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            DeclaredType::Record(children) => {
+                for (_, child) in children {
+                    if contains_native(child, budget, location)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            _ => false,
+        })
+    })
 }

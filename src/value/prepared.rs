@@ -1,22 +1,30 @@
 use super::*;
 use std::sync::Arc;
 
-pub(super) type PreparedValue<'a, Q> = Located<PreparedKind<'a, Q>>;
+pub(crate) type PreparedValue<'a, Q> = Located<PreparedKind<'a, Q>>;
 
 #[derive(Debug, PartialEq)]
-pub(super) enum ReadSlot {
+pub(crate) enum ReadSlot {
     Outer(usize),
     Local(usize),
 }
 
-pub(super) struct PreparedArgument<'a, Q> {
+pub(crate) struct PreparedArgument<'a, Q> {
     pub source: &'a ValueExpression<Q>,
     pub expression: PreparedValue<'a, Q>,
     pub names: Vec<&'a str>,
 }
 
-pub(super) enum PreparedKind<'a, Q> {
+pub(crate) enum PreparedKind<'a, Q> {
     Literal(&'a ConstructedValue),
+    Call {
+        function: usize,
+        arguments: Vec<PreparedValue<'a, Q>>,
+    },
+    NativeValue {
+        query: &'a Q,
+        arguments: Vec<PreparedArgument<'a, Q>>,
+    },
     /// A normalized native operand; it runs only when this node is selected.
     NativeQuery {
         query: &'a Q,
@@ -127,7 +135,7 @@ pub(super) enum PreparedKind<'a, Q> {
 
 /// Ordered generator clauses. None discards a value without installing a name.
 /// Grouped `In` evaluates its source once and varies the last binder fastest.
-pub(super) enum PreparedGenerator<'a, Q> {
+pub(crate) enum PreparedGenerator<'a, Q> {
     In {
         binders: Vec<&'a Located<Option<String>>>,
         source: PreparedValue<'a, Q>,
@@ -140,9 +148,9 @@ pub(super) enum PreparedGenerator<'a, Q> {
     },
 }
 
-pub(super) struct Preparation<'a> {
+pub(crate) struct Preparation<'a> {
     pub names: Vec<&'a str>,
-    locals: Vec<&'a str>,
+    pub(crate) locals: Vec<&'a str>,
 }
 
 impl<'a> Preparation<'a> {
@@ -164,7 +172,25 @@ impl<'a> Preparation<'a> {
             budget.charge(1, location.clone())?;
             let kind = match &expression.value {
                 ValueExpressionKind::Literal(value) => PreparedKind::Literal(value),
-                ValueExpressionKind::NativeQuery(query) => {
+                ValueExpressionKind::Call {
+                    function,
+                    arguments,
+                } => {
+                    let (function, arity) = queries.function(function, budget)?;
+                    if arguments.len() != arity {
+                        return Err(error(&location, "function argument count mismatch"));
+                    }
+                    let mut values = metadata_vec(arguments.len(), budget, &location)?;
+                    for value in arguments {
+                        values.push(self.resolve(value, queries, budget)?);
+                    }
+                    PreparedKind::Call {
+                        function,
+                        arguments: values,
+                    }
+                }
+                ValueExpressionKind::NativeQuery(query)
+                | ValueExpressionKind::NativeValue(query) => {
                     let sources = queries.query_arguments(query, budget, &expression.range)?;
                     let mut arguments = metadata_vec(sources.len(), budget, &location)?;
                     for source in sources {
@@ -176,9 +202,16 @@ impl<'a> Preparation<'a> {
                             names: preparation.names,
                         });
                     }
-                    PreparedKind::NativeQuery {
-                        query: query.as_ref(),
-                        arguments,
+                    if matches!(expression.value, ValueExpressionKind::NativeValue(_)) {
+                        PreparedKind::NativeValue {
+                            query: query.as_ref(),
+                            arguments,
+                        }
+                    } else {
+                        PreparedKind::NativeQuery {
+                            query: query.as_ref(),
+                            arguments,
+                        }
                     }
                 }
                 ValueExpressionKind::Name(name) => {
@@ -442,7 +475,7 @@ impl<'a> Preparation<'a> {
 /// An immutable selected value; paths borrow children through their retained owner.
 /// Only current slots and consumers retain owners, never a history of evaluated nodes.
 #[derive(Debug)]
-pub(super) enum RuntimeValue {
+pub(crate) enum RuntimeValue {
     Owned(ConstructedValue),
     Shared {
         owner: Arc<ConstructedValue>,
@@ -558,9 +591,9 @@ impl RuntimeValue {
 }
 
 pub(crate) struct Frame<'a> {
-    pub(super) names: Vec<&'a str>,
-    pub(super) outer: Vec<Option<RuntimeValue>>,
-    pub(super) locals: Vec<(&'a str, RuntimeValue)>,
+    pub(crate) names: Vec<&'a str>,
+    pub(crate) outer: Vec<Option<RuntimeValue>>,
+    pub(crate) locals: Vec<(&'a str, RuntimeValue)>,
 }
 impl<'a> Frame<'a> {
     pub fn new(
@@ -598,7 +631,7 @@ impl<'a> Frame<'a> {
             self.outer[index] = None;
         }
     }
-    pub(super) fn read<Q, H: ValueQueryHost<Q> + ?Sized>(
+    pub(crate) fn read<Q, H: ValueQueryHost<Q> + ?Sized>(
         &mut self,
         slot: &ReadSlot,
         queries: &mut H,

@@ -229,3 +229,24 @@ with the owned result. Immutable outer bindings and scalar argument owners can
 be shared during execution; completed row temporaries are released. This changes
 some repeated preparation/copy charges near limits, as described in
 [the accounting contract](diagnostics-and-limits.md#prepared-execution-and-sharing).
+
+
+## Named pure functions
+
+The development Rust API accepts located pure function declarations beside an
+entry value expression. Functions have explicit parameter and result contracts,
+ordered immutable local lets and one final expression. Names register before
+bodies, allowing direct and mutual recursion. Locals cannot shadow parameters or
+earlier locals, and functions receive outer program data through explicit
+arguments. External `param` transport remains `int`, `string` and `bool`.
+
+Compatible final calls reuse an activation, including selected conditional,
+requirement and untyped default branches. Pending arithmetic or return checks
+consume active function depth. Every call spends work, so an infinite tail call
+still ends in a located allowance error. Native results retain their host handles
+and coordinates, and functions cannot edit or emit.
+
+See [constructing functions in Rust](embedding-programs.md#call-typed-pure-functions)
+for the callable path. Consumer textual declarations and conditionals are later
+integrations; these Rust APIs are absent from published alpha.5. Function values,
+closures, imports and user overloads are outside this interface.

@@ -2873,3 +2873,354 @@ fn shared_reads_keep_aliases_admit_new_data_and_release_failed_scopes() {
     );
     assert!(allowance.remaining_work() < remaining);
 }
+
+fn call(function: &str, arguments: Vec<E>) -> E {
+    Located::new(
+        K::Call {
+            function: Located::new(function.into(), 30..34),
+            arguments,
+        },
+        30..40,
+    )
+}
+fn function(
+    function: &str,
+    parameters: Vec<(&str, D<()>)>,
+    result: D<()>,
+    value: E,
+) -> zirql::FunctionDeclaration {
+    zirql::FunctionDeclaration {
+        name: Located::new(function.into(), 2..6),
+        parameters: parameters
+            .into_iter()
+            .map(|(name, declaration)| {
+                Located::new(
+                    zirql::FunctionParameter {
+                        name: Located::new(name.into(), 7..8),
+                        declaration,
+                    },
+                    7..12,
+                )
+            })
+            .collect(),
+        result: Located::new(result, 13..16),
+        bindings: vec![],
+        value,
+    }
+}
+fn select_branch(condition: E, yes: E, no: E) -> E {
+    e(K::Conditional {
+        branches: vec![(condition, yes)],
+        otherwise: Box::new(no),
+    })
+}
+fn tail_body(next: &str) -> E {
+    select_branch(
+        binary(B::Equal, name("n"), int(0)),
+        name("total"),
+        call(
+            next,
+            vec![
+                binary(B::Subtract, name("n"), int(1)),
+                binary(B::Add, name("total"), name("n")),
+            ],
+        ),
+    )
+}
+fn run_functions(
+    functions: &[zirql::FunctionDeclaration],
+    entry: &E,
+    depth: usize,
+    budget: &mut Budget,
+) -> Result<V, zirql::FunctionError<zirql::QueryError>> {
+    zirql::evaluate_functions(
+        functions,
+        entry,
+        &Bindings::default(),
+        budget,
+        zirql::FunctionLimits {
+            active_depth: depth,
+        },
+    )
+}
+
+#[test]
+fn typed_functions_reuse_compatible_tail_frames_and_read_old_slots() {
+    let mut accumulator = function(
+        "acc",
+        vec![("n", D::Integer), ("total", D::Integer)],
+        D::Integer,
+        tail_body("acc"),
+    );
+    // Locals are fresh on each tail transition and cannot overwrite an argument
+    // before the following argument has read the old slots.
+    accumulator
+        .bindings
+        .push((Located::new("old".into(), 20..23), name("n")));
+    assert_eq!(
+        run_functions(
+            &[accumulator],
+            &call("acc", vec![int(10_000), int(0)]),
+            1,
+            &mut budget(20_000_000, 1_000_000, 64)
+        )
+        .unwrap()
+        .data(),
+        &V::Integer(50_005_000)
+    );
+    let a = function(
+        "a",
+        vec![("n", D::Integer), ("total", D::Integer)],
+        D::Integer,
+        tail_body("b"),
+    );
+    let b = function(
+        "b",
+        vec![("n", D::Integer), ("total", D::Integer)],
+        D::Integer,
+        tail_body("a"),
+    );
+    assert_eq!(
+        run_functions(
+            &[a, b],
+            &call("a", vec![int(1000), int(0)]),
+            1,
+            &mut ample()
+        )
+        .unwrap()
+        .data(),
+        &V::Integer(500_500)
+    );
+    let swap = function(
+        "swap",
+        vec![("n", D::Integer), ("x", D::Integer), ("y", D::Integer)],
+        D::Tuple(vec![D::Integer, D::Integer]),
+        select_branch(
+            binary(B::Equal, name("n"), int(0)),
+            e(K::Tuple(vec![name("x"), name("y")])),
+            call(
+                "swap",
+                vec![binary(B::Subtract, name("n"), int(1)), name("y"), name("x")],
+            ),
+        ),
+    );
+    let swapped = run_functions(
+        &[swap],
+        &call("swap", vec![int(1001), int(3), int(7)]),
+        1,
+        &mut ample(),
+    )
+    .unwrap();
+    assert!(
+        matches!(swapped.data(),V::Tuple(values) if values[0].data()==&V::Integer(7) && values[1].data()==&V::Integer(3))
+    );
+}
+
+#[test]
+fn function_continuations_cover_branches_operands_and_comprehensions() {
+    let count = function(
+        "count",
+        vec![("n", D::Integer)],
+        D::Integer,
+        select_branch(
+            binary(B::Equal, name("n"), int(0)),
+            int(0),
+            binary(
+                B::Add,
+                int(1),
+                call("count", vec![binary(B::Subtract, name("n"), int(1))]),
+            ),
+        ),
+    );
+    assert_eq!(
+        run_functions(&[count], &call("count", vec![int(8)]), 16, &mut ample())
+            .unwrap()
+            .data(),
+        &V::Integer(8)
+    );
+    let left = function(
+        "left",
+        vec![("n", D::Integer)],
+        D::Integer,
+        select_branch(
+            binary(B::Equal, name("n"), int(0)),
+            int(0),
+            binary(
+                B::Add,
+                int(1),
+                call("right", vec![binary(B::Subtract, name("n"), int(1))]),
+            ),
+        ),
+    );
+    let right = function(
+        "right",
+        vec![("n", D::Integer)],
+        D::Integer,
+        call("left", vec![name("n")]),
+    );
+    assert_eq!(
+        run_functions(
+            &[left, right],
+            &call("left", vec![int(8)]),
+            16,
+            &mut ample()
+        )
+        .unwrap()
+        .data(),
+        &V::Integer(8)
+    );
+    let count = function(
+        "count",
+        vec![("n", D::Integer)],
+        D::Integer,
+        binary(B::Add, int(1), call("count", vec![name("n")])),
+    );
+    let error =
+        run_functions(&[count], &call("count", vec![int(1000)]), 8, &mut ample()).unwrap_err();
+    assert!(error.error.message.contains("active function depth"));
+    assert_eq!(error.error.location, Location::Query(30..40));
+    assert_eq!(error.calls.len(), 8);
+    let relay = function(
+        "relay",
+        vec![("n", D::Integer)],
+        D::Integer,
+        select_branch(
+            binary(B::Equal, name("n"), int(0)),
+            int(0),
+            e(K::Require {
+                condition: Box::new(literal(V::Boolean(true))),
+                value: Box::new(e(K::Default {
+                    value: Box::new(literal(V::Absent)),
+                    fallback: Box::new(call("relay", vec![binary(B::Subtract, name("n"), int(1))])),
+                })),
+                message: Located::new("unused".into(), 45..51),
+            }),
+        ),
+    );
+    let entry = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("i")],
+            source: e(K::Array(vec![call("relay", vec![int(500)]), int(2)])),
+            filter: Some(binary(B::Equal, call("relay", vec![name("i")]), int(0))),
+        })],
+        head: Box::new(call("relay", vec![name("i")])),
+    });
+    let rows = run_functions(&[relay], &entry, 1, &mut ample()).unwrap();
+    assert!(
+        matches!(rows.data(),V::Array(values) if values.len()==2 && values.iter().all(|value|value.data()==&V::Integer(0)))
+    );
+    let optional = function(
+        "optional",
+        vec![],
+        D::Optional(Box::new(D::Integer)),
+        call("required", vec![]),
+    );
+    let required = function("required", vec![], D::Integer, call("optional", vec![]));
+    let error = run_functions(
+        &[optional, required],
+        &call("optional", vec![]),
+        4,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.error.message.contains("active function depth"));
+    let typed = function(
+        "typed",
+        vec![],
+        D::Integer,
+        e(K::Default {
+            value: Box::new(literal(
+                zirql::declare_constructed(
+                    V::Absent,
+                    D::Optional(Box::new(D::Integer)),
+                    &mut ample(),
+                    Location::Query(0..1),
+                )
+                .unwrap(),
+            )),
+            fallback: Box::new(call("typed", vec![])),
+        }),
+    );
+    let error = run_functions(&[typed], &call("typed", vec![]), 4, &mut ample()).unwrap_err();
+    assert!(error.error.message.contains("active function depth"));
+}
+
+#[test]
+fn function_limits_types_and_preflight_restore_the_active_budget() {
+    let spin = function("spin", vec![], D::Integer, call("spin", vec![]));
+    let error = run_functions(
+        &[spin],
+        &call("spin", vec![]),
+        1,
+        &mut budget(20_000, 100_000, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.error.category, zirql::QueryErrorCategory::WorkLimit);
+    assert_eq!(error.error.location, Location::Query(30..40));
+    assert_eq!(error.calls.len(), 1);
+    let branch = function(
+        "branch",
+        vec![("n", D::Integer)],
+        D::Integer,
+        select_branch(
+            binary(B::Equal, name("n"), int(0)),
+            int(1),
+            binary(
+                B::Add,
+                call("branch", vec![binary(B::Subtract, name("n"), int(1))]),
+                call("branch", vec![binary(B::Subtract, name("n"), int(1))]),
+            ),
+        ),
+    );
+    let error = run_functions(
+        &[branch],
+        &call("branch", vec![int(12)]),
+        16,
+        &mut budget(20_000, 100_000, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.error.category, zirql::QueryErrorCategory::WorkLimit);
+    let mut shared = ample();
+    let wrong = function(
+        "wrong",
+        vec![("x", D::Integer)],
+        D::Integer,
+        literal(V::String("bad".into())),
+    );
+    let error = run_functions(&[wrong], &call("wrong", vec![int(1)]), 2, &mut shared).unwrap_err();
+    assert_eq!(error.error.location, Location::Query(0..1));
+    assert_eq!(
+        evaluate_value(&int(9), &Bindings::default(), &mut shared).unwrap(),
+        V::Integer(9)
+    );
+    let identity = function("id", vec![("x", D::Integer)], D::Integer, name("x"));
+    let argument = Located::new(K::Literal(V::String("bad".into())), 60..65);
+    let error =
+        run_functions(&[identity], &call("id", vec![argument]), 2, &mut shared).unwrap_err();
+    assert_eq!(error.error.location, Location::Query(60..65));
+    for bad in [
+        function("unused", vec![], D::Integer, name("missing")),
+        function(
+            "unused",
+            vec![],
+            D::Integer,
+            select_branch(literal(V::Boolean(false)), call("missing", vec![]), int(0)),
+        ),
+        function("sum", vec![], D::Integer, int(0)),
+        function(
+            "duplicate",
+            vec![("x", D::Integer), ("x", D::Integer)],
+            D::Integer,
+            int(0),
+        ),
+    ] {
+        assert!(run_functions(&[bad], &int(0), 2, &mut ample()).is_err());
+    }
+    let mut bad = function("shadow", vec![("x", D::Integer)], D::Integer, name("x"));
+    bad.bindings
+        .push((Located::new("x".into(), 70..71), int(1)));
+    assert!(run_functions(&[bad], &int(0), 2, &mut ample()).is_err());
+    let bad = function("arity", vec![], D::Integer, call("arity", vec![int(1)]));
+    assert!(run_functions(&[bad], &int(0), 2, &mut ample()).is_err());
+}

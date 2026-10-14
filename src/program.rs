@@ -420,6 +420,13 @@ impl<V> Bindings<V> {
         Ok(bindings)
     }
 
+    pub(crate) fn from_shared(values: BTreeMap<String, std::sync::Arc<V>>) -> Self {
+        Self {
+            values: std::sync::Arc::new(values),
+            locals: Vec::new(),
+        }
+    }
+
     /// Iterate immutable scope entries in name order without copying values.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
         let mut outer = self.values.iter().peekable();

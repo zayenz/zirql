@@ -422,6 +422,184 @@ fn runtime_refusal(
     })
 }
 
+impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
+    type Kind = SourceKind;
+    fn kind(
+        &self,
+        _: &SourceValue<'a>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        Ok(SourceKind::Words)
+    }
+    fn scalar_types(
+        &self,
+        _: &SourceKind,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Option<Vec<zirql::ValueType>>, QueryError> {
+        Ok(None)
+    }
+    fn constructed_kind(&self, _: Vec<zirql::ValueType>) -> SourceKind {
+        SourceKind::Words
+    }
+    fn stage_kind(
+        &self,
+        _: &SourceStage,
+        _: &SourceKind,
+        _: &std::collections::BTreeMap<String, SourceKind>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        Ok(SourceKind::Words)
+    }
+    fn is_pure(&self, _: &SourceStage) -> bool {
+        true
+    }
+    fn nested_queries(
+        &self,
+        stage: &SourceStage,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<zirql::NativeOperands<SourceContext<'a>, Self>, QueryError> {
+        if matches!(stage, SourceStage::Select(_)) {
+            return Err(QueryError::query(
+                0..1,
+                "selectors unavailable in this native-only fixture",
+            ));
+        }
+        Ok(vec![])
+    }
+    fn subjects(
+        &self,
+        input: SourceValue<'a>,
+        _: &mut SourceContext<'a>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Vec<SourceValue<'a>>, EvaluationError<SourceFailure>> {
+        Ok(vec![input])
+    }
+    fn project_value(
+        &self,
+        _: SourceValue<'a>,
+        _: &mut SourceContext<'a>,
+        _: &mut Budget,
+        r: &Range<usize>,
+    ) -> Result<zirql::ConstructedValue, EvaluationError<SourceFailure>> {
+        Err(QueryError::query(r.clone(), "native-only fixture").into())
+    }
+    fn lift_constructed(
+        &self,
+        _: zirql::ConstructedValue,
+        _: Vec<zirql::ValueType>,
+        _: &mut SourceContext<'a>,
+        _: &mut Budget,
+        r: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        Err(QueryError::query(r.clone(), "native-only fixture").into())
+    }
+}
+impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
+    fn declaration_kind(
+        &self,
+        _: &DeclaredType<SourceKind>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        Ok(SourceKind::Words)
+    }
+    fn is_operation_name(&self, name: &str) -> bool {
+        name == "prefix"
+    }
+}
+#[test]
+fn functions_keep_borrowed_source_coordinates_and_reject_foreign_context() {
+    use zirql::{
+        FunctionDeclaration, FunctionLimits, FunctionParameter, FunctionRequest,
+        ValueExpressionKind as K,
+    };
+    let source = String::from("alpha beta");
+    let other = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let functions = [FunctionDeclaration {
+        name: at("identity".into(), 1),
+        parameters: vec![at(
+            FunctionParameter {
+                name: at("word".into(), 2),
+                declaration: DeclaredType::Native(SourceKind::Words),
+            },
+            2,
+        )],
+        result: at(DeclaredType::Native(SourceKind::Words), 3),
+        bindings: vec![],
+        value: at(K::Name("word".into()), 4),
+    }];
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 100_000,
+        results: 10_000,
+        ..limits()
+    });
+    let bindings =
+        Bindings::new([(at("source".into(), 10), source_input(&source, &mut budget))]).unwrap();
+    let entry = at(
+        K::Call {
+            function: at("identity".into(), 11),
+            arguments: vec![at(
+                K::NativeValue(Box::new(at(ExpressionKind::Binding("source".into()), 12))),
+                12,
+            )],
+        },
+        11,
+    );
+    let result = FunctionRequest::prepare(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    let SourceValue::Words(words) = result else {
+        panic!("native words")
+    };
+    assert_eq!(words[0].text.as_ptr(), source.as_ptr());
+    assert_eq!(words[1].range, 6..10);
+    context.source = &other;
+    let error = FunctionRequest::prepare(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap_err();
+    assert_eq!(
+        error.error,
+        EvaluationError::Host(SourceFailure::Source(0..5))
+    );
+    context.source = &source;
+    assert!(
+        FunctionRequest::prepare(
+            &functions,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 }
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .is_ok()
+    );
+}
+
 #[test]
 fn typed_borrowed_calls_keep_source_identity_and_locate_contract_failures() {
     let source = String::from("alpha beta");
@@ -1786,6 +1964,20 @@ mod projection {
                 let mut total = 0;
                 for _ in 0..2 {
                     let read = arguments.evaluate(value, Value::Subjects(vec![]), budget)?;
+                    if matches!(value.value, K::Call { .. }) {
+                        let declaration = read.declared_type().ok_or_else(|| {
+                            QueryError::query(
+                                range.clone(),
+                                "function argument needs its result contract",
+                            )
+                        })?;
+                        zirql::admit_constructed(
+                            read.value(),
+                            declaration,
+                            budget,
+                            Location::Query(range.clone()),
+                        )?;
+                    }
                     total += match read.value().data() {
                         V::String(value) => value.len(),
                         V::Array(values)
@@ -2025,6 +2217,369 @@ mod projection {
         ) -> Result<Value, EvaluationError<QueryError>> {
             Ok(Value::Constructed(value))
         }
+    }
+    impl zirql::FunctionHost<()> for Host {
+        fn declaration_kind(
+            &self,
+            d: &zirql::DeclaredType<Kind>,
+            _budget: &mut Budget,
+            _range: &Range<usize>,
+        ) -> Result<Kind, QueryError> {
+            Ok(match d {
+                zirql::DeclaredType::Native(kind) => kind.clone(),
+                _ => self.constructed_kind(vec![ValueType::Unestablished]),
+            })
+        }
+        fn is_operation_name(&self, name: &str) -> bool {
+            matches!(name, "names" | "count" | "edit")
+        }
+    }
+    fn function_call(
+        name: &str,
+        args: Vec<zirql::ValueExpression<Query>>,
+    ) -> zirql::ValueExpression<Query> {
+        Located::new(
+            K::Call {
+                function: Located::new(name.into(), 30..34),
+                arguments: args,
+            },
+            30..40,
+        )
+    }
+    fn function_value(value: K<Query>) -> zirql::ValueExpression<Query> {
+        Located::new(value, 40..50)
+    }
+    fn native_operand(stage: Stage) -> Query {
+        super::sequence(
+            super::at(ExpressionKind::Binding("xs".into()), 20),
+            vec![super::at(ExpressionStep::Stage(stage), 21)],
+        )
+    }
+    fn native_function(
+        name: &str,
+        value: zirql::ValueExpression<Query>,
+    ) -> zirql::FunctionDeclaration<Query, Kind> {
+        zirql::FunctionDeclaration {
+            name: super::at(name.into(), 1),
+            parameters: vec![
+                super::at(
+                    zirql::FunctionParameter {
+                        name: super::at("n".into(), 2),
+                        declaration: zirql::DeclaredType::Integer,
+                    },
+                    2,
+                ),
+                super::at(
+                    zirql::FunctionParameter {
+                        name: super::at("xs".into(), 3),
+                        declaration: zirql::DeclaredType::Native(Kind::Subjects),
+                    },
+                    3,
+                ),
+            ],
+            result: super::at(zirql::DeclaredType::Native(Kind::Subjects), 4),
+            bindings: vec![],
+            value,
+        }
+    }
+    fn fn_name(name: &str) -> zirql::ValueExpression<Query> {
+        function_value(K::Name(name.into()))
+    }
+    fn fn_int(value: i64) -> zirql::ValueExpression<Query> {
+        function_value(K::Literal(V::Integer(value)))
+    }
+    fn fn_binary(
+        op: zirql::ValueBinaryOperator,
+        left: zirql::ValueExpression<Query>,
+        right: zirql::ValueExpression<Query>,
+    ) -> zirql::ValueExpression<Query> {
+        function_value(K::Binary {
+            operator: op,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    }
+    fn function_budget() -> Budget {
+        Budget::for_program(ProgramLimits {
+            work: 5_000_000,
+            results: 500_000,
+            nesting: 64,
+            stream_items: 100,
+        })
+    }
+    #[test]
+    fn named_native_functions_keep_arguments_results_projections_and_callback_limits() {
+        use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest, ValueBinaryOperator as B};
+        let body = function_value(K::Conditional {
+            branches: vec![(fn_binary(B::Equal, fn_name("n"), fn_int(0)), fn_name("xs"))],
+            otherwise: Box::new(function_call(
+                "walk",
+                vec![
+                    fn_binary(B::Subtract, fn_name("n"), fn_int(1)),
+                    fn_name("xs"),
+                ],
+            )),
+        });
+        let mut walk = native_function("walk", body);
+        walk.bindings.push((
+            super::at("chosen".into(), 9),
+            function_value(K::Conditional {
+                branches: vec![(function_value(K::Literal(V::Boolean(true))), fn_name("xs"))],
+                otherwise: Box::new(fn_name("xs")),
+            }),
+        ));
+        walk.bindings.push((
+            super::at("size".into(), 10),
+            function_value(K::NativeQuery(Box::new(super::sequence(
+                super::at(ExpressionKind::Binding("chosen".into()), 20),
+                vec![super::at(ExpressionStep::Stage(Stage::Count), 21)],
+            )))),
+        ));
+        let functions = [walk];
+        let bindings = Bindings::new([(
+            super::at("input".into(), 60),
+            Value::Subjects(vec!["alpha"]),
+        )])
+        .unwrap();
+        let mut budget = function_budget();
+        let entry = function_call(
+            "walk",
+            vec![
+                fn_int(1000),
+                function_value(K::NativeValue(Box::new(super::at(
+                    ExpressionKind::Binding("input".into()),
+                    61,
+                )))),
+            ],
+        );
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap();
+        assert!(matches!(result,Value::Subjects(rows) if rows==vec!["alpha"]));
+        let mut items = native_function("items", function_value(K::Array(vec![fn_int(1)])));
+        items.parameters.clear();
+        items.result = super::at(D::Sequence(Box::new(D::Integer)), 4);
+        let mut apply = native_function(
+            "apply",
+            function_value(K::NativeQuery(Box::new(native_operand(Stage::Argument {
+                value: Box::new(function_call("items", vec![])),
+                selected: true,
+            })))),
+        );
+        apply.result = super::at(D::Integer, 4);
+        let functions = [items, apply];
+        let applied = function_call(
+            "apply",
+            vec![
+                fn_int(0),
+                function_value(K::NativeValue(Box::new(super::at(
+                    ExpressionKind::Binding("input".into()),
+                    61,
+                )))),
+            ],
+        );
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&applied, &bindings)
+        .unwrap();
+        assert!(matches!(result,Value::Constructed(value) if value.data()==&V::Integer(2)));
+        for saved in [true, false] {
+            let mut missing = native_function("missing", function_value(K::Literal(V::Absent)));
+            missing.parameters.clear();
+            missing.result = super::at(D::Optional(Box::new(D::Integer)), 4);
+            let fallback = function_value(K::Default {
+                value: Box::new(fn_name(if saved { "saved" } else { "n" })),
+                fallback: Box::new(function_value(K::Literal(V::String("bad".into())))),
+            });
+            let mut apply = native_function(
+                "apply",
+                function_value(K::NativeQuery(Box::new(native_operand(Stage::Argument {
+                    value: Box::new(fallback),
+                    selected: true,
+                })))),
+            );
+            apply.result = super::at(D::Integer, 4);
+            if saved {
+                apply.bindings.push((
+                    super::at("saved".into(), 8),
+                    function_call("missing", vec![]),
+                ));
+            } else {
+                apply.parameters[0].value.declaration = D::Optional(Box::new(D::Integer));
+            }
+            let functions = [missing, apply];
+            let entry = function_call(
+                "apply",
+                vec![
+                    if saved {
+                        fn_int(0)
+                    } else {
+                        function_call("missing", vec![])
+                    },
+                    function_value(K::NativeValue(Box::new(super::at(
+                        ExpressionKind::Binding("input".into()),
+                        61,
+                    )))),
+                ],
+            );
+            let error = FunctionRequest::prepare(
+                &functions,
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 2 },
+            )
+            .unwrap()
+            .evaluate(&entry, &bindings)
+            .unwrap_err();
+            assert!(matches!(error.error, EvaluationError::Core(ref e)
+                if e.message.contains("integer") && e.location == Location::Query(40..50)));
+        }
+        let mut failure = native_function(
+            "failure",
+            function_value(K::NativeValue(Box::new(native_operand(Stage::Fail)))),
+        );
+        failure.result = super::at(D::Native(Kind::Subjects), 4);
+        let functions = [failure];
+        let entry = function_call(
+            "failure",
+            vec![
+                fn_int(0),
+                function_value(K::NativeValue(Box::new(super::at(
+                    ExpressionKind::Binding("input".into()),
+                    61,
+                )))),
+            ],
+        );
+        let error = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap_err();
+        assert_eq!(
+            error.error,
+            EvaluationError::Host(QueryError::source(20..21, "native failure"))
+        );
+        assert_eq!(error.calls.len(), 1);
+        assert_eq!(
+            zirql::evaluate_value(
+                &super::at(K::Literal(V::Integer(3)), 1),
+                &Bindings::default(),
+                &mut budget
+            )
+            .unwrap(),
+            V::Integer(3)
+        );
+        let recursive = function_call("reenter", vec![fn_name("n"), fn_name("xs")]);
+        let mut reenter = native_function(
+            "reenter",
+            function_value(K::NativeQuery(Box::new(native_operand(Stage::Argument {
+                value: Box::new(recursive),
+                selected: true,
+            })))),
+        );
+        reenter.result = super::at(D::Integer, 4);
+        let functions = [reenter];
+        let entry = function_call(
+            "reenter",
+            vec![
+                fn_int(1),
+                function_value(K::NativeValue(Box::new(super::at(
+                    ExpressionKind::Binding("input".into()),
+                    61,
+                )))),
+            ],
+        );
+        let error = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1000 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap_err();
+        assert!(
+            matches!(error.error,EvaluationError::Core(ref e) if e.message.contains("evaluation call limit")||e.message.contains("nesting limit"))
+        );
+        assert!(error.calls.len() <= 16);
+        assert_eq!(
+            zirql::evaluate_value(
+                &super::at(K::Literal(V::Integer(4)), 1),
+                &Bindings::default(),
+                &mut budget
+            )
+            .unwrap(),
+            V::Integer(4)
+        );
+    }
+    #[test]
+    fn function_native_preflight_covers_unused_effects_emitters_and_argument_bodies() {
+        use zirql::{FunctionLimits, FunctionRequest};
+        for query in [
+            native_operand(Stage::Edit),
+            super::sequence(
+                super::at(ExpressionKind::Binding("xs".into()), 20),
+                vec![super::at(
+                    ExpressionStep::Emit {
+                        emitter: (),
+                        policy: zirql::EmissionPolicy::PassThrough,
+                    },
+                    22,
+                )],
+            ),
+            native_operand(Stage::Argument {
+                value: Box::new(function_call("missing", vec![])),
+                selected: false,
+            }),
+        ] {
+            let functions = [native_function(
+                "unused",
+                function_value(K::NativeValue(Box::new(query))),
+            )];
+            let mut budget = function_budget();
+            assert!(
+                FunctionRequest::prepare(
+                    &functions,
+                    &Host,
+                    &mut (),
+                    &mut budget,
+                    FunctionLimits { active_depth: 2 }
+                )
+                .is_err()
+            );
+        }
+        let functions = [native_function("names", fn_name("xs"))];
+        let mut budget = function_budget();
+        assert!(
+            FunctionRequest::prepare(
+                &functions,
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 2 }
+            )
+            .is_err()
+        );
     }
     impl ValueReaderHost for Host {
         type Stage = Stage;

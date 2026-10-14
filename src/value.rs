@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
+pub(crate) mod execution;
 pub(crate) mod prepared;
 use prepared::{
     Frame, Preparation, PreparedArgument, PreparedGenerator, PreparedKind, PreparedValue,
@@ -209,6 +210,14 @@ pub enum ValueExpressionKind<Q = ()> {
     Literal(ConstructedValue),
     /// A normalized native operand; it runs only when this node is selected.
     NativeQuery(Box<Q>),
+    /// A pure native result, retained without scalar projection. Available in a
+    /// function request; ordinary value entry points reject this operand.
+    NativeValue(Box<Q>),
+    /// A named pure function, resolved before any body executes.
+    Call {
+        function: Located<String>,
+        arguments: Vec<ValueExpression<Q>>,
+    },
     /// Extract exactly one positional child without copying it.
     One(Box<ValueExpression<Q>>),
     Name(String),
@@ -334,10 +343,30 @@ pub enum ValueGenerator<Q = ()> {
 pub struct ConstructedRead {
     value: RuntimeValue,
     location: Location,
+    declaration: Option<DeclaredType<()>>,
 }
 impl ConstructedRead {
+    pub(crate) fn from_runtime(
+        value: RuntimeValue,
+        location: Location,
+        declaration: Option<DeclaredType<()>>,
+    ) -> Self {
+        Self {
+            value,
+            location,
+            declaration,
+        }
+    }
     pub fn value(&self) -> &ConstructedValue {
         self.value.as_ref()
+    }
+    /// The selected function result's established contract, when available.
+    /// Borrowing data with `value` retains this metadata separately; materializing
+    /// with `into_owned` installs its transparent constructed annotation.
+    pub fn declared_type(&self) -> Option<&DeclaredType<()>> {
+        self.declaration
+            .as_ref()
+            .or_else(|| declaration(self.value.as_ref()))
     }
     /// Materialize an owned argument for a native payload that needs ownership.
     ///
@@ -345,7 +374,12 @@ impl ConstructedRead {
     /// Copy/result/nesting refusals retain this argument's source location.
     pub fn into_owned(self, budget: &mut Budget) -> Result<ConstructedValue, QueryError> {
         budget.within_evaluation(1, self.location.clone(), |budget| {
-            self.value.materialize(budget, &self.location)
+            let value = self.value.materialize(budget, &self.location)?;
+            if let Some(declaration) = self.declaration {
+                annotate(value, declaration, budget, &self.location)
+            } else {
+                Ok(value)
+            }
         })
     }
 }
@@ -367,6 +401,47 @@ pub trait ValueArguments<Q, E: From<QueryError>> {
 pub trait ValueQueryHost<Q> {
     type Error: From<QueryError>;
 
+    /// Function requests resolve names to stable entries. Ordinary value hosts
+    /// retain their existing behavior and reject calls.
+    fn function(
+        &mut self,
+        name: &Located<String>,
+        _budget: &mut Budget,
+    ) -> Result<(usize, usize), QueryError> {
+        Err(QueryError::query(
+            name.range.clone(),
+            "named functions require a function request",
+        ))
+    }
+    fn function_types(
+        &mut self,
+        name: &Located<String>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        self.function(name, budget)?;
+        Ok(vec![ValueType::Unestablished])
+    }
+    fn native_value_types(
+        &mut self,
+        _query: &Q,
+        _locals: &[(&str, Vec<ValueType>)],
+        _budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native values require a function request",
+        ))
+    }
+    fn prepare_local(
+        &mut self,
+        _name: &Located<String>,
+        _value: &ValueExpression<Q>,
+        _types: &[ValueType],
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
     fn query_types(
         &mut self,
         query: &Q,
@@ -1054,12 +1129,12 @@ fn shape_type(
     })
 }
 
-fn record_declaration<'a>(
-    fields: &'a [(String, DeclaredType<()>)],
+fn record_declaration<'a, K>(
+    fields: &'a [(String, DeclaredType<K>)],
     label: &str,
     budget: &mut Budget,
     location: &Location,
-) -> Result<&'a DeclaredType<()>, QueryError> {
+) -> Result<&'a DeclaredType<K>, QueryError> {
     for (candidate, declaration) in fields {
         budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
         if label == candidate {
@@ -2532,6 +2607,23 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         location: &Location,
     ) -> Result<Vec<ValueType>, QueryError> {
         match &expression.value {
+            ValueExpressionKind::Call {
+                function,
+                arguments,
+            } => {
+                let (_, arity) = self.queries.function(function, budget)?;
+                if arguments.len() != arity {
+                    return Err(error(location, "function argument count mismatch"));
+                }
+                for argument in arguments {
+                    self.walk(argument, budget)?;
+                }
+                self.queries.function_types(function, budget)
+            }
+            ValueExpressionKind::NativeValue(query) => {
+                self.queries
+                    .native_value_types(query, &self.locals, budget, &expression.range)
+            }
             ValueExpressionKind::Literal(value) => {
                 let ty = if self.fallback {
                     shallow_type(value, budget, location)?
@@ -4368,6 +4460,7 @@ where
         Ok(ConstructedRead {
             value,
             location: Location::Query(expression.range.clone()),
+            declaration: None,
         })
     }
 }
@@ -4404,491 +4497,7 @@ fn run_value<'a, Q, H: ValueQueryHost<Q> + ?Sized>(
     budget: &mut Budget,
     check_value: &mut impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
 ) -> Result<RuntimeValue, H::Error> {
-    let location = Location::Query(expression.range.clone());
-    budget.within_evaluation(1, location.clone(), |budget| {
-        budget.charge(1, location.clone())?;
-        let value = match &expression.value {
-            PreparedKind::Name(slot) => locals.read(slot, queries, budget, &expression.range)?,
-            PreparedKind::Occurs(child) | PreparedKind::Absent(child) => {
-                let value = run_value(child, queries, locals, budget, check_value)?;
-                let present = value.as_ref().occurs();
-                RuntimeValue::Owned(scalar(
-                    ConstructedValue::Boolean(
-                        if matches!(expression.value, PreparedKind::Occurs(_)) {
-                            present
-                        } else {
-                            !present
-                        },
-                    ),
-                    budget,
-                    &location,
-                )?)
-            }
-            PreparedKind::Reduce { operator, array } => {
-                let array = run_value(array, queries, locals, budget, check_value)?;
-                RuntimeValue::Owned(reduce_ref(*operator, array.as_ref(), budget, &location)?)
-            }
-            PreparedKind::Default { value, fallback } => {
-                let left = run_value(value, queries, locals, budget, check_value)?;
-                if left.as_ref().occurs() {
-                    left
-                } else {
-                    let right = run_value(fallback, queries, locals, budget, check_value)?;
-                    if let Some(expected) = declaration(left.as_ref()) {
-                        let expected = if right.as_ref().occurs() {
-                            underlying(expected)
-                        } else {
-                            expected
-                        };
-                        crate::admit_constructed(
-                            right.as_ref(),
-                            expected,
-                            budget,
-                            location.clone(),
-                        )?;
-                        RuntimeValue::Owned(annotate(
-                            right.materialize(budget, &location)?,
-                            copy_declaration(expected, budget, &location)?,
-                            budget,
-                            &location,
-                        )?)
-                    } else {
-                        right
-                    }
-                }
-            }
-            PreparedKind::Field { value, field } => {
-                let value = run_value(value, queries, locals, budget, check_value)?;
-                if matches!(value.as_ref(), ConstructedValue::Declared { .. }) {
-                    let value = expose(value.materialize(budget, &location)?, budget, &location)?;
-                    RuntimeValue::Owned(select_field(value, field, budget, &location)?)
-                } else {
-                    let ConstructedValue::Record(fields) = value.as_ref() else {
-                        return Err(error(&location, "field access needs a record").into());
-                    };
-                    let mut selected = None;
-                    for (index, (label, _)) in fields.iter().enumerate() {
-                        budget.charge(
-                            sum(1, label.len().min(field.value.len()), &location)?,
-                            location.clone(),
-                        )?;
-                        if label == &field.value {
-                            selected = Some(index);
-                            break;
-                        }
-                    }
-                    let Some(index) = selected else {
-                        admit_diagnostic(
-                            "missing record field: ",
-                            &field.value,
-                            budget,
-                            &location,
-                        )?;
-                        return Err(error(
-                            &location,
-                            format!("missing record field: {}", field.value),
-                        )
-                        .into());
-                    };
-                    value.child(index, budget, &location)?
-                }
-            }
-            _ => RuntimeValue::Owned((|| -> Result<ConstructedValue, H::Error> {
-                let location = location.clone();
-                match &expression.value {
-                    PreparedKind::NativeQuery { query, arguments } => {
-                        let mut values = metadata_vec(locals.locals.len(), budget, &location)?;
-                        for (name, value) in &mut locals.locals {
-                            values.push((
-                                *name,
-                                value
-                                    .share(budget, &location)?
-                                    .into_shared(budget, &location)?,
-                            ));
-                        }
-                        let mut frames = metadata_vec(arguments.len(), budget, &location)?;
-                        for argument in arguments {
-                            let mut names = metadata_vec(argument.names.len(), budget, &location)?;
-                            names.extend_from_slice(&argument.names);
-                            frames.push(Frame::new(names, budget, &location)?);
-                        }
-                        let mut arguments = PreparedArguments {
-                            arguments,
-                            frames,
-                            check_value,
-                        };
-                        let value = queries.evaluate_query_with_arguments(
-                            query,
-                            &values,
-                            &mut arguments,
-                            budget,
-                            &expression.range,
-                        )?;
-                        constructed_value_type(&value, budget, location.clone())?;
-                        Ok(value)
-                    }
-                    PreparedKind::Lookup { value, key } | PreparedKind::HasKey { value, key } => {
-                        let value = run(value, queries, locals, budget, check_value)?;
-                        let key = run(key, queries, locals, budget, check_value)?;
-                        let (present, value) = optional_access(value, key, budget, &location)?;
-                        if matches!(expression.value, PreparedKind::HasKey { .. }) {
-                            Ok(scalar(
-                                ConstructedValue::Boolean(present),
-                                budget,
-                                &location,
-                            )?)
-                        } else {
-                            Ok(value)
-                        }
-                    }
-                    PreparedKind::Default { .. } => {
-                        unreachable!("selected shared branch handled above")
-                    }
-                    PreparedKind::One(array) => {
-                        let ConstructedValue::Array(values) = expose(
-                            run(array, queries, locals, budget, check_value)?,
-                            budget,
-                            &location,
-                        )?
-                        else {
-                            return Err(error(&location, "one needs a positional array").into());
-                        };
-                        Ok(take_one(values, expression.range.clone())?)
-                    }
-                    PreparedKind::Literal(value) => {
-                        Ok(copy_constructed_value(value, budget, location)?)
-                    }
-                    PreparedKind::Name(_) => unreachable!("shared read handled above"),
-                    PreparedKind::Array(children)
-                    | PreparedKind::Tuple(children)
-                    | PreparedKind::Set(children) => {
-                        let mut values = admit_container(children.len(), budget, &location)?;
-                        let mut element_type = None;
-                        for child in children {
-                            let value = run(child, queries, locals, budget, check_value)?;
-                            if matches!(expression.value, PreparedKind::Set(_)) {
-                                insert_set(
-                                    &mut values,
-                                    &mut element_type,
-                                    value,
-                                    false,
-                                    budget,
-                                    &location,
-                                )?;
-                            } else {
-                                values.push(value);
-                            }
-                        }
-                        Ok(match expression.value {
-                            PreparedKind::Array(_) => ConstructedValue::Array(values),
-                            PreparedKind::Tuple(_) => ConstructedValue::Tuple(values),
-                            PreparedKind::Set(_) => ConstructedValue::Set {
-                                element_type,
-                                elements: values,
-                            },
-                            _ => unreachable!("collection expression"),
-                        })
-                    }
-                    PreparedKind::KeyedArray { axes, entries } => {
-                        let axes = match axes {
-                            Some(axes) => Some(copy_axes(axes, budget, &location)?),
-                            None => None,
-                        };
-                        let mut values = admit_container(entries.len(), budget, &location)?;
-                        for (key, head) in entries {
-                            let key_location = Location::Query(key.range.clone());
-                            let keys = value_keys(
-                                run(key, queries, locals, budget, check_value)?,
-                                budget,
-                                &key_location,
-                            )?;
-                            let value = run(head, queries, locals, budget, check_value)?;
-                            values.push(Located::new(
-                                KeyedEntry { key: keys, value },
-                                key.range.clone(),
-                            ));
-                        }
-                        Ok(finish_keyed(axes, values, budget, &location)?)
-                    }
-                    PreparedKind::KeyedComprehension {
-                        clauses,
-                        key,
-                        head,
-                        empty_axis_sources,
-                    } => {
-                        let mut output = Construction::Keyed {
-                            key,
-                            entries: admit_container(0, budget, &location)?,
-                        };
-                        expand(
-                            clauses,
-                            head,
-                            queries,
-                            locals,
-                            &mut output,
-                            budget,
-                            &location,
-                            check_value,
-                        )?;
-                        let Construction::Keyed { entries, .. } = output else {
-                            unreachable!("keyed construction");
-                        };
-                        let axes = if entries.is_empty() {
-                            let sources = empty_axis_sources.as_ref().ok_or_else(|| {
-                                error(&location, "unestablished empty keyed axes")
-                            })?;
-                            allocation::<KeyAxis>(sources.len(), &location)?;
-                            budget.charge(sources.len(), location.clone())?;
-                            budget.charge_results(sources.len(), location.clone())?;
-                            let mut axes = Vec::with_capacity(sources.len());
-                            for source in sources {
-                                let value = run(source, queries, locals, budget, check_value)?;
-                                axes.push(source_axis(
-                                    value,
-                                    budget,
-                                    &Location::Query(source.range.clone()),
-                                )?);
-                            }
-                            Some(axes)
-                        } else {
-                            None
-                        };
-                        Ok(finish_keyed(axes, entries, budget, &location)?)
-                    }
-                    PreparedKind::Record(fields) => {
-                        let mut values = admit_container(fields.len(), budget, &location)?;
-                        for (label, child) in fields {
-                            budget
-                                .charge(label.value.len(), Location::Query(label.range.clone()))?;
-                            let value = run(child, queries, locals, budget, check_value)?;
-                            values.push((label.value.to_owned(), value));
-                        }
-                        Ok(ConstructedValue::Record(values))
-                    }
-                    PreparedKind::Unary { operator, operand } => Ok(unary(
-                        *operator,
-                        run(operand, queries, locals, budget, check_value)?,
-                        budget,
-                        &location,
-                    )?),
-                    PreparedKind::Binary {
-                        operator,
-                        left,
-                        right,
-                    } => {
-                        let left = run(left, queries, locals, budget, check_value)?;
-                        if matches!(operator, ValueBinaryOperator::And | ValueBinaryOperator::Or) {
-                            let a = match left.into_data() {
-                                ConstructedValue::Boolean(value) => value,
-                                _ => {
-                                    return Err(error(
-                                        &location,
-                                        "condition needs a fixed Boolean",
-                                    )
-                                    .into());
-                                }
-                            };
-                            if (*operator == ValueBinaryOperator::And && !a)
-                                || (*operator == ValueBinaryOperator::Or && a)
-                            {
-                                return Ok(scalar(
-                                    ConstructedValue::Boolean(a),
-                                    budget,
-                                    &location,
-                                )?);
-                            }
-                            let right = run(right, queries, locals, budget, check_value)?;
-                            return Ok(binary(
-                                *operator,
-                                ConstructedValue::Boolean(a),
-                                right,
-                                budget,
-                                &location,
-                            )?);
-                        }
-                        let right = run(right, queries, locals, budget, check_value)?;
-                        Ok(binary(*operator, left, right, budget, &location)?)
-                    }
-                    PreparedKind::Field { .. }
-                    | PreparedKind::Occurs(_)
-                    | PreparedKind::Absent(_)
-                    | PreparedKind::Reduce { .. } => unreachable!("shared operation handled above"),
-                    PreparedKind::TupleAccess { value, position } => {
-                        let ConstructedValue::Tuple(values) = expose(
-                            run(value, queries, locals, budget, check_value)?,
-                            budget,
-                            &location,
-                        )?
-                        else {
-                            return Err(error(&location, "tuple access needs a tuple").into());
-                        };
-                        Ok(take_position(values, position.value, budget, &location)?)
-                    }
-                    PreparedKind::ArrayAccess { array, index } => {
-                        let array = expose(
-                            run(array, queries, locals, budget, check_value)?,
-                            budget,
-                            &location,
-                        )?;
-                        let index = run(index, queries, locals, budget, check_value)?;
-                        match array {
-                            ConstructedValue::Array(values) => {
-                                let position =
-                                    integer(index, &Location::Query(expression.range.clone()))?;
-                                let position = usize::try_from(position)
-                                    .map_err(|_| error(&location, "missing array position"))?;
-                                Ok(take_position(values, position, budget, &location)?)
-                            }
-                            ConstructedValue::KeyedArray { axes, entries } => {
-                                let key = value_keys(
-                                    index,
-                                    budget,
-                                    &Location::Query(expression.range.clone()),
-                                )?;
-                                key_positions(&key, &axes, budget, &location)?;
-                                for entry in entries {
-                                    budget.charge(1, location.clone())?;
-                                    if equal_keys(&key, &entry.key, budget, &location)? {
-                                        return Ok(entry.value);
-                                    }
-                                }
-                                Err(error(&location, "missing keyed array cell").into())
-                            }
-                            _ => Err(error(&location, "array access needs an array").into()),
-                        }
-                    }
-                    PreparedKind::IndexSet(array) => {
-                        match expose(
-                            run(array, queries, locals, budget, check_value)?,
-                            budget,
-                            &location,
-                        )? {
-                            ConstructedValue::Array(values) => {
-                                let len = i64::try_from(values.len())
-                                    .map_err(|_| error(&location, "index overflow"))?;
-                                Ok(integer_range(1, len, budget, &location)?)
-                            }
-                            ConstructedValue::KeyedArray { mut axes, .. } if axes.len() == 1 => {
-                                let axis = axes.pop().expect("rank one");
-                                let mut values =
-                                    admit_container(axis.keys.len(), budget, &location)?;
-                                let mut element_type = Some(key_set_type(axis.key_type));
-                                for key in axis.keys {
-                                    budget.charge(1, location.clone())?;
-                                    let value = key_value(key);
-                                    insert_set(
-                                        &mut values,
-                                        &mut element_type,
-                                        value,
-                                        false,
-                                        budget,
-                                        &location,
-                                    )?;
-                                }
-                                Ok(ConstructedValue::Set {
-                                    element_type,
-                                    elements: values,
-                                })
-                            }
-                            ConstructedValue::KeyedArray { .. } => {
-                                Err(error(&location, "index_set needs rank one").into())
-                            }
-                            _ => Err(error(&location, "index_set needs an array").into()),
-                        }
-                    }
-                    PreparedKind::Entries(array) => Ok(entries(
-                        run(array, queries, locals, budget, check_value)?,
-                        budget,
-                        &location,
-                    )?),
-                    PreparedKind::ZipExact { left, right } => {
-                        let left = run(left, queries, locals, budget, check_value)?;
-                        let right = run(right, queries, locals, budget, check_value)?;
-                        Ok(zip_exact(left, right, budget, &location)?)
-                    }
-                    PreparedKind::GroupBy { rows, field } => Ok(group_by(
-                        run(rows, queries, locals, budget, check_value)?,
-                        field,
-                        budget,
-                        &location,
-                    )?),
-                    PreparedKind::Require {
-                        condition,
-                        value,
-                        message,
-                    } => {
-                        if !boolean(
-                            run(condition, queries, locals, budget, check_value)?,
-                            &Location::Query(condition.range.clone()),
-                        )? {
-                            admit_diagnostic("", &message.value, budget, &location)?;
-                            return Err(error(&location, message.value.to_owned()).into());
-                        }
-                        run(value, queries, locals, budget, check_value)
-                    }
-                    PreparedKind::Range { lower, upper } => {
-                        let lower =
-                            integer(run(lower, queries, locals, budget, check_value)?, &location)?;
-                        let upper =
-                            integer(run(upper, queries, locals, budget, check_value)?, &location)?;
-                        Ok(integer_range(lower, upper, budget, &location)?)
-                    }
-                    PreparedKind::Conditional {
-                        branches,
-                        otherwise,
-                    } => {
-                        for (condition, value) in branches {
-                            if boolean(
-                                run(condition, queries, locals, budget, check_value)?,
-                                &Location::Query(condition.range.clone()),
-                            )? {
-                                return run(value, queries, locals, budget, check_value);
-                            }
-                        }
-                        run(otherwise, queries, locals, budget, check_value)
-                    }
-                    PreparedKind::Comprehension {
-                        constructor,
-                        clauses,
-                        head,
-                    } => {
-                        let mut output = match constructor {
-                            ValueConstructor::Array => {
-                                Construction::Array(admit_container(0, budget, &location)?)
-                            }
-                            ValueConstructor::Set => Construction::Set {
-                                elements: admit_container(0, budget, &location)?,
-                                element_type: None,
-                            },
-                        };
-                        expand(
-                            clauses,
-                            head,
-                            queries,
-                            locals,
-                            &mut output,
-                            budget,
-                            &location,
-                            check_value,
-                        )?;
-                        Ok(match output {
-                            Construction::Array(values) => ConstructedValue::Array(values),
-                            Construction::Set {
-                                elements,
-                                element_type,
-                            } => ConstructedValue::Set {
-                                element_type,
-                                elements,
-                            },
-                            Construction::Keyed { .. } => unreachable!("positional construction"),
-                        })
-                    }
-                }
-            })()?),
-        };
-        check_value(value.as_ref(), budget, &location)?;
-        Ok(value)
-    })
+    execution::run_scalar(expression, queries, locals, budget, check_value)
 }
 
 fn entries(
@@ -5237,224 +4846,6 @@ fn insert_set(
     Ok(())
 }
 
-enum Construction<'a, Q> {
-    Array(Vec<ConstructedValue>),
-    Set {
-        elements: Vec<ConstructedValue>,
-        element_type: Option<SetElementType>,
-    },
-    Keyed {
-        key: &'a PreparedValue<'a, Q>,
-        entries: Vec<Located<KeyedEntry>>,
-    },
-}
-
-// This is the runtime clause chain, not a second expression evaluator. Each
-// source runs before its own binders; scope restoration covers every Result.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Clause expansion retains its scope, output and active budget with the same host check"
-)]
-fn expand<'a, Q, H: ValueQueryHost<Q> + ?Sized>(
-    clauses: &'a [Located<PreparedGenerator<'a, Q>>],
-    head: &'a PreparedValue<'a, Q>,
-    queries: &mut H,
-    locals: &mut Frame<'a>,
-    output: &mut Construction<'a, Q>,
-    budget: &mut Budget,
-    location: &Location,
-    check_value: &mut impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
-) -> Result<(), H::Error> {
-    let Some((clause, rest)) = clauses.split_first() else {
-        match output {
-            Construction::Array(values) => {
-                let value = run(head, queries, locals, budget, check_value)?;
-                allocation::<ConstructedValue>(sum(values.len(), 1, location)?, location)?;
-                budget.charge_results(1, location.clone())?;
-                values.push(value);
-            }
-            Construction::Set {
-                elements,
-                element_type,
-            } => {
-                let value = run(head, queries, locals, budget, check_value)?;
-                insert_set(elements, element_type, value, true, budget, location)?;
-            }
-            Construction::Keyed { key, entries } => {
-                let key_location = Location::Query(key.range.clone());
-                let keys = value_keys(
-                    run(key, queries, locals, budget, check_value)?,
-                    budget,
-                    &key_location,
-                )?;
-                let value = run(head, queries, locals, budget, check_value)?;
-                allocation::<Located<KeyedEntry>>(
-                    sum(entries.len(), 1, &key_location)?,
-                    &key_location,
-                )?;
-                budget.charge(1, key_location.clone())?;
-                budget.charge_results(1, key_location)?;
-                entries.push(Located::new(
-                    KeyedEntry { key: keys, value },
-                    key.range.clone(),
-                ));
-            }
-        }
-        return Ok(());
-    };
-    let clause_location = Location::Query(clause.range.clone());
-    budget.within_evaluation(
-        1,
-        clause_location.clone(),
-        |budget| -> Result<(), H::Error> {
-            budget.charge(1, clause_location.clone())?;
-            match &clause.value {
-                PreparedGenerator::Bind {
-                    binder,
-                    value,
-                    filter,
-                } => {
-                    budget.charge(1, clause_location.clone())?;
-                    let value = run_value(value, queries, locals, budget, check_value)?;
-                    let saved = locals.locals.len();
-                    let result = (|| -> Result<(), H::Error> {
-                        if let Some(name) = &binder.value {
-                            push_metadata(
-                                &mut locals.locals,
-                                (name.as_str(), value),
-                                budget,
-                                &clause_location,
-                            )?;
-                        }
-                        if filter_passes(filter, queries, locals, budget, check_value)? {
-                            expand(
-                                rest,
-                                head,
-                                queries,
-                                locals,
-                                output,
-                                budget,
-                                location,
-                                check_value,
-                            )?;
-                        }
-                        Ok(())
-                    })();
-                    locals.locals.truncate(saved);
-                    result
-                }
-                PreparedGenerator::In {
-                    binders,
-                    source,
-                    filter,
-                } => {
-                    let source_value = run_value(source, queries, locals, budget, check_value)?;
-                    let mut source_value =
-                        if matches!(source_value.as_ref(), ConstructedValue::Declared { .. }) {
-                            RuntimeValue::Owned(expose(
-                                source_value.materialize(budget, &clause_location)?,
-                                budget,
-                                &clause_location,
-                            )?)
-                        } else {
-                            source_value
-                        };
-                    let len = match source_value.as_ref() {
-                        ConstructedValue::Array(values)
-                        | ConstructedValue::Set {
-                            elements: values, ..
-                        } => values.len(),
-                        ConstructedValue::KeyedArray { entries, .. } => entries.len(),
-                        _ => {
-                            return Err(error(
-                                &Location::Query(source.range.clone()),
-                                "in source needs an array or supported set",
-                            )
-                            .into());
-                        }
-                    };
-                    let mut candidates = 1usize;
-                    for _ in binders {
-                        budget.charge(1, clause_location.clone())?;
-                        candidates = candidates.checked_mul(len).ok_or_else(|| {
-                            error(&clause_location, "grouped generator cardinality overflow")
-                        })?;
-                    }
-                    // The whole grouped product is admitted before any filter.
-                    budget.charge(candidates, clause_location.clone())?;
-                    if candidates == 0 {
-                        return Ok(());
-                    }
-                    let mut positions = metadata_vec(binders.len(), budget, &clause_location)?;
-                    positions.resize(binders.len(), 0usize);
-                    for _ in 0..candidates {
-                        let saved = locals.locals.len();
-                        let result = (|| -> Result<(), H::Error> {
-                            for (binder, position) in binders.iter().zip(&positions) {
-                                budget.charge(1, Location::Query(binder.range.clone()))?;
-                                if let Some(name) = &binder.value {
-                                    let value =
-                                        source_value.share(budget, &clause_location)?.child(
-                                            *position,
-                                            budget,
-                                            &Location::Query(binder.range.clone()),
-                                        )?;
-                                    push_metadata(
-                                        &mut locals.locals,
-                                        (name.as_str(), value),
-                                        budget,
-                                        &clause_location,
-                                    )?;
-                                }
-                            }
-                            if filter_passes(filter, queries, locals, budget, check_value)? {
-                                expand(
-                                    rest,
-                                    head,
-                                    queries,
-                                    locals,
-                                    output,
-                                    budget,
-                                    location,
-                                    check_value,
-                                )?;
-                            }
-                            Ok(())
-                        })();
-                        locals.locals.truncate(saved);
-                        result?;
-                        for position in positions.iter_mut().rev() {
-                            budget.charge(1, clause_location.clone())?;
-                            *position += 1;
-                            if *position < len {
-                                break;
-                            }
-                            *position = 0;
-                        }
-                    }
-                    Ok(())
-                }
-            }
-        },
-    )
-}
-
-fn filter_passes<'a, Q, H: ValueQueryHost<Q> + ?Sized>(
-    filter: &'a Option<PreparedValue<'a, Q>>,
-    queries: &mut H,
-    locals: &mut Frame<'a>,
-    budget: &mut Budget,
-    check_value: &mut impl FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
-) -> Result<bool, H::Error> {
-    match filter {
-        Some(filter) => Ok(boolean(
-            run(filter, queries, locals, budget, check_value)?,
-            &Location::Query(filter.range.clone()),
-        )?),
-        None => Ok(true),
-    }
-}
-
 /// Copy inferred facts under the active metadata allowance.
 ///
 /// # Errors
@@ -5488,4 +4879,160 @@ pub(crate) fn extend_type_positions(
         }
     }
     Ok(expanded)
+}
+
+pub(crate) fn function_facts<K>(
+    declaration: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    if crate::runtime_types::contains_native(declaration, budget, location)? {
+        one_type(ValueType::Unestablished, budget, location)
+    } else {
+        let declaration =
+            crate::runtime_types::constructed_declaration(declaration, budget, location)?;
+        one_type(
+            declared_fact(&declaration, ValueType::Unestablished, budget, location)?,
+            budget,
+            location,
+        )
+    }
+}
+
+pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
+    declaration: &'a crate::FunctionDeclaration<Q, K>,
+    queries: &mut H,
+    budget: &mut Budget,
+) -> Result<execution::Body<'a, Q, K>, QueryError> {
+    let globals = BTreeMap::new();
+    let mut analysis = Analysis::new(Globals::Facts(&globals), queries);
+    let mut preparation = Preparation::new();
+    for parameter in &declaration.parameters {
+        let name = &parameter.value.name;
+        function_local(name, &analysis.locals, budget)?;
+        let types = function_facts(
+            &parameter.value.declaration,
+            budget,
+            &Location::Query(parameter.range.clone()),
+        )?;
+        push_metadata(
+            &mut analysis.locals,
+            (name.value.as_str(), types),
+            budget,
+            &Location::Query(name.range.clone()),
+        )?;
+        push_metadata(
+            &mut preparation.locals,
+            name.value.as_str(),
+            budget,
+            &Location::Query(name.range.clone()),
+        )?;
+    }
+    let mut bindings = metadata_vec(
+        declaration.bindings.len(),
+        budget,
+        &Location::Query(declaration.name.range.clone()),
+    )?;
+    for (name, value) in &declaration.bindings {
+        function_local(name, &analysis.locals, budget)?;
+        let types = analysis.walk(value, budget)?;
+        let expression = preparation.resolve(value, analysis.queries, budget)?;
+        analysis
+            .queries
+            .prepare_local(name, value, &types, budget)?;
+        push_metadata(
+            &mut analysis.locals,
+            (name.value.as_str(), types),
+            budget,
+            &Location::Query(name.range.clone()),
+        )?;
+        push_metadata(
+            &mut preparation.locals,
+            name.value.as_str(),
+            budget,
+            &Location::Query(name.range.clone()),
+        )?;
+        bindings.push((name.value.as_str(), expression));
+    }
+    analysis.walk(&declaration.value, budget)?;
+    let value = preparation.resolve(&declaration.value, analysis.queries, budget)?;
+    Ok(execution::Body {
+        declaration,
+        bindings,
+        value,
+    })
+}
+fn function_local(
+    name: &Located<String>,
+    locals: &[(&str, Vec<ValueType>)],
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let location = Location::Query(name.range.clone());
+    budget.charge(name.value.len() + 1, location.clone())?;
+    if name.value == "_" {
+        return Err(error(&location, "discard name cannot be bound"));
+    }
+    for (previous, _) in locals {
+        budget.charge(1 + previous.len().min(name.value.len()), location.clone())?;
+        if *previous == name.value {
+            return Err(error(&location, "binding is already defined"));
+        }
+    }
+    Ok(())
+}
+pub(crate) fn run_functions(
+    declarations: &[crate::FunctionDeclaration],
+    entry: &ValueExpression,
+    bindings: &Bindings<ConstructedValue>,
+    budget: &mut Budget,
+    limits: crate::FunctionLimits,
+) -> Result<ConstructedValue, crate::FunctionError<QueryError>> {
+    let mut queries = NoQueries {
+        bindings: Some(bindings),
+    };
+    let mut resolver = crate::functions::Resolver {
+        queries: &mut queries,
+        declarations,
+    };
+    let location = Location::Query(entry.range.clone());
+    let mut bodies = metadata_vec(declarations.len(), budget, &location)?;
+    for declaration in declarations {
+        bodies.push(prepare_function_body(declaration, &mut resolver, budget)?);
+    }
+    Analysis::new(Globals::Available(bindings), &mut resolver).walk(entry, budget)?;
+    let mut preparation = Preparation::new();
+    let entry = preparation.resolve(entry, &mut resolver, budget)?;
+    let names = preparation.names;
+    let mut frame = Frame::new(names.clone(), budget, &location)?;
+    let mut calls = crate::functions::CallTrace::default();
+    let mut check = |_: &ConstructedValue, _: &mut Budget, _: &Location| Ok(());
+    let mut host = execution::ScalarHost {
+        queries: &mut queries,
+        frame: &mut frame,
+        check: &mut check,
+        query: std::marker::PhantomData,
+        calls: &mut calls,
+    };
+    let result = execution::execute(
+        &entry,
+        &names,
+        &bodies,
+        &mut host,
+        budget,
+        limits.active_depth,
+        0,
+    )
+    .and_then(|v| v.materialize(budget, &location));
+    result.map_err(|error| crate::FunctionError {
+        error,
+        omitted_calls: calls.omitted,
+        calls: calls
+            .frames
+            .into_iter()
+            .map(|(id, range)| crate::FunctionCall {
+                function: declarations[id].name.value.chars().take(64).collect(),
+                range,
+            })
+            .collect(),
+    })
 }
