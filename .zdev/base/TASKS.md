@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 46
-- Ready: 5
+- Ready: 4
 - Blocked: 6
-- Done: 35
+- Done: 36
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -45,7 +45,7 @@
 | [base-034](tasks/034-expose-typed-recursive-functions-in-zirium-programs.md) | Expose typed recursive functions in Zirium programs | done | base-033, base-031 |
 | [base-035](tasks/035-expose-typed-recursive-functions-in-zincite-programs.md) | Expose typed recursive functions in Zincite programs | done | base-033, base-031 |
 | [base-036](tasks/036-sort-constructed-reports-and-select-optional-extrema.md) | Sort constructed reports and select optional extrema | ready | base-031 |
-| [base-037](tasks/037-share-exact-string-matching-for-projected-names.md) | Share exact string matching for projected names | ready | — |
+| [base-037](tasks/037-share-exact-string-matching-for-projected-names.md) | Share exact string matching for projected names | done | — |
 | [base-038](tasks/038-measure-and-document-the-completed-computation-model.md) | Measure and document the completed computation model | blocked | base-034, base-035, base-036, base-037 |
 | [base-039](tasks/039-bind-patterns-and-select-guarded-value-matches-in-the-shared.md) | Bind patterns and select guarded value matches in the shared runtime | ready | base-033, base-031 |
 | [base-040](tasks/040-execute-expression-loops-with-simultaneous-immutable-state-t.md) | Execute expression loops with simultaneous immutable state transitions | blocked | base-039 |
