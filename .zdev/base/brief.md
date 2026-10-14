@@ -107,6 +107,18 @@ exact-version registry consumer executes nominal/keyed values and all five
 functions. Earlier usable prereleases remain available; the reservation remains
 yanked.
 
+On 2026-10-13, the user approved Zincite base-127's exact bounded data-edit
+contract and chose `emit;` as its terminator, with `emit_document;` retained as
+a compatibility alias. The approved source/let/create/replace grammar, closed
+operator/helper subset, read-only model ownership, key/empty-axis rules,
+comment/directive policy and explicit dependent-data mapping are recorded in
+Zincite's `docs/query-comprehension-contract.md`. Zincite implemented that
+contract in `4b4246d543b612a4b94264f96411a78b2dc16f74` and the terminator change
+in `ae1ccdd9958ad633f20f6baf5d9665ce20101ef8`; its base-127 is complete.
+Base-008 verifies those actual library and CLI outcomes against the current
+shared dependency. Reuse the existing implementation; new semantic choices
+outside that exact contract remain attended.
+
 ## Architectural direction
 
 Start with one reusable Rust library crate. A framework executable, parser
@@ -455,8 +467,9 @@ these observations are not a promise that a later checkout has the same APIs.
 ## Outstanding decisions
 
 Concrete Rust signatures are chosen against the first two native controls within
-these boundaries. Zincite's data-construction grammar, operation subset,
-target/key/empty-axis and comment policies retain their existing attended gate.
+these boundaries. The bounded Zincite data-edit contract's attended gate is
+resolved as recorded under User decisions; broader data semantics need a new
+decision. Base-008 records actual integration acceptance.
 The repository is public and the crate name is reserved. Before another
 publication or consumer distribution, follow the development and release
 policy in User decisions.
