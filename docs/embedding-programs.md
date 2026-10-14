@@ -161,10 +161,10 @@ supported Boolean, integer, float and nominal element types. A bare saved name
 
 Bodies contain ordered `let name = expression;` bindings and a final expression.
 Ordinary calls accept zero or more positional arguments. Conditionals use
-`if condition { expression } else { expression }`, with optional `else if`
-branches and a required final `else`. Both written branches are preflighted;
-only the selected result executes. Callable expression blocks support lexical
-pattern bindings; their textual frontend syntax belongs to later host work.
+`if condition { lets; expression } else { lets; expression }`, with optional
+`else if` branches and a required final `else`. Every written branch receives
+preflight checks; only the selected result executes. Branch-local names stay
+inside their block. Ordinary JSON records remain value expressions.
 
 Hosts with their own expression parser can implement
 `ValueReaderHost::parse_function_value`. It receives the original cursor and
@@ -253,11 +253,67 @@ view access does not reflect Rust fields. Child selections retain the original
 owner and any declared field/position contract. Host calls and returned owned
 results use the existing charged materialization boundaries.
 
-The common reader retains its current simple bindings, records, native capture
-matches and conditionals. Host text syntax for patterns, blocks and value
-matching is separate work. When releasing lowered native trees, use
-`dispose_native_value` or `dispose_pattern_functions`; `dispose_pattern` releases
-a standalone nested pattern iteratively.
+The common reader exposes these forms through `read_value_expression`,
+`read_pattern`, `read_pattern_let` and `read_pattern_function_declaration`.
+The pattern function reader accepts the complete parameter's type and lowers
+local lets to the existing `Block`. Its name-only counterparts retain their
+original signatures and representation. Names such as `if`, `match`, `let`,
+`fn`, `param` and `report` remain contextual binding names. A bare `absent` or
+`present` in a let or parameter position is a name; `present(pattern)` is an
+explicit presence pattern, and nested/match `absent` is an absence pattern.
+
+```text
+fn add_cost((label, {cost: (_, cost), ..}):
+    tuple<string, record {cost: tuple<string, int>, ignored: int}>) -> int {
+    if cost >= 0 { let answer = cost + 1; answer }
+    else { 0 }
+}
+
+match (lookup(row, "cost")) {
+    absent => 0,
+    present(cost) if cost >= 0 => { let answer = cost + 1; answer },
+    _ => require(false, 0, "negative cost")
+}
+```
+
+Tuple values use `(first, second)`; `(value)` remains grouping and `(value,)`
+is a one-element tuple. Record results keep their JSON-shaped spelling,
+including directly in a match arm. Function/conditional braces are blocks;
+match arms also recognize blocks containing local lets and a final value.
+Native `match { from ... }` retains its capture-enumeration grammar.
+Host frontend availability is documented by each consumer.
+
+For model-owned types, use `read_unresolved_pattern_function_declaration`, then
+`resolve_signature` and `with_signature`. `ResolvedPatternFunctionSignature`
+owns only request-resolved type metadata and borrows the original patterns.
+`PreparedFunctions::prepare_patterns_borrowed` borrows that header and the
+original body. Neither step clones or reparses the body or patterns.
+`PreparedFunctions::value_kind` uses the same common preflight as preparation,
+including lexical native field kinds through blocks and match arms. Hosts need
+no separate block or pattern scope walk.
+
+A top-level frontend can call `PreparedFunctions::prepare_binding` with the
+pattern, initializer, outer kinds and optional relative kind. Preflight checks
+the initializer's purity and all new names before execution. The returned
+`PreparedPatternBinding::bindings` supplies ordered names and host kinds.
+`evaluate_binding` evaluates once and returns a `NativeCapture` containing only
+selected public outputs. It shares native/constructed owners while matching
+and finishes selected fields through the ordinary host boundary; it does not
+copy ignored fields into another record. Failed matching returns an error
+before any caller binding changes.
+
+Lower that capture to `Statement::BindFields { names, expression }` to install
+its fields in an ordinary `Program`. Program preflight checks every new name
+against the outer scope. Execution verifies and copies every requested field
+through `capture_record` and `copy_value`, then installs the complete set.
+`Statement` and `Program` retain their `Eq` support; the host retains its pattern
+expression in its existing checked stage wrapper.
+
+When releasing parsed native trees, use `dispose_native_value`,
+`dispose_pattern_functions` or `dispose_unresolved_pattern_functions`;
+`dispose_pattern` releases a standalone nested pattern iteratively. Reusable
+typed wrappers can call `copy_pattern` to copy only located pattern metadata
+under the active budget, without parsing generated text or copying matched data.
 
 
 ## Fold and scan named functions

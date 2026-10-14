@@ -412,6 +412,58 @@ fn select<'a, Q, H: Host<'a, Q>>(
     Ok(Value { data, contract })
 }
 
+/// Copy reusable pattern metadata under the active allowance, retaining every
+/// original query range. This never reads or copies a matched native value.
+///
+/// # Errors
+/// Metadata, scalar-copy and nesting limits fail at the original pattern.
+pub fn copy_pattern(pattern: &Pattern, budget: &mut Budget) -> Result<Pattern, QueryError> {
+    let location = Location::Query(pattern.range.clone());
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        budget.charge_results(1, location.clone())?;
+        let copy_name = |name: &Located<String>, budget: &mut Budget| {
+            budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+            Ok::<_, QueryError>(name.clone())
+        };
+        let value = match &pattern.value {
+            PatternKind::Name(name) => PatternKind::Name(copy_name(name, budget)?),
+            PatternKind::Wildcard => PatternKind::Wildcard,
+            PatternKind::Absent => PatternKind::Absent,
+            PatternKind::Literal(value) => {
+                PatternKind::Literal(copy_constructed_value(value, budget, location.clone())?)
+            }
+            PatternKind::Present(child) => {
+                PatternKind::Present(Box::new(copy_pattern(child, budget)?))
+            }
+            PatternKind::Tuple(children) => {
+                let mut copied = Vec::new();
+                for child in children {
+                    let child = copy_pattern(child, budget)?;
+                    push_metadata(&mut copied, child, budget, &location)?;
+                }
+                PatternKind::Tuple(copied)
+            }
+            PatternKind::Record {
+                fields,
+                ignore_rest,
+            } => {
+                let mut copied = Vec::new();
+                for (label, child) in fields {
+                    let label = copy_name(label, budget)?;
+                    let child = copy_pattern(child, budget)?;
+                    push_metadata(&mut copied, (label, child), budget, &location)?;
+                }
+                PatternKind::Record {
+                    fields: copied,
+                    ignore_rest: *ignore_rest,
+                }
+            }
+        };
+        Ok(Located::new(value, pattern.range.clone()))
+    })
+}
+
 pub fn dispose_pattern(pattern: Pattern) {
     let mut pending = vec![pattern];
     while let Some(pattern) = pending.pop() {

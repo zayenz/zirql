@@ -3464,6 +3464,229 @@ mod projection {
     }
 
     #[test]
+    fn parsed_pattern_functions_blocks_matches_and_borrowed_headers_share_execution() {
+        use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
+        let source = r#"
+            fn report((label, {cost: (_, cost), ..}): tuple<string, record {cost: tuple<string, int>, ignored: int}>) -> record {label: string, total: int} {
+                if cost > 0 { let answer = cost + 1; {"label": label, "total": answer} }
+                else { {"label": label, "total": 0} }
+            }
+            fn classify(value: opt int) -> int {
+                match (value) {
+                    absent => 0,
+                    present(cost) if cost < 0 => require(false, 0, "negative"),
+                    present(cost) if cost > 100 => 1,
+                    present(cost) => { let answer = cost + 1; answer },
+                    _ => -1
+                }
+            }
+            fn tally((n, total): tuple<int, int>) -> int {
+                match (n) { 0 => total, _ => { let next = (n - 1, total + n); if true { tally(next) } else { 0 } } }
+            }
+        "#;
+        let mut budget = function_budget();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let mut parsed = Vec::new();
+        while let Some(function) = zirql::read_unresolved_pattern_function_declaration(
+            &mut reader,
+            &mut Host,
+            &mut budget,
+            64,
+        )
+        .unwrap()
+        {
+            parsed.push(function);
+        }
+        reader.skip_whitespace();
+        assert!(reader.remaining().is_empty());
+        let headers = parsed
+            .iter()
+            .map(|function| {
+                function
+                    .resolve_signature(&mut budget, |name, _| {
+                        Err::<D<Kind>, _>(QueryError::query(name.range, "unexpected named type"))
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &source[headers[0].parameters[0].value.pattern.range.clone()],
+            "(label, {cost: (_, cost), ..})"
+        );
+        let limits = FunctionLimits { active_depth: 1 };
+        for (text, expected) in [
+            (
+                r#"report(("alpha", {"cost": ("unused", 4), "ignored": 99}))"#,
+                V::Record(vec![
+                    (
+                        "label".into(),
+                        V::Declared {
+                            value: Box::new(V::String("alpha".into())),
+                            declaration: D::String,
+                        },
+                    ),
+                    ("total".into(), V::Integer(5)),
+                ]),
+            ),
+            ("classify(null)", V::Integer(0)),
+            ("classify(4)", V::Integer(5)),
+            ("tally((100, 0))", V::Integer(5050)),
+        ] {
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let entry =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+            assert!(reader.remaining().is_empty());
+            let mut functions = PreparedFunctions::prepare_patterns_borrowed(
+                parsed
+                    .iter()
+                    .zip(&headers)
+                    .map(|(body, header)| body.with_signature(header)),
+                &Host,
+                &mut budget,
+            )
+            .unwrap();
+            let prepared = functions
+                .prepare_value(&entry, &BTreeMap::new(), None, &mut budget)
+                .unwrap();
+            let result = functions
+                .evaluate(
+                    &prepared,
+                    &Bindings::default(),
+                    None,
+                    &mut (),
+                    &mut budget,
+                    limits,
+                )
+                .unwrap();
+            let Value::Constructed(V::Declared { value, .. }) = result else {
+                panic!("declared function result");
+            };
+            assert_eq!(*value, expected);
+        }
+        let text = r#"match (2) { 1 => {"kind": 0}, _ => {"kind": 2} }"#;
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let entry = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let mut functions = PreparedFunctions::prepare_patterns_borrowed(
+            parsed
+                .iter()
+                .zip(&headers)
+                .map(|(body, header)| body.with_signature(header)),
+            &Host,
+            &mut budget,
+        )
+        .unwrap();
+        let prepared = functions
+            .prepare_value(&entry, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(
+                    &prepared,
+                    &Bindings::default(),
+                    None,
+                    &mut (),
+                    &mut budget,
+                    limits
+                )
+                .unwrap(),
+            Value::Constructed(V::Record(vec![("kind".into(), V::Integer(2))]))
+        );
+        drop(functions);
+        drop(headers);
+        zirql::dispose_unresolved_pattern_functions(parsed);
+    }
+
+    #[test]
+    fn parsed_patterns_preserve_contextual_names_and_preflight_refusals() {
+        use zirql::{FunctionLimits, PreparedFunctions};
+        let mut budget = function_budget();
+        let mut reader = zirql::ArgumentReader::new("fn contextual(if: int, match: int, absent: int, present: int) -> int { let let = if; let fn = match; let param = absent; let report = present; let + fn + param + report }", 0).unwrap();
+        let function = zirql::read_pattern_function_declaration(
+            &mut reader,
+            &mut Host,
+            &mut budget,
+            64,
+            |name, _| {
+                Err::<zirql::DeclaredType<Kind>, _>(QueryError::query(
+                    name.range,
+                    "unexpected type",
+                ))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        // Keep the old name-only API available beside pattern declarations.
+        let mut legacy = zirql::ArgumentReader::new(
+            "fn legacy(value: int) -> int { let saved = value; saved }",
+            0,
+        )
+        .unwrap();
+        let old =
+            zirql::read_function_declaration(&mut legacy, &mut Host, &mut budget, 64, |name, _| {
+                Err::<zirql::DeclaredType<Kind>, _>(QueryError::query(
+                    name.range,
+                    "unexpected type",
+                ))
+            })
+            .unwrap()
+            .unwrap();
+        let mut functions =
+            PreparedFunctions::prepare_patterns([&function], &Host, &mut budget).unwrap();
+        let mut reader = zirql::ArgumentReader::new("contextual(1, 2, 3, 4)", 0).unwrap();
+        let entry = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let prepared = functions
+            .prepare_value(&entry, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        assert!(
+            matches!(functions.evaluate(&prepared, &Bindings::default(), None, &mut (), &mut budget, FunctionLimits { active_depth: 1 }).unwrap(), Value::Constructed(V::Declared { value, .. }) if *value == V::Integer(10))
+        );
+        for text in [
+            "match (0) { _ => 0, missing => 1 }",
+            "match (0) { x => x }",
+            "if true { 1 } else { let (x, x) = (1, 2); x }",
+            "if true { let x = 1; x } else { x }",
+            "match (0) { _ => 1, x => edit }",
+        ] {
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let entry =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+            let mut empty = PreparedFunctions::prepare([], &Host, &mut budget).unwrap();
+            assert!(
+                empty
+                    .prepare_value(&entry, &BTreeMap::new(), None, &mut budget)
+                    .is_err(),
+                "{text}"
+            );
+        }
+        for text in [
+            "match (0) { x if 1 => x, _ => 2 }",
+            "if true { let (x, y) = (1,); x } else { 0 }",
+        ] {
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let entry =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+            let mut empty = PreparedFunctions::prepare([], &Host, &mut budget).unwrap();
+            let prepared = empty.prepare_value(&entry, &BTreeMap::new(), None, &mut budget);
+            if let Ok(prepared) = prepared {
+                assert!(
+                    empty
+                        .evaluate(
+                            &prepared,
+                            &Bindings::default(),
+                            None,
+                            &mut (),
+                            &mut budget,
+                            FunctionLimits { active_depth: 1 }
+                        )
+                        .is_err()
+                );
+            }
+        }
+        zirql::dispose_functions(vec![old]);
+        zirql::dispose_pattern_functions(vec![function]);
+    }
+
+    #[test]
     fn request_resolved_headers_borrow_host_lowered_bodies() {
         use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
         let source = "fn saved(xs: sequence<set<Colour>>) -> sequence<set<Colour>> { let local = yield xs; yield local }";
@@ -6422,4 +6645,155 @@ fn loop_native_state_keeps_borrowed_identity_aliases_and_failure_cleanup() {
     zirql::dispose_native_value(entry);
     zirql::dispose_native_value(failing);
     zirql::dispose_native_value(wrong);
+}
+
+#[test]
+fn prepared_binding_and_program_capture_fields_keep_native_values() {
+    use std::collections::BTreeMap;
+    use zirql::{FunctionLimits, PreparedFunctions, ProjectionHost, ValueExpressionKind as K};
+    fn eq_capable<T: Eq>() {}
+    eq_capable::<Program<(), (), ()>>();
+    let source = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: Vec::new(),
+    };
+    let words = |range: Range<usize>| {
+        SourceValue::Words(vec![Word {
+            text: &source[range.clone()],
+            range,
+        }])
+    };
+    let record = SourceValue::Record(zirql::NativeCapture {
+        fields: vec![
+            (
+                "selected".into(),
+                SourceValue::Tuple(vec![words(0..5), words(6..10)]),
+            ),
+            ("ignored".into(), words(6..10)),
+        ],
+    });
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 100_000,
+        results: 10_000,
+        nesting: 64,
+        ..limits()
+    });
+    let mut reader = zirql::ArgumentReader::new("{selected: (first, _), ..}", 0).unwrap();
+    let original = zirql::read_pattern(&mut reader, &mut budget, 64).unwrap();
+    let pattern = zirql::copy_pattern(&original, &mut budget).unwrap();
+    assert_eq!(pattern, original);
+    let mut scarce = Budget::for_program(ProgramLimits {
+        work: 1,
+        ..limits()
+    });
+    assert!(zirql::copy_pattern(&original, &mut scarce).is_err());
+    let initializer = at(
+        K::NativeValue(Box::new(at(ExpressionKind::Binding("input".into()), 20))),
+        20,
+    );
+    let scope = BTreeMap::from([(
+        "input".into(),
+        SourceHost.kind(&record, &mut budget, &(20..21)).unwrap(),
+    )]);
+    let bindings = Bindings::new([(at("input".into(), 1), record)]).unwrap();
+    let mut functions = PreparedFunctions::prepare([], &SourceHost, &mut budget).unwrap();
+    let mut block_reader = zirql::ArgumentReader::new("{selected: (first, _), ..}", 0).unwrap();
+    let block_pattern = zirql::read_pattern(&mut block_reader, &mut budget, 64).unwrap();
+    let block = at(
+        K::Block {
+            bindings: vec![(
+                block_pattern,
+                at(
+                    K::NativeValue(Box::new(at(ExpressionKind::Binding("input".into()), 20))),
+                    20,
+                ),
+            )],
+            value: Box::new(at(K::Name("first".into()), 25)),
+        },
+        20,
+    );
+    assert_eq!(
+        functions
+            .value_kind(&block, &scope, None, &mut budget)
+            .unwrap(),
+        SourceKind::Words
+    );
+    let prepared = functions
+        .prepare_binding(&pattern, &initializer, &scope, None, &mut budget)
+        .unwrap();
+    let names = prepared
+        .bindings()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names[0].value, "first");
+    assert_eq!(prepared.bindings().next().unwrap().1, &SourceKind::Words);
+    let capture = functions
+        .evaluate_binding(
+            &prepared,
+            &bindings,
+            None,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap();
+    let program = Program::new(
+        vec![at(
+            Statement::BindFields {
+                names,
+                expression: at(ExpressionKind::Input, 30),
+            },
+            30,
+        )],
+        0..40,
+    );
+    let installed = evaluate_program(
+        &program,
+        &SourceHost,
+        SourceValue::Record(capture),
+        &mut context,
+        Bindings::default(),
+        &mut budget,
+    )
+    .unwrap();
+    let SourceValue::Words(selected) = installed.get("first", 30..31).unwrap() else {
+        panic!("native field");
+    };
+    assert_eq!(selected[0].range, 0..5);
+    assert_eq!(selected[0].text.as_ptr(), source.as_ptr());
+    let collision = BTreeMap::from([
+        ("first".into(), SourceKind::Words),
+        ("input".into(), scope["input"].clone()),
+    ]);
+    assert!(
+        functions
+            .prepare_binding(&pattern, &initializer, &collision, None, &mut budget)
+            .is_err()
+    );
+    let missing = Program::new(
+        vec![at(
+            Statement::BindFields {
+                names: vec![at("first".into(), 1), at("missing".into(), 2)],
+                expression: at(ExpressionKind::Input, 30),
+            },
+            30,
+        )],
+        0..40,
+    );
+    let capture = SourceValue::Record(zirql::NativeCapture {
+        fields: vec![("first".into(), words(0..5))],
+    });
+    assert!(
+        evaluate_program(
+            &missing,
+            &SourceHost,
+            capture,
+            &mut context,
+            Bindings::default(),
+            &mut budget
+        )
+        .is_err()
+    );
 }

@@ -72,9 +72,25 @@ pub struct PatternFunctionDeclaration<Q = (), K = ()> {
     pub value: ValueExpression<Q>,
 }
 
+/// A request-resolved declaration borrowing its original parameter pattern.
+#[derive(Debug, PartialEq)]
+pub struct PatternParameterRef<'a, K> {
+    pub pattern: &'a Pattern,
+    pub declaration: DeclaredType<K>,
+}
+
+/// Request-owned headers borrowing reusable patterns and a body tree.
+pub struct PatternFunctionDeclarationRef<'a, Q = (), K = ()> {
+    pub name: &'a Located<String>,
+    pub parameters: &'a [Located<PatternParameterRef<'a, K>>],
+    pub result: &'a Located<DeclaredType<K>>,
+    pub value: &'a ValueExpression<Q>,
+}
+
 pub(crate) enum Parameters<'a, K> {
     Names(&'a [Located<FunctionParameter<K>>]),
     Patterns(&'a [Located<PatternParameter<K>>]),
+    BorrowedPatterns(&'a [Located<PatternParameterRef<'a, K>>]),
 }
 impl<K> Copy for Parameters<'_, K> {}
 impl<K> Clone for Parameters<'_, K> {
@@ -92,6 +108,7 @@ impl<'a, K> Parameters<'a, K> {
         match self {
             Self::Names(v) => v.len(),
             Self::Patterns(v) => v.len(),
+            Self::BorrowedPatterns(v) => v.len(),
         }
     }
     pub fn iter(self) -> impl Iterator<Item = ParameterRef<'a, K>> {
@@ -103,6 +120,11 @@ impl<'a, K> Parameters<'a, K> {
             },
             Self::Patterns(v) => ParameterRef {
                 pattern: PatternRef::Pattern(&v[index].value.pattern),
+                declaration: &v[index].value.declaration,
+                range: &v[index].range,
+            },
+            Self::BorrowedPatterns(v) => ParameterRef {
+                pattern: PatternRef::Pattern(v[index].value.pattern),
                 declaration: &v[index].value.declaration,
                 range: &v[index].range,
             },
@@ -129,6 +151,17 @@ impl<'a, Q, K> From<FunctionDeclarationRef<'a, Q, K>> for DeclarationRef<'a, Q, 
             parameters: Parameters::Names(d.parameters),
             result: d.result,
             bindings: d.bindings,
+            value: d.value,
+        }
+    }
+}
+impl<'a, Q, K> From<PatternFunctionDeclarationRef<'a, Q, K>> for DeclarationRef<'a, Q, K> {
+    fn from(d: PatternFunctionDeclarationRef<'a, Q, K>) -> Self {
+        Self {
+            name: d.name,
+            parameters: Parameters::BorrowedPatterns(d.parameters),
+            result: d.result,
+            bindings: &[],
             value: d.value,
         }
     }
@@ -659,6 +692,33 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
     }
 }
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
+    fn entry_kind(
+        &mut self,
+        entry: &ValueExpression<Query<C, H>>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Kind<C, H>, QueryError> {
+        self.scope = crate::projection::copy_scope::<C, H>(scope, budget, &entry.range)?;
+        self.relative = relative;
+        self.generator_kinds.clear();
+        let mut facts = BTreeMap::new();
+        for (name, kind) in scope {
+            budget_name(name, budget, &entry.range)?;
+            facts.insert(
+                name.clone(),
+                self.host
+                    .scalar_types(kind, budget, &entry.range)?
+                    .unwrap_or_else(|| vec![ValueType::Unestablished]),
+            );
+        }
+        let types = query_value_types(entry, &facts, self, budget)?;
+        Ok(match self.local_kind(entry, budget)? {
+            Some(kind) => kind,
+            None => self.host.constructed_kind(types),
+        })
+    }
+
     // Retain already-known native kinds through the same selected-value forms.
     // Unknown scalar/collection facts continue through ordinary value analysis.
     fn pattern_kind(
@@ -1214,6 +1274,19 @@ pub struct PreparedFunctionValue<'a, Q, K = ()> {
     identity: std::sync::Arc<()>,
 }
 
+/// A prepared initializer and its atomic, ordered public bindings.
+pub struct PreparedPatternBinding<'a, Q, K> {
+    pattern: &'a Pattern,
+    value: PreparedFunctionValue<'a, Q, K>,
+    bindings: Vec<(&'a Located<String>, K)>,
+}
+impl<K, Q> PreparedPatternBinding<'_, Q, K> {
+    /// Bound names and host kinds in written pattern order.
+    pub fn bindings(&self) -> impl Iterator<Item = (&Located<String>, &K)> {
+        self.bindings.iter().map(|(name, kind)| (*name, kind))
+    }
+}
+
 impl<Q, K> PreparedFunctionValue<'_, Q, K> {
     /// Preflight kind for the written value; runtime whole-type admission still
     /// checks actual arguments and results.
@@ -1271,6 +1344,25 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             declarations
                 .into_iter()
                 .map(PatternFunctionDeclaration::as_borrowed),
+            host,
+            budget,
+        )
+    }
+
+    /// Prepare request-resolved pattern headers without cloning body trees.
+    ///
+    /// # Errors
+    /// Every declaration and written branch receives the ordinary scope, purity
+    /// and allowance checks before execution.
+    pub fn prepare_patterns_borrowed(
+        declarations: impl IntoIterator<
+            Item = PatternFunctionDeclarationRef<'a, Query<C, H>, Kind<C, H>>,
+        >,
+        host: &'h H,
+        budget: &mut Budget,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        Self::prepare_headers(
+            declarations.into_iter().map(DeclarationRef::from),
             host,
             budget,
         )
@@ -1359,27 +1451,9 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         PreparedFunctionValue<'a, Query<C, H>, Kind<C, H>>,
         FunctionError<EvaluationError<H::Error>>,
     > {
-        self.preflight.scope = crate::projection::copy_scope::<C, H>(scope, budget, &entry.range)?;
-        self.preflight.relative = relative;
-        self.preflight.generator_kinds.clear();
-        let mut facts = BTreeMap::new();
-        for (name, kind) in scope {
-            budget_name(name, budget, &entry.range)?;
-            facts.insert(
-                name.clone(),
-                self.preflight
-                    .host
-                    .scalar_types(kind, budget, &entry.range)?
-                    .unwrap_or_else(|| vec![ValueType::Unestablished]),
-            );
-        }
         let saved = std::mem::take(&mut self.preflight.prepared);
         let result = (|| {
-            let types = query_value_types(entry, &facts, &mut self.preflight, budget)?;
-            let kind = match self.preflight.local_kind(entry, budget)? {
-                Some(kind) => kind,
-                None => self.preflight.host.constructed_kind(types),
-            };
+            let kind = self.preflight.entry_kind(entry, scope, relative, budget)?;
             let mut preparation = Preparation::new();
             let value = preparation.resolve(entry, &mut self.preflight, budget)?;
             budget.charge(1, Location::Query(entry.range.clone()))?;
@@ -1393,6 +1467,189 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         })();
         self.preflight.prepared = saved;
         result
+    }
+
+    /// Discover a value's host kind through the same preflight used by prepared
+    /// execution. All written branches, lexical patterns and native arguments
+    /// are checked; actual values still require runtime admission.
+    ///
+    /// # Errors
+    /// Invalid scope, effects, host operations and exhausted allowances fail.
+    pub fn value_kind(
+        &mut self,
+        entry: &ValueExpression<Query<C, H>>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Kind<C, H>, FunctionError<EvaluationError<H::Error>>> {
+        let saved = std::mem::take(&mut self.preflight.prepared);
+        let result = self.preflight.entry_kind(entry, scope, relative, budget);
+        self.preflight.prepared = saved;
+        Ok(result?)
+    }
+
+    /// Prepare one atomic pattern binding. The initializer cannot see its new
+    /// names. Only selected bindings are materialized by [`Self::evaluate_binding`].
+    ///
+    /// # Errors
+    /// Duplicate/shadowed names, invalid patterns, effects and limits fail.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The binding retains the existing host expression and kind types"
+    )]
+    pub fn prepare_binding(
+        &mut self,
+        pattern: &'a Pattern,
+        initializer: &'a ValueExpression<Query<C, H>>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<
+        PreparedPatternBinding<'a, Query<C, H>, Kind<C, H>>,
+        FunctionError<EvaluationError<H::Error>>,
+    > {
+        let value = self.prepare_value(initializer, scope, relative, budget)?;
+        let types = self
+            .preflight
+            .host
+            .scalar_types(value.kind(), budget, &initializer.range)?
+            .unwrap_or_else(|| vec![ValueType::Unestablished]);
+        let facts = crate::value::pattern::facts(pattern, &types, budget)?;
+        let mut names = std::collections::BTreeSet::new();
+        for (name, _) in &facts {
+            budget_name(&name.value, budget, &name.range)?;
+            crate::projection::admit_slots::<&str>(1, budget, &name.range)?;
+            if scope.contains_key(&name.value) || !names.insert(name.value.as_str()) {
+                return Err(
+                    QueryError::query(name.range.clone(), "binding is already defined").into(),
+                );
+            }
+        }
+        self.preflight.pattern_kind(
+            PatternRef::Pattern(pattern),
+            Some(value.kind.clone()),
+            None,
+            budget,
+        )?;
+        let mut bindings = Vec::new();
+        for (name, types) in facts {
+            crate::projection::admit_slots::<(&Located<String>, Kind<C, H>)>(
+                1,
+                budget,
+                &name.range,
+            )?;
+            let kind = self
+                .preflight
+                .scope
+                .get(&name.value)
+                .cloned()
+                .unwrap_or_else(|| self.preflight.host.constructed_kind(types));
+            bindings.push((name, kind));
+        }
+        Ok(PreparedPatternBinding {
+            pattern,
+            value,
+            bindings,
+        })
+    }
+
+    /// Evaluate the initializer once, then match and finish its selected fields.
+    /// A mismatch returns no capture; ignored fields are never copied as output.
+    ///
+    /// # Errors
+    /// A mismatch, host failure, invalid ownership, runtime contract or limit
+    /// fails before the caller can install any names.
+    pub fn evaluate_binding(
+        &self,
+        entry: &PreparedPatternBinding<'a, Query<C, H>, Kind<C, H>>,
+        bindings: &Bindings<H::Value>,
+        relative: Option<&H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<crate::NativeCapture<H::Value>, FunctionError<EvaluationError<H::Error>>> {
+        let value = &entry.value;
+        if !std::sync::Arc::ptr_eq(&self.identity, &value.identity) {
+            return Err(QueryError::query(
+                entry.pattern.range.clone(),
+                "binding belongs to a different prepared function program",
+            )
+            .into());
+        }
+        let mut calls = CallTrace::default();
+        let mut runtime = Runtime {
+            host: self.preflight.host,
+            context,
+            bindings,
+            contracts: &BTreeMap::new(),
+            prepared: &value.prepared,
+            body_prepared: &self.body_prepared,
+            source_function: None,
+            relative,
+            limit: limits.active_depth,
+            calls: &mut calls,
+        };
+        let location = Location::Query(entry.pattern.range.clone());
+        let result = (|| {
+            let value = execution::execute(
+                &value.value,
+                &value.names,
+                &self.bodies,
+                &mut runtime,
+                budget,
+                limits.active_depth,
+                0,
+            )?;
+            execution::Host::inspect_pattern(&mut runtime, &value, budget, &location)?;
+            let selected = crate::value::pattern::bind::<Query<C, H>, _>(
+                PatternRef::Pattern(entry.pattern),
+                value,
+                &mut runtime,
+                budget,
+            )?
+            .ok_or_else(|| {
+                QueryError::query(entry.pattern.range.clone(), "binding pattern did not match")
+            })?;
+            crate::projection::admit_slots::<(String, H::Value)>(
+                selected.len(),
+                budget,
+                &entry.pattern.range,
+            )?;
+            let mut fields = Vec::with_capacity(selected.len());
+            for (name, value) in selected {
+                budget_name(name, budget, &entry.pattern.range)?;
+                fields.push((
+                    name.to_owned(),
+                    runtime.finish_value(value, budget, &location)?,
+                ));
+            }
+            Ok(crate::NativeCapture { fields })
+        })();
+        result.map_err(|error| self.function_error(error, calls))
+    }
+
+    fn function_error(
+        &self,
+        error: EvaluationError<H::Error>,
+        calls: CallTrace,
+    ) -> FunctionError<EvaluationError<H::Error>> {
+        FunctionError {
+            error,
+            omitted_calls: calls.omitted,
+            calls: calls
+                .frames
+                .into_iter()
+                .map(|(id, range)| FunctionCall {
+                    function: self.preflight.declarations[id]
+                        .name
+                        .value
+                        .chars()
+                        .take(64)
+                        .collect(),
+                    range,
+                })
+                .collect(),
+        }
     }
 
     /// Execute a prepared value with current bindings, relative input and one
@@ -1441,23 +1698,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             0,
         )
         .and_then(|value| runtime.finish_value(value, budget, &location));
-        result.map_err(|error| FunctionError {
-            error,
-            omitted_calls: calls.omitted,
-            calls: calls
-                .frames
-                .into_iter()
-                .map(|(id, range)| FunctionCall {
-                    function: self.preflight.declarations[id]
-                        .name
-                        .value
-                        .chars()
-                        .take(64)
-                        .collect(),
-                    range,
-                })
-                .collect(),
-        })
+        result.map_err(|error| self.function_error(error, calls))
     }
 }
 

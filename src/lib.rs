@@ -21,8 +21,9 @@ pub use eval::{
 pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
     FunctionLimits, FunctionParameter, FunctionRequest, PatternFunctionDeclaration,
-    PatternParameter, PreparedFunctionValue, PreparedFunctions, dispose_functions,
-    dispose_pattern_functions, evaluate_functions, evaluate_pattern_functions,
+    PatternFunctionDeclarationRef, PatternParameter, PatternParameterRef, PreparedFunctionValue,
+    PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
+    evaluate_functions, evaluate_pattern_functions,
 };
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
@@ -45,11 +46,14 @@ pub use projection::{
     native_value_types, projection_types,
 };
 pub use reader::{
-    CommonStatement, ReadExpression, ResolvedFunctionSignature, SignatureType,
-    UnresolvedFunctionDeclaration, UnresolvedFunctionParameter, ValueReaderHost,
-    dispose_native_value, dispose_unresolved_functions, read_function_declaration, read_match,
-    read_native_expression, read_paths, read_projection, read_statement_prefix,
-    read_unresolved_function_declaration, read_value_expression,
+    CommonStatement, ReadExpression, ResolvedFunctionSignature, ResolvedPatternFunctionSignature,
+    SignatureType, UnresolvedFunctionDeclaration, UnresolvedFunctionParameter,
+    UnresolvedPatternFunctionDeclaration, UnresolvedPatternFunctionParameter, ValueReaderHost,
+    dispose_native_value, dispose_unresolved_functions, dispose_unresolved_pattern_functions,
+    read_function_declaration, read_match, read_native_expression, read_paths, read_pattern,
+    read_pattern_function_declaration, read_pattern_let, read_projection, read_statement_prefix,
+    read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
+    read_value_expression,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
@@ -61,8 +65,8 @@ pub use value::{
     ValueArguments, ValueBinaryOperator, ValueConstructor, ValueExpression, ValueExpressionKind,
     ValueExtremum, ValueGenerator, ValueKey, ValueKeyType, ValueMatchArm, ValueQueryHost,
     ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value,
-    copy_value_types, count_value, dispose_pattern, evaluate_query_value, evaluate_value,
-    evaluate_value_with_host_validation, free_query_value_names, free_value_names,
+    copy_pattern, copy_value_types, count_value, dispose_pattern, evaluate_query_value,
+    evaluate_value, evaluate_value_with_host_validation, free_query_value_names, free_value_names,
     query_value_types, take_one, validate_value_expression, value_expression_types,
 };
 

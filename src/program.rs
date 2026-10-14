@@ -337,6 +337,12 @@ pub enum Statement<S, O, E> {
         name: Located<String>,
         expression: Expression<S, O, E>,
     },
+    /// Install selected fields of one native capture together. The expression
+    /// runs once; no name is installed until all requested fields are copied.
+    BindFields {
+        names: Vec<Located<String>>,
+        expression: Expression<S, O, E>,
+    },
     Evaluate {
         expression: Expression<S, O, E>,
         implicit_output: Option<E>,
@@ -346,7 +352,9 @@ pub enum Statement<S, O, E> {
 impl<S, O, E> Statement<S, O, E> {
     fn expression(&self) -> &Expression<S, O, E> {
         match self {
-            Self::Bind { expression, .. } | Self::Evaluate { expression, .. } => expression,
+            Self::Bind { expression, .. }
+            | Self::BindFields { expression, .. }
+            | Self::Evaluate { expression, .. } => expression,
         }
     }
 }
@@ -623,10 +631,23 @@ where
     let mut names: BTreeSet<_> = bindings.iter().map(|(name, _)| name).collect();
     for statement in program.statements() {
         validate_expression(statement.value.expression(), &names, budget)?;
-        if let Statement::Bind { name, .. } = &statement.value
-            && !names.insert(&name.value)
-        {
-            return Err(QueryError::query(name.range.clone(), "binding is already defined").into());
+        let bound = match &statement.value {
+            Statement::Bind { name, .. } => std::slice::from_ref(name),
+            Statement::BindFields { names, .. } => names.as_slice(),
+            Statement::Evaluate { .. } => &[],
+        };
+        for name in bound {
+            if matches!(statement.value, Statement::BindFields { .. }) {
+                budget.charge_program_work(
+                    name.value.len() + 1,
+                    Location::Query(name.range.clone()),
+                )?;
+            }
+            if !names.insert(&name.value) {
+                return Err(
+                    QueryError::query(name.range.clone(), "binding is already defined").into(),
+                );
+            }
         }
     }
 
@@ -659,6 +680,31 @@ where
                     .charge_program_work(name.value.len(), Location::Query(name.range.clone()))?;
                 std::sync::Arc::make_mut(&mut bindings.values)
                     .insert(name.value.clone(), std::sync::Arc::new(value));
+            }
+            Statement::BindFields { names, .. } => {
+                let record = host.capture_record(&value).ok_or_else(|| {
+                    QueryError::query(
+                        expression.range.clone(),
+                        "binding requires a native capture record",
+                    )
+                })?;
+                parameter_slots::<(String, H::Value)>(names.len(), budget, &statement.range)?;
+                let mut selected = Vec::with_capacity(names.len());
+                for name in names {
+                    budget.charge_program_work(
+                        name.value.len() + 1,
+                        Location::Query(name.range.clone()),
+                    )?;
+                    let field = record.get(name, budget)?;
+                    selected.push((
+                        name.value.clone(),
+                        host.copy_value(field, context, budget, &name.range)?,
+                    ));
+                }
+                let values = std::sync::Arc::make_mut(&mut bindings.values);
+                for (name, value) in selected {
+                    values.insert(name, std::sync::Arc::new(value));
+                }
             }
             Statement::Evaluate {
                 implicit_output, ..

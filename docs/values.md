@@ -423,8 +423,19 @@ and tuple patterns require explicit host views; native handles keep their
 identity and source coordinates. Typed parameters admit each whole argument
 before matching the complete parameter set. See the
 [embedding guide](embedding-programs.md#destructure-values-and-select-match-arms)
-for the callable types and host hooks. Consumer textual frontends do not yet
-expose these forms.
+for the callable types and host hooks. The common value reader accepts
+`match (subject) { pattern [if guard] => value, ..., _ => fallback }` and
+conditional blocks with immutable local lets. `read_pattern_function_declaration`
+adds destructured typed parameters; the existing name-only reader is unchanged.
+Consumer guides describe which frontend entry points expose these forms.
+
+Patterns spell renaming as `{field: local}`, discards as `_`, and ignored extra
+fields as a final `..`. Quoted static field labels are supported. Tuple values
+use `(first, second)` and remain distinct from arrays. In a function body or
+conditional branch, braces hold local lets and a final expression. A match arm
+can return an ordinary JSON record directly or use a block such as
+`{ let answer = cost + 1; answer }`. Native `match { from ... }` still enumerates
+captures; value matching selects one result.
 
 
 ## Callable loop values

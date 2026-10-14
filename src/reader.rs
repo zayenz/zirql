@@ -144,6 +144,168 @@ pub enum CommonStatement {
     Param(ParameterDeclaration),
 }
 
+/// Read one located pattern in a match or nested-pattern position.
+/// Native structure is inspected only later through explicit host views.
+///
+/// # Errors
+/// Malformed patterns, invalid scalar literals and parse limits are located.
+pub fn read_pattern(
+    reader: &mut ArgumentReader<'_>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<crate::Pattern, QueryError> {
+    PatternReader {
+        reader,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+    }
+    .pattern(0, true)
+}
+
+/// Read contextual `let pattern =`, leaving the initializer to the frontend.
+/// A bare `absent` or `present` remains an ordinary binding name; optional
+/// constructors are recognized in nested patterns and explicit `present(...)`.
+/// Non-declarations leave the cursor and allowance unchanged.
+///
+/// # Errors
+/// Malformed recognized declarations and exhausted allowances are located.
+pub fn read_pattern_let(
+    reader: &mut ArgumentReader<'_>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<Option<crate::Pattern>, QueryError> {
+    let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
+    if !probe.keyword("let")
+        || !probe
+            .remaining()
+            .starts_with(|ch: char| ch.is_whitespace() || ch == '#')
+    {
+        return Ok(None);
+    }
+    probe.skip_whitespace();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut declaration = false;
+    while let Some(ch) = probe.remaining().chars().next() {
+        if quoted {
+            probe.advance(ch.len_utf8())?;
+            if ch == '"' && !escaped {
+                quoted = false;
+            }
+            escaped = ch == '\\' && !escaped;
+            continue;
+        }
+        match ch {
+            '"' => quoted = true,
+            '#' => {
+                probe.skip_whitespace();
+                continue;
+            }
+            '(' | '{' => depth += 1,
+            ')' | '}' if depth > 0 => depth -= 1,
+            ';' | '}' if depth == 0 => break,
+            '=' if depth == 0 => {
+                declaration =
+                    !(probe.remaining().starts_with("==") || probe.remaining().starts_with("=>"));
+                break;
+            }
+            _ => {}
+        }
+        probe.advance(ch.len_utf8())?;
+    }
+    if !declaration {
+        return Ok(None);
+    }
+    reader.keyword("let");
+    let pattern = PatternGuard(Some(
+        PatternReader {
+            reader,
+            budget,
+            nesting: nesting.min(crate::MAX_NESTING),
+        }
+        .pattern(0, false)?,
+    ));
+    reader.expect('=')?;
+    Ok(Some(pattern.into_pattern()))
+}
+
+/// Pattern parameters retain their whole type and original pattern coordinates.
+#[derive(Debug, PartialEq)]
+pub struct UnresolvedPatternFunctionParameter {
+    pub pattern: crate::Pattern,
+    pub declaration: Located<SignatureType>,
+}
+/// Reusable parsed pattern function, with local bindings in its lexical block.
+#[derive(Debug, PartialEq)]
+pub struct UnresolvedPatternFunctionDeclaration<Q> {
+    pub name: Located<String>,
+    pub parameters: Vec<Located<UnresolvedPatternFunctionParameter>>,
+    pub result: Located<SignatureType>,
+    pub value: ValueExpression<Q>,
+}
+/// Request-owned types borrowing the original parameter patterns.
+#[derive(Debug, PartialEq)]
+pub struct ResolvedPatternFunctionSignature<'a, K> {
+    pub name: &'a Located<String>,
+    pub parameters: Vec<Located<crate::PatternParameterRef<'a, K>>>,
+    pub result: Located<crate::DeclaredType<K>>,
+}
+impl<Q> UnresolvedPatternFunctionDeclaration<Q> {
+    /// Resolve small headers against the current host without copying bodies or patterns.
+    ///
+    /// # Errors
+    /// Invalid types, host refusals and exhausted allowances retain type ranges.
+    pub fn resolve_signature<K>(
+        &self,
+        budget: &mut Budget,
+        mut resolve: impl FnMut(
+            Located<&str>,
+            &mut Budget,
+        ) -> Result<crate::DeclaredType<K>, QueryError>,
+    ) -> Result<ResolvedPatternFunctionSignature<'_, K>, QueryError> {
+        let mut parameters = Vec::new();
+        for parameter in &self.parameters {
+            budget.charge_results(1, Location::Query(parameter.range.clone()))?;
+            let p = &parameter.value;
+            parameters.push(Located::new(
+                crate::PatternParameterRef {
+                    pattern: &p.pattern,
+                    declaration: p.declaration.value.resolve(
+                        budget,
+                        &p.declaration.range,
+                        &mut resolve,
+                    )?,
+                },
+                parameter.range.clone(),
+            ));
+        }
+        Ok(ResolvedPatternFunctionSignature {
+            name: &self.name,
+            parameters,
+            result: Located::new(
+                self.result
+                    .value
+                    .resolve(budget, &self.result.range, &mut resolve)?,
+                self.result.range.clone(),
+            ),
+        })
+    }
+
+    /// Borrow the original body with a request-resolved pattern header.
+    pub fn with_signature<'a, K>(
+        &'a self,
+        signature: &'a ResolvedPatternFunctionSignature<'a, K>,
+    ) -> crate::PatternFunctionDeclarationRef<'a, Q, K> {
+        crate::PatternFunctionDeclarationRef {
+            name: signature.name,
+            parameters: &signature.parameters,
+            result: &signature.result,
+            value: &self.value,
+        }
+    }
+}
+
 /// Common type syntax before a host has resolved nominal/native names.
 /// Nested locations and named leaves retain their original query coordinates.
 #[derive(Debug, PartialEq)]
@@ -521,6 +683,146 @@ pub fn dispose_unresolved_functions<S, O, E>(
     }
 }
 
+/// Read a contextual pattern function using the shared signature and value grammar.
+/// Local lets lower to `Block`; the original name-only readers remain available.
+///
+/// # Errors
+/// Malformed declarations, patterns, expressions and limits retain source ranges.
+pub fn read_unresolved_pattern_function_declaration<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<Option<UnresolvedPatternFunctionDeclaration<ReadExpression<H>>>, QueryError> {
+    let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
+    if !probe.keyword("fn") || probe.word().is_err() || !probe.consume('(') {
+        return Ok(None);
+    }
+    let mut parser = Reader {
+        reader,
+        host,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+        locals: Vec::new(),
+    };
+    parser.reader.keyword("fn");
+    let name = parser.name()?;
+    parser.reader.expect('(')?;
+    let mut guard = PatternFunctionGuard(Some(UnresolvedPatternFunctionDeclaration {
+        name,
+        parameters: Vec::new(),
+        result: Located::new(SignatureType::Boolean, 0..0),
+        value: Located::new(K::Literal(V::Absent), 0..0),
+    }));
+    if !parser.reader.consume(')') {
+        loop {
+            let pattern = PatternGuard(Some(parser.pattern(0, false)?));
+            parser.reader.expect(':')?;
+            let declaration = parser.signature(0)?;
+            parser.add_pattern_locals(pattern.pattern())?;
+            parser.slots::<Located<UnresolvedPatternFunctionParameter>>(1)?;
+            let range = pattern.pattern().range.start..declaration.range.end;
+            guard
+                .0
+                .as_mut()
+                .expect("retained function")
+                .parameters
+                .push(Located::new(
+                    UnresolvedPatternFunctionParameter {
+                        pattern: pattern.into_pattern(),
+                        declaration,
+                    },
+                    range,
+                ));
+            if !parser.reader.consume(',') {
+                parser.reader.expect(')')?;
+                break;
+            }
+        }
+    }
+    parser.reader.expect('-')?;
+    parser.reader.expect('>')?;
+    guard.0.as_mut().expect("retained function").result = parser.signature(0)?;
+    guard.0.as_mut().expect("retained function").value = parser.block(0)?;
+    Ok(guard.0.take())
+}
+
+/// Read and resolve a pattern function for a host with request-independent kinds.
+///
+/// # Errors
+/// The unresolved reader's errors and located type-resolution refusals propagate.
+pub fn read_pattern_function_declaration<H: ValueReaderHost, T>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    budget: &mut Budget,
+    nesting: usize,
+    resolve_type: impl FnMut(Located<&str>, &mut Budget) -> Result<crate::DeclaredType<T>, QueryError>,
+) -> Result<Option<crate::PatternFunctionDeclaration<ReadExpression<H>, T>>, QueryError> {
+    let Some(function) =
+        read_unresolved_pattern_function_declaration(reader, host, budget, nesting)?
+    else {
+        return Ok(None);
+    };
+    let mut guard = PatternFunctionGuard(Some(function));
+    let signature = guard
+        .0
+        .as_ref()
+        .expect("retained function")
+        .resolve_signature(budget, resolve_type)?;
+    budget.charge_results(
+        signature.parameters.len(),
+        Location::Query(signature.name.range.clone()),
+    )?;
+    let declarations = signature
+        .parameters
+        .into_iter()
+        .map(|p| p.value.declaration)
+        .collect::<Vec<_>>();
+    let result = signature.result;
+    let function = guard.0.take().expect("retained function");
+    Ok(Some(crate::PatternFunctionDeclaration {
+        name: function.name,
+        parameters: function
+            .parameters
+            .into_iter()
+            .zip(declarations)
+            .map(|(p, declaration)| {
+                Located::new(
+                    crate::PatternParameter {
+                        pattern: p.value.pattern,
+                        declaration,
+                    },
+                    p.range,
+                )
+            })
+            .collect(),
+        result,
+        value: function.value,
+    }))
+}
+
+struct PatternFunctionGuard<S, O, E>(
+    Option<UnresolvedPatternFunctionDeclaration<Expression<S, O, E>>>,
+);
+impl<S, O, E> Drop for PatternFunctionGuard<S, O, E> {
+    fn drop(&mut self) {
+        if let Some(function) = self.0.take() {
+            for parameter in function.parameters {
+                crate::dispose_pattern(parameter.value.pattern);
+            }
+            dispose_native_value(function.value);
+        }
+    }
+}
+/// Release reusable pattern function bodies and patterns iteratively.
+pub fn dispose_unresolved_pattern_functions<S, O, E>(
+    functions: Vec<UnresolvedPatternFunctionDeclaration<Expression<S, O, E>>>,
+) {
+    for function in functions {
+        drop(PatternFunctionGuard(Some(function)));
+    }
+}
+
 /// Read a value using original byte offsets and one parsing allowance.
 /// Native operands remain normalized trees and execute only through the runner.
 /// The caller owns a successful tree; use [`dispose_native_value`] to release
@@ -628,6 +930,175 @@ pub fn read_projection<H: ValueReaderHost>(
     .projection(0)
 }
 
+struct PatternGuard(Option<crate::Pattern>);
+impl PatternGuard {
+    fn pattern(&self) -> &crate::Pattern {
+        self.0.as_ref().expect("retained pattern")
+    }
+    fn into_pattern(mut self) -> crate::Pattern {
+        self.0.take().expect("retained pattern")
+    }
+}
+impl Drop for PatternGuard {
+    fn drop(&mut self) {
+        if let Some(pattern) = self.0.take() {
+            crate::dispose_pattern(pattern);
+        }
+    }
+}
+struct PatternReader<'a, 's, 'b> {
+    reader: &'a mut ArgumentReader<'s>,
+    budget: &'b mut Budget,
+    nesting: usize,
+}
+impl PatternReader<'_, '_, '_> {
+    fn slot(&mut self) -> Result<(), QueryError> {
+        let location = Location::Query(self.reader.position()..self.reader.position());
+        self.budget.charge(1, location.clone())?;
+        self.budget.charge_results(1, location)
+    }
+    fn pattern(&mut self, depth: usize, optional: bool) -> Result<crate::Pattern, QueryError> {
+        use crate::PatternKind as P;
+        if depth >= self.nesting {
+            return Err(self.reader.error("pattern nesting limit exceeded"));
+        }
+        self.reader.skip_whitespace();
+        let start = self.reader.position();
+        self.slot()?;
+        let kind = if self.reader.consume('(') {
+            let mut guard = PatternGuard(Some(Located::new(P::Tuple(Vec::new()), start..start)));
+            if !self.reader.consume(')') {
+                loop {
+                    let child = PatternGuard(Some(self.pattern(depth + 1, true)?));
+                    self.slot()?;
+                    let P::Tuple(children) = &mut guard.0.as_mut().expect("retained tuple").value
+                    else {
+                        unreachable!()
+                    };
+                    children.push(child.into_pattern());
+                    if !self.reader.consume(',') {
+                        self.reader.expect(')')?;
+                        break;
+                    }
+                    if self.reader.consume(')') {
+                        break;
+                    }
+                }
+            }
+            guard.into_pattern().value
+        } else if self.reader.consume('{') {
+            let mut guard = PatternGuard(Some(Located::new(
+                P::Record {
+                    fields: Vec::new(),
+                    ignore_rest: false,
+                },
+                start..start,
+            )));
+            if !self.reader.consume('}') {
+                loop {
+                    self.reader.skip_whitespace();
+                    if self.reader.remaining().starts_with("..") {
+                        self.reader.advance(2)?;
+                        let P::Record { ignore_rest, .. } =
+                            &mut guard.0.as_mut().expect("retained record").value
+                        else {
+                            unreachable!()
+                        };
+                        *ignore_rest = true;
+                        self.reader.expect('}')?;
+                        break;
+                    }
+                    let quoted = self.reader.remaining().starts_with('"');
+                    let label = if quoted {
+                        read_string(self.reader, self.budget)?
+                    } else {
+                        let name = self.reader.word()?;
+                        self.budget
+                            .charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+                        Located::new(name.value.to_owned(), name.range)
+                    };
+                    let child = if self.reader.consume(':') {
+                        self.pattern(depth + 1, true)?
+                    } else {
+                        if quoted {
+                            return Err(self
+                                .reader
+                                .error("quoted pattern fields require `: pattern`"));
+                        }
+                        self.slot()?;
+                        let kind = if label.value == "_" {
+                            P::Wildcard
+                        } else {
+                            P::Name(label.clone())
+                        };
+                        Located::new(kind, label.range.clone())
+                    };
+                    let child = PatternGuard(Some(child));
+                    self.slot()?;
+                    let P::Record { fields, .. } =
+                        &mut guard.0.as_mut().expect("retained record").value
+                    else {
+                        unreachable!()
+                    };
+                    fields.push((label, child.into_pattern()));
+                    if !self.reader.consume(',') {
+                        self.reader.expect('}')?;
+                        break;
+                    }
+                    if self.reader.consume('}') {
+                        break;
+                    }
+                }
+            }
+            guard.into_pattern().value
+        } else if self.reader.remaining().starts_with('"') {
+            P::Literal(V::String(read_string(self.reader, self.budget)?.value))
+        } else if self
+            .reader
+            .remaining()
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-'))
+        {
+            let mut previous = b' ';
+            while let Some(byte) = self.reader.remaining().bytes().next() {
+                if byte.is_ascii_digit()
+                    || matches!(byte, b'e' | b'E')
+                    || (byte == b'.' && !self.reader.remaining().starts_with(".."))
+                    || (matches!(byte, b'+' | b'-')
+                        && (self.reader.position() == start || matches!(previous, b'e' | b'E')))
+                {
+                    self.reader.advance(1)?;
+                    previous = byte;
+                } else {
+                    break;
+                }
+            }
+            let range = start..self.reader.position();
+            self.budget
+                .charge(range.len() + 1, Location::Query(range.clone()))?;
+            P::Literal(number(&self.reader.source()[range.clone()], range)?)
+        } else {
+            let name = self.reader.word()?;
+            self.budget
+                .charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+            match name.value {
+                "_" => P::Wildcard,
+                "true" => P::Literal(V::Boolean(true)),
+                "false" => P::Literal(V::Boolean(false)),
+                "absent" if optional => P::Absent,
+                "present" if self.reader.consume('(') => {
+                    let child = PatternGuard(Some(self.pattern(depth + 1, true)?));
+                    self.reader.expect(')')?;
+                    P::Present(Box::new(child.into_pattern()))
+                }
+                _ => P::Name(Located::new(name.value.to_owned(), name.range)),
+            }
+        };
+        Ok(Located::new(kind, start..self.reader.position()))
+    }
+}
+
 struct Reader<'a, 's, 'h, H> {
     reader: &'a mut ArgumentReader<'s>,
     host: &'h mut H,
@@ -638,13 +1109,180 @@ struct Reader<'a, 's, 'h, H> {
 
 impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
     fn function_value(&mut self) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
-        if let Some(value) =
-            self.host
-                .parse_function_value(self.reader, &self.locals, self.budget, self.nesting)?
-        {
+        self.function_value_at(0)
+    }
+    fn function_value_at(
+        &mut self,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        if let Some(value) = self.host.parse_function_value(
+            self.reader,
+            &self.locals,
+            self.budget,
+            self.nesting.saturating_sub(depth),
+        )? {
             return Ok(value);
         }
-        self.expression(0, 0)
+        self.expression(0, depth)
+    }
+
+    fn pattern(&mut self, depth: usize, optional: bool) -> Result<crate::Pattern, QueryError> {
+        PatternReader {
+            reader: self.reader,
+            budget: self.budget,
+            nesting: self.nesting,
+        }
+        .pattern(depth, optional)
+    }
+    fn add_pattern_locals(&mut self, pattern: &crate::Pattern) -> Result<(), QueryError> {
+        for (name, _) in
+            crate::value::pattern::facts(pattern, &[crate::ValueType::Unestablished], self.budget)?
+        {
+            self.slots::<&str>(1)?;
+            self.locals.push(&self.reader.source()[name.range.clone()]);
+        }
+        Ok(())
+    }
+    fn block(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        self.reader.skip_whitespace();
+        let start = self.reader.position();
+        self.reader.expect('{')?;
+        let locals = self.locals.len();
+        let result = (|| {
+            let mut guard = ValueGuard::new(Located::new(
+                K::Block {
+                    bindings: Vec::new(),
+                    value: Box::new(Located::new(K::Literal(V::Absent), start..start)),
+                },
+                start..start,
+            ));
+            while let Some(pattern) = read_pattern_let(
+                self.reader,
+                self.budget,
+                self.nesting.saturating_sub(depth + 1),
+            )? {
+                let pattern = PatternGuard(Some(pattern));
+                let value = ValueGuard::new(self.function_value_at(depth + 1)?);
+                self.reader.expect(';')?;
+                self.add_pattern_locals(pattern.pattern())?;
+                self.slots::<(crate::Pattern, ValueExpression<ReadExpression<H>>)>(1)?;
+                let K::Block { bindings, .. } = &mut guard.value_mut().value else {
+                    unreachable!()
+                };
+                bindings.push((pattern.into_pattern(), value.into_value()));
+            }
+            let K::Block { bindings, .. } = &guard.value().value else {
+                unreachable!()
+            };
+            let value =
+                ValueGuard::new(self.function_value_at(depth + usize::from(!bindings.is_empty()))?);
+            self.reader.expect('}')?;
+            if bindings.is_empty() {
+                return Ok(value.into_value());
+            }
+            let K::Block {
+                value: final_value, ..
+            } = &mut guard.value_mut().value
+            else {
+                unreachable!()
+            };
+            **final_value = value.into_value();
+            guard.value_mut().range = start..self.reader.position();
+            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+            Ok(guard.into_value())
+        })();
+        self.locals.truncate(locals);
+        result
+    }
+    fn arm_value(
+        &mut self,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        if probe.consume('{') {
+            // A direct JSON record keeps its existing spelling in an arm.
+            let mut record = probe.consume('}');
+            if !record && probe.consume('"') {
+                let mut escaped = false;
+                while let Some(ch) = probe.remaining().chars().next() {
+                    self.budget.charge(
+                        1,
+                        Location::Query(probe.position()..probe.position() + ch.len_utf8()),
+                    )?;
+                    probe.advance(ch.len_utf8())?;
+                    if ch == '"' && !escaped {
+                        record = probe.consume(':');
+                        break;
+                    }
+                    escaped = ch == '\\' && !escaped;
+                }
+            }
+            if !record {
+                return self.block(depth);
+            }
+        }
+        self.function_value_at(depth)
+    }
+    fn value_match(
+        &mut self,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        self.reader.skip_whitespace();
+        let start = self.reader.position();
+        self.reader.keyword("match");
+        self.reader.expect('(')?;
+        let subject = ValueGuard::new(self.function_value_at(depth + 1)?);
+        self.reader.expect(')')?;
+        self.reader.expect('{')?;
+        let mut guard = ValueGuard::new(Located::new(
+            K::ValueMatch {
+                subject: Box::new(subject.into_value()),
+                arms: Vec::new(),
+            },
+            start..start,
+        ));
+        if !self.reader.consume('}') {
+            loop {
+                let pattern = PatternGuard(Some(self.pattern(depth + 1, true)?));
+                let locals = self.locals.len();
+                let result = (|| {
+                    self.add_pattern_locals(pattern.pattern())?;
+                    let condition = if self.reader.keyword("if") {
+                        Some(ValueGuard::new(self.function_value_at(depth + 1)?))
+                    } else {
+                        None
+                    };
+                    self.reader.expect('=')?;
+                    self.reader.expect('>')?;
+                    let value = ValueGuard::new(self.arm_value(depth + 1)?);
+                    self.slots::<crate::ValueMatchArm<ReadExpression<H>>>(1)?;
+                    let K::ValueMatch { arms, .. } = &mut guard.value_mut().value else {
+                        unreachable!()
+                    };
+                    arms.push(crate::ValueMatchArm {
+                        pattern: pattern.into_pattern(),
+                        guard: condition.map(ValueGuard::into_value),
+                        value: value.into_value(),
+                    });
+                    Ok::<_, QueryError>(())
+                })();
+                self.locals.truncate(locals);
+                result?;
+                if !self.reader.consume(',') {
+                    self.reader.expect('}')?;
+                    break;
+                }
+                if self.reader.consume('}') {
+                    break;
+                }
+            }
+        }
+        guard.value_mut().range = start..self.reader.position();
+        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+        Ok(guard.into_value())
     }
 
     fn signature(&mut self, depth: usize) -> Result<Located<SignatureType>, QueryError> {
@@ -731,19 +1369,26 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.depth(depth)?;
         self.reader.skip_whitespace();
         let start = self.reader.position();
-        let mut branches = Vec::new();
+        let mut guard = ValueGuard::new(Located::new(
+            K::Conditional {
+                branches: Vec::new(),
+                otherwise: Box::new(Located::new(K::Literal(V::Absent), start..start)),
+            },
+            start..start,
+        ));
         loop {
             if !self.reader.keyword("if") {
                 return Err(self.reader.error("expected `if`"));
             }
             let condition = ValueGuard::new(self.expression(0, depth + 1)?);
-            self.reader.expect('{')?;
-            let value = ValueGuard::new(self.expression(0, depth + 1)?);
-            self.reader.expect('}')?;
+            let value = ValueGuard::new(self.block(depth + 1)?);
             self.slots::<(
                 ValueExpression<ReadExpression<H>>,
                 ValueExpression<ReadExpression<H>>,
             )>(1)?;
+            let K::Conditional { branches, .. } = &mut guard.value_mut().value else {
+                unreachable!()
+            };
             branches.push((condition.into_value(), value.into_value()));
             if !self.reader.keyword("else") {
                 return Err(self.reader.error("conditional requires a final else"));
@@ -752,26 +1397,18 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 break;
             }
         }
-        let branches = ValueGuard::new(Located::new(
-            K::Conditional {
-                branches,
-                otherwise: Box::new(Located::new(K::Literal(V::Absent), start..start)),
-            },
-            start..start,
-        ));
-        self.reader.expect('{')?;
-        let otherwise = ValueGuard::new(self.expression(0, depth + 1)?);
-        self.reader.expect('}')?;
-        let K::Conditional { branches, .. } = branches.into_value().value else {
+        let otherwise = ValueGuard::new(self.block(depth + 1)?);
+        let K::Conditional {
+            otherwise: final_value,
+            ..
+        } = &mut guard.value_mut().value
+        else {
             unreachable!()
         };
-        self.node(
-            K::Conditional {
-                branches,
-                otherwise: Box::new(otherwise.into_value()),
-            },
-            start..self.reader.position(),
-        )
+        **final_value = otherwise.into_value();
+        guard.value_mut().range = start..self.reader.position();
+        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+        Ok(guard.into_value())
     }
 
     fn location(&self) -> Location {
@@ -809,39 +1446,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         Ok(Located::new(name.value.to_owned(), name.range))
     }
     fn string(&mut self) -> Result<Located<String>, QueryError> {
-        self.reader.skip_whitespace();
-        let start = self.reader.position();
-        self.reader.expect('"')?;
-        let mut escaped = false;
-        while let Some(ch) = self.reader.remaining().chars().next() {
-            self.reader.advance(ch.len_utf8())?;
-            if ch == '"' && !escaped {
-                let range = start..self.reader.position();
-                let text = &self.reader.source()[range.clone()];
-                self.budget.charge(
-                    text.len()
-                        .checked_mul(6)
-                        .ok_or_else(|| self.reader.error("value allocation size overflow"))?,
-                    Location::Query(range.clone()),
-                )?;
-                let normalized = text
-                    .replace('\n', "\\n")
-                    .replace('\r', "\\r")
-                    .replace('\t', "\\t");
-                let value = serde_json::from_str(&normalized).map_err(|_| {
-                    QueryError::query(
-                        range.clone(),
-                        "invalid JSON string escape or Unicode sequence",
-                    )
-                })?;
-                return Ok(Located::new(value, range));
-            }
-            escaped = ch == '\\' && !escaped;
-        }
-        Err(QueryError::query(
-            start..self.reader.position(),
-            "unterminated string",
-        ))
+        read_string(self.reader, self.budget)
     }
     fn word_is(&self, word: &str) -> bool {
         let rest = self.reader.remaining().trim_start();
@@ -924,6 +1529,46 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 "descending needs a literal Boolean",
             )),
         }
+    }
+    fn value_match_call(&mut self) -> Result<bool, QueryError> {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        if !probe.keyword("match") || !probe.consume('(') {
+            return Ok(false);
+        }
+        let mut depth = 1usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        while let Some(ch) = probe.remaining().chars().next() {
+            self.budget.charge(
+                1,
+                Location::Query(probe.position()..probe.position() + ch.len_utf8()),
+            )?;
+            if quoted {
+                if ch == '"' && !escaped {
+                    quoted = false;
+                }
+                escaped = ch == '\\' && !escaped;
+            } else {
+                match ch {
+                    '#' => {
+                        probe.skip_whitespace();
+                        continue;
+                    }
+                    '"' => quoted = true,
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            probe.advance(1)?;
+                            return Ok(probe.consume('{'));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            probe.advance(ch.len_utf8())?;
+        }
+        Ok(false)
     }
     fn match_call(&self) -> bool {
         let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
@@ -1011,6 +1656,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     continue;
                 }
                 let rest = self.reader.remaining();
+                if rest.starts_with("=>") {
+                    break;
+                }
                 let operator = [
                     ("or", 1, Some(B::Or)),
                     ("and", 2, Some(B::And)),
@@ -1162,6 +1810,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             if (!local && !self.host.is_binding("if")) || starts_condition {
                 return self.conditional(depth);
             }
+        }
+        if word.value == "match" && self.value_match_call()? {
+            return self.value_match(depth);
         }
         let ordering_call = self.ordering_call()?;
         if self.match_call()
@@ -1665,7 +2316,37 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 range,
             )
         } else if self.reader.consume('(') {
+            if self.reader.consume(')') {
+                return self.node(K::Tuple(Vec::new()), start..self.reader.position());
+            }
             let value = ValueGuard::new(self.expression(0, depth + 1)?);
+            if self.reader.consume(',') {
+                let mut tuple = ValueGuard::new(Located::new(
+                    K::Tuple(vec![value.into_value()]),
+                    start..start,
+                ));
+                self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                if !self.reader.consume(')') {
+                    loop {
+                        let child = ValueGuard::new(self.expression(0, depth + 1)?);
+                        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                        let K::Tuple(children) = &mut tuple.value_mut().value else {
+                            unreachable!()
+                        };
+                        children.push(child.into_value());
+                        if !self.reader.consume(',') {
+                            self.reader.expect(')')?;
+                            break;
+                        }
+                        if self.reader.consume(')') {
+                            break;
+                        }
+                    }
+                }
+                tuple.value_mut().range = start..self.reader.position();
+                self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                return Ok(tuple.into_value());
+            }
             self.reader.expect(')')?;
             let range = start..self.reader.position();
             if !matches!(value.value().value, K::NativeQuery(_) | K::NativeValue(_)) {
@@ -2213,4 +2894,43 @@ impl<S, O, E, P> Drop for MatchGuard<S, O, E, P> {
             crate::dispose_match(matching);
         }
     }
+}
+
+fn read_string(
+    reader: &mut ArgumentReader<'_>,
+    budget: &mut Budget,
+) -> Result<Located<String>, QueryError> {
+    reader.skip_whitespace();
+    let start = reader.position();
+    reader.expect('"')?;
+    let mut escaped = false;
+    while let Some(ch) = reader.remaining().chars().next() {
+        reader.advance(ch.len_utf8())?;
+        if ch == '"' && !escaped {
+            let range = start..reader.position();
+            let text = &reader.source()[range.clone()];
+            budget.charge(
+                text.len()
+                    .checked_mul(6)
+                    .ok_or_else(|| reader.error("value allocation size overflow"))?,
+                Location::Query(range.clone()),
+            )?;
+            let normalized = text
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t");
+            let value = serde_json::from_str(&normalized).map_err(|_| {
+                QueryError::query(
+                    range.clone(),
+                    "invalid JSON string escape or Unicode sequence",
+                )
+            })?;
+            return Ok(Located::new(value, range));
+        }
+        escaped = ch == '\\' && !escaped;
+    }
+    Err(QueryError::query(
+        start..reader.position(),
+        "unterminated string",
+    ))
 }
