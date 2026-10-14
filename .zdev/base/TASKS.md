@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 28
-- Ready: 4
+- Ready: 3
 - Blocked: 1
-- Done: 23
+- Done: 24
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@
 | [base-022](tasks/022-adapt-zincite-native-projections-and-captures-to-the-shared.md) | Adapt Zincite native projections and captures to the shared language | done | base-021 |
 | [base-023](tasks/023-group-constructed-records-with-stable-typed-keys-in-both-con.md) | Group constructed records with stable typed keys in both consumers | done | base-019 |
 | [base-024](tasks/024-inspect-and-exactly-align-keyed-data-through-shared-value-op.md) | Inspect and exactly align keyed data through shared value operations | done | base-018, base-007 |
-| [base-025](tasks/025-explain-native-connections-with-bounded-shortest-path-witnes.md) | Explain native connections with bounded shortest path witnesses | ready | base-022 |
+| [base-025](tasks/025-explain-native-connections-with-bounded-shortest-path-witnes.md) | Explain native connections with bounded shortest path witnesses | done | base-022 |
 | [base-026](tasks/026-release-native-expression-trees-safely-on-shared-reader-erro.md) | Release native expression trees safely on shared reader errors | done | — |
 | [base-027](tasks/027-give-translated-core-errors-stable-machine-readable-categori.md) | Give translated core errors stable machine-readable categories | ready | — |
 | [base-028](tasks/028-run-core-validation-and-the-declared-rust-version-in-ci.md) | Run core validation and the declared Rust version in CI | ready | — |
