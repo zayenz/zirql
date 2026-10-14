@@ -101,6 +101,16 @@ pub(crate) enum PreparedKind<'a, Q> {
         operator: ValueReducer,
         array: Box<PreparedValue<'a, Q>>,
     },
+    Sort {
+        array: Box<PreparedValue<'a, Q>>,
+        field: Option<&'a Located<String>>,
+        descending: bool,
+    },
+    Extremum {
+        operator: ValueExtremum,
+        array: Box<PreparedValue<'a, Q>>,
+        field: Option<&'a Located<String>>,
+    },
     /// Group positional records by one static field, preserving first-seen keys
     /// and all rows in input order. Keys are homogeneous integers, strings or
     /// members of one nominal type. Results use existing `key`/`items` records.
@@ -336,6 +346,24 @@ impl<'a> Preparation<'a> {
                     operator: *operator,
                     array: Box::new(self.resolve(array, queries, budget)?),
                 },
+                ValueExpressionKind::Sort {
+                    array,
+                    field,
+                    descending,
+                } => PreparedKind::Sort {
+                    array: Box::new(self.resolve(array, queries, budget)?),
+                    field: field.as_ref(),
+                    descending: *descending,
+                },
+                ValueExpressionKind::Extremum {
+                    operator,
+                    array,
+                    field,
+                } => PreparedKind::Extremum {
+                    operator: *operator,
+                    array: Box::new(self.resolve(array, queries, budget)?),
+                    field: field.as_ref(),
+                },
                 ValueExpressionKind::GroupBy { rows, field } => PreparedKind::GroupBy {
                     rows: Box::new(self.resolve(rows, queries, budget)?),
                     field,
@@ -497,6 +525,7 @@ impl RuntimeValue {
                 let mut value = owner.as_ref();
                 for index in path {
                     value = match value {
+                        ConstructedValue::Declared { value, .. } => value,
                         ConstructedValue::Record(fields) => &fields[*index].1,
                         ConstructedValue::Array(values)
                         | ConstructedValue::Tuple(values)
@@ -556,6 +585,27 @@ impl RuntimeValue {
             owner: Arc::clone(owner),
             path: path.clone(),
         })
+    }
+    pub fn into_data(
+        mut self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        while matches!(self.as_ref(), ConstructedValue::Declared { .. }) {
+            budget.charge(1, location.clone())?;
+            match &mut self {
+                Self::Owned(value) => {
+                    let ConstructedValue::Declared { value: inner, .. } =
+                        std::mem::replace(value, ConstructedValue::Absent)
+                    else {
+                        unreachable!()
+                    };
+                    *value = *inner;
+                }
+                Self::Shared { path, .. } => push_metadata(path, 0, budget, location)?,
+            }
+        }
+        Ok(self)
     }
     pub fn child(
         mut self,

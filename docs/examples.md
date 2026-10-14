@@ -126,6 +126,37 @@ to survive as keys.
 All four candidates are charged before filtering, including the rejected
 size 3. The head runs only for the three survivors.
 
+## Order a constructed report
+
+For a positional constructed binding with repeated scores:
+
+```text
+rows = [{"id": "A", "score": 2}, {"id": "B", "score": 1},
+        {"id": "C", "score": 2}, {"id": "D", "score": 1}]
+```
+
+The common value reader accepts these report expressions:
+
+```text
+sort_by(rows, "score")
+→ [{"id": "B", "score": 1}, {"id": "D", "score": 1},
+   {"id": "A", "score": 2}, {"id": "C", "score": 2}]
+
+sort_by(rows, "score", descending=true)
+→ [{"id": "A", "score": 2}, {"id": "C", "score": 2},
+   {"id": "B", "score": 1}, {"id": "D", "score": 1}]
+
+min_by(rows, "score") → {"id": "B", "score": 1}
+max_by(rows, "score") → {"id": "A", "score": 2}
+min([]) default 0     → 0
+```
+
+Both directions preserve input order within ties, and extrema return the first
+tied row. Original rows keep their other fields and nominal identities. Missing
+or absent scores fail; project an explicit `lookup(row, "score") default 0` key
+first when that is the intended policy. See [sorting and optional extrema](values.md#sorting-and-optional-extrema)
+for supported key types, input conversion and the callable Rust forms.
+
 ## Integrate another semantic model
 
 <span id="count-mlir-operations-by-name"></span>

@@ -2700,18 +2700,20 @@ mod projection {
                 .is_err()
             );
         }
-        let functions = [native_function("names", fn_name("xs"))];
-        let mut budget = function_budget();
-        assert!(
-            FunctionRequest::prepare(
-                &functions,
-                &Host,
-                &mut (),
-                &mut budget,
-                FunctionLimits { active_depth: 2 }
-            )
-            .is_err()
-        );
+        for name in ["names", "sort", "sort_by", "min", "max", "min_by", "max_by"] {
+            let functions = [native_function(name, fn_name("xs"))];
+            let mut budget = function_budget();
+            assert!(
+                FunctionRequest::prepare(
+                    &functions,
+                    &Host,
+                    &mut (),
+                    &mut budget,
+                    FunctionLimits { active_depth: 2 }
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn parsed_string_helpers_share_prepared_native_arguments() {
@@ -2759,6 +2761,7 @@ mod projection {
             fn even(n: int) -> bool { if n == 0 { true } else if n == 1 { false } else { odd(n - 1) } }
             fn identity(xs: Subjects) -> Subjects { let alias = xs; alias }
             fn counts(xs: sequence<Subjects>) -> int { sum([identity(item) | count for item in xs]) }
+            fn ordered(xs: Subjects) -> int { native(if (min(sort([2, 1, 2, 1], descending=true)) default 0) == 1 { xs } else { identity(xs) }) | count }
             fn parameter(if: int) -> int { let saved = if; if saved == 0 { if } else { saved } }
             fn local() -> int { let if = 3; if if == 3 { if } else { 0 } }
             fn forwarded(if: Subjects) -> int { native(if true { if } else { if }) | count }
@@ -2859,8 +2862,11 @@ mod projection {
                 .unwrap(),
             Value::Constructed(V::Integer(3))
         );
-        let mut reader =
-            zirql::ArgumentReader::new("forwarded(source) + forwarded_local(source)", 0).unwrap();
+        let mut reader = zirql::ArgumentReader::new(
+            "forwarded(source) + forwarded_local(source) + ordered(source)",
+            0,
+        )
+        .unwrap();
         let forwarded =
             zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
         let forwarded = functions
@@ -2870,7 +2876,7 @@ mod projection {
             functions
                 .evaluate(&forwarded, &bindings, None, &mut (), &mut budget, limits)
                 .unwrap(),
-            Value::Constructed(V::Integer(6))
+            Value::Constructed(V::Integer(9))
         );
         let mut reader=zirql::ArgumentReader::new("fn guarded(if: int, xs: Subjects) -> int { xs | paths(neighbors, to=bound(if), max_depth=0) }",0).unwrap();
         let guarded =
@@ -3637,6 +3643,10 @@ mod projection {
         }
         fn is_stage(&self, name: &str) -> bool {
             Host.is_stage(name)
+                || matches!(
+                    name,
+                    "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
+                )
         }
         fn parse_stage(
             &mut self,
@@ -3645,7 +3655,23 @@ mod projection {
         ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             let name = probe.word()?;
-            if matches!(name.value, "one" | "project") {
+            if matches!(
+                name.value,
+                "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
+            ) {
+                reader.word()?;
+                if name.value.ends_with("_by") {
+                    reader.expect('(')?;
+                    let selector = reader.word()?;
+                    assert_eq!(selector.value, "name");
+                    reader.expect(')')?;
+                }
+                budget.charge(
+                    reader.position() - name.range.start,
+                    Location::Query(name.range),
+                )?;
+                Ok(ExpressionStep::Stage(Stage::Saved("one".into())))
+            } else if matches!(name.value, "one" | "project") {
                 budget.charge(name.value.len(), Location::Query(name.range.clone()))?;
                 reader.advance(probe.position() - reader.position())?;
                 Ok(ExpressionStep::Stage(Stage::Saved(name.value.to_owned())))
@@ -4666,6 +4692,46 @@ mod projection {
                     ]),
                 ]),
             ),
+            (
+                "sort([2, 1, 2, 1])",
+                V::Array(vec![
+                    V::Integer(1),
+                    V::Integer(1),
+                    V::Integer(2),
+                    V::Integer(2),
+                ]),
+            ),
+            (
+                "sort([2, 1, 2, 1], descending=true)",
+                V::Array(vec![
+                    V::Integer(2),
+                    V::Integer(2),
+                    V::Integer(1),
+                    V::Integer(1),
+                ]),
+            ),
+            ("min([2, 1, 2, 1])", V::Integer(1)),
+            ("max([]) default 7", V::Integer(7)),
+            (
+                "sort_by([{\"id\": \"A\", \"score\": 2}, {\"id\": \"B\", \"score\": 1}], \"score\", descending=false)",
+                V::Array(vec![
+                    V::Record(vec![
+                        ("id".into(), V::String("B".into())),
+                        ("score".into(), V::Integer(1)),
+                    ]),
+                    V::Record(vec![
+                        ("id".into(), V::String("A".into())),
+                        ("score".into(), V::Integer(2)),
+                    ]),
+                ]),
+            ),
+            (
+                "min_by([{\"score\": 2}, {\"score\": 1}], \"score\")",
+                V::Record(vec![("score".into(), V::Integer(1))]),
+            ),
+            ("max_by([], \"score\")", V::Absent),
+            ("sort", V::Array(vec![V::String("saved".into())])),
+            ("sort_by(name)", V::Array(vec![V::String("saved".into())])),
             ("f | names | one", V::Array(vec![V::String("saved".into())])),
             (
                 "project(w, {\"n\": w | count})",
@@ -4780,6 +4846,14 @@ mod projection {
             "group_by([], 1)",
             "group_by([])",
             "group_by([], \"n\", \"m\")",
+            "sort()",
+            "sort([], descending=1)",
+            "sort([], descending=true, descending=false)",
+            "sort([], wrong=true)",
+            "sort_by([], 1)",
+            "sort_by([])",
+            "min([], descending=true)",
+            "max_by([], \"score\", true)",
         ] {
             let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
             assert!(

@@ -4,7 +4,7 @@ use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
     Located, Location, MatchClause, NativeMatch, NativePaths, ParameterDeclaration, ParameterType,
     Predicate, PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
-    ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
+    ValueExpression, ValueExpressionKind as K, ValueExtremum, ValueGenerator, ValueReducer,
     ValueUnaryOperator as U,
 };
 
@@ -859,6 +859,72 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             .is_ok_and(|word| word.value == "project" && self.host.is_stage(word.value))
             && probe.consume('(')
     }
+    fn ordering_call(&mut self) -> Result<bool, QueryError> {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let Ok(name) = probe.word() else {
+            return Ok(false);
+        };
+        if !matches!(
+            name.value,
+            "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
+        ) || !probe.consume('(')
+        {
+            return Ok(false);
+        }
+        if matches!(name.value, "sort" | "min" | "max") {
+            return Ok(true);
+        }
+        // Existing native *_by(selector) stages have one argument. Constructed
+        // helpers have a top-level comma, independent of nested value syntax.
+        let mut depth = 0usize;
+        let (mut quoted, mut escaped, mut comment) = (false, false, false);
+        for (offset, ch) in probe.remaining().char_indices() {
+            let position = probe.position() + offset;
+            self.budget
+                .charge(1, Location::Query(position..position + ch.len_utf8()))?;
+            if comment {
+                comment = ch != '\n';
+            } else if quoted {
+                if !escaped && ch == '"' {
+                    quoted = false;
+                }
+                escaped = !escaped && ch == '\\';
+            } else {
+                match ch {
+                    '#' => comment = true,
+                    '"' => quoted = true,
+                    '(' | '[' | '{' => depth += 1,
+                    ')' if depth == 0 => return Ok(false),
+                    ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                    ',' if depth == 0 => return Ok(true),
+                    _ => {}
+                }
+            }
+        }
+        Ok(false)
+    }
+    fn descending_option(&mut self) -> Result<bool, QueryError> {
+        if !self.reader.consume(',') {
+            return Ok(false);
+        }
+        let option = self.name()?;
+        if option.value != "descending" {
+            return Err(QueryError::query(
+                option.range,
+                "expected descending=true or descending=false",
+            ));
+        }
+        self.reader.expect('=')?;
+        let value = self.name()?;
+        match value.value.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(QueryError::query(
+                value.range,
+                "descending needs a literal Boolean",
+            )),
+        }
+    }
     fn match_call(&self) -> bool {
         let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
             .expect("reader byte boundary");
@@ -1097,9 +1163,11 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 return self.conditional(depth);
             }
         }
+        let ordering_call = self.ordering_call()?;
         if self.match_call()
             || self.field_pipeline()
             || (self.host.is_stage(word.value)
+                && !ordering_call
                 && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
             || (word.value == "input" && !local)
             || probe.remaining().starts_with('|')
@@ -1121,6 +1189,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     "lookup"
                         | "has_key"
                         | "group_by"
+                        | "sort"
+                        | "sort_by"
+                        | "min"
+                        | "max"
+                        | "min_by"
+                        | "max_by"
                         | "zip_exact"
                         | "contains"
                         | "starts_with"
@@ -1210,6 +1284,36 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         },
                         left: Box::new(value.into_value()),
                         right: Box::new(right.into_value()),
+                    }
+                } else if matches!(
+                    name.value.as_str(),
+                    "sort" | "sort_by" | "min" | "max" | "min_by" | "max_by"
+                ) {
+                    let field = if name.value.ends_with("_by") {
+                        self.reader.expect(',')?;
+                        Some(self.string()?)
+                    } else {
+                        None
+                    };
+                    if matches!(name.value.as_str(), "sort" | "sort_by") {
+                        let descending = self.descending_option()?;
+                        self.reader.expect(')')?;
+                        K::Sort {
+                            array: Box::new(value.into_value()),
+                            field,
+                            descending,
+                        }
+                    } else {
+                        self.reader.expect(')')?;
+                        K::Extremum {
+                            operator: if name.value.starts_with("min") {
+                                ValueExtremum::Min
+                            } else {
+                                ValueExtremum::Max
+                            },
+                            array: Box::new(value.into_value()),
+                            field,
+                        }
                     }
                 } else if name.value == "group_by" {
                     self.reader.expect(',')?;
@@ -1969,7 +2073,9 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }
             | K::GroupBy { rows: child, .. }
-            | K::Reduce { array: child, .. } => {
+            | K::Reduce { array: child, .. }
+            | K::Sort { array: child, .. }
+            | K::Extremum { array: child, .. } => {
                 pending.push(*child);
                 continue;
             }

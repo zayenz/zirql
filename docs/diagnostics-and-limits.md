@@ -148,6 +148,27 @@ constructed outputs charge before allocation. An annotation adds bounded
 validation/copy nesting, and repeated re-admission does not accumulate wrappers.
 Arithmetic, host and allowance failures retain their responsible locations.
 
+Sorting evaluates its positional input once and inspects each scalar or record
+key once. Field-label inspection, finite/nominal checks and key comparisons pay
+work at the selector range, or the scalar helper's call range. A string comparison
+charges each inspected UTF-8 byte through the first difference or common prefix.
+Sort admits O(n) descriptor, merge and permutation slots before allocation and
+charges descriptor writes on each merge pass and payload swaps. These are
+metadata work units, with no produced-value charge. An owned array is reordered
+in place; materializing a shared input pays the ordinary full output-copy costs.
+Rows and declarations move intact. Descending equality still selects the left
+merge input. Every comparison is fallible and stops immediately on refusal.
+
+Extrema scan all keys once, retaining one winner without allocating sort scratch
+or copying the whole input. An owned winner moves; a shared winner retains its
+owner until a materialization boundary copies that selected value. Propagating a
+container's declaration copies only the selected declaration and, where needed,
+its selected payload. Empty extrema admit one absent value plus any retained
+optional declaration. Inputs remain eager and all written branches keep
+preflight checks. Later bad keys fail; no partial sorted array or winner escapes.
+Host source errors and child failures retain their original locations. Existing
+host limits and data policies remain unchanged.
+
 Grouping materializes its positional rows before scanning them. Row visits,
 selector-label comparisons, typed key comparisons and nominal metadata checks
 charge work. New group records, the outer array, each `items` array and their

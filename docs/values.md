@@ -222,6 +222,60 @@ that same allowance. Host checks still inspect each executed operand before a
 parent consumes it, so entries cannot bypass a host's rectangularity policy.
 Neither helper fills, truncates, reindexes or writes data.
 
+## Sorting and optional extrema
+
+`sort(xs)` sorts a positional array of scalars. `sort_by(rows, "field")` sorts
+records by a static field label. Both are ascending and stable. The optional
+literal option `descending=true` reverses key order and keeps input order for
+equal keys; `descending=false` is the default. Other record fields and stored
+field order are retained, and rows may have different schemas.
+
+`min(xs)` and `max(xs)` return one original scalar. `min_by(rows, "field")` and
+`max_by(rows, "field")` return one original record. Empty input returns absence;
+equal keys select the first input value. Empty sorting returns an empty array.
+Use an explicit default when absence needs a replacement:
+
+```text
+sort([2, 1, 2, 1])                  → [1, 1, 2, 2]
+sort([2, 1], descending=true)       → [2, 1]
+min([]) default 0                  → 0
+max([2, 1, 2, 1])                  → 2
+```
+
+Keys must be present and homogeneous: integers, finite floats, strings, or
+members of one nominal type. Integers and floats do not mix. Strings use exact
+lexicographic order without normalization. Nominal members use their declared
+order and retain their identity. Booleans and native handles need an explicit
+supported projection before ordering. Keyed arrays need explicit conversion,
+for example `[cell.value for cell in entries(a)]`, to choose positional values.
+
+A missing field, absent key or incompatible key fails at the selector range;
+scalar key failures use the call range. Later bad keys still fail an extremum
+request even after an earlier winner. Known incompatible kinds fail preflight
+in skipped branches; missing data and presence are checked when executed. To
+choose a default key, first project records with a field such as
+`lookup(row, "score") default 0`, then order that field.
+
+The Rust forms are `ValueExpressionKind::Sort { array, field, descending }` and
+`Extremum { operator, array, field }`, with `ValueExtremum::Min` or `Max` and an
+optional located static field. They use the same value, native-value and
+prepared-function APIs. Result facts describe possible reordered elements,
+not the input positions; selected values keep their declarations. These are
+constructed-value calls. Host-native stages such as bare `sort` or a host's
+single-selector `sort_by(name)` keep their domain behavior.
+
+Sorting extracts each key once and uses a fallible stable merge with O(n log n)
+key comparisons and O(n) temporary descriptors/positions. Comparisons and
+scratch admission share the request budget. Payloads move by the resulting
+permutation; shared input needs one owned output copy. Extrema instead scan
+once and retain only the selected row/key, borrowing shared input and copying
+only the selected result when an owned boundary requires it. See
+[resource charges](diagnostics-and-limits.md#what-uses-the-allowance).
+
+These helpers are available in the development Git revision; published
+alpha.5 predates them. Host data-edit whitelists and serialization policies
+remain separate from report construction.
+
 ## Array summaries and requirements
 
 `ValueExpressionKind::Reduce` selects a closed `ValueReducer`: `Length`, `Sum`,

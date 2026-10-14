@@ -6,10 +6,10 @@ use super::{
     QueryError, RuntimeValue, SetElementType, ValueBinaryOperator, ValueConstructor, ValueKey,
     ValueQueryHost, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
     constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, declaration,
-    entries, equal_keys, error, expose, finish_keyed, group_by, insert_set, integer, integer_range,
-    key_positions, key_set_type, key_value, metadata_vec, optional_access, push_metadata,
-    record_declaration, reduce_ref, scalar, select_field, source_axis, string_match_ref, sum,
-    take_one, take_position, unary, underlying, value_keys, zip_exact,
+    entries, equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set,
+    integer, integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
+    push_metadata, record_declaration, reduce_ref, scalar, select_field, sort_value, source_axis,
+    string_match_ref, sum, take_one, take_position, unary, underlying, value_keys, zip_exact,
 };
 use std::rc::Rc;
 
@@ -521,6 +521,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                                     | ValueBinaryOperator::EndsWith,
                                                 ..
                                             }
+                                            | PreparedKind::Extremum { .. }
                                     );
                                     let value = if values.is_empty()
                                         && matches!(expression.value, PreparedKind::Range { .. })
@@ -1326,6 +1327,8 @@ fn operands<'a, Q>(
         | PreparedKind::Field { value, .. }
         | PreparedKind::TupleAccess { value, .. }
         | PreparedKind::Reduce { array: value, .. }
+        | PreparedKind::Sort { array: value, .. }
+        | PreparedKind::Extremum { array: value, .. }
         | PreparedKind::GroupBy { rows: value, .. } => result.push(value),
         _ => unreachable!("special control has no ordinary operands"),
     }
@@ -1427,6 +1430,74 @@ fn apply<'a, Q, N, K>(
             budget,
             &location,
         )?)));
+    }
+    if let PreparedKind::Extremum {
+        operator, field, ..
+    } = &expression.value
+    {
+        let value = values.pop().expect("extremum operand");
+        let position = extremum_position(
+            *operator,
+            value.scalar(&location)?,
+            *field,
+            budget,
+            &location,
+        )?;
+        let Data::Constructed(data) = value.data else {
+            unreachable!("scalar checked")
+        };
+        let contract = value.contract.and_then(|mut contract| {
+            while let DeclaredType::Optional(child) = contract {
+                contract = child;
+            }
+            match contract {
+                DeclaredType::Array(child) | DeclaredType::Sequence(child) => Some(child.as_ref()),
+                _ => None,
+            }
+        });
+        let child_declaration = match declaration(data.as_ref()).map(underlying) {
+            Some(DeclaredType::Array(child) | DeclaredType::Sequence(child)) => {
+                Some(copy_declaration(child, budget, &location)?)
+            }
+            _ => None,
+        };
+        let Some(position) = position else {
+            let mut absent = scalar(ConstructedValue::Absent, budget, &location)?;
+            let declaration = match child_declaration {
+                Some(child) => Some(child),
+                None => contract
+                    .map(|child| {
+                        crate::runtime_types::constructed_declaration(child, budget, &location)
+                    })
+                    .transpose()?,
+            };
+            if let Some(declaration) = declaration {
+                absent = annotate(
+                    absent,
+                    DeclaredType::Optional(Box::new(declaration)),
+                    budget,
+                    &location,
+                )?;
+            }
+            return Ok(Value::constructed(RuntimeValue::Owned(absent)));
+        };
+        let selected = data
+            .into_data(budget, &location)?
+            .child(position, budget, &location)?;
+        let selected = if let Some(declaration) = child_declaration {
+            RuntimeValue::Owned(annotate(
+                selected.materialize(budget, &location)?,
+                declaration,
+                budget,
+                &location,
+            )?)
+        } else {
+            selected
+        };
+        return Ok(Value {
+            data: Data::Constructed(selected),
+            contract,
+        });
     }
     let mut arguments = metadata_vec(values.len(), budget, &location)?;
     for value in values {
@@ -1570,6 +1641,9 @@ fn apply<'a, Q, N, K>(
         PreparedKind::Entries(_) => entries(next(), budget, &location)?,
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
         PreparedKind::GroupBy { field, .. } => group_by(next(), field, budget, &location)?,
+        PreparedKind::Sort {
+            field, descending, ..
+        } => sort_value(next(), *field, *descending, budget, &location)?,
         PreparedKind::Range { .. } => integer_range(
             integer(next(), &location)?,
             integer(next(), &location)?,

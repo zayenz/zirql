@@ -3274,3 +3274,352 @@ fn exact_string_matching_checks_types_and_admits_scans() {
         V::Boolean(true)
     );
 }
+
+fn sorting(array: E, field: Option<&str>, descending: bool) -> E {
+    Located::new(
+        K::Sort {
+            array: Box::new(array),
+            field: field.map(|field| Located::new(field.into(), 5..12)),
+            descending,
+        },
+        2..40,
+    )
+}
+fn extremum(operator: zirql::ValueExtremum, array: E, field: Option<&str>) -> E {
+    Located::new(
+        K::Extremum {
+            operator,
+            array: Box::new(array),
+            field: field.map(|field| Located::new(field.into(), 5..12)),
+        },
+        2..40,
+    )
+}
+
+#[test]
+fn report_ordering_keeps_original_rows_stable_ties_and_optional_extrema() {
+    use zirql::ValueExtremum::{Max, Min};
+    let row = |id: &str, score| {
+        V::Record(vec![
+            ("id".into(), V::String(id.into())),
+            ("score".into(), V::Integer(score)),
+            (
+                "payload".into(),
+                V::Tuple(vec![V::Member(member(9, 3)), V::Absent]),
+            ),
+        ])
+    };
+    let rows = V::Array(vec![row("A", 2), row("B", 1), row("C", 2), row("D", 1)]);
+    let types = BTreeMap::from([(
+        "rows".into(),
+        constructed_value_type(&rows, &mut ample(), Location::Source(0..4)).unwrap(),
+    )]);
+    let ordered = sorting(name("rows"), Some("score"), false);
+    validate_value_expression(&ordered, &types, &mut ample()).unwrap();
+    assert_eq!(
+        free_value_names(&ordered, &types, &mut ample()).unwrap(),
+        vec![Located::new("rows".into(), 0..1)]
+    );
+    let facts = value_expression_types(&ordered, &types, &mut ample()).unwrap();
+    let ValueType::Array(ArrayType::Elements(elements)) = &facts[0] else {
+        panic!("reordered element facts")
+    };
+    let ValueType::Array(ArrayType::Positions(original)) = &types["rows"] else {
+        panic!("input positions")
+    };
+    assert_eq!(elements, original);
+    let report = record(vec![
+        ("ascending", ordered),
+        ("descending", sorting(name("rows"), Some("score"), true)),
+        ("min", extremum(Min, name("rows"), Some("score"))),
+        ("max", extremum(Max, name("rows"), Some("score"))),
+        (
+            "scalar",
+            sorting(
+                e(K::Array(vec![int(2), int(1), int(2), int(1)])),
+                None,
+                false,
+            ),
+        ),
+        ("empty_sort", sorting(e(K::Array(vec![])), None, true)),
+        ("empty_min", extremum(Min, e(K::Array(vec![])), None)),
+        (
+            "empty_max",
+            default(extremum(Max, e(K::Array(vec![])), Some("score")), int(7)),
+        ),
+    ]);
+    let bindings = Bindings::new([(Located::new("rows".into(), 0..0), rows)]).unwrap();
+    let result = evaluate_value(&report, &bindings, &mut ample()).unwrap();
+    assert_eq!(
+        result,
+        V::Record(vec![
+            (
+                "ascending".into(),
+                V::Array(vec![row("B", 1), row("D", 1), row("A", 2), row("C", 2)])
+            ),
+            (
+                "descending".into(),
+                V::Array(vec![row("A", 2), row("C", 2), row("B", 1), row("D", 1)])
+            ),
+            ("min".into(), row("B", 1)),
+            ("max".into(), row("A", 2)),
+            (
+                "scalar".into(),
+                V::Array(vec![
+                    V::Integer(1),
+                    V::Integer(1),
+                    V::Integer(2),
+                    V::Integer(2)
+                ])
+            ),
+            ("empty_sort".into(), V::Array(vec![])),
+            ("empty_min".into(), V::Absent),
+            ("empty_max".into(), V::Integer(7)),
+        ])
+    );
+    assert!(
+        matches!(bindings.get("rows", 0..0).unwrap().data(), V::Array(rows) if rows[0] == row("A", 2))
+    );
+}
+
+#[test]
+fn ordering_uses_exact_scalar_types_nominal_order_and_retained_declarations() {
+    use zirql::ValueExtremum::{Max, Min};
+    assert_eq!(
+        evaluate(&sorting(
+            e(K::Array(vec![
+                text("é"),
+                text("a"),
+                text("A"),
+                text("a\u{301}")
+            ])),
+            None,
+            false
+        ))
+        .unwrap(),
+        V::Array(vec![
+            V::String("A".into()),
+            V::String("a".into()),
+            V::String("a\u{301}".into()),
+            V::String("é".into())
+        ])
+    );
+    assert_eq!(
+        evaluate(&sorting(
+            e(K::Array(vec![
+                literal(V::Float(3.5)),
+                literal(V::Float(-0.0)),
+                literal(V::Float(0.0)),
+                literal(V::Float(-2.5))
+            ])),
+            None,
+            true
+        ))
+        .unwrap(),
+        V::Array(vec![
+            V::Float(3.5),
+            V::Float(-0.0),
+            V::Float(0.0),
+            V::Float(-2.5)
+        ])
+    );
+    assert_eq!(
+        evaluate(&sorting(
+            e(K::Array(vec![
+                member_expression(30, 2),
+                member_expression(10, 0),
+                member_expression(20, 1)
+            ])),
+            None,
+            false
+        ))
+        .unwrap(),
+        V::Array(vec![
+            V::Member(member(10, 0)),
+            V::Member(member(20, 1)),
+            V::Member(member(30, 2))
+        ])
+    );
+    assert_eq!(
+        evaluate(&extremum(
+            Max,
+            e(K::Array(vec![text("A"), text("é")])),
+            None
+        ))
+        .unwrap(),
+        V::String("é".into())
+    );
+    assert_eq!(
+        evaluate(&extremum(
+            Min,
+            e(K::Array(vec![
+                literal(V::Float(3.5)),
+                literal(V::Float(-2.5))
+            ])),
+            None
+        ))
+        .unwrap(),
+        V::Float(-2.5)
+    );
+    let schema = D::Record(vec![
+        ("score".into(), D::Integer),
+        ("caption".into(), D::Optional(Box::new(D::String))),
+    ]);
+    let rows = declared(
+        V::Array(vec![
+            V::Record(vec![("score".into(), V::Integer(2))]),
+            V::Record(vec![("score".into(), V::Integer(1))]),
+        ]),
+        D::Sequence(Box::new(schema.clone())),
+    );
+    let bindings = Bindings::new([(Located::new("rows".into(), 0..0), rows)]).unwrap();
+    let selected = evaluate_value(
+        &extremum(Min, name("rows"), Some("score")),
+        &bindings,
+        &mut ample(),
+    )
+    .unwrap();
+    assert!(matches!(&selected, V::Declared { declaration, .. } if declaration == &schema));
+    let sorted = evaluate_value(
+        &sorting(name("rows"), Some("score"), false),
+        &bindings,
+        &mut ample(),
+    )
+    .unwrap();
+    assert!(
+        matches!(&sorted, V::Declared { declaration: D::Sequence(child), .. } if child.as_ref() == &schema)
+    );
+    let expression = lookup(
+        default(
+            extremum(Min, name("rows"), Some("score")),
+            literal(declared(
+                V::Record(vec![("score".into(), V::Integer(0))]),
+                schema,
+            )),
+        ),
+        text("caption"),
+    );
+    let omitted = evaluate_value(&expression, &bindings, &mut ample()).unwrap();
+    assert_eq!(omitted.data(), &V::Absent);
+    admit_constructed(
+        &omitted,
+        &D::<()>::Optional(Box::new(D::String)),
+        &mut ample(),
+        Location::Query(0..1),
+    )
+    .unwrap();
+    let empty = literal(declared(
+        V::Array(vec![]),
+        D::Sequence(Box::new(D::Integer)),
+    ));
+    let selected = evaluate(&extremum(Max, empty, None)).unwrap();
+    assert!(
+        matches!(selected, V::Declared { declaration: D::Optional(child), value } if *child == D::Integer && *value == V::Absent)
+    );
+    let projected = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("row")],
+            source: e(K::Array(vec![
+                record(vec![]),
+                record(vec![("score", int(2))]),
+            ])),
+            filter: None,
+        })],
+        head: Box::new(record(vec![(
+            "score",
+            default(lookup(name("row"), text("score")), int(0)),
+        )])),
+    });
+    assert_eq!(
+        evaluate(&extremum(Min, projected, Some("score"))).unwrap(),
+        V::Record(vec![("score".into(), V::Integer(0))])
+    );
+}
+
+#[test]
+fn ordering_refuses_later_bad_keys_and_known_incompatible_skipped_types_at_the_selector() {
+    use zirql::ValueExtremum::Min;
+    for bad in [
+        record(vec![]),
+        record(vec![("score", literal(V::Absent))]),
+        record(vec![("score", text("1"))]),
+    ] {
+        let expression = extremum(
+            Min,
+            e(K::Array(vec![record(vec![("score", int(1))]), bad])),
+            Some("score"),
+        );
+        assert_eq!(
+            evaluate(&expression).unwrap_err().location,
+            Location::Query(5..12)
+        );
+    }
+    let missing = sorting(e(K::Array(vec![record(vec![])])), Some("score"), false);
+    assert_eq!(evaluate(&choose(missing)).unwrap(), V::Integer(7));
+    let incompatible = sorting(
+        e(K::Array(vec![record(vec![(
+            "score",
+            literal(V::Boolean(true)),
+        )])])),
+        Some("score"),
+        false,
+    );
+    assert_eq!(
+        evaluate(&choose(incompatible)).unwrap_err().location,
+        Location::Query(5..12)
+    );
+    let mut foreign = member(10, 0);
+    foreign.type_id = NominalTypeId(8);
+    assert!(
+        evaluate(&sorting(
+            e(K::Array(vec![
+                member_expression(10, 0),
+                literal(V::Member(foreign))
+            ])),
+            None,
+            false
+        ))
+        .is_err()
+    );
+    assert!(
+        evaluate(&sorting(
+            e(K::Array(vec![int(1), literal(V::Float(2.0))])),
+            None,
+            false
+        ))
+        .is_err()
+    );
+    assert!(
+        evaluate(&extremum(
+            Min,
+            literal(V::Array(vec![V::Float(f64::INFINITY)])),
+            None
+        ))
+        .is_err()
+    );
+    let expression = sorting(
+        e(K::Array(vec![
+            text("common-prefix-b"),
+            text("common-prefix-a"),
+        ])),
+        None,
+        false,
+    );
+    let mut allowance = ample();
+    let failure = zirql::evaluate_value_with_host_validation(
+        &expression,
+        &Bindings::default(),
+        &mut allowance,
+        |value, budget, location| {
+            if matches!(value, V::Array(_)) {
+                // A host scan can leave too little allowance for sort scratch.
+                budget.charge(budget.remaining_work().saturating_sub(2), location.clone())?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(failure.category, zirql::QueryErrorCategory::WorkLimit);
+    assert_eq!(failure.location, Location::Query(2..40));
+}
