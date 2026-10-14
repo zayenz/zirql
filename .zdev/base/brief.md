@@ -163,8 +163,9 @@ required `param name: type` declarations with `int`, `string` or `bool` types,
 eager array reducers and conditional `require`. Initially `require` accepts a
 literal string message; it preflights all operands and evaluates its value only
 after a true condition. It includes shared `match` clauses (`from`, `bind`,
-`where`) returning native capture records. Named result schemas, parameter
-defaults, arbitrary functions and lazy generator reduction remain deferred.
+`where`) returning native capture records. Named result schemas, parameter defaults, function values/closures and lazy
+generator reduction remain deferred. Typed named pure functions are implemented
+by base-033 through base-035.
 The user approved this exact bundle on 2026-10-13. Tasks base-018 through
 base-025 record the implemented scope. These forms are available through the
 pinned development Git dependency; the published alpha.5 predates them.
@@ -474,17 +475,18 @@ publication or consumer distribution, follow the development and release
 policy in User decisions.
 
 The approved extension bundle records the selected concrete language choices.
-Result schemas and broader function syntax remain future
-design work. Shared base ownership and short command-line usage are settled.
+Named result schemas, function values and closures remain future design work.
+Shared base ownership and short command-line usage are settled.
 
 
-## Next language design: types, absence and functions
+## Types, absence, functions and bounded execution
 
-On 2026-10-14, the user endorsed further language design covering the three
-review suggestions below, host-defined domain types, optional values with a
-MiniZinc-style default operator, and user-defined recursive functions. This
-section records the design for the requested next task bundle. Approval of that
-bundle does not extend the completion conditions of the current adoption work.
+On 2026-10-14, the user selected runtime type contracts, absence/defaults, typed
+pure query functions, stable ordering and exact string helpers. Tasks base-030
+through base-037 implement that accepted bundle. The design discussion below
+records its original motivation; the accepted task-bundle controls and current
+guides own the implemented details. Base-038 records current bounded
+measurements, including unresolved small-query regressions.
 
 ### Confirmed direction
 
@@ -503,7 +505,7 @@ bundle does not extend the completion conditions of the current adoption work.
 - Include small shared string operations: contains, starts_with and ends_with
   for projected names.
 
-### Proposed contract for discussion
+### Original design discussion
 
 Use existing scalar and collection concepts, structural report records and
 nominal host types. For example, Zirium can describe operations and SSA values;
@@ -542,12 +544,11 @@ limit without overflowing the Rust stack, including on error and cleanup paths.
 No termination proof is required. First-class functions, closures, polymorphic
 inference and module loading are outside this initial proposal.
 
-### Remaining choices and sequence
+### Original choices and sequence
 
-The task-bundle choices below make the remaining surface and behavior decisions
-reviewable together. Extrema's optional empty result and first-in-input tie
-selection and mandatory tail recursion are user decisions. Other choices below
-are conservative defaults proposed for this bundle, not implemented behavior.
+The choices in the accepted controls below were selected and implemented. This
+subsection retains the original sequence; it is not an outstanding approval
+gate.
 
 Refine host/runtime type contracts and optional values together, then typed
 functions. Sorting/extrema and string helpers remain independently useful work;
@@ -557,19 +558,20 @@ concrete function example per consumer and focused acceptance cases for absence,
 wrong runtime types, recursive limits, stable ties and string operations.
 
 
-### Execution model and efficiency proposal
+### Execution model and measured acceptance
 
-On 2026-10-14, the user requested reasonable computational efficiency and a
-well-considered execution model alongside the language additions. The following
-is the proposed implementation direction, subject to the language choices above
-and focused measurements. It does not authorize a runtime rewrite.
+The shared evaluator uses invocation-local preparation, slots, shared immutable
+owners and explicit call/continuation frames. Compatible tail calls reuse their
+activation; non-tail calls consume active depth, with separate expression-nesting
+and native-reentry guards. Runtime contracts, eager collections, lazy selected
+branches, native ownership and cumulative budgets retain the accepted controls
+below.
 
-The current implementation supplies concrete starting points: `value.rs`
-preflights expressions before running them, `projection.rs` invokes that path
-again for each projected field and subject, local value reads scan names and
-copy constructed values, and `Bindings::with_local` copies the outer name map
-while sharing its native values. Function calls must not multiply these costs.
-These are source observations, not measured performance regressions.
+The following design rationale predates implementation; references to per-row
+reanalysis and repeated outer-map/payload copies describe the old starting point.
+Base-032/base-033 retain their original measurements. Base-038's completed-source
+comparison in [the computation guide](../../docs/computation.md) records current
+cases, status changes, observer overhead and limitations.
 
 #### Prepare once, execute with runtime contracts
 
@@ -779,6 +781,13 @@ memory follows live work rather than all completed calls. These are measurement
 questions, not permanent tests of internal call counts. Retain focused public
 behavior checks for runtime type errors, defaults, eager failure ordering,
 recursive limits/cleanup, tie order and host identity.
+
+Current acceptance retains a focused follow-up for the observed function-free
+small-report and tiny eight-read binding regressions. Investigate preparation
+and continuation overhead while preserving one evaluator, actual-value
+contracts, branch demand, owned results, source locations and unchanged
+allowances. Validate with matched paired outputs, phase times/spreads and peak
+memory; the observed ratios are not clean-allocator production timings.
 
 
 ### Selected contract for the next task bundle

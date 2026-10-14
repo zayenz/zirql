@@ -26,7 +26,7 @@ export default defineConfig({
     customCss: ['./src/styles/custom.css'],
     social: [{ icon: 'github', label: 'Source on GitHub', href: 'https://github.com/zayenz/zirql' }],
     sidebar: [
-      { label: 'Language reference', items: ['guides/shared-concepts', 'guides/native-programs', 'guides/values', 'guides/diagnostics-and-limits'] },
+      { label: 'Language reference', items: ['guides/shared-concepts', 'guides/native-programs', 'guides/values', 'guides/diagnostics-and-limits', 'guides/computation'] },
       { label: 'Examples', items: ['guides/examples', 'guides/language-direction'] },
       { label: 'Embedding in Rust', items: ['guides/getting-started', 'guides/host-integration', 'guides/embedding-programs', 'guides/semantic-models'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql' },

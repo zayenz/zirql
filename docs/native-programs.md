@@ -247,6 +247,13 @@ still ends in a located allowance error. Native results retain their host handle
 and coordinates, and functions cannot edit or emit.
 
 See [constructing functions in Rust](embedding-programs.md#call-typed-pure-functions)
-for the callable path. Consumer textual declarations and conditionals are later
-integrations; these Rust APIs are absent from published alpha.5. Function values,
+for the callable path. Both consumer frontends expose typed declarations and
+conditionals with their own native type names and expression syntax. These APIs
+and frontend forms are absent from published alpha.5. Function values,
 closures, imports and user overloads are outside this interface.
+
+## Execution costs
+
+[Execution and measured costs](computation.md) connects runtime contracts,
+preparation reuse, tail-call limits and owned results to the bounded measurement
+cases. It also links complete programs for both host syntaxes.

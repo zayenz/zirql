@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 46
-- Ready: 4
+- Ready: 3
 - Blocked: 5
-- Done: 37
+- Done: 38
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -46,7 +46,7 @@
 | [base-035](tasks/035-expose-typed-recursive-functions-in-zincite-programs.md) | Expose typed recursive functions in Zincite programs | done | base-033, base-031 |
 | [base-036](tasks/036-sort-constructed-reports-and-select-optional-extrema.md) | Sort constructed reports and select optional extrema | done | base-031 |
 | [base-037](tasks/037-share-exact-string-matching-for-projected-names.md) | Share exact string matching for projected names | done | — |
-| [base-038](tasks/038-measure-and-document-the-completed-computation-model.md) | Measure and document the completed computation model | ready | base-034, base-035, base-036, base-037 |
+| [base-038](tasks/038-measure-and-document-the-completed-computation-model.md) | Measure and document the completed computation model | done | base-034, base-035, base-036, base-037 |
 | [base-039](tasks/039-bind-patterns-and-select-guarded-value-matches-in-the-shared.md) | Bind patterns and select guarded value matches in the shared runtime | ready | base-033, base-031 |
 | [base-040](tasks/040-execute-expression-loops-with-simultaneous-immutable-state-t.md) | Execute expression loops with simultaneous immutable state transitions | blocked | base-039 |
 | [base-041](tasks/041-fold-and-scan-eager-sequences-with-named-pure-functions.md) | Fold and scan eager sequences with named pure functions | ready | base-033 |

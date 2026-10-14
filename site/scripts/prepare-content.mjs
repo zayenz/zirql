@@ -7,7 +7,7 @@ const root = resolve(site, '..');
 const guides = [
   'getting-started', 'shared-concepts', 'native-programs', 'values',
   'host-integration', 'embedding-programs', 'diagnostics-and-limits', 'examples', 'language-direction',
-  'semantic-models',
+  'semantic-models', 'computation',
 ];
 const output = resolve(site, 'src/content/docs');
 await mkdir(resolve(output, 'guides'), { recursive: true });
