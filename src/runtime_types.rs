@@ -6,7 +6,8 @@ use crate::{
 };
 
 /// An opt-in interface contract, distinct from discovered [`ValueType`] facts.
-/// Sequences and keyed cells are homogeneous; tuples have fixed positions and
+/// Arrays admit positional or keyed storage with homogeneous elements; sequences
+/// and keyed declarations restrict that storage. Tuples have fixed positions and
 /// records have the declared labels in any stored order, with optional fields
 /// allowed to be omitted. Keyed axes
 /// remain runtime facts. Sets use the existing supported scalar identities.
@@ -19,6 +20,8 @@ pub enum DeclaredType<K> {
     Float,
     String,
     Member(NominalTypeId),
+    /// Homogeneous elements in either positional or keyed storage.
+    Array(Box<Self>),
     Sequence(Box<Self>),
     Tuple(Vec<Self>),
     Record(Vec<(String, Self)>),
@@ -235,6 +238,7 @@ fn reject_native(
                 )?);
             }
             DeclaredType::Optional(child)
+            | DeclaredType::Array(child)
             | DeclaredType::Sequence(child)
             | DeclaredType::Keyed(child) => reject_native(child, budget, location)?,
             DeclaredType::Tuple(children) => {
@@ -263,6 +267,9 @@ pub(crate) fn copy_declaration<K: Clone>(
         Ok(match declaration {
             DeclaredType::Optional(child) => {
                 DeclaredType::Optional(Box::new(copy_declaration(child, budget, location)?))
+            }
+            DeclaredType::Array(child) => {
+                DeclaredType::Array(Box::new(copy_declaration(child, budget, location)?))
             }
             DeclaredType::Sequence(child) => {
                 DeclaredType::Sequence(Box::new(copy_declaration(child, budget, location)?))
@@ -313,7 +320,10 @@ pub(crate) fn compatible_declarations<K>(
             | (DeclaredType::String, DeclaredType::String) => true,
             (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
             (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
-            (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
+            (DeclaredType::Array(a), DeclaredType::Array(b))
+            | (DeclaredType::Array(a), DeclaredType::Sequence(b) | DeclaredType::Keyed(b))
+            | (DeclaredType::Sequence(a) | DeclaredType::Keyed(a), DeclaredType::Array(b))
+            | (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
             | (DeclaredType::Keyed(a), DeclaredType::Keyed(b)) => {
                 compatible_declarations(a, b, budget, location)?
             }
@@ -406,6 +416,7 @@ fn validate_declaration<K>(
         budget.charge(1, location.clone())?;
         match expected {
             DeclaredType::Optional(element)
+            | DeclaredType::Array(element)
             | DeclaredType::Sequence(element)
             | DeclaredType::Keyed(element) => {
                 validate_declaration(element, budget, location)?;
@@ -477,6 +488,19 @@ fn check_type_facts<K>(
             {
                 Ok(())
             }
+            (
+                ValueType::ArrayKind(elements),
+                DeclaredType::Array(element)
+                | DeclaredType::Sequence(element)
+                | DeclaredType::Keyed(element),
+            ) if deferred => check_elements(
+                elements,
+                element,
+                "array element",
+                deferred,
+                budget,
+                location,
+            ),
             (ValueType::Array(ArrayType::Elements(elements)), DeclaredType::Sequence(element))
                 if deferred =>
             {
@@ -519,6 +543,17 @@ fn check_type_facts<K>(
             (ValueType::Set(actual), DeclaredType::Set(expected)) if *actual == Some(*expected) => {
                 Ok(())
             }
+            (
+                ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements)),
+                DeclaredType::Array(element),
+            ) => check_elements(
+                elements,
+                element,
+                "array element",
+                deferred,
+                budget,
+                location,
+            ),
             (ValueType::Array(ArrayType::Positions(elements)), DeclaredType::Sequence(element)) => {
                 check_elements(
                     elements,
@@ -529,7 +564,10 @@ fn check_type_facts<K>(
                     location,
                 )
             }
-            (ValueType::KeyedArray(actual), DeclaredType::Keyed(element)) => check_elements(
+            (
+                ValueType::KeyedArray(actual),
+                DeclaredType::Array(element) | DeclaredType::Keyed(element),
+            ) => check_elements(
                 &actual.elements,
                 element,
                 "keyed cell",
@@ -617,6 +655,7 @@ impl<K> DeclaredType<K> {
             Self::Float => "expected finite float",
             Self::String => "expected string",
             Self::Member(_) => "expected member of declared nominal type",
+            Self::Array(_) => "expected array",
             Self::Sequence(_) => "expected positional sequence",
             Self::Tuple(_) => "expected tuple",
             Self::Record(_) => "expected record",

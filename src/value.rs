@@ -137,6 +137,8 @@ pub enum ValueType {
     Member(NominalTypeId),
     KeyedArray(KeyedArrayType),
     Array(ArrayType),
+    /// Possible array elements with storage, positions and axes unestablished.
+    ArrayKind(Vec<Self>),
     Tuple(Vec<Self>),
     /// A tuple whose positions have not been inspected; no arity is known.
     TupleKind,
@@ -751,6 +753,11 @@ fn declared_facts(
             DeclaredType::String => ValueType::String,
             DeclaredType::Member(id) => ValueType::Member(*id),
             DeclaredType::Set(element) => ValueType::Set(Some(*element)),
+            DeclaredType::Array(child) => ValueType::ArrayKind(one_type(
+                declared_fact(child, ValueType::Unestablished, budget, location)?,
+                budget,
+                location,
+            )?),
             DeclaredType::Sequence(child) => ValueType::Array(ArrayType::Elements(one_type(
                 declared_fact(child, ValueType::Unestablished, budget, location)?,
                 budget,
@@ -826,7 +833,7 @@ fn shape_type(
         actual => shape_type(actual, budget, location)?,
     };
     Ok(match (actual, underlying(&declaration)) {
-        (ValueType::Array(array), DeclaredType::Sequence(child)) => {
+        (ValueType::Array(array), DeclaredType::Array(child) | DeclaredType::Sequence(child)) => {
             let positional = matches!(array, ArrayType::Positions(_));
             let (ArrayType::Positions(entries) | ArrayType::Elements(entries)) = array;
             let mut fields = metadata_vec(entries.len(), budget, location)?;
@@ -848,7 +855,10 @@ fn shape_type(
                 ArrayType::Elements(fields)
             })
         }
-        (ValueType::KeyedArray(mut keyed), DeclaredType::Keyed(child)) => {
+        (
+            ValueType::KeyedArray(mut keyed),
+            DeclaredType::Array(child) | DeclaredType::Keyed(child),
+        ) => {
             let mut fields = metadata_vec(keyed.elements.len(), budget, location)?;
             for entry in keyed.elements {
                 fields.push(declared_fact(child, entry, budget, location)?);
@@ -908,7 +918,10 @@ fn expose(
     };
     let mut value = expose(*value, budget, location)?;
     match (&mut value, underlying(&declaration)) {
-        (ConstructedValue::Array(values), DeclaredType::Sequence(child)) => {
+        (
+            ConstructedValue::Array(values),
+            DeclaredType::Array(child) | DeclaredType::Sequence(child),
+        ) => {
             for value in values {
                 annotate_child(value, child, budget, location)?;
             }
@@ -928,7 +941,10 @@ fn expose(
                 )?;
             }
         }
-        (ConstructedValue::KeyedArray { entries, .. }, DeclaredType::Keyed(child)) => {
+        (
+            ConstructedValue::KeyedArray { entries, .. },
+            DeclaredType::Array(child) | DeclaredType::Keyed(child),
+        ) => {
             for entry in entries {
                 annotate_child(&mut entry.value, child, budget, location)?;
             }
@@ -997,9 +1013,9 @@ fn access_type(
                 )?),
                 None => None,
             },
-            DeclaredType::Sequence(element) | DeclaredType::Keyed(element) => {
-                Some(copy_declaration(element, budget, location)?)
-            }
+            DeclaredType::Array(element)
+            | DeclaredType::Sequence(element)
+            | DeclaredType::Keyed(element) => Some(copy_declaration(element, budget, location)?),
             _ => None,
         };
     }
@@ -1030,6 +1046,11 @@ fn access_type(
             for key in keys {
                 require_type(key, ScalarRequirement::Integer, location)?;
             }
+            result = elements;
+        }
+        ValueType::ArrayKind(elements) => {
+            let mut facts = None;
+            merge_key_facts(&mut facts, keys, budget, location)?;
             result = elements;
         }
         ValueType::KeyedArray(keyed) => {
@@ -1080,9 +1101,9 @@ fn optional_access(
                     location,
                 )?)
             }
-            DeclaredType::Sequence(element) | DeclaredType::Keyed(element) => {
-                Some(copy_declaration(element, budget, location)?)
-            }
+            DeclaredType::Array(element)
+            | DeclaredType::Sequence(element)
+            | DeclaredType::Keyed(element) => Some(copy_declaration(element, budget, location)?),
             _ => None,
         };
     }
@@ -2096,6 +2117,9 @@ fn copy_type(
                     ArrayType::Elements(_) => ArrayType::Elements(entries),
                 })
             }
+            ValueType::ArrayKind(elements) => {
+                ValueType::ArrayKind(copy_types(elements, budget, location)?)
+            }
             ValueType::Tuple(entries) => ValueType::Tuple(copy_types(entries, budget, location)?),
             ValueType::Record(fields) => {
                 check_value_labels(fields, budget, location)?;
@@ -2441,7 +2465,10 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     match shape_type(ty, budget, location)? {
                         ValueType::Array(
                             ArrayType::Positions(types) | ArrayType::Elements(types),
-                        ) => append_types(&mut result, types, budget, location)?,
+                        )
+                        | ValueType::ArrayKind(types) => {
+                            append_types(&mut result, types, budget, location)?
+                        }
                         ValueType::Unestablished => {
                             push_metadata(&mut result, ValueType::Unestablished, budget, location)?
                         }
@@ -2705,6 +2732,11 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut result = Vec::new();
                 for array in arrays {
                     match shape_type(array, budget, location)? {
+                        ValueType::ArrayKind(elements) => {
+                            let mut facts = None;
+                            merge_key_facts(&mut facts, &indices, budget, location)?;
+                            append_types(&mut result, elements, budget, location)?;
+                        }
                         ValueType::KeyedArray(keyed) => {
                             let mut facts = None;
                             merge_key_facts(&mut facts, &indices, budget, location)?;
@@ -2768,7 +2800,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             Some(_) => return Err(error(location, "index_set needs rank one")),
                             None => None,
                         },
-                        ValueType::Unestablished => None,
+                        ValueType::ArrayKind(_) | ValueType::Unestablished => None,
                         _ => return Err(error(location, "index_set needs an array")),
                     };
                     push_metadata(&mut result, ValueType::Set(element_type), budget, location)?;
@@ -2781,6 +2813,10 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     budget.charge(1, location.clone())?;
                     let keyed = match shape_type(ty, budget, location)? {
                         ValueType::KeyedArray(keyed) => keyed,
+                        ValueType::ArrayKind(elements) => KeyedArrayType {
+                            axes: None,
+                            elements,
+                        },
                         ValueType::Unestablished => {
                             push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
                             continue;
@@ -2840,7 +2876,8 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     let elements = match shape_type(ty, budget, location)? {
                         ValueType::Array(
                             ArrayType::Positions(elements) | ArrayType::Elements(elements),
-                        ) => elements,
+                        )
+                        | ValueType::ArrayKind(elements) => elements,
                         ValueType::KeyedArray(keyed) => keyed.elements,
                         ValueType::Unestablished => continue,
                         _ => return Err(error(location, "reducer needs an array")),
@@ -2875,7 +2912,8 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     let elements = match shape_type(ty, budget, location)? {
                         ValueType::Array(
                             ArrayType::Positions(elements) | ArrayType::Elements(elements),
-                        ) => elements,
+                        )
+                        | ValueType::ArrayKind(elements) => elements,
                         ValueType::Unestablished => {
                             push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
                             continue;
@@ -3030,7 +3068,10 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         match shape_type(ty, budget, &clause_location)? {
                             ValueType::Array(
                                 ArrayType::Positions(entries) | ArrayType::Elements(entries),
-                            ) => append_types(&mut elements, entries, budget, &clause_location)?,
+                            )
+                            | ValueType::ArrayKind(entries) => {
+                                append_types(&mut elements, entries, budget, &clause_location)?
+                            }
                             ValueType::KeyedArray(keyed) => append_types(
                                 &mut elements,
                                 keyed.elements,
@@ -3131,15 +3172,15 @@ fn zip_exact_type(
         let right = shape_type(copy_type(right, budget, location)?, budget, location)?;
         return zip_exact_type(&left, &right, budget, location);
     }
+    let deferred = [ValueType::Unestablished];
     let [left, right] = [left, right].map(|ty| match ty {
-        ValueType::KeyedArray(keyed) => Ok(Some(keyed)),
-        ValueType::Unestablished => Ok(None),
+        ValueType::KeyedArray(keyed) => Ok((keyed.axes.as_deref(), keyed.elements.as_slice())),
+        ValueType::ArrayKind(elements) => Ok((None, elements.as_slice())),
+        ValueType::Unestablished => Ok((None, deferred.as_slice())),
         _ => Err(error(location, "zip_exact needs keyed arrays")),
     });
-    let left = left?;
-    let right = right?;
-    let left_axes = left.and_then(|keyed| keyed.axes.as_deref());
-    let right_axes = right.and_then(|keyed| keyed.axes.as_deref());
+    let (left_axes, a) = left?;
+    let (right_axes, b) = right?;
     if let (Some(a), Some(b)) = (left_axes, right_axes)
         && !same_axis_types(a, b, budget, location)?
     {
@@ -3152,9 +3193,6 @@ fn zip_exact_type(
         Some(axes) => Some(copy_axis_types(axes, budget, location)?),
         None => None,
     };
-    let deferred = [ValueType::Unestablished];
-    let a = left.map_or(deferred.as_slice(), |keyed| keyed.elements.as_slice());
-    let b = right.map_or(deferred.as_slice(), |keyed| keyed.elements.as_slice());
     let mut elements = Vec::new();
     for a in a {
         for b in b {
@@ -3512,6 +3550,21 @@ fn compatible_types(
             | (ValueType::TupleKind, ValueType::TupleKind | ValueType::Tuple(_))
             | (ValueType::Tuple(_), ValueType::TupleKind) => true,
             (ValueType::Member(a), ValueType::Member(b)) => a == b,
+            (ValueType::ArrayKind(a), ValueType::ArrayKind(b))
+            | (
+                ValueType::ArrayKind(a),
+                ValueType::Array(ArrayType::Positions(b) | ArrayType::Elements(b)),
+            )
+            | (
+                ValueType::Array(ArrayType::Positions(a) | ArrayType::Elements(a)),
+                ValueType::ArrayKind(b),
+            ) => compatible_keyed_elements(a, b, budget, location)?,
+            (ValueType::ArrayKind(a), ValueType::KeyedArray(b)) => {
+                compatible_keyed_elements(a, &b.elements, budget, location)?
+            }
+            (ValueType::KeyedArray(a), ValueType::ArrayKind(b)) => {
+                compatible_keyed_elements(&a.elements, b, budget, location)?
+            }
             (ValueType::KeyedArray(a), ValueType::KeyedArray(b)) => {
                 if let (Some(a), Some(b)) = (&a.axes, &b.axes)
                     && !same_axis_types(a, b, budget, location)?

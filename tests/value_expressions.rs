@@ -2590,6 +2590,113 @@ fn optional_report_keeps_declared_omissions_stored_absence_and_sparse_membership
 }
 
 #[test]
+fn array_declarations_preserve_storage_and_deferred_element_contracts() {
+    let integers = D::Array(Box::new(D::Integer));
+    let schema = D::Record(vec![
+        ("xs".into(), integers.clone()),
+        ("note".into(), D::Optional(Box::new(D::String))),
+    ]);
+    let keyed = V::KeyedArray {
+        axes: vec![KeyAxis {
+            key_type: ValueKeyType::Integer,
+            keys: vec![ValueKey::Integer(3)],
+        }],
+        entries: vec![KeyedEntry {
+            key: vec![ValueKey::Integer(3)],
+            value: V::Integer(7),
+        }],
+    };
+    let rows = declared(
+        V::Array(vec![
+            V::Record(vec![(
+                "xs".into(),
+                V::Array(vec![V::Integer(1), V::Integer(2)]),
+            )]),
+            V::Record(vec![("xs".into(), keyed)]),
+            V::Record(vec![("xs".into(), V::Array(vec![]))]),
+        ]),
+        D::Array(Box::new(schema.clone())),
+    );
+    let mut bindings = Bindings::new([(Located::new("rows".into(), 0..1), rows)]).unwrap();
+    let expression = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("r")],
+            source: name("rows"),
+            filter: None,
+        })],
+        head: Box::new(e(K::Reduce {
+            operator: R::Sum,
+            array: Box::new(field(name("r"), "xs")),
+        })),
+    });
+    let V::Array(sums) = evaluate_value(&expression, &bindings, &mut ample()).unwrap() else {
+        panic!("sums")
+    };
+    assert_eq!(sums, [V::Integer(3), V::Integer(7), V::Integer(0)]);
+    let value = evaluate_value(
+        &field(access(name("rows"), int(2)), "xs"),
+        &bindings,
+        &mut ample(),
+    )
+    .unwrap();
+    assert!(matches!(value.data(), V::KeyedArray { .. }));
+    assert!(
+        admit_constructed(
+            &value,
+            &D::<()>::Sequence(Box::new(D::Integer)),
+            &mut ample(),
+            Location::Source(3..9)
+        )
+        .is_err()
+    );
+    admit_constructed(
+        &value,
+        &D::<()>::Keyed(Box::new(D::Integer)),
+        &mut ample(),
+        Location::Source(3..9),
+    )
+    .unwrap();
+    assert!(
+        zirql::declare_constructed(
+            V::Array(vec![V::Boolean(true)]),
+            integers.clone(),
+            &mut ample(),
+            Location::Source(3..9)
+        )
+        .is_err()
+    );
+    // Missing optional arrays retain their element schema without inventing storage.
+    let missing = || literal(declared(V::Absent, D::Optional(Box::new(integers.clone()))));
+    assert!(evaluate(&default(missing(), record(vec![]))).is_err());
+    assert!(
+        matches!(evaluate(&default(missing(), literal(V::Array(vec![])))).unwrap().data(), V::Array(values) if values.is_empty())
+    );
+    let empty = declared(
+        V::Array(vec![]),
+        D::Array(Box::new(D::Array(Box::new(schema)))),
+    );
+    bindings = Bindings::new([(Located::new("rows".into(), 0..1), empty)]).unwrap();
+    let invalid = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![
+            clause(G::In {
+                binders: vec![binder("inner")],
+                source: name("rows"),
+                filter: None,
+            }),
+            clause(G::In {
+                binders: vec![binder("r")],
+                source: name("inner"),
+                filter: None,
+            }),
+        ],
+        head: Box::new(lookup(name("r"), text("typo"))),
+    });
+    assert!(evaluate_value(&invalid, &bindings, &mut ample()).is_err());
+}
+
+#[test]
 fn optional_types_presence_and_lazy_defaults_preserve_failures_and_budget() {
     for value in [
         V::Boolean(false),
