@@ -8,8 +8,8 @@ use super::{
     constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, declaration,
     entries, equal_keys, error, expose, finish_keyed, group_by, insert_set, integer, integer_range,
     key_positions, key_set_type, key_value, metadata_vec, optional_access, push_metadata,
-    record_declaration, reduce_ref, scalar, select_field, source_axis, sum, take_one,
-    take_position, unary, underlying, value_keys, zip_exact,
+    record_declaration, reduce_ref, scalar, select_field, source_axis, string_match_ref, sum,
+    take_one, take_position, unary, underlying, value_keys, zip_exact,
 };
 use std::rc::Rc;
 
@@ -515,6 +515,12 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Occurs(_)
                                             | PreparedKind::Absent(_)
                                             | PreparedKind::Reduce { .. }
+                                            | PreparedKind::Binary {
+                                                operator: ValueBinaryOperator::Contains
+                                                    | ValueBinaryOperator::StartsWith
+                                                    | ValueBinaryOperator::EndsWith,
+                                                ..
+                                            }
                                     );
                                     let value = if values.is_empty()
                                         && matches!(expression.value, PreparedKind::Range { .. })
@@ -1402,6 +1408,22 @@ fn apply<'a, Q, N, K>(
         return Ok(Value::constructed(RuntimeValue::Owned(reduce_ref(
             *operator,
             values[0].scalar(&location)?,
+            budget,
+            &location,
+        )?)));
+    }
+    if let PreparedKind::Binary {
+        operator:
+            operator @ (ValueBinaryOperator::Contains
+            | ValueBinaryOperator::StartsWith
+            | ValueBinaryOperator::EndsWith),
+        ..
+    } = &expression.value
+    {
+        return Ok(Value::constructed(RuntimeValue::Owned(string_match_ref(
+            *operator,
+            values[0].scalar(&location)?,
+            values[1].scalar(&location)?,
             budget,
             &location,
         )?)));

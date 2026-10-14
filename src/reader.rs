@@ -1122,6 +1122,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         | "has_key"
                         | "group_by"
                         | "zip_exact"
+                        | "contains"
+                        | "starts_with"
+                        | "ends_with"
                         | "require"
                         | "length"
                         | "sum"
@@ -1190,6 +1193,23 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                             value: Box::new(value.into_value()),
                             key: Box::new(key.into_value()),
                         }
+                    }
+                } else if matches!(
+                    name.value.as_str(),
+                    "contains" | "starts_with" | "ends_with"
+                ) {
+                    self.reader.expect(',')?;
+                    let right = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.reader.expect(')')?;
+                    K::Binary {
+                        operator: match name.value.as_str() {
+                            "contains" => B::Contains,
+                            "starts_with" => B::StartsWith,
+                            "ends_with" => B::EndsWith,
+                            _ => unreachable!("string matching call"),
+                        },
+                        left: Box::new(value.into_value()),
+                        right: Box::new(right.into_value()),
                     }
                 } else if name.value == "group_by" {
                     self.reader.expect(',')?;

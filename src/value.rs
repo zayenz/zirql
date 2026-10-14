@@ -181,6 +181,12 @@ pub enum ValueBinaryOperator {
     And,
     Or,
     Concatenate,
+    /// Exact case-sensitive substring matching. Empty search strings match.
+    Contains,
+    /// Exact case-sensitive prefix matching. Empty prefixes match.
+    StartsWith,
+    /// Exact case-sensitive suffix matching. Empty suffixes match.
+    EndsWith,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3984,6 +3990,16 @@ fn binary_type(
             require_type(right, ScalarRequirement::Integer, location)?;
             Ok(ValueType::Integer)
         }
+        ValueBinaryOperator::Contains
+        | ValueBinaryOperator::StartsWith
+        | ValueBinaryOperator::EndsWith => {
+            if !matches!(left, ValueType::String | ValueType::Unestablished)
+                || !matches!(right, ValueType::String | ValueType::Unestablished)
+            {
+                return Err(string_operand_error(budget, location));
+            }
+            Ok(ValueType::Boolean)
+        }
         ValueBinaryOperator::And | ValueBinaryOperator::Or => {
             require_type(left, ScalarRequirement::Boolean, location)?;
             require_type(right, ScalarRequirement::Boolean, location)?;
@@ -4129,6 +4145,45 @@ fn unary(
     scalar(value, budget, location)
 }
 
+fn string_operand_error(budget: &mut Budget, location: &Location) -> QueryError {
+    let message = "string matching needs two strings";
+    match budget.charge(message.len(), location.clone()) {
+        Ok(()) => error(location, message),
+        Err(error) => error,
+    }
+}
+
+fn string_match_ref(
+    operator: ValueBinaryOperator,
+    left: &ConstructedValue,
+    right: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let (ConstructedValue::String(text), ConstructedValue::String(search)) =
+        (left.data(), right.data())
+    else {
+        return Err(string_operand_error(budget, location));
+    };
+    // Admit a byte-scan bound before borrowing the existing text. No
+    // substring or normalized text is allocated by these operations.
+    let work = if search.is_empty() {
+        0
+    } else if operator == ValueBinaryOperator::Contains {
+        sum(text.len(), search.len(), location)?
+    } else {
+        text.len().min(search.len())
+    };
+    budget.charge(work, location.clone())?;
+    let matched = match operator {
+        ValueBinaryOperator::Contains => text.contains(search.as_str()),
+        ValueBinaryOperator::StartsWith => text.starts_with(search.as_str()),
+        ValueBinaryOperator::EndsWith => text.ends_with(search.as_str()),
+        _ => unreachable!("string matching operator"),
+    };
+    scalar(ConstructedValue::Boolean(matched), budget, location)
+}
+
 fn binary(
     operator: ValueBinaryOperator,
     left: ConstructedValue,
@@ -4148,6 +4203,11 @@ fn binary(
         )
     };
     match operator {
+        ValueBinaryOperator::Contains
+        | ValueBinaryOperator::StartsWith
+        | ValueBinaryOperator::EndsWith => {
+            string_match_ref(operator, &left, &right, budget, location)
+        }
         ValueBinaryOperator::Concatenate => match (left, right) {
             (ConstructedValue::String(left), ConstructedValue::String(right)) => {
                 let len = sum(left.len(), right.len(), location)?;

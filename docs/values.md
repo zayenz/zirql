@@ -39,6 +39,34 @@ in skipped branches. A skipped missing access or zero division is not evaluated.
 `ValueType::Unestablished` records missing type facts; it is not a runtime null or
 an Unknown Boolean.
 
+## Exact string matching
+
+`contains(text, fragment)`, `starts_with(text, prefix)` and
+`ends_with(text, suffix)` return fixed Booleans. Both arguments must be strings;
+there is no coercion, case folding, normalization or regex interpretation.
+Empty search strings match every string, including an empty text.
+
+```text
+contains("Ångström", "ström")  → true
+starts_with("Ångström", "ång") → false
+ends_with("Ångström", "")      → true
+contains("é", "é")            → false
+```
+
+Both operands evaluate in written order. Known non-string operands fail
+preflight, including in skipped branches. Matching borrows existing string
+storage. The active request budget admits a byte-scan bound before matching:
+text plus search byte lengths for nonempty `contains`, or the smaller byte
+length for prefix/suffix checks. An empty search needs no scan work. Type-error
+diagnostics also spend this budget. Ordinary operand evaluation and result
+admission retain their existing charges.
+
+Rust callers use `ValueExpressionKind::Binary` with
+`ValueBinaryOperator::{Contains, StartsWith, EndsWith}`. The common reader lowers
+the three calls to those same operators. Domain name extraction remains with
+the host. These helpers are available in the development Git revision;
+published alpha.5 predates them.
+
 ## Absence, lookup and defaults
 
 Absence is one runtime value, distinct from an unknown fact and an error. The

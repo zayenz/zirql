@@ -2714,6 +2714,44 @@ mod projection {
         );
     }
     #[test]
+    fn parsed_string_helpers_share_prepared_native_arguments() {
+        let source = r#"[contains("Ångström", "ström"), starts_with("Ångström", "ång"), ends_with("Ångström", ""), contains("é", "é"), starts_with("", ""), contains(one(source | names), "et")]"#;
+        let mut allowance = function_budget();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let expression =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 64).unwrap();
+        assert!(reader.remaining().is_empty());
+        let mut functions = zirql::PreparedFunctions::prepare(&[], &Host, &mut allowance).unwrap();
+        let scope = BTreeMap::from([("source".into(), Kind::Subjects)]);
+        let prepared = functions
+            .prepare_value(&expression, &scope, None, &mut allowance)
+            .unwrap();
+        let bindings =
+            Bindings::new([(super::at("source".into(), 0), Value::Subjects(vec!["beta"]))])
+                .unwrap();
+        let result = functions
+            .evaluate(
+                &prepared,
+                &bindings,
+                None,
+                &mut (),
+                &mut allowance,
+                zirql::FunctionLimits { active_depth: 1 },
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            Value::Constructed(V::Array(
+                vec![true, false, true, false, true, true]
+                    .into_iter()
+                    .map(V::Boolean)
+                    .collect()
+            ))
+        );
+        zirql::dispose_native_value(expression);
+    }
+
+    #[test]
     fn parsed_functions_share_preparation_native_arguments_and_generator_kinds() {
         use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
         let source = r#"

@@ -3224,3 +3224,53 @@ fn function_limits_types_and_preflight_restore_the_active_budget() {
     let bad = function("arity", vec![], D::Integer, call("arity", vec![int(1)]));
     assert!(run_functions(&[bad], &int(0), 2, &mut ample()).is_err());
 }
+
+#[test]
+fn exact_string_matching_checks_types_and_admits_scans() {
+    let text = |value: &str| literal(V::String(value.into()));
+    let expression = e(K::Array(vec![
+        binary(B::Contains, text("Ångström"), text("ström")),
+        binary(B::StartsWith, text("Ångström"), text("ång")),
+        binary(B::EndsWith, text("Ångström"), text("")),
+        binary(B::Contains, text("é"), text("é")),
+        binary(B::StartsWith, text(""), text("")),
+    ]));
+    assert_eq!(
+        evaluate(&expression).unwrap(),
+        V::Array(
+            vec![true, false, true, false, true]
+                .into_iter()
+                .map(V::Boolean)
+                .collect()
+        )
+    );
+    let wrong_type = Located::new(binary(B::Contains, text("name"), int(1)).value, 40..58);
+    let skipped = e(K::Conditional {
+        branches: vec![(literal(V::Boolean(false)), wrong_type)],
+        otherwise: Box::new(literal(V::Boolean(false))),
+    });
+    let refusal = evaluate(&skipped).unwrap_err();
+    assert_eq!(refusal.location, Location::Query(40..58));
+    assert_eq!(refusal.message, "string matching needs two strings");
+
+    let bindings = Bindings::new([(
+        Located::new("long".into(), 0..1),
+        V::String("a".repeat(4_000)),
+    )])
+    .unwrap();
+    let expression = Located::new(binary(B::Contains, name("long"), text("z")).value, 60..80);
+    let refusal = evaluate_value(&expression, &bindings, &mut budget(1_000, 100, 64)).unwrap_err();
+    assert_eq!(refusal.location, Location::Query(60..80));
+    assert!(refusal.message.contains("work limit"));
+    // Prefix and empty-search checks borrow the shared text without copying it.
+    let prefix = binary(B::StartsWith, name("long"), text("a"));
+    assert_eq!(
+        evaluate_value(&prefix, &bindings, &mut budget(1_000, 100, 64)).unwrap(),
+        V::Boolean(true)
+    );
+    let empty = binary(B::Contains, name("long"), text(""));
+    assert_eq!(
+        evaluate_value(&empty, &bindings, &mut budget(1_000, 100, 64)).unwrap(),
+        V::Boolean(true)
+    );
+}
