@@ -54,6 +54,14 @@ type. Duplicate, extra or malformed caller arguments use the request range and
 identify the parameter in the message. A host retains its inline/file source label
 instead of inventing a query byte range for command-line arguments.
 
+Declared runtime contracts use the supplied admission location. A checked native
+call uses each argument's written range for argument refusals and the call range
+for arity, declaration and result refusals. Nested mismatches identify the field,
+tuple position, sequence element or keyed cell in the message. Positions are
+one-based; keyed cell positions follow the stored sparse entry order. Native
+owner, source and operation failures remain `EvaluationError::Host` with their
+original error type and coordinates. A contract error never becomes Unknown.
+
 ## Request allowances
 
 | Field | Meaning |
@@ -80,6 +88,22 @@ Its full-set validation completes before domain execution. Empty declarations
 and inputs spend nothing, so literal-only requests keep their existing costs.
 A value snapshot scans the full size and invariants, admits the result units
 and copied bytes, then constructs the copy.
+
+Declared admission charges declaration visits, actual-value/type discovery,
+metadata slots and label bytes, contract comparisons and diagnostic bytes.
+It uses the existing nested evaluation guards. Native adapters charge their
+member and ownership checks under that same budget. `checked_invoke` charges a
+call visit, admits arguments, runs the trusted operation and checks its result
+without resetting the allowance. An operation can therefore succeed internally
+and still fail result admission when its work has consumed the budget.
+
+Admission borrows the value and adds no materialized result charge. Fresh
+operation outputs still require producer admission before allocation; explicit
+copies keep their existing charges. Immutable structural checks can remain
+valid for the same value and contract, but these APIs retain no checked-value
+cache. Native context changes, new values and data-dependent access still need
+runtime checks. Declaration facts do not expand external parameter types or
+change existing value-entry-point costs or host defaults.
 
 Result units cover new or copied scalar values, containers and their entry slots.
 Keyed arrays also charge axes, entries, axis-key slots and entry-key slots.

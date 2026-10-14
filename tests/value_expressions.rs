@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
 use zirql::{
-    ArrayType, Bindings, Budget, ConstructedValue as V, KeyAxis, KeyedArrayType, KeyedEntry,
-    Limits, Located, Location, NominalMember, NominalMemberId, NominalTypeId, ParameterDeclaration,
-    ParameterInputs, ParameterType, ProgramLimits, SetElementType, ValueBinaryOperator as B,
-    ValueConstructor, ValueExpression as E, ValueExpressionKind as K, ValueGenerator as G,
-    ValueKey, ValueKeyType, ValueReducer as R, ValueType, ValueUnaryOperator as U,
-    admit_parameters, constructed_value_type, copy_constructed_value, evaluate_value,
-    free_value_names, validate_value_expression, value_expression_types,
+    ArrayType, Bindings, Budget, ConstructedValue as V, DeclaredType as D, KeyAxis, KeyedArrayType,
+    KeyedEntry, Limits, Located, Location, NominalMember, NominalMemberId, NominalTypeId,
+    ParameterDeclaration, ParameterInputs, ParameterType, ProgramLimits, SetElementType,
+    ValueBinaryOperator as B, ValueConstructor, ValueExpression as E, ValueExpressionKind as K,
+    ValueGenerator as G, ValueKey, ValueKeyType, ValueReducer as R, ValueType,
+    ValueUnaryOperator as U, admit_constructed, admit_parameters, constructed_value_type,
+    copy_constructed_value, evaluate_value, free_value_names, validate_value_expression,
+    value_expression_types,
 };
 
 fn e(kind: K) -> E {
@@ -71,6 +72,135 @@ fn budget(work: usize, results: usize, nesting: usize) -> Budget {
 }
 fn ample() -> Budget {
     budget(1_000_000, 100_000, 64)
+}
+
+#[test]
+fn declared_report_contracts_check_actual_nested_values_without_changing_raw_values() {
+    let contract: D<()> = D::Record(vec![
+        (
+            "rows".into(),
+            D::Sequence(Box::new(D::Tuple(vec![D::Integer, D::String]))),
+        ),
+        ("cells".into(), D::Keyed(Box::new(D::Float))),
+        ("flags".into(), D::Set(SetElementType::Boolean)),
+    ]);
+    // Stored label order is retained; it need not match declaration order.
+    let report = V::Record(vec![
+        (
+            "flags".into(),
+            V::Set {
+                element_type: Some(SetElementType::Boolean),
+                elements: vec![],
+            },
+        ),
+        (
+            "cells".into(),
+            V::KeyedArray {
+                axes: vec![KeyAxis {
+                    key_type: ValueKeyType::Integer,
+                    keys: vec![ValueKey::Integer(4)],
+                }],
+                entries: vec![KeyedEntry {
+                    key: vec![ValueKey::Integer(4)],
+                    value: V::Float(1.5),
+                }],
+            },
+        ),
+        (
+            "rows".into(),
+            V::Array(vec![V::Tuple(vec![
+                V::Integer(2),
+                V::String("beta".into()),
+            ])]),
+        ),
+    ]);
+    let mut checking = budget(10_000, 0, 16);
+    admit_constructed(&report, &contract, &mut checking, Location::Source(3..9)).unwrap();
+    assert_eq!(checking.remaining_results(), Some(0));
+    let V::Record(fields) = report else {
+        panic!("record")
+    };
+    assert_eq!(fields[0].0, "flags");
+
+    let heterogeneous = V::Record(vec![(
+        "rows".into(),
+        V::Array(vec![V::Integer(1), V::String("two".into())]),
+    )]);
+    constructed_value_type(&heterogeneous, &mut ample(), Location::Query(1..8)).unwrap();
+    let expected: D<()> = D::Record(vec![("rows".into(), D::Sequence(Box::new(D::Integer)))]);
+    let error = admit_constructed(
+        &heterogeneous,
+        &expected,
+        &mut ample(),
+        Location::Query(1..8),
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Query(1..8));
+    assert_eq!(
+        error.message,
+        "field rows: sequence element 2: expected integer"
+    );
+    let duplicate: D<()> = D::Record(vec![("a".into(), D::Integer), ("a".into(), D::Integer)]);
+    assert!(
+        admit_constructed(
+            &heterogeneous,
+            &duplicate,
+            &mut ample(),
+            Location::Query(1..8)
+        )
+        .unwrap_err()
+        .message
+        .contains("duplicate record label")
+    );
+    assert_eq!(
+        admit_constructed(
+            &heterogeneous,
+            &duplicate,
+            &mut budget(3, 0, 16),
+            Location::Query(1..8)
+        )
+        .unwrap_err()
+        .category,
+        zirql::QueryErrorCategory::WorkLimit
+    );
+}
+
+#[test]
+fn declared_nominal_types_use_identity_and_keep_empty_set_types() {
+    let value = V::Member(member(1, 0));
+    admit_constructed(
+        &value,
+        &D::<()>::Member(NominalTypeId(7)),
+        &mut ample(),
+        Location::Source(4..10),
+    )
+    .unwrap();
+    let V::Member(mut other) = value else {
+        unreachable!()
+    };
+    other.type_id = NominalTypeId(8);
+    let error = admit_constructed(
+        &V::Member(other),
+        &D::<()>::Member(NominalTypeId(7)),
+        &mut ample(),
+        Location::Source(4..10),
+    )
+    .unwrap_err();
+    assert_eq!(error.location, Location::Source(4..10));
+    assert_eq!(error.message, "expected member of declared nominal type");
+    let empty = V::Set {
+        element_type: Some(SetElementType::Member(NominalTypeId(8))),
+        elements: vec![],
+    };
+    assert!(
+        admit_constructed(
+            &empty,
+            &D::<()>::Set(SetElementType::Member(NominalTypeId(7))),
+            &mut ample(),
+            Location::Query(0..1)
+        )
+        .is_err()
+    );
 }
 fn evaluate(expression: &E) -> Result<V, zirql::QueryError> {
     evaluate_value(expression, &Bindings::default(), &mut ample())

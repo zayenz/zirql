@@ -1,10 +1,11 @@
 use std::{ops::Range, rc::Rc};
 
 use zirql::{
-    Bindings, Budget, EmissionPolicy, EvaluationError, Expression, ExpressionKind, ExpressionStep,
-    Host, Located, Location, NativeInput, NativeValue, Pipeline, PredicateKind, Program,
-    ProgramHost, ProgramLimits, QueryError, QueryErrorCategory, Stage, Statement, Truth, evaluate,
-    evaluate_expression, evaluate_program,
+    Bindings, Budget, DeclaredType, EmissionPolicy, EvaluationError, Expression, ExpressionKind,
+    ExpressionStep, Host, Located, Location, NativeInput, NativeValue, OperationSignature,
+    Pipeline, PredicateKind, Program, ProgramHost, ProgramLimits, QueryError, QueryErrorCategory,
+    RuntimeTypeHost, Stage, Statement, Truth, checked_invoke, evaluate, evaluate_expression,
+    evaluate_program,
 };
 
 fn limits() -> ProgramLimits {
@@ -369,6 +370,170 @@ fn source_input<'a>(source: &'a str, budget: &mut Budget) -> SourceValue<'a> {
         words.push(Word { text, range });
     }
     SourceValue::Words(words)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SourceKind {
+    Words,
+}
+
+impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
+    type Kind = SourceKind;
+
+    fn admit_native(
+        &self,
+        value: &SourceValue<'a>,
+        expected: &DeclaredType<SourceKind>,
+        context: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        location: Location,
+    ) -> Result<(), EvaluationError<SourceFailure>> {
+        let (DeclaredType::Native(SourceKind::Words), SourceValue::Words(words)) =
+            (expected, value)
+        else {
+            return Err(runtime_refusal("expected borrowed words", budget, location)?.into());
+        };
+        budget.check_items(words.len(), location.clone())?;
+        for word in words {
+            budget.charge(1, location.clone())?;
+            let valid = context.source.get(word.range.clone()).is_some_and(|text| {
+                text.as_ptr() == word.text.as_ptr() && text.len() == word.text.len()
+            });
+            if !valid {
+                return Err(EvaluationError::Host(SourceFailure::Source(
+                    word.range.clone(),
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn runtime_refusal(
+    message: &str,
+    budget: &mut Budget,
+    location: Location,
+) -> Result<QueryError, QueryError> {
+    budget.charge(message.len(), location.clone())?;
+    Ok(QueryError {
+        message: message.into(),
+        location,
+        category: QueryErrorCategory::Other,
+    })
+}
+
+#[test]
+fn typed_borrowed_calls_keep_source_identity_and_locate_contract_failures() {
+    let source = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: Vec::new(),
+    };
+    let signature = OperationSignature {
+        parameters: vec![DeclaredType::Native(SourceKind::Words)],
+        result: DeclaredType::Native(SourceKind::Words),
+    };
+    let mut budget = Budget::for_program(limits());
+    let input = source_input(&source, &mut budget);
+    let result = checked_invoke(
+        &signature,
+        vec![at(input, 10)],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        5..20,
+        |mut arguments, _, _| Ok(arguments.remove(0).value),
+    )
+    .unwrap();
+    let arguments = [at(result, 10)];
+    let copied = checked_invoke(
+        &signature,
+        &arguments,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        5..20,
+        |arguments, context, budget| {
+            SourceHost.copy_value(&arguments[0].value, context, budget, &(5..20))
+        },
+    )
+    .unwrap();
+    let SourceValue::Words(words) = copied else {
+        panic!("native result")
+    };
+    assert_eq!(words[0].text.as_ptr(), source.as_ptr());
+    assert_eq!(words[0].range, 0..5);
+    assert_eq!(words[1].text.as_ptr(), source[6..].as_ptr());
+    assert_eq!(words[1].range, 6..10);
+
+    let wrong_argument = checked_invoke(
+        &signature,
+        [at(SourceValue::Count(1), 30)],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        25..40,
+        |_, _, _| panic!("incompatible arguments cannot run"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        wrong_argument,
+        EvaluationError::Core(QueryError::query(30..31, "expected borrowed words"))
+    );
+    let wrong_result = checked_invoke(
+        &signature,
+        &arguments,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        45..60,
+        |_, _, budget| {
+            budget.charge_results(1, Location::Query(45..60))?;
+            Ok(SourceValue::Count(1))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        wrong_result,
+        EvaluationError::Core(QueryError::query(45..60, "expected borrowed words"))
+    );
+    let arity = checked_invoke(
+        &signature,
+        [],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        65..70,
+        |_, _, _| panic!("wrong arity cannot run"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        arity,
+        EvaluationError::Core(QueryError::query(
+            65..70,
+            "operation argument count mismatch"
+        ))
+    );
+
+    let mut continuing = Budget::for_program(limits());
+    let input = source_input(&source, &mut continuing);
+    let exhausted = checked_invoke(
+        &signature,
+        vec![at(input, 10)],
+        &SourceHost,
+        &mut context,
+        &mut continuing,
+        5..20,
+        |mut arguments, _, budget| {
+            budget.charge(budget.remaining_work(), Location::Query(12..13))?;
+            Ok(arguments.remove(0).value)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(exhausted, EvaluationError::Core(QueryError { location: Location::Query(range), category: QueryErrorCategory::WorkLimit, .. }) if range == (5..20))
+    );
 }
 
 fn count_stage() -> Located<ExpressionStep<SourceStage, &'static str>> {
@@ -969,6 +1134,128 @@ fn document_input(budget: &mut Budget) -> DocumentValue {
     )
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DocumentKind {
+    Operation,
+}
+
+impl RuntimeTypeHost<DocumentContext> for DocumentHost {
+    type Kind = DocumentKind;
+
+    fn admit_native(
+        &self,
+        value: &DocumentValue,
+        expected: &DeclaredType<DocumentKind>,
+        context: &mut DocumentContext,
+        budget: &mut Budget,
+        location: Location,
+    ) -> Result<(), EvaluationError<QueryError>> {
+        let DocumentValue::Handles(ids) = value else {
+            return Err(runtime_refusal("expected operation handles", budget, location)?.into());
+        };
+        match expected {
+            DeclaredType::Native(DocumentKind::Operation) if ids.len() == 1 => {}
+            DeclaredType::Sequence(element)
+                if matches!(
+                    element.as_ref(),
+                    DeclaredType::Native(DocumentKind::Operation)
+                ) => {}
+            _ => {
+                return Err(
+                    runtime_refusal("expected operation handles", budget, location)?.into(),
+                );
+            }
+        }
+        budget.check_items(ids.len(), location.clone())?;
+        for id in ids {
+            budget.charge(1, location.clone())?;
+            if context.document.resolve(id).is_none() {
+                return Err(EvaluationError::Host(runtime_refusal(
+                    "invalid operation owner or index",
+                    budget,
+                    location,
+                )?));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn typed_document_calls_retain_owner_and_native_failures() {
+    let document = Rc::new(Document {
+        owner: 7,
+        operations: vec!["add", "mul", "add"],
+    });
+    let mut context = DocumentContext {
+        document: Rc::clone(&document),
+        emissions: Vec::new(),
+    };
+    let signature = OperationSignature {
+        parameters: vec![DeclaredType::Sequence(Box::new(DeclaredType::Native(
+            DocumentKind::Operation,
+        )))],
+        result: DeclaredType::Sequence(Box::new(DeclaredType::Native(DocumentKind::Operation))),
+    };
+    let mut budget = Budget::for_program(limits());
+    let input = document_input(&mut budget);
+    let result = checked_invoke(
+        &signature,
+        vec![at(input, 10)],
+        &DocumentHost,
+        &mut context,
+        &mut budget,
+        5..20,
+        |mut arguments, _, _| Ok(arguments.remove(0).value),
+    )
+    .unwrap();
+    let DocumentValue::Handles(ids) = result else {
+        panic!("native result")
+    };
+    assert!(Rc::ptr_eq(&document, &context.document));
+    assert_eq!(
+        ids,
+        [2, 0, 2, 1].map(|index| OperationId { owner: 7, index })
+    );
+    assert_eq!(document.resolve(&ids[0]), Some("add"));
+
+    budget.charge_results(2, Location::Query(30..31)).unwrap();
+    let foreign = DocumentValue::Handles(vec![
+        OperationId { owner: 7, index: 0 },
+        OperationId { owner: 9, index: 0 },
+    ]);
+    let owner_error = checked_invoke(
+        &signature,
+        [at(foreign, 30)],
+        &DocumentHost,
+        &mut context,
+        &mut budget,
+        25..40,
+        |_, _, _| panic!("foreign handles cannot run"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        owner_error,
+        EvaluationError::Host(QueryError::query(
+            30..31,
+            "invalid operation owner or index"
+        ))
+    );
+    let input = document_input(&mut budget);
+    let native_error = QueryError::source(4..8, "host read failed");
+    let failed = checked_invoke(
+        &signature,
+        [at(input, 10)],
+        &DocumentHost,
+        &mut context,
+        &mut budget,
+        5..20,
+        |_, _, _| Err(EvaluationError::Host(native_error.clone())),
+    )
+    .unwrap_err();
+    assert_eq!(failed, EvaluationError::Host(native_error));
+}
+
 fn document_head(
     count: usize,
     start: usize,
@@ -1237,6 +1524,36 @@ mod projection {
         Neighbors,
     }
     struct Host;
+
+    impl zirql::RuntimeTypeHost<()> for Host {
+        type Kind = Kind;
+
+        fn constructed_value<'v>(&self, value: &'v Value) -> Option<&'v V> {
+            match value {
+                Value::Constructed(value) => Some(value),
+                _ => None,
+            }
+        }
+
+        fn admit_native(
+            &self,
+            value: &Value,
+            expected: &zirql::DeclaredType<Kind>,
+            _: &mut (),
+            budget: &mut Budget,
+            location: Location,
+        ) -> Result<(), EvaluationError<QueryError>> {
+            // This control declares only its native subject selection interface.
+            let (zirql::DeclaredType::Native(Kind::Subjects), Value::Subjects(rows)) =
+                (expected, value)
+            else {
+                return Err(super::runtime_refusal("expected subjects", budget, location)?.into());
+            };
+            budget.check_items(rows.len(), location.clone())?;
+            budget.charge(rows.len(), location)?;
+            Ok(())
+        }
+    }
     type Query = Expression<Stage, (), ()>;
     impl ProgramHost<()> for Host {
         type Value = Value;
@@ -1874,6 +2191,59 @@ mod projection {
             stream_items: 100,
         })
     }
+    #[test]
+    fn typed_constructed_wrappers_use_shared_admission_at_native_call_boundaries() {
+        use zirql::{DeclaredType as D, OperationSignature, admit_value, checked_invoke};
+        let signature = OperationSignature {
+            parameters: vec![D::Sequence(Box::new(D::Integer))],
+            result: D::Sequence(Box::new(D::Integer)),
+        };
+        let mut budget = budget();
+        let arguments = vec![Located::new(
+            Value::Constructed(V::Array(vec![V::Integer(3)])),
+            10..15,
+        )];
+        let result = checked_invoke(
+            &signature,
+            arguments,
+            &Host,
+            &mut (),
+            &mut budget,
+            5..20,
+            |mut arguments, _, _| Ok(arguments.remove(0).value),
+        )
+        .unwrap();
+        admit_value(
+            &result,
+            &signature.result,
+            &Host,
+            &mut (),
+            &mut budget,
+            Location::Query(25..30),
+        )
+        .unwrap();
+        let error = checked_invoke(
+            &signature,
+            [Located::new(result, 10..15)],
+            &Host,
+            &mut (),
+            &mut budget,
+            5..20,
+            |_, _, budget| {
+                // One container, one slot, one scalar and five copied bytes.
+                budget.charge(8, Location::Query(5..20))?;
+                budget.charge_results(3, Location::Query(5..20))?;
+                Ok(Value::Constructed(V::Array(vec![V::String(
+                    "wrong".into(),
+                )])))
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EvaluationError::Core(QueryError { location: Location::Query(range), message, .. }) if range == (5..20) && message == "sequence element 1: expected integer")
+        );
+    }
+
     fn parse(source: &str, budget: &mut Budget) -> Projection<Query> {
         zirql::read_projection(
             &mut zirql::ArgumentReader::new(source, 0).unwrap(),

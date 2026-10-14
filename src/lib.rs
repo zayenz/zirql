@@ -7,6 +7,7 @@ mod paths;
 mod program;
 mod projection;
 mod reader;
+mod runtime_types;
 mod value;
 
 use std::fmt;
@@ -35,6 +36,10 @@ pub use reader::{
     CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value, read_match,
     read_native_expression, read_paths, read_projection, read_statement_prefix,
     read_value_expression,
+};
+pub use runtime_types::{
+    DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
+    checked_invoke,
 };
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,

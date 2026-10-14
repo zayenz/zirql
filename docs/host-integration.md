@@ -117,6 +117,93 @@ preflight is useful before projecting domain data, but does not replace this
 check. Keep these calls on the same budget, including any copies of bindings
 or emission snapshots.
 
+## Declared runtime contracts
+
+A trusted Rust operation can require a homogeneous sequence even though ordinary
+Zirql arrays may contain different types. `DeclaredType<K>` expresses that
+interface requirement. `ValueType` describes discovered or deferred facts,
+including individual array positions; it is not an interface declaration.
+`ValueType::Unestablished` means deferred knowledge, not a runtime absence value.
+
+The callable development API supports Boolean, integer, finite float, string,
+nominal member, sequence, tuple, record, set, keyed and native contracts.
+Sequences and keyed cells check every present element. Tuples have fixed
+positions. Records require exactly the declared labels, without changing the
+value's stored field order; duplicate declaration labels fail. Sets retain the
+existing supported scalar element types, including typed empty sets. Keyed rank,
+axis identity, sparse coverage and entry order remain actual runtime facts.
+Nominal declarations use `NominalTypeId`, so equal names do not make distinct
+types compatible. Integers do not implicitly satisfy float contracts.
+
+Use `admit_constructed` for borrowed constructed data:
+
+```rust
+use zirql::{DeclaredType, Location, admit_constructed};
+
+let rows = DeclaredType::<()>::Sequence(Box::new(DeclaredType::Record(vec![
+    ("name".into(), DeclaredType::String),
+    ("count".into(), DeclaredType::Integer),
+])));
+admit_constructed(&value, &rows, &mut budget, Location::Query(10..30))?;
+```
+
+Admission discovers facts from the actual value and reuses the existing float,
+label, nominal, set and keyed-shape validation. A heterogeneous array remains
+accepted through existing value APIs and fails here only if the declared
+contract excludes one of its elements.
+
+For native calls, implement the optional `RuntimeTypeHost<C>` alongside
+`ProgramHost<C>`. It needs no projection implementation. Reuse the host's own
+kind type as its `Kind`. `admit_native` receives the whole declaration, so a
+native handle sequence can satisfy `Sequence(Native(Operation))` while its
+handles retain their owner. The hook checks the actual wrapper and every member
+against that declaration and the current context. For borrowed words, check source
+pointers and ranges. For document handles, check owner and index, including
+stale handles. A kind tag alone proves neither. If the host also wraps
+`ConstructedValue`, expose it through the borrowed `constructed_value` hook so
+the core checks language declarations. Native handles never become constructed
+scalars or require serialization, downcasting or a shared registry.
+
+`OperationSignature<K>` holds ordered parameter declarations and one result
+declaration. Pass it with located arguments, the host, context, budget, call
+range and an ordinary trusted Rust operation to `checked_invoke`. The call:
+
+1. Checks arity and declaration structure.
+2. Admits actual arguments in written order, at their own ranges.
+3. Invokes the operation once with the same context and budget.
+4. Admits the actual result at the call range before returning it.
+
+For an already owned argument vector, an identity adapter can move its result:
+
+```rust
+let result = zirql::checked_invoke(
+    &signature, arguments, &host, &mut context, &mut budget, call_range,
+    |mut arguments: Vec<zirql::Located<HostValue>>, _, _| {
+        Ok(arguments.remove(0).value)
+    },
+)?;
+```
+
+Here `HostValue` is the adapter's own value type and `signature` declares one
+native parameter and the same native result kind. A borrowed argument slice is
+also accepted; the operation receives that slice instead. Borrowing or moving
+does not create another result representation. An operation producing new data
+must charge work and admit result units before allocating it. Host failures keep
+their concrete error type and source locations through `EvaluationError::Host`.
+This boundary leaves purity, effects and rendering with their existing owners.
+
+Structural admission remains valid for that exact immutable value and unchanged
+declaration. New external values and operation results require admission.
+Native ownership and staleness depend on the current host context; nominal
+resolution, actual key/field access and consumer shape policy still need their
+runtime checks. The API stores no admission cache.
+Each call performs its checks under the active work and nesting limits.
+
+These declarations and calls are Rust library APIs in the development revision.
+They introduce no type syntax, function declarations or operation registry into
+the existing readers or CLIs. External `param` transport remains `int`, `string`
+and `bool`; optional values and prepared execution belong to later work.
+
 ## Domain policy
 
 The host defines its predicates, native identity, navigation and permitted
