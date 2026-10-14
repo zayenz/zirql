@@ -297,3 +297,17 @@ array's element schema remains known when it has no rows, so preflight can rejec
 a sum over known string fields on empty input. See
 [native projection](host-integration.md#correlated-native-projection) for the
 subject and conversion contract.
+
+## Immutable reads and owned results
+
+Evaluation prepares local names once and reads them through resolved slots.
+Repeated reads can share unchanged strings, collections and selected fields.
+Reducers inspect shared input directly after eager operand evaluation; they still
+scan every required element. Generator sources retain current immutable owners,
+and completed local frames release their temporary references.
+
+Returned `ConstructedValue` results remain owned. Separate result fields and
+explicit snapshots receive admitted materialization, so changing an owned Rust
+result cannot change an earlier result or binding. Fresh values still receive
+runtime checks. Sharing does not scan or execute a default's unselected fallback;
+all written branches keep their structural and known-type preflight.

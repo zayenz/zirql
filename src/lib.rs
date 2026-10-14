@@ -28,9 +28,10 @@ pub use program::{
     dispose_expression, evaluate_expression, evaluate_program,
 };
 pub use projection::{
-    NativeExpression, NativeOperands, Projection, ProjectionFields, ProjectionHost,
-    evaluate_native_value, evaluate_projection, native_expression_kind, native_value_types,
-    projection_types,
+    ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeValueArguments,
+    Projection, ProjectionFields, ProjectionHost, evaluate_native_value,
+    evaluate_native_value_with_types, evaluate_projection, evaluate_projection_with_types,
+    native_expression_kind, native_value_types, projection_types,
 };
 pub use reader::{
     CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value, read_match,
@@ -42,13 +43,14 @@ pub use runtime_types::{
     checked_invoke, declare_constructed,
 };
 pub use value::{
-    ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
-    NominalMemberId, NominalTypeId, SetElementType, ValueBinaryOperator, ValueConstructor,
-    ValueExpression, ValueExpressionKind, ValueGenerator, ValueKey, ValueKeyType, ValueQueryHost,
-    ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value,
-    copy_value_types, count_value, evaluate_query_value, evaluate_value,
-    evaluate_value_with_host_validation, free_query_value_names, free_value_names,
-    query_value_types, take_one, validate_value_expression, value_expression_types,
+    ArrayType, ConstructedRead, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry,
+    NominalMember, NominalMemberId, NominalTypeId, SetElementType, ValueArguments,
+    ValueBinaryOperator, ValueConstructor, ValueExpression, ValueExpressionKind, ValueGenerator,
+    ValueKey, ValueKeyType, ValueQueryHost, ValueReducer, ValueType, ValueUnaryOperator,
+    constructed_value_type, copy_constructed_value, copy_value_types, count_value,
+    evaluate_query_value, evaluate_value, evaluate_value_with_host_validation,
+    free_query_value_names, free_value_names, query_value_types, take_one,
+    validate_value_expression, value_expression_types,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.

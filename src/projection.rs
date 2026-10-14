@@ -1,10 +1,13 @@
+mod prepared;
+use prepared::PreparedNative;
+
 use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
     ArrayType, Bindings, Budget, ConstructedValue, EvaluationError, Expression, ExpressionKind,
     ExpressionStep, Located, Location, ProgramHost, QueryError, QueryErrorCategory,
     ValueExpression, ValueQueryHost, ValueType, copy_constructed_value, copy_value_types,
-    evaluate_expression, evaluate_query_value, query_value_types,
+    query_value_types,
 };
 
 /// Correlated native subjects become positional records with written field order.
@@ -23,11 +26,59 @@ pub struct Projection<Q> {
 
 pub type NativeOperands<C, H> = Vec<(NativeExpression<C, H>, <H as ProjectionHost<C>>::Kind)>;
 
+/// Scalar/native primitive arguments declared by one stage, with their relative kinds.
+pub type NativeValueArguments<'s, C, H> = Vec<(
+    &'s ValueExpression<NativeExpression<C, H>>,
+    <H as ProjectionHost<C>>::Kind,
+)>;
+
+/// Borrowed only while a prepared native stage executes. The runner retains the
+/// exact current context and lexical scope; adapters cannot rebind its context.
+pub trait NativeArguments<C, H: ProjectionHost<C>> {
+    fn parts(&mut self) -> (&mut C, &Bindings<H::Value>);
+    /// Evaluate a declared body only when its native argument is selected.
+    ///
+    /// # Errors
+    /// Undeclared bodies, new-data/native refusals and resource failures retain
+    /// their original locations and cumulative spending.
+    fn evaluate(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        relative_input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>>;
+}
+
 /// Domain facts and explicit scalar conversions for shared native projection.
 /// Hooks describe native stages; the core owns query composition and pure scope.
 pub trait ProjectionHost<C>: ProgramHost<C> {
     type Kind: Clone + PartialEq;
 
+    /// Expose embedded primitive argument bodies without evaluating their data.
+    fn value_arguments<'s>(
+        &self,
+        _stage: &'s Self::Stage,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<NativeValueArguments<'s, C, Self>, QueryError> {
+        Ok(Vec::new())
+    }
+    /// Execute a stage with its invocation-local prepared argument runner.
+    /// Existing hosts keep their ordinary stage implementation.
+    fn evaluate_stage_with_arguments(
+        &self,
+        stage: &Self::Stage,
+        input: Self::Value,
+        arguments: &mut dyn NativeArguments<C, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        let (context, bindings) = arguments.parts();
+        self.evaluate_stage(stage, input, context, bindings, budget, range)
+    }
     fn kind(
         &self,
         value: &Self::Value,
@@ -88,6 +139,32 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<ConstructedValue, EvaluationError<Self::Error>>;
+    /// Share a selected immutable constructed binding when the host retains it.
+    /// The hook must preserve current context/handle checks. Runtime admission
+    /// still inspects the selected value; the default uses owned projection.
+    fn share_constructed(
+        &self,
+        _value: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Option<std::sync::Arc<ConstructedValue>>, EvaluationError<Self::Error>> {
+        Ok(None)
+    }
+
+    /// Lift a shared immutable scalar argument into the native host. The default
+    /// materializes the owned value required by the existing lifting hook.
+    fn lift_shared_constructed(
+        &self,
+        value: std::sync::Arc<ConstructedValue>,
+        types: Vec<ValueType>,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        let value = copy_constructed_value(&value, budget, Location::Query(range.clone()))?;
+        self.lift_constructed(value, types, context, budget, range)
+    }
     fn lift_constructed(
         &self,
         value: ConstructedValue,
@@ -254,13 +331,113 @@ fn value_facts<C, H: ProjectionHost<C>>(
     Ok(facts)
 }
 
+enum NativePreparation<'a> {
+    Checking(&'a mut BTreeMap<usize, PreparedNative>),
+    Running(&'a BTreeMap<usize, PreparedNative>),
+}
+impl NativePreparation<'_> {
+    fn checking(&mut self) -> &mut BTreeMap<usize, PreparedNative> {
+        match self {
+            Self::Checking(values) => values,
+            Self::Running(_) => unreachable!("runtime argument bodies are already prepared"),
+        }
+    }
+    fn values(&self) -> &BTreeMap<usize, PreparedNative> {
+        match self {
+            Self::Checking(values) => values,
+            Self::Running(values) => values,
+        }
+    }
+}
+
+fn declared_arguments<'q, C, H: ProjectionHost<C>>(
+    query: &'q NativeExpression<C, H>,
+    host: &H,
+    budget: &mut Budget,
+) -> Result<NativeValueArguments<'q, C, H>, QueryError> {
+    enum Pending<'q, S, O, E> {
+        Expression(&'q Expression<S, O, E>),
+        Step(&'q Located<ExpressionStep<S, E>>),
+    }
+    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter>>(1, budget, &query.range)?;
+    let mut pending = vec![Pending::Expression(query)];
+    let mut result = Vec::new();
+    while let Some(node) = pending.pop() {
+        match node {
+            Pending::Step(step) => {
+                if let ExpressionStep::Stage(stage) = &step.value {
+                    let arguments = host.value_arguments(stage, budget, &step.range)?;
+                    admit_slots::<(&ValueExpression<NativeExpression<C, H>>, H::Kind)>(
+                        arguments.len(),
+                        budget,
+                        &step.range,
+                    )?;
+                    result.extend(arguments);
+                }
+            }
+            Pending::Expression(expression) => match &expression.value {
+                ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+                ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => {
+                    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter>>(
+                        1,
+                        budget,
+                        &expression.range,
+                    )?;
+                    pending.push(Pending::Expression(value));
+                }
+                ExpressionKind::Sequence { input, steps } => {
+                    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter>>(
+                        steps.len().checked_add(1).ok_or_else(|| {
+                            QueryError::query(
+                                expression.range.clone(),
+                                "argument metadata size overflow",
+                            )
+                        })?,
+                        budget,
+                        &expression.range,
+                    )?;
+                    pending.extend(steps.iter().rev().map(Pending::Step));
+                    pending.push(Pending::Expression(input));
+                }
+                ExpressionKind::Set { left, right, .. } => {
+                    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter>>(
+                        2,
+                        budget,
+                        &expression.range,
+                    )?;
+                    pending.push(Pending::Expression(right));
+                    pending.push(Pending::Expression(left));
+                }
+                ExpressionKind::Record(fields) => {
+                    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter>>(
+                        fields.len(),
+                        budget,
+                        &expression.range,
+                    )?;
+                    pending.extend(
+                        fields
+                            .iter()
+                            .rev()
+                            .map(|(_, value)| Pending::Expression(value)),
+                    );
+                }
+            },
+        }
+    }
+    Ok(result)
+}
+
 struct NativeValues<'a, C, H: ProjectionHost<C>> {
     host: &'a H,
     input_kind: H::Kind,
     input: Option<&'a H::Value>,
     context: Option<&'a mut C>,
     bindings: Option<&'a Bindings<H::Value>>,
-    scope: BTreeMap<String, H::Kind>,
+    scope: &'a BTreeMap<String, H::Kind>,
+    outer_names: &'a [&'a str],
+    outer: &'a [&'a H::Value],
+    subject_name: Option<&'a str>,
+    prepared: NativePreparation<'a>,
 }
 
 impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator, H::Emitter>>
@@ -274,7 +451,7 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
         budget: &mut Budget,
         _range: &Range<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
-        let mut scope = copy_scope::<C, H>(&self.scope, budget, &query.range)?;
+        let mut scope = copy_scope::<C, H>(self.scope, budget, &query.range)?;
         for (name, types) in locals {
             budget.charge(name.len() + 1, Location::Query(query.range.clone()))?;
             scope.insert(
@@ -287,6 +464,39 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
             );
         }
         let kind = native_expression_kind(query, self.host, &self.input_kind, &scope, budget)?;
+        let prepared = PreparedNative::resolve::<C, H>(
+            query,
+            self.host,
+            self.outer_names,
+            self.subject_name,
+            locals,
+            budget,
+        )?;
+        budget.charge(1, Location::Query(query.range.clone()))?;
+        self.prepared
+            .checking()
+            .insert(query as *const _ as usize, prepared);
+        let arguments = declared_arguments::<C, H>(query, self.host, budget)?;
+        if !arguments.is_empty() {
+            let facts = value_facts(self.host, &scope, budget, &query.range)?;
+            admit_slots::<&str>(scope.len(), budget, &query.range)?;
+            let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
+            for (expression, input_kind) in arguments {
+                let mut queries = NativeValues {
+                    host: self.host,
+                    input_kind,
+                    input: None,
+                    context: None,
+                    bindings: None,
+                    scope: &scope,
+                    outer_names: &outer_names,
+                    outer: &[],
+                    subject_name: None,
+                    prepared: NativePreparation::Checking(self.prepared.checking()),
+                };
+                query_value_types(expression, &facts, &mut queries, budget)?;
+            }
+        }
         self.host
             .scalar_types(&kind, budget, &query.range)?
             .ok_or_else(|| {
@@ -296,26 +506,76 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
                 )
             })
     }
+    fn query_arguments<'q>(
+        &self,
+        query: &'q NativeExpression<C, H>,
+        budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Vec<&'q ValueExpression<NativeExpression<C, H>>>, QueryError> {
+        let arguments = declared_arguments::<C, H>(query, self.host, budget)?;
+        admit_slots::<&ValueExpression<NativeExpression<C, H>>>(
+            arguments.len(),
+            budget,
+            &query.range,
+        )?;
+        Ok(arguments
+            .into_iter()
+            .map(|(expression, _)| expression)
+            .collect())
+    }
     fn evaluate_query(
         &mut self,
         query: &Expression<H::Stage, H::SetOperator, H::Emitter>,
         locals: &[(&str, ConstructedValue)],
         budget: &mut Budget,
     ) -> Result<ConstructedValue, Self::Error> {
+        admit_slots::<std::sync::Arc<ConstructedValue>>(locals.len(), budget, &query.range)?;
+        let mut shared = Vec::with_capacity(locals.len());
+        for (name, value) in locals {
+            shared.push((
+                *name,
+                std::sync::Arc::new(copy_constructed_value(
+                    value,
+                    budget,
+                    Location::Query(query.range.clone()),
+                )?),
+            ));
+        }
+        self.evaluate_query_with_shared_locals(query, &shared, budget, &query.range)
+    }
+    fn evaluate_query_with_shared_locals(
+        &mut self,
+        query: &NativeExpression<C, H>,
+        locals: &[(&str, std::sync::Arc<ConstructedValue>)],
+        budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<ConstructedValue, Self::Error> {
+        self.evaluate_query_with_arguments(query, locals, &mut NoArguments, budget, &query.range)
+    }
+    fn evaluate_query_with_arguments(
+        &mut self,
+        query: &NativeExpression<C, H>,
+        locals: &[(&str, std::sync::Arc<ConstructedValue>)],
+        arguments: &mut dyn crate::ValueArguments<NativeExpression<C, H>, Self::Error>,
+        budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<ConstructedValue, Self::Error> {
         let context = self.context.as_deref_mut().expect("runtime native context");
         let mut scoped = None;
         for (name, value) in locals {
-            let value =
-                copy_constructed_value(value, budget, Location::Query(query.range.clone()))?;
             admit_slots::<ValueType>(1, budget, &query.range)?;
             let types = vec![crate::constructed_value_type(
-                &value,
+                value,
                 budget,
                 Location::Query(query.range.clone()),
             )?];
-            let value = self
-                .host
-                .lift_constructed(value, types, context, budget, &query.range)?;
+            let value = self.host.lift_shared_constructed(
+                std::sync::Arc::clone(value),
+                types,
+                context,
+                budget,
+                &query.range,
+            )?;
             let outer = scoped
                 .as_ref()
                 .unwrap_or(self.bindings.expect("runtime native bindings"));
@@ -332,19 +592,52 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
             budget,
             &query.range,
         )?;
-        let value = evaluate_expression(
+        let bindings = scoped
+            .as_ref()
+            .unwrap_or(self.bindings.expect("runtime native bindings"));
+        admit_slots::<H::Value>(locals.len(), budget, &query.range)?;
+        let mut local_values = Vec::with_capacity(locals.len());
+        for (name, _) in locals {
+            local_values.push(bindings.get(name, query.range.clone())?);
+        }
+        let prepared = self
+            .prepared
+            .values()
+            .get(&(query as *const _ as usize))
+            .expect("native operand prepared in this invocation");
+        let value = prepared.run(
             query,
             self.host,
             input,
             context,
-            scoped
-                .as_ref()
-                .unwrap_or(self.bindings.expect("runtime native bindings")),
+            bindings,
+            self.outer,
+            self.input.expect("runtime relative input"),
+            &local_values,
+            arguments,
+            self.prepared.values(),
+            self.scope,
             budget,
         )?;
         self.host
             .project_value(value, context, budget, &query.range)
     }
+    fn read_shared_binding(
+        &mut self,
+        name: &str,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Option<std::sync::Arc<ConstructedValue>>, Self::Error> {
+        self.host.share_constructed(
+            self.bindings
+                .expect("runtime native bindings")
+                .get(name, range.clone())?,
+            self.context.as_deref_mut().expect("runtime native context"),
+            budget,
+            range,
+        )
+    }
+
     fn read_binding(
         &mut self,
         name: &str,
@@ -383,6 +676,81 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
     }
 }
 
+struct NoArguments;
+impl<Q, E: From<QueryError>> crate::ValueArguments<Q, E> for NoArguments {
+    fn evaluate(
+        &mut self,
+        expression: &ValueExpression<Q>,
+        _: &mut dyn ValueQueryHost<Q, Error = E>,
+        _: &mut Budget,
+    ) -> Result<crate::ConstructedRead, E> {
+        Err(QueryError::query(
+            expression.range.clone(),
+            "argument was not prepared in this invocation",
+        )
+        .into())
+    }
+}
+
+struct StageArguments<'a, 'v, C, H: ProjectionHost<C>> {
+    host: &'a H,
+    context: &'a mut C,
+    bindings: &'a Bindings<H::Value>,
+    scope: &'a BTreeMap<String, H::Kind>,
+    prepared: &'a BTreeMap<usize, PreparedNative>,
+    declared: &'a [usize],
+    values: &'v mut dyn crate::ValueArguments<NativeExpression<C, H>, EvaluationError<H::Error>>,
+}
+impl<C, H: ProjectionHost<C>> NativeArguments<C, H> for StageArguments<'_, '_, C, H> {
+    fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
+        (self.context, self.bindings)
+    }
+    fn evaluate(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>> {
+        let id = expression as *const _ as usize;
+        budget.charge(
+            self.declared.len() + 1,
+            Location::Query(expression.range.clone()),
+        )?;
+        if !self.declared.contains(&id) {
+            return Err(QueryError::query(
+                expression.range.clone(),
+                "argument was not declared by this native stage",
+            )
+            .into());
+        }
+        admit_slots::<(&str, &H::Value)>(self.bindings.iter().count(), budget, &expression.range)?;
+        let outer_names = self
+            .bindings
+            .iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        let outer = self
+            .bindings
+            .iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>();
+        let input_kind = self.host.kind(&input, budget, &expression.range)?;
+        let mut queries = NativeValues {
+            host: self.host,
+            input_kind,
+            input: Some(&input),
+            context: Some(&mut *self.context),
+            bindings: Some(self.bindings),
+            scope: self.scope,
+            outer_names: &outer_names,
+            outer: &outer,
+            subject_name: None,
+            prepared: NativePreparation::Running(self.prepared),
+        };
+        self.values.evaluate(expression, &mut queries, budget)
+    }
+}
+
 /// Infer constructed field schemas before obtaining any native subjects.
 ///
 /// # Errors
@@ -408,13 +776,24 @@ pub fn projection_types<C, H: ProjectionHost<C>>(
     let subject_kind = host.subject_kind(&input, budget, range)?;
     scope.insert(projection.subject.value.clone(), subject_kind.clone());
     let facts = value_facts(host, &scope, budget, range)?;
+    let mut prepared = BTreeMap::new();
+    admit_slots::<&str>(scope.len().saturating_sub(1), budget, range)?;
+    let outer_names = scope
+        .keys()
+        .filter(|name| *name != &projection.subject.value)
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     let mut queries = NativeValues::<C, H> {
+        prepared: NativePreparation::Checking(&mut prepared),
+        outer_names: &outer_names,
+        outer: &[],
+        subject_name: Some(&projection.subject.value),
         host,
         input_kind: subject_kind,
         input: None,
         context: None,
         bindings: None,
-        scope,
+        scope: &scope,
     };
     admit_slots::<Vec<ValueType>>(1, budget, range)?;
     let mut positions = vec![Vec::new()];
@@ -439,6 +818,15 @@ pub fn projection_types<C, H: ProjectionHost<C>>(
             &Location::Query(expression.range.clone()),
         )?;
     }
+    projection_result_types(projection, positions, budget)
+}
+
+fn projection_result_types<Q>(
+    projection: &Projection<Q>,
+    positions: Vec<Vec<ValueType>>,
+    budget: &mut Budget,
+) -> Result<Vec<ValueType>, QueryError> {
+    let range = &projection.subject.range;
     admit_slots::<ValueType>(positions.len(), budget, range)?;
     let mut records = Vec::with_capacity(positions.len());
     for position in positions {
@@ -467,12 +855,105 @@ pub fn evaluate_projection<C, H: ProjectionHost<C>>(
     bindings: &Bindings<H::Value>,
     budget: &mut Budget,
 ) -> Result<ConstructedValue, EvaluationError<H::Error>> {
+    Ok(evaluate_projection_with_types(projection, host, input, context, bindings, budget)?.value)
+}
+
+/// Owned report and result facts prepared in the same invocation.
+#[derive(Debug, PartialEq)]
+pub struct ConstructedResult {
+    pub value: ConstructedValue,
+    pub types: Vec<ValueType>,
+}
+
+/// Prepare every written field once, then execute its resolved slots for each
+/// current native subject. Preparation cannot escape this context or invocation.
+///
+/// # Errors
+/// All-written preflight runs before enumeration; runtime/native failures retain
+/// their locations and cumulative spending while current frames are released.
+pub fn evaluate_projection_with_types<C, H: ProjectionHost<C>>(
+    projection: &Projection<Expression<H::Stage, H::SetOperator, H::Emitter>>,
+    host: &H,
+    input: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+) -> Result<ConstructedResult, EvaluationError<H::Error>> {
     let range = &projection.subject.range;
     budget.within_evaluation(1, Location::Query(range.clone()), |budget| {
         let input_kind = host.kind(&input, budget, range)?;
-        let scope = scope_kinds(host, bindings, budget, range)?;
-        projection_types(projection, host, input_kind.clone(), scope, budget)?;
+        let mut scope = scope_kinds(host, bindings, budget, range)?;
+        if scope.contains_key(&projection.subject.value) {
+            return Err(QueryError::query(
+                range.clone(),
+                "projection subject shadows an existing binding",
+            )
+            .into());
+        }
+        budget.charge(
+            projection.subject.value.len() + 1,
+            Location::Query(range.clone()),
+        )?;
         let subject_kind = host.subject_kind(&input_kind, budget, range)?;
+        scope.insert(projection.subject.value.clone(), subject_kind.clone());
+        let facts = value_facts(host, &scope, budget, range)?;
+        let mut prepared_native = BTreeMap::new();
+        admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, range)?;
+        let outer_names = bindings.iter().map(|(name, _)| name).collect::<Vec<_>>();
+        let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
+        let mut queries = NativeValues {
+            host,
+            input_kind: subject_kind.clone(),
+            input: None,
+            context: None,
+            bindings: None,
+            scope: &scope,
+            outer_names: &outer_names,
+            outer: &outer,
+            subject_name: Some(&projection.subject.value),
+            prepared: NativePreparation::Checking(&mut prepared_native),
+        };
+        admit_slots::<crate::value::PreparedQueryValue<'_, NativeExpression<C, H>>>(
+            projection.fields.len(),
+            budget,
+            range,
+        )?;
+        let mut fields = Vec::with_capacity(projection.fields.len());
+        let mut positions = vec![Vec::new()];
+        for (index, (label, expression)) in projection.fields.iter().enumerate() {
+            for (previous, _) in &projection.fields[..index] {
+                budget.charge(
+                    label.value.len().min(previous.value.len()) + 1,
+                    Location::Query(label.range.clone()),
+                )?;
+                if previous.value == label.value {
+                    return Err(
+                        QueryError::query(label.range.clone(), "duplicate record label").into(),
+                    );
+                }
+            }
+            let field =
+                crate::value::prepare_query_value(expression, &facts, &mut queries, budget)?;
+            positions = crate::value::extend_type_positions(
+                &positions,
+                &field.types,
+                budget,
+                &Location::Query(expression.range.clone()),
+            )?;
+            fields.push(field);
+        }
+        let types = projection_result_types(projection, positions, budget)?;
+        admit_slots::<(crate::value::prepared::Frame<'_>, Option<usize>)>(
+            fields.len(),
+            budget,
+            range,
+        )?;
+        let mut frames = Vec::with_capacity(fields.len());
+        for field in &fields {
+            let frame = field.frame(budget)?;
+            let subject = frame.named_slot(&projection.subject.value, budget, range)?;
+            frames.push((frame, subject));
+        }
         let subjects = host.subjects(input, context, budget, range)?;
         budget.charge_results(
             subjects.len().checked_add(1).ok_or_else(|| {
@@ -493,28 +974,38 @@ pub fn evaluate_projection<C, H: ProjectionHost<C>>(
                 subject,
                 budget,
             )?;
-            let input = local.get(&projection.subject.value, range.clone())?;
-            let scope = scope_kinds(host, &local, budget, range)?;
-            let facts = value_facts(host, &scope, budget, range)?;
             let mut queries = NativeValues {
                 host,
                 input_kind: subject_kind.clone(),
-                input: Some(input),
-                context: Some(&mut *context),
+                input: Some(local.get(&projection.subject.value, range.clone())?),
                 bindings: Some(&local),
-                scope,
+                context: Some(&mut *context),
+                scope: &scope,
+                outer_names: &outer_names,
+                outer: &outer,
+                subject_name: Some(&projection.subject.value),
+                prepared: NativePreparation::Running(&prepared_native),
             };
             budget.charge_results(projection.fields.len() + 1, Location::Query(range.clone()))?;
             admit_slots::<(String, ConstructedValue)>(projection.fields.len(), budget, range)?;
-            let mut fields = Vec::with_capacity(projection.fields.len());
-            for (label, expression) in &projection.fields {
+            let mut values = Vec::with_capacity(projection.fields.len());
+            for (((label, _), field), (frame, subject_slot)) in
+                projection.fields.iter().zip(&fields).zip(&mut frames)
+            {
+                frame.reset(*subject_slot);
                 budget.charge(label.value.len(), Location::Query(label.range.clone()))?;
-                let value = evaluate_query_value(expression, &facts, &mut queries, budget)?;
-                fields.push((label.value.clone(), value));
+                values.push((
+                    label.value.clone(),
+                    field.evaluate(&mut queries, frame, budget)?,
+                ));
+                frame.reset(*subject_slot);
             }
-            rows.push(ConstructedValue::Record(fields));
+            rows.push(ConstructedValue::Record(values));
         }
-        Ok(ConstructedValue::Array(rows))
+        Ok(ConstructedResult {
+            value: ConstructedValue::Array(rows),
+            types,
+        })
     })
 }
 
@@ -523,25 +1014,67 @@ pub fn evaluate_projection<C, H: ProjectionHost<C>>(
 /// # Errors
 /// Static and runtime failures share the existing native evaluation allowance.
 pub fn evaluate_native_value<C, H: ProjectionHost<C>>(
-    expression: &ValueExpression<Expression<H::Stage, H::SetOperator, H::Emitter>>,
+    expression: &ValueExpression<NativeExpression<C, H>>,
     host: &H,
     input: H::Value,
     context: &mut C,
     bindings: &Bindings<H::Value>,
     budget: &mut Budget,
 ) -> Result<ConstructedValue, EvaluationError<H::Error>> {
+    Ok(evaluate_native_value_with_types(expression, host, input, context, bindings, budget)?.value)
+}
+
+/// Prepare a native value and return its owned result with its prepared facts.
+///
+/// # Errors
+/// Structural/name/type preflight and selected runtime admission use the active
+/// allowance and retain the original scalar/native source locations.
+pub fn evaluate_native_value_with_types<C, H: ProjectionHost<C>>(
+    expression: &ValueExpression<NativeExpression<C, H>>,
+    host: &H,
+    input: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+) -> Result<ConstructedResult, EvaluationError<H::Error>> {
     let scope = scope_kinds(host, bindings, budget, &expression.range)?;
     let facts = value_facts(host, &scope, budget, &expression.range)?;
     let input_kind = host.kind(&input, budget, &expression.range)?;
+    let mut prepared_native = BTreeMap::new();
+    admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, &expression.range)?;
+    let outer_names = bindings.iter().map(|(name, _)| name).collect::<Vec<_>>();
+    let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
+    let mut queries = NativeValues {
+        host,
+        input_kind: input_kind.clone(),
+        input: None,
+        context: None,
+        bindings: None,
+        scope: &scope,
+        outer_names: &outer_names,
+        outer: &outer,
+        subject_name: None,
+        prepared: NativePreparation::Checking(&mut prepared_native),
+    };
+    let prepared = crate::value::prepare_query_value(expression, &facts, &mut queries, budget)?;
+    let mut frame = prepared.frame(budget)?;
     let mut queries = NativeValues {
         host,
         input_kind,
         input: Some(&input),
         context: Some(context),
         bindings: Some(bindings),
-        scope,
+        scope: &scope,
+        outer_names: &outer_names,
+        outer: &outer,
+        subject_name: None,
+        prepared: NativePreparation::Running(&prepared_native),
     };
-    evaluate_query_value(expression, &facts, &mut queries, budget)
+    let value = prepared.evaluate(&mut queries, &mut frame, budget)?;
+    Ok(ConstructedResult {
+        value,
+        types: prepared.types,
+    })
 }
 
 /// Infer a report's declared facts without executing a native operand.
@@ -556,13 +1089,20 @@ pub fn native_value_types<C, H: ProjectionHost<C>>(
     budget: &mut Budget,
 ) -> Result<Vec<ValueType>, QueryError> {
     let facts = value_facts(host, &scope, budget, &expression.range)?;
+    let mut prepared = BTreeMap::new();
+    admit_slots::<&str>(scope.len(), budget, &expression.range)?;
+    let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
     let mut queries = NativeValues::<C, H> {
+        prepared: NativePreparation::Checking(&mut prepared),
+        outer_names: &outer_names,
+        outer: &[],
+        subject_name: None,
         host,
         input_kind,
         input: None,
         context: None,
         bindings: None,
-        scope,
+        scope: &scope,
     };
     query_value_types(expression, &facts, &mut queries, budget)
 }

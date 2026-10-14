@@ -1,0 +1,633 @@
+use super::*;
+use std::sync::Arc;
+
+pub(super) type PreparedValue<'a, Q> = Located<PreparedKind<'a, Q>>;
+
+#[derive(Debug, PartialEq)]
+pub(super) enum ReadSlot {
+    Outer(usize),
+    Local(usize),
+}
+
+pub(super) struct PreparedArgument<'a, Q> {
+    pub source: &'a ValueExpression<Q>,
+    pub expression: PreparedValue<'a, Q>,
+    pub names: Vec<&'a str>,
+}
+
+pub(super) enum PreparedKind<'a, Q> {
+    Literal(&'a ConstructedValue),
+    /// A normalized native operand; it runs only when this node is selected.
+    NativeQuery {
+        query: &'a Q,
+        arguments: Vec<PreparedArgument<'a, Q>>,
+    },
+    /// Extract exactly one positional child without copying it.
+    One(Box<PreparedValue<'a, Q>>),
+    Name(ReadSlot),
+    Occurs(Box<PreparedValue<'a, Q>>),
+    Absent(Box<PreparedValue<'a, Q>>),
+    Lookup {
+        value: Box<PreparedValue<'a, Q>>,
+        key: Box<PreparedValue<'a, Q>>,
+    },
+    HasKey {
+        value: Box<PreparedValue<'a, Q>>,
+        key: Box<PreparedValue<'a, Q>>,
+    },
+    Default {
+        value: Box<PreparedValue<'a, Q>>,
+        fallback: Box<PreparedValue<'a, Q>>,
+    },
+    Array(Vec<PreparedValue<'a, Q>>),
+    Tuple(Vec<PreparedValue<'a, Q>>),
+    Record(Vec<(&'a Located<String>, PreparedValue<'a, Q>)>),
+    Set(Vec<PreparedValue<'a, Q>>),
+    /// Literal pairs run in written order and normalize to row-major order.
+    /// Empty literals require explicit typed axes; generic sparse data is valid.
+    KeyedArray {
+        axes: Option<&'a [KeyAxis]>,
+        entries: Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>,
+    },
+    /// Fallback sources establish axes only after zero entries. They run in the
+    /// surrounding scope, outside this comprehension's own generator binders.
+    KeyedComprehension {
+        clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
+        key: Box<PreparedValue<'a, Q>>,
+        head: Box<PreparedValue<'a, Q>>,
+        empty_axis_sources: Option<Vec<PreparedValue<'a, Q>>>,
+    },
+    Unary {
+        operator: ValueUnaryOperator,
+        operand: Box<PreparedValue<'a, Q>>,
+    },
+    Binary {
+        operator: ValueBinaryOperator,
+        left: Box<PreparedValue<'a, Q>>,
+        right: Box<PreparedValue<'a, Q>>,
+    },
+    Field {
+        value: Box<PreparedValue<'a, Q>>,
+        field: &'a Located<String>,
+    },
+    TupleAccess {
+        value: Box<PreparedValue<'a, Q>>,
+        position: &'a Located<usize>,
+    },
+    ArrayAccess {
+        array: Box<PreparedValue<'a, Q>>,
+        index: Box<PreparedValue<'a, Q>>,
+    },
+    IndexSet(Box<PreparedValue<'a, Q>>),
+    /// Expose present keyed cells as positional `key`/`value` records. Rank-one
+    /// keys are scalars; higher-rank keys are tuples in dimension order.
+    Entries(Box<PreparedValue<'a, Q>>),
+    /// Pair keyed arrays with identical ordered axes and present full keys.
+    /// Retain left axes/keys and move each pair into a two-element tuple cell.
+    ZipExact {
+        left: Box<PreparedValue<'a, Q>>,
+        right: Box<PreparedValue<'a, Q>>,
+    },
+    /// Evaluate the entire array before scanning its values in stored order.
+    Reduce {
+        operator: ValueReducer,
+        array: Box<PreparedValue<'a, Q>>,
+    },
+    /// Group positional records by one static field, preserving first-seen keys
+    /// and all rows in input order. Keys are homogeneous integers, strings or
+    /// members of one nominal type. Results use existing `key`/`items` records.
+    /// Missing fields are deferred until execution; known incompatible types
+    /// fail preflight. Selector/key errors use `field`'s range.
+    GroupBy {
+        rows: Box<PreparedValue<'a, Q>>,
+        field: &'a Located<String>,
+    },
+    /// Preflight both operands; run value only after a true fixed Boolean.
+    /// A false condition fails at this node with the literal message.
+    Require {
+        condition: Box<PreparedValue<'a, Q>>,
+        value: Box<PreparedValue<'a, Q>>,
+        message: &'a Located<String>,
+    },
+    Range {
+        lower: Box<PreparedValue<'a, Q>>,
+        upper: Box<PreparedValue<'a, Q>>,
+    },
+    /// Conditions are checked in order. The final else is mandatory.
+    Conditional {
+        branches: Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>,
+        otherwise: Box<PreparedValue<'a, Q>>,
+    },
+    Comprehension {
+        constructor: ValueConstructor,
+        clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
+        head: Box<PreparedValue<'a, Q>>,
+    },
+}
+
+/// Ordered generator clauses. None discards a value without installing a name.
+/// Grouped `In` evaluates its source once and varies the last binder fastest.
+pub(super) enum PreparedGenerator<'a, Q> {
+    In {
+        binders: Vec<&'a Located<Option<String>>>,
+        source: PreparedValue<'a, Q>,
+        filter: Option<PreparedValue<'a, Q>>,
+    },
+    Bind {
+        binder: &'a Located<Option<String>>,
+        value: PreparedValue<'a, Q>,
+        filter: Option<PreparedValue<'a, Q>>,
+    },
+}
+
+pub(super) struct Preparation<'a> {
+    pub names: Vec<&'a str>,
+    locals: Vec<&'a str>,
+}
+
+impl<'a> Preparation<'a> {
+    pub fn new() -> Self {
+        Self {
+            names: Vec::new(),
+            locals: Vec::new(),
+        }
+    }
+
+    pub fn resolve<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        expression: &'a ValueExpression<Q>,
+        queries: &mut H,
+        budget: &mut Budget,
+    ) -> Result<PreparedValue<'a, Q>, QueryError> {
+        let location = Location::Query(expression.range.clone());
+        budget.within_evaluation(1, location.clone(), |budget| {
+            budget.charge(1, location.clone())?;
+            let kind = match &expression.value {
+                ValueExpressionKind::Literal(value) => PreparedKind::Literal(value),
+                ValueExpressionKind::NativeQuery(query) => {
+                    let sources = queries.query_arguments(query, budget, &expression.range)?;
+                    let mut arguments = metadata_vec(sources.len(), budget, &location)?;
+                    for source in sources {
+                        let mut preparation = Self::new();
+                        let expression = preparation.resolve(source, queries, budget)?;
+                        arguments.push(PreparedArgument {
+                            source,
+                            expression,
+                            names: preparation.names,
+                        });
+                    }
+                    PreparedKind::NativeQuery {
+                        query: query.as_ref(),
+                        arguments,
+                    }
+                }
+                ValueExpressionKind::Name(name) => {
+                    let work = self
+                        .locals
+                        .iter()
+                        .chain(&self.names)
+                        .try_fold(0usize, |work, local| {
+                            sum(work, 1 + local.len().min(name.len()), &location)
+                        })?;
+                    budget.charge(work, location.clone())?;
+                    let slot = if let Some(index) =
+                        self.locals.iter().position(|local| *local == name)
+                    {
+                        ReadSlot::Local(index)
+                    } else {
+                        let index = match self.names.iter().position(|outer| *outer == name) {
+                            Some(index) => index,
+                            None => {
+                                push_metadata(&mut self.names, name.as_str(), budget, &location)?;
+                                self.names.len() - 1
+                            }
+                        };
+                        ReadSlot::Outer(index)
+                    };
+                    PreparedKind::Name(slot)
+                }
+                ValueExpressionKind::One(value) => {
+                    PreparedKind::One(Box::new(self.resolve(value, queries, budget)?))
+                }
+                ValueExpressionKind::Occurs(value) => {
+                    PreparedKind::Occurs(Box::new(self.resolve(value, queries, budget)?))
+                }
+                ValueExpressionKind::Absent(value) => {
+                    PreparedKind::Absent(Box::new(self.resolve(value, queries, budget)?))
+                }
+                ValueExpressionKind::IndexSet(value) => {
+                    PreparedKind::IndexSet(Box::new(self.resolve(value, queries, budget)?))
+                }
+                ValueExpressionKind::Entries(value) => {
+                    PreparedKind::Entries(Box::new(self.resolve(value, queries, budget)?))
+                }
+                ValueExpressionKind::Lookup { value, key } => PreparedKind::Lookup {
+                    value: Box::new(self.resolve(value, queries, budget)?),
+                    key: Box::new(self.resolve(key, queries, budget)?),
+                },
+                ValueExpressionKind::HasKey { value, key } => PreparedKind::HasKey {
+                    value: Box::new(self.resolve(value, queries, budget)?),
+                    key: Box::new(self.resolve(key, queries, budget)?),
+                },
+                ValueExpressionKind::Default { value, fallback } => PreparedKind::Default {
+                    value: Box::new(self.resolve(value, queries, budget)?),
+                    fallback: Box::new(self.resolve(fallback, queries, budget)?),
+                },
+                ValueExpressionKind::ZipExact { left, right } => PreparedKind::ZipExact {
+                    left: Box::new(self.resolve(left, queries, budget)?),
+                    right: Box::new(self.resolve(right, queries, budget)?),
+                },
+                ValueExpressionKind::Range { lower, upper } => PreparedKind::Range {
+                    lower: Box::new(self.resolve(lower, queries, budget)?),
+                    upper: Box::new(self.resolve(upper, queries, budget)?),
+                },
+                ValueExpressionKind::Array(values)
+                | ValueExpressionKind::Tuple(values)
+                | ValueExpressionKind::Set(values) => {
+                    let mut children = metadata_vec(values.len(), budget, &location)?;
+                    for child in values {
+                        children.push(self.resolve(child, queries, budget)?);
+                    }
+                    match &expression.value {
+                        ValueExpressionKind::Array(_) => PreparedKind::Array(children),
+                        ValueExpressionKind::Tuple(_) => PreparedKind::Tuple(children),
+                        _ => PreparedKind::Set(children),
+                    }
+                }
+                ValueExpressionKind::Record(fields) => {
+                    let mut children = metadata_vec(fields.len(), budget, &location)?;
+                    for (label, child) in fields {
+                        children.push((label, self.resolve(child, queries, budget)?));
+                    }
+                    PreparedKind::Record(children)
+                }
+                ValueExpressionKind::KeyedArray { axes, entries } => {
+                    let mut children = metadata_vec(entries.len(), budget, &location)?;
+                    for (key, value) in entries {
+                        children.push((
+                            self.resolve(key, queries, budget)?,
+                            self.resolve(value, queries, budget)?,
+                        ));
+                    }
+                    PreparedKind::KeyedArray {
+                        axes: axes.as_deref(),
+                        entries: children,
+                    }
+                }
+                ValueExpressionKind::Unary { operator, operand } => PreparedKind::Unary {
+                    operator: *operator,
+                    operand: Box::new(self.resolve(operand, queries, budget)?),
+                },
+                ValueExpressionKind::Binary {
+                    operator,
+                    left,
+                    right,
+                } => PreparedKind::Binary {
+                    operator: *operator,
+                    left: Box::new(self.resolve(left, queries, budget)?),
+                    right: Box::new(self.resolve(right, queries, budget)?),
+                },
+                ValueExpressionKind::Field { value, field } => PreparedKind::Field {
+                    value: Box::new(self.resolve(value, queries, budget)?),
+                    field,
+                },
+                ValueExpressionKind::TupleAccess { value, position } => PreparedKind::TupleAccess {
+                    value: Box::new(self.resolve(value, queries, budget)?),
+                    position,
+                },
+                ValueExpressionKind::ArrayAccess { array, index } => PreparedKind::ArrayAccess {
+                    array: Box::new(self.resolve(array, queries, budget)?),
+                    index: Box::new(self.resolve(index, queries, budget)?),
+                },
+                ValueExpressionKind::Reduce { operator, array } => PreparedKind::Reduce {
+                    operator: *operator,
+                    array: Box::new(self.resolve(array, queries, budget)?),
+                },
+                ValueExpressionKind::GroupBy { rows, field } => PreparedKind::GroupBy {
+                    rows: Box::new(self.resolve(rows, queries, budget)?),
+                    field,
+                },
+                ValueExpressionKind::Require {
+                    condition,
+                    value,
+                    message,
+                } => PreparedKind::Require {
+                    condition: Box::new(self.resolve(condition, queries, budget)?),
+                    value: Box::new(self.resolve(value, queries, budget)?),
+                    message,
+                },
+                ValueExpressionKind::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    let mut children = metadata_vec(branches.len(), budget, &location)?;
+                    for (condition, value) in branches {
+                        children.push((
+                            self.resolve(condition, queries, budget)?,
+                            self.resolve(value, queries, budget)?,
+                        ));
+                    }
+                    PreparedKind::Conditional {
+                        branches: children,
+                        otherwise: Box::new(self.resolve(otherwise, queries, budget)?),
+                    }
+                }
+                ValueExpressionKind::Comprehension {
+                    constructor,
+                    clauses,
+                    head,
+                } => {
+                    let saved = self.locals.len();
+                    let clauses = self.clauses(clauses, queries, budget, &location)?;
+                    let head = Box::new(self.resolve(head, queries, budget)?);
+                    self.locals.truncate(saved);
+                    PreparedKind::Comprehension {
+                        constructor: *constructor,
+                        clauses,
+                        head,
+                    }
+                }
+                ValueExpressionKind::KeyedComprehension {
+                    clauses,
+                    key,
+                    head,
+                    empty_axis_sources,
+                } => {
+                    let sources = match empty_axis_sources {
+                        Some(sources) => {
+                            let mut children = metadata_vec(sources.len(), budget, &location)?;
+                            for source in sources {
+                                children.push(self.resolve(source, queries, budget)?);
+                            }
+                            Some(children)
+                        }
+                        None => None,
+                    };
+                    let saved = self.locals.len();
+                    let clauses = self.clauses(clauses, queries, budget, &location)?;
+                    let key = Box::new(self.resolve(key, queries, budget)?);
+                    let head = Box::new(self.resolve(head, queries, budget)?);
+                    self.locals.truncate(saved);
+                    PreparedKind::KeyedComprehension {
+                        clauses,
+                        key,
+                        head,
+                        empty_axis_sources: sources,
+                    }
+                }
+            };
+            Ok(Located::new(kind, expression.range.clone()))
+        })
+    }
+
+    fn clauses<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        clauses: &'a [Located<ValueGenerator<Q>>],
+        queries: &mut H,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<Located<PreparedGenerator<'a, Q>>>, QueryError> {
+        let mut result = metadata_vec(clauses.len(), budget, location)?;
+        for clause in clauses {
+            let value = match &clause.value {
+                ValueGenerator::In {
+                    binders,
+                    source,
+                    filter,
+                } => {
+                    let source = self.resolve(source, queries, budget)?;
+                    let mut names = metadata_vec(binders.len(), budget, location)?;
+                    for binder in binders {
+                        names.push(binder);
+                        if let Some(name) = &binder.value {
+                            push_metadata(&mut self.locals, name.as_str(), budget, location)?;
+                        }
+                    }
+                    let filter = filter
+                        .as_ref()
+                        .map(|value| self.resolve(value, queries, budget))
+                        .transpose()?;
+                    PreparedGenerator::In {
+                        binders: names,
+                        source,
+                        filter,
+                    }
+                }
+                ValueGenerator::Bind {
+                    binder,
+                    value,
+                    filter,
+                } => {
+                    let value = self.resolve(value, queries, budget)?;
+                    if let Some(name) = &binder.value {
+                        push_metadata(&mut self.locals, name.as_str(), budget, location)?;
+                    }
+                    let filter = filter
+                        .as_ref()
+                        .map(|value| self.resolve(value, queries, budget))
+                        .transpose()?;
+                    PreparedGenerator::Bind {
+                        binder,
+                        value,
+                        filter,
+                    }
+                }
+            };
+            result.push(Located::new(value, clause.range.clone()));
+        }
+        Ok(result)
+    }
+}
+
+/// An immutable selected value; paths borrow children through their retained owner.
+/// Only current slots and consumers retain owners, never a history of evaluated nodes.
+#[derive(Debug)]
+pub(super) enum RuntimeValue {
+    Owned(ConstructedValue),
+    Shared {
+        owner: Arc<ConstructedValue>,
+        path: Vec<usize>,
+    },
+}
+
+impl RuntimeValue {
+    pub fn shared(owner: Arc<ConstructedValue>) -> Self {
+        Self::Shared {
+            owner,
+            path: Vec::new(),
+        }
+    }
+    pub fn as_ref(&self) -> &ConstructedValue {
+        match self {
+            Self::Owned(value) => value,
+            Self::Shared { owner, path } => {
+                let mut value = owner.as_ref();
+                for index in path {
+                    value = match value {
+                        ConstructedValue::Record(fields) => &fields[*index].1,
+                        ConstructedValue::Array(values)
+                        | ConstructedValue::Tuple(values)
+                        | ConstructedValue::Set {
+                            elements: values, ..
+                        } => &values[*index],
+                        ConstructedValue::KeyedArray { entries, .. } => &entries[*index].value,
+                        _ => unreachable!("shared child path"),
+                    };
+                }
+                value
+            }
+        }
+    }
+    pub fn materialize(
+        self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<ConstructedValue, QueryError> {
+        match self {
+            Self::Owned(value) => Ok(value),
+            shared => copy_constructed_value(shared.as_ref(), budget, location.clone()),
+        }
+    }
+    pub fn into_shared(
+        self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Arc<ConstructedValue>, QueryError> {
+        if let Self::Shared { owner, path } = self {
+            if path.is_empty() {
+                return Ok(owner);
+            }
+            let view = Self::Shared { owner, path };
+            let value = view.materialize(budget, location)?;
+            budget.charge(1, location.clone())?;
+            Ok(Arc::new(value))
+        } else {
+            budget.charge(1, location.clone())?;
+            Ok(Arc::new(self.materialize(budget, location)?))
+        }
+    }
+    pub fn share(&mut self, budget: &mut Budget, location: &Location) -> Result<Self, QueryError> {
+        budget.charge(1, location.clone())?;
+        if let Self::Owned(_) = self {
+            let Self::Owned(value) = std::mem::replace(self, Self::Owned(ConstructedValue::Absent))
+            else {
+                unreachable!()
+            };
+            *self = Self::shared(Arc::new(value));
+        }
+        let Self::Shared { owner, path } = self else {
+            unreachable!()
+        };
+        budget.charge(path.len() + 1, location.clone())?;
+        Ok(Self::Shared {
+            owner: Arc::clone(owner),
+            path: path.clone(),
+        })
+    }
+    pub fn child(
+        mut self,
+        index: usize,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        match &mut self {
+            Self::Owned(value) => {
+                let value = std::mem::replace(value, ConstructedValue::Absent);
+                let selected = match value {
+                    ConstructedValue::Record(fields) => {
+                        fields.into_iter().nth(index).expect("selected field").1
+                    }
+                    ConstructedValue::Array(values)
+                    | ConstructedValue::Tuple(values)
+                    | ConstructedValue::Set {
+                        elements: values, ..
+                    } => values.into_iter().nth(index).expect("selected position"),
+                    ConstructedValue::KeyedArray { entries, .. } => {
+                        entries.into_iter().nth(index).expect("selected cell").value
+                    }
+                    _ => unreachable!("selected child"),
+                };
+                Ok(Self::Owned(selected))
+            }
+            Self::Shared { path, .. } => {
+                push_metadata(path, index, budget, location)?;
+                Ok(self)
+            }
+        }
+    }
+}
+
+pub(crate) struct Frame<'a> {
+    pub(super) names: Vec<&'a str>,
+    pub(super) outer: Vec<Option<RuntimeValue>>,
+    pub(super) locals: Vec<(&'a str, RuntimeValue)>,
+}
+impl<'a> Frame<'a> {
+    pub fn new(
+        names: Vec<&'a str>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        let mut outer = metadata_vec(names.len(), budget, location)?;
+        outer.resize_with(names.len(), || None);
+        Ok(Self {
+            names,
+            outer,
+            locals: Vec::new(),
+        })
+    }
+    pub fn named_slot(
+        &self,
+        name: &str,
+        budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Option<usize>, QueryError> {
+        for (index, outer) in self.names.iter().enumerate() {
+            budget.charge(
+                1 + outer.len().min(name.len()),
+                Location::Query(range.clone()),
+            )?;
+            if *outer == name {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+    pub fn reset(&mut self, slot: Option<usize>) {
+        if let Some(index) = slot {
+            self.outer[index] = None;
+        }
+    }
+    pub(super) fn read<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        slot: &ReadSlot,
+        queries: &mut H,
+        budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<RuntimeValue, H::Error> {
+        let location = Location::Query(range.clone());
+        budget.charge(1, location.clone())?;
+        match *slot {
+            ReadSlot::Local(index) => Ok(self.locals[index].1.share(budget, &location)?),
+            ReadSlot::Outer(index) => {
+                if self.outer[index].is_none() {
+                    let value =
+                        match queries.read_shared_binding(self.names[index], range, budget)? {
+                            Some(value) => RuntimeValue::shared(value),
+                            None => RuntimeValue::Owned(queries.read_binding(
+                                self.names[index],
+                                range,
+                                budget,
+                            )?),
+                        };
+                    constructed_value_type(value.as_ref(), budget, location.clone())?;
+                    self.outer[index] = Some(value);
+                }
+                Ok(self.outer[index]
+                    .as_mut()
+                    .expect("selected outer slot")
+                    .share(budget, &location)?)
+            }
+        }
+    }
+}

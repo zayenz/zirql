@@ -215,3 +215,17 @@ coordinates. Every native query in either branch still passes scope, kind and
 purity preflight. See [optional values](values.md#absence-lookup-and-defaults)
 for the shared nodes and the distinction between absence and missing membership.
 These forms require a development revision containing optional values.
+
+## Repeated projection
+
+A projection prepares its fields once before native subject enumeration. Each
+row installs its current subject in resolved slots and keeps written field order,
+correlation and duplicates. Empty selections and skipped branches still receive
+scope, type and purity preflight. Runtime access and selected native operations
+retain their checks and original source locations.
+
+The value-plus-types entry points let a host return its prepared report schema
+with the owned result. Immutable outer bindings and scalar argument owners can
+be shared during execution; completed row temporaries are released. This changes
+some repeated preparation/copy charges near limits, as described in
+[the accounting contract](diagnostics-and-limits.md#prepared-execution-and-sharing).

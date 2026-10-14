@@ -253,8 +253,9 @@ Each call performs its checks under the active work and nesting limits.
 These declarations and calls are Rust library APIs in the development revision.
 They introduce no type syntax, function declarations or operation registry into
 the existing readers or CLIs. External `param` transport remains `int`, `string`
-and `bool`. Optional report values use the contracts below; prepared execution
-and user function signatures remain deferred.
+and `bool`. Optional report values use the contracts below. Invocation-local
+preparation is available through the report APIs described below; user function
+signatures remain deferred.
 
 ## Domain policy
 
@@ -420,3 +421,63 @@ discovery and purity checks for native operands inside those leaves.
 Release returned path trees with `dispose_paths`. It drops shared Boolean
 wrappers iteratively; opaque edge and target payloads retain their host disposal
 contract. Native results and later emitter snapshots use the same budget.
+
+## Prepare native reports in one invocation
+
+`evaluate_projection_with_types` and `evaluate_native_value_with_types` return
+`ConstructedResult { value, types }`: an owned value and the facts prepared for
+that expression. The existing evaluation functions return the value from this
+same path. Hosts that need report schemas can consume this pair without running
+a separate type-discovery walk.
+
+Each call checks every written branch and resolves names and native operands
+before obtaining projection subjects. Execution uses outer, subject and generator
+slots. Preparation borrows that call's syntax and remains inside its current host
+context; callers cannot retain an executable object and run it against another
+document. New inputs and selected native results still receive runtime admission,
+and hosts retain native identity, current ownership and source-coordinate checks.
+
+`Bindings::with_local` shares its immutable outer map and retains only current
+local entries. Constructed reads and generator values can share immutable owners.
+`ValueQueryHost::read_shared_binding` and `ProjectionHost::share_constructed` let
+hosts expose an existing `Arc<ConstructedValue>`; their defaults preserve owned
+reads. The shared-local execution/lifting hooks likewise preserve existing host
+implementations while allowing argument-ready owners to pass through unchanged.
+Hosts must check the current context before returning a shared binding. These
+hooks do not memoize domain operations.
+
+The evaluator releases completed local frames and intermediate owners. Public
+results, explicit snapshots, emissions and rendering retain their ownership and
+copy-admission boundaries. See [request accounting](diagnostics-and-limits.md#prepared-execution-and-sharing)
+for the compatibility impact near limits.
+
+### Embedded primitive arguments
+
+A `ProjectionHost` can declare scalar/native argument bodies inside its stage
+payload with `value_arguments(stage, budget, range)`. Each returned pair contains
+a borrowed `ValueExpression<NativeExpression<C, H>>` and its relative input kind.
+The core checks these bodies with the current lexical facts and prepares their
+slots before enumerating subjects. This hook evaluates no argument data.
+
+The default `evaluate_stage_with_arguments(stage, input, arguments, budget,
+range)` forwards to `ProgramHost::evaluate_stage`. An adapter with computed
+arguments overrides it and receives a borrowed `NativeArguments<C, H>` service.
+`parts()` gives the current context and bindings. `evaluate(expression,
+relative_input, budget)` runs one body declared by this exact stage and returns
+`ConstructedRead`. The service retains its current host/context and cannot run
+against a replacement context. It exists only for the active stage call.
+
+Adapters invoke arguments in their existing written order and only when selected,
+including inside a short-circuit predicate leaf. Argument bodies run through the
+same scalar/native evaluator. Native operations execute afresh; the service does
+not memoize their results. New selected data and operation results receive runtime
+admission, and native owner/source checks remain with the adapter.
+
+`ConstructedRead::value()` borrows the selected immutable data. A predicate can
+inspect a string or collection without another deep copy. An adapter constructing
+an owned native payload calls `into_owned(budget)`, which admits materialization
+at the argument's original location. Body preparation is charged once per report
+invocation; current argument frames, scope references, slot reads, runtime
+admission and native work are charged when used. Current frames release their
+owners when that native invocation ends. The lower-level `ValueQueryHost` bridge
+hooks support this same path; ordinary value hosts keep their defaults.

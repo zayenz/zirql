@@ -1502,6 +1502,7 @@ mod projection {
         Strings(Vec<String>),
         Count(usize),
         Constructed(V),
+        Shared(Arc<V>),
         Capture(NativeCapture<Value>),
         Captures {
             rows: Vec<Value>,
@@ -1521,6 +1522,10 @@ mod projection {
     enum Stage {
         Names,
         Count,
+        Argument {
+            value: Box<zirql::ValueExpression<Query>>,
+            selected: bool,
+        },
         Fail,
         Edit,
         Saved(String),
@@ -1537,6 +1542,7 @@ mod projection {
         fn constructed_value<'v>(&self, value: &'v Value) -> Option<&'v V> {
             match value {
                 Value::Constructed(value) => Some(value),
+                Value::Shared(value) => Some(value),
                 _ => None,
             }
         }
@@ -1590,6 +1596,10 @@ mod projection {
                     budget.charge_results(1, location)?;
                     Value::Count(*count)
                 }
+                Value::Shared(value) => {
+                    budget.charge(1, location)?;
+                    Value::Shared(Arc::clone(value))
+                }
                 Value::Constructed(value) => {
                     Value::Constructed(zirql::copy_constructed_value(value, budget, location)?)
                 }
@@ -1630,6 +1640,7 @@ mod projection {
         ) -> Result<Value, EvaluationError<QueryError>> {
             budget.charge(1, Location::Query(range.clone()))?;
             match stage {
+                Stage::Argument { .. } => unreachable!("argument stage uses scoped preparation"),
                 Stage::Saved(name) => {
                     self.copy_value(bindings.get(name, range.clone())?, context, budget, range)
                 }
@@ -1747,6 +1758,78 @@ mod projection {
     }
     impl ProjectionHost<()> for Host {
         type Kind = Kind;
+        fn value_arguments<'s>(
+            &self,
+            stage: &'s Stage,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<zirql::NativeValueArguments<'s, (), Self>, QueryError> {
+            if let Stage::Argument { value, .. } = stage {
+                budget.charge(1, Location::Query(range.clone()))?;
+                Ok(vec![(value.as_ref(), Kind::Subjects)])
+            } else {
+                Ok(vec![])
+            }
+        }
+        fn evaluate_stage_with_arguments(
+            &self,
+            stage: &Stage,
+            input: Value,
+            arguments: &mut dyn zirql::NativeArguments<(), Self>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            if let Stage::Argument { value, selected } = stage {
+                if !selected {
+                    return Ok(Value::Count(0));
+                }
+                let mut total = 0;
+                for _ in 0..2 {
+                    let read = arguments.evaluate(value, Value::Subjects(vec![]), budget)?;
+                    total += match read.value().data() {
+                        V::String(value) => value.len(),
+                        V::Array(values)
+                            if values.iter().all(|value| matches!(value, V::Integer(_))) =>
+                        {
+                            values
+                                .iter()
+                                .map(|value| {
+                                    let V::Integer(value) = value else {
+                                        unreachable!()
+                                    };
+                                    usize::try_from(*value).unwrap()
+                                })
+                                .sum::<usize>()
+                        }
+                        V::Array(values) => values.len(),
+                        _ => {
+                            return Err(QueryError::query(
+                                range.clone(),
+                                "argument needs string or array",
+                            )
+                            .into());
+                        }
+                    };
+                }
+                return Ok(Value::Count(total));
+            }
+            let (context, bindings) = arguments.parts();
+            self.evaluate_stage(stage, input, context, bindings, budget, range)
+        }
+        fn share_constructed(
+            &self,
+            value: &Value,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Option<Arc<V>>, EvaluationError<QueryError>> {
+            budget.charge(1, Location::Query(range.clone()))?;
+            Ok(if let Value::Shared(value) = value {
+                Some(Arc::clone(value))
+            } else {
+                None
+            })
+        }
         fn kind(
             &self,
             value: &Value,
@@ -1767,6 +1850,13 @@ mod projection {
                     Kind::Capture(Arc::new(NativeCapture { fields }))
                 }
                 Value::Captures { schema, .. } => Kind::Captures(Arc::clone(schema)),
+                Value::Shared(value) => {
+                    Kind::Constructed(Arc::new(vec![zirql::constructed_value_type(
+                        value,
+                        budget,
+                        Location::Query(range.clone()),
+                    )?]))
+                }
                 Value::Constructed(value) => {
                     Kind::Constructed(Arc::new(vec![zirql::constructed_value_type(
                         value,
@@ -1823,6 +1913,7 @@ mod projection {
                         budget,
                     )?,
                 ))),
+                Stage::Argument { .. } => Ok(Kind::Count),
                 Stage::Names if *input == Kind::Subjects => Ok(Kind::Strings),
                 Stage::Count if matches!(input, Kind::Subjects | Kind::Strings) => Ok(Kind::Count),
                 Stage::Fail | Stage::Edit => Ok(input.clone()),
@@ -1917,6 +2008,11 @@ mod projection {
                     Location::Query(range.clone()),
                 )?),
                 Value::Constructed(value) => Ok(value),
+                Value::Shared(value) => Ok(zirql::copy_constructed_value(
+                    &value,
+                    budget,
+                    Location::Query(range.clone()),
+                )?),
             }
         }
         fn lift_constructed(
@@ -2272,6 +2368,210 @@ mod projection {
         let paths = zirql::read_paths(&mut reader, &mut Host, &mut budget(), 32).unwrap();
         assert_eq!(reader.position(), source.len());
         paths
+    }
+
+    #[test]
+    fn prepared_native_arguments_keep_demand_shared_reads_and_nested_scope() {
+        use zirql::{ValueConstructor, ValueGenerator};
+        fn scalar(kind: K<Query>) -> zirql::ValueExpression<Query> {
+            Located::new(kind, 0..1)
+        }
+        fn binding(name: &str) -> Query {
+            Located::new(ExpressionKind::Binding(name.into()), 0..1)
+        }
+        fn native(query: Query) -> zirql::ValueExpression<Query> {
+            scalar(K::NativeQuery(Box::new(query)))
+        }
+        fn argument(
+            value: zirql::ValueExpression<Query>,
+            selected: bool,
+        ) -> zirql::ValueExpression<Query> {
+            native(Located::new(
+                ExpressionKind::Sequence {
+                    input: Box::new(Located::new(ExpressionKind::Input, 0..1)),
+                    steps: vec![Located::new(
+                        ExpressionStep::Stage(Stage::Argument {
+                            value: Box::new(value),
+                            selected,
+                        }),
+                        0..1,
+                    )],
+                },
+                0..1,
+            ))
+        }
+        let failing = native(Located::new(
+            ExpressionKind::Sequence {
+                input: Box::new(binding("w")),
+                steps: vec![
+                    Located::new(ExpressionStep::Stage(Stage::Fail), 0..1),
+                    Located::new(ExpressionStep::Stage(Stage::Names), 0..1),
+                ],
+            },
+            0..1,
+        ));
+        let own_generator = scalar(K::Comprehension {
+            constructor: ValueConstructor::Array,
+            clauses: vec![Located::new(
+                ValueGenerator::In {
+                    binders: vec![Located::new(Some("m".into()), 0..1)],
+                    source: scalar(K::Array(vec![
+                        scalar(K::Name("n".into())),
+                        scalar(K::Literal(V::Integer(3))),
+                    ])),
+                    filter: None,
+                },
+                0..1,
+            )],
+            head: Box::new(native(binding("m"))),
+        });
+        let nested = scalar(K::Comprehension {
+            constructor: ValueConstructor::Array,
+            clauses: vec![Located::new(
+                ValueGenerator::In {
+                    binders: vec![Located::new(Some("n".into()), 0..1)],
+                    source: scalar(K::Array(vec![
+                        scalar(K::Literal(V::Integer(1))),
+                        scalar(K::Literal(V::Integer(2))),
+                    ])),
+                    filter: None,
+                },
+                0..1,
+            )],
+            head: Box::new(argument(own_generator, true)),
+        });
+        let projection = Projection {
+            subject: Located::new("w".into(), 0..1),
+            fields: vec![
+                (
+                    Located::new("size".into(), 0..1),
+                    argument(scalar(K::Name("big".into())), true),
+                ),
+                (
+                    Located::new("label_width".into(), 0..1),
+                    argument(
+                        scalar(K::One(Box::new(native(Located::new(
+                            ExpressionKind::Sequence {
+                                input: Box::new(binding("w")),
+                                steps: vec![Located::new(
+                                    ExpressionStep::Stage(Stage::Names),
+                                    0..1,
+                                )],
+                            },
+                            0..1,
+                        ))))),
+                        true,
+                    ),
+                ),
+                (Located::new("skip".into(), 0..1), argument(failing, false)),
+                (Located::new("nested".into(), 0..1), nested),
+            ],
+        };
+        let original = Arc::new(V::Array(
+            (0..1000).map(|_| V::String("x".repeat(128))).collect(),
+        ));
+        let bindings = Bindings::new([(
+            Located::new("big".into(), 0..1),
+            Value::Shared(Arc::clone(&original)),
+        )])
+        .unwrap();
+        for subjects in [vec!["alpha", "beta"], vec!["other"]] {
+            let result = zirql::evaluate_projection(
+                &projection,
+                &Host,
+                Value::Subjects(subjects.clone()),
+                &mut (),
+                &bindings,
+                &mut budget(),
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                V::Array(
+                    subjects
+                        .iter()
+                        .map(|subject| V::Record(vec![
+                            ("size".into(), V::Integer(2000)),
+                            (
+                                "label_width".into(),
+                                V::Integer(i64::try_from(subject.len() * 2).unwrap())
+                            ),
+                            ("skip".into(), V::Integer(0)),
+                            (
+                                "nested".into(),
+                                V::Array(vec![V::Integer(8), V::Integer(10)])
+                            )
+                        ]))
+                        .collect()
+                )
+            );
+        }
+        assert!(matches!(original.as_ref(),V::Array(values) if values.len()==1000));
+        let invalid = Projection {
+            subject: Located::new("w".into(), 0..1),
+            fields: vec![(
+                Located::new("skip".into(), 0..1),
+                argument(scalar(K::Name("missing".into())), false),
+            )],
+        };
+        assert!(
+            zirql::evaluate_projection(
+                &invalid,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &bindings,
+                &mut budget()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prepared_projection_keeps_nested_slots_rows_and_fresh_inputs() {
+        let projection = parse(
+            "project(w, {\"name\": one(w | names), \"pairs\": [n ++ suffix for n in w | names for suffix in [\"!\", \"?\"]]})",
+            &mut budget(),
+        );
+        let mut first = None;
+        for subjects in [vec!["alpha", "beta", "alpha"], vec!["other"], vec![]] {
+            let result = zirql::evaluate_projection_with_types(
+                &projection,
+                &Host,
+                Value::Subjects(subjects.clone()),
+                &mut (),
+                &Bindings::default(),
+                &mut budget(),
+            )
+            .unwrap();
+            assert!(!result.types.is_empty());
+            let expected = V::Array(
+                subjects
+                    .iter()
+                    .map(|subject| {
+                        V::Record(vec![
+                            ("name".into(), V::String((*subject).into())),
+                            (
+                                "pairs".into(),
+                                V::Array(vec![
+                                    V::String(format!("{subject}!")),
+                                    V::String(format!("{subject}?")),
+                                ]),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            );
+            assert_eq!(result.value, expected);
+            if first.is_none() {
+                first = Some(result.value);
+            }
+        }
+        let V::Array(rows) = first.unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], rows[2]);
     }
 
     #[test]

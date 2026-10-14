@@ -115,8 +115,9 @@ Known range lengths, Cartesian products and byte sums are checked before
 allocation. Generator candidates pay before filters. Host hooks must charge work
 hidden from the core, such as scans and native materialization.
 
-Array summaries pay the full operand's materialization, candidate and copy
-costs before reduction. Sum and both Boolean quantifiers charge one work unit
+Array summaries evaluate their complete operand before reduction. New collection
+construction and generator candidates remain eager. An unchanged admitted input
+can be inspected through an immutable shared owner without copying its payload. Sum and both Boolean quantifiers charge one work unit
 per inspected element, including elements after a decisive Boolean. Length
 charges one work unit for reading the present-value count and converting it to
 `i64`. Each summary adds one aggregate result unit for its scalar, including
@@ -198,3 +199,35 @@ The host defines transactions and rendering behavior for explicit effects.
 A CLI can buffer output until the full request succeeds. Library emitters and
 live edits do not gain automatic rollback from the core; callers must use the
 host's documented effect contract.
+
+## Prepared execution and sharing
+
+Preparation charges expression/name resolution, native operand metadata and scope
+setup once per evaluation invocation. Repeated rows charge executed expressions,
+slot reads and shared references, current-frame/container growth, new-value
+admission and host work. Known capacities and byte/entry sizes are admitted
+before growth. Creating a shared owner or child-view path also charges its
+allocation/metadata work.
+
+An immutable shared read creates no deep copy, so it pays neither copied payload
+bytes nor recursively produced value units. Length, reductions and field reads
+can inspect that retained data directly. Materializing another owned value and
+`copy_constructed_value` still scan and admit the complete copied value. Host
+copies, emission snapshots and rendering keep their applicable byte/result costs.
+New external data and operation results are inspected when selected. Reusing an
+unchanged owner does not validate a different value or host context.
+
+Spending remains cumulative: releasing a frame or value refunds nothing. Nesting,
+per-stream ceilings and every host default remain unchanged. Repeated analysis
+and avoidable copies now cost less, so a request close to an old work/result
+threshold may complete, and the operation that first exhausts an allowance may
+move. Limit categories and original locations remain intact. Compare successful
+throughput separately from refusals when measuring this change.
+
+Embedded primitive argument bodies share that preparation. Executing a selected
+argument charges current-frame setup, references, slots, new-value admission and
+native work. A `ConstructedRead` retains its immutable owner while the adapter
+inspects it; `into_owned` admits a copy only when that native boundary needs an
+owned value. Argument frames end with the current native invocation. Skipped
+predicate leaves and default fallbacks execute no argument body, while all written
+bodies retain preflight checks.

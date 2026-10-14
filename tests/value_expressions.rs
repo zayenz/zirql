@@ -2823,3 +2823,53 @@ fn optional_types_presence_and_lazy_defaults_preserve_failures_and_budget() {
         V::Integer(1)
     );
 }
+
+#[test]
+fn shared_reads_keep_aliases_admit_new_data_and_release_failed_scopes() {
+    let bindings = Bindings::new([(
+        Located::new("xs".into(), 0..0),
+        V::Array(vec![V::String("first".into()), V::String("second".into())]),
+    )])
+    .unwrap();
+    let expression = e(K::Array(vec![name("xs"), name("xs")]));
+    let mut output = evaluate_value(&expression, &bindings, &mut ample()).unwrap();
+    let V::Array(copies) = &mut output else {
+        unreachable!()
+    };
+    let V::Array(first) = &mut copies[0] else {
+        unreachable!()
+    };
+    first.clear();
+    assert_eq!(
+        copies[1],
+        V::Array(vec![V::String("first".into()), V::String("second".into())])
+    );
+    assert_eq!(bindings.get("xs", 0..0).unwrap(), &copies[1]);
+    let length = e(K::Reduce {
+        operator: R::Length,
+        array: Box::new(name("xs")),
+    });
+    let fresh = Bindings::new([(
+        Located::new("xs".into(), 0..0),
+        V::Array(vec![V::Float(f64::NAN)]),
+    )])
+    .unwrap();
+    assert!(evaluate_value(&length, &fresh, &mut ample()).is_err());
+    let failure = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("n")],
+            source: name("xs"),
+            filter: None,
+        })],
+        head: Box::new(binary(B::IntegerDivide, int(1), int(0))),
+    });
+    let mut allowance = ample();
+    assert!(evaluate_value(&failure, &bindings, &mut allowance).is_err());
+    let remaining = allowance.remaining_work();
+    assert_eq!(
+        evaluate_value(&length, &bindings, &mut allowance).unwrap(),
+        V::Integer(2)
+    );
+    assert!(allowance.remaining_work() < remaining);
+}

@@ -382,15 +382,24 @@ impl<S, O, E> Program<S, O, E> {
 
 /// Immutable native values. Initial names are reserved for the whole program;
 /// only ordered execution can add subsequent definitions. No Clone bound applies.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Bindings<V> {
-    values: BTreeMap<String, std::sync::Arc<V>>,
+    values: std::sync::Arc<BTreeMap<String, std::sync::Arc<V>>>,
+    locals: Vec<(String, std::sync::Arc<V>)>,
 }
+
+impl<V: PartialEq> PartialEq for Bindings<V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+impl<V: Eq> Eq for Bindings<V> {}
 
 impl<V> Default for Bindings<V> {
     fn default() -> Self {
         Self {
-            values: BTreeMap::new(),
+            values: std::sync::Arc::new(BTreeMap::new()),
+            locals: Vec::new(),
         }
     }
 }
@@ -405,8 +414,7 @@ impl<V> Bindings<V> {
             if bindings.values.contains_key(&name.value) {
                 return Err(QueryError::query(name.range, "binding is already defined"));
             }
-            bindings
-                .values
+            std::sync::Arc::make_mut(&mut bindings.values)
                 .insert(name.value, std::sync::Arc::new(value));
         }
         Ok(bindings)
@@ -414,52 +422,74 @@ impl<V> Bindings<V> {
 
     /// Iterate immutable scope entries in name order without copying values.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &V)> {
-        self.values
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_ref()))
+        let mut outer = self.values.iter().peekable();
+        let mut locals = self.locals.iter().peekable();
+        std::iter::from_fn(move || {
+            let next = match (outer.peek(), locals.peek()) {
+                (Some((a, _)), Some((b, _))) if a < &b => outer.next(),
+                (Some(_), Some(_)) | (None, Some(_)) => locals.next().map(|(n, v)| (n, v)),
+                (Some(_), None) => outer.next(),
+                (None, None) => None,
+            };
+            next.map(|(name, value)| (name.as_str(), value.as_ref()))
+        })
     }
 
-    /// Add one local name while sharing immutable outer values. Name metadata
-    /// spends the active allowance; dropping this child restores the outer scope.
+    /// Add a current-frame name, sharing the outer map and immutable values.
+    /// Dropping the child releases its local values and restores the outer scope.
     pub fn with_local(
         &self,
         name: Located<String>,
         value: V,
         budget: &mut Budget,
     ) -> Result<Self, QueryError> {
-        if self.values.contains_key(&name.value) {
+        if self.get(&name.value, name.range.clone()).is_ok() {
             return Err(QueryError::query(name.range, "binding is already defined"));
         }
-        let location = Location::Query(name.range.clone());
         let bytes = self
-            .values
-            .keys()
-            .try_fold(name.value.len(), |bytes, outer| {
-                bytes.checked_add(outer.len()).ok_or_else(|| {
+            .locals
+            .iter()
+            .try_fold(name.value.len() + 1, |bytes, (local, _)| {
+                bytes.checked_add(local.len() + 1).ok_or_else(|| {
                     QueryError::query(name.range.clone(), "binding metadata size overflow")
                 })
             })?;
-        // Outer values are admitted; only names and Arc entries are copied.
-        budget.charge(
-            bytes.checked_add(self.values.len() + 1).ok_or_else(|| {
-                QueryError::query(name.range.clone(), "binding metadata size overflow")
-            })?,
-            location,
-        )?;
-        let mut values = self
-            .values
+        budget.charge(bytes, Location::Query(name.range.clone()))?;
+        let mut locals = self
+            .locals
             .iter()
             .map(|(name, value)| (name.clone(), std::sync::Arc::clone(value)))
-            .collect::<BTreeMap<_, _>>();
-        values.insert(name.value, std::sync::Arc::new(value));
-        Ok(Self { values })
+            .collect::<Vec<_>>();
+        let position = locals.partition_point(|(local, _)| local < &name.value);
+        locals.insert(position, (name.value, std::sync::Arc::new(value)));
+        Ok(Self {
+            values: std::sync::Arc::clone(&self.values),
+            locals,
+        })
+    }
+
+    pub(crate) fn shared(
+        &self,
+        name: &str,
+        range: Range<usize>,
+    ) -> Result<std::sync::Arc<V>, QueryError> {
+        self.locals
+            .iter()
+            .find(|(local, _)| local == name)
+            .map(|(_, value)| value)
+            .or_else(|| self.values.get(name))
+            .map(std::sync::Arc::clone)
+            .ok_or_else(|| QueryError::query(range, format!("undefined binding: {name}")))
     }
 
     /// Read a native value without copying it. The supplied query range locates
     /// a missing name, including reads inside opaque host selectors.
     pub fn get(&self, name: &str, range: Range<usize>) -> Result<&V, QueryError> {
-        self.values
-            .get(name)
+        self.locals
+            .iter()
+            .find(|(local, _)| local == name)
+            .map(|(_, value)| value)
+            .or_else(|| self.values.get(name))
             .map(std::sync::Arc::as_ref)
             .ok_or_else(|| QueryError::query(range, format!("undefined binding: {name}")))
     }
@@ -556,7 +586,7 @@ pub fn evaluate_program<C, H>(
 where
     H: ProgramHost<C>,
 {
-    let mut names: BTreeSet<_> = bindings.values.keys().map(String::as_str).collect();
+    let mut names: BTreeSet<_> = bindings.iter().map(|(name, _)| name).collect();
     for statement in program.statements() {
         validate_expression(statement.value.expression(), &names, budget)?;
         if let Statement::Bind { name, .. } = &statement.value
@@ -593,8 +623,7 @@ where
             Statement::Bind { name, .. } => {
                 budget
                     .charge_program_work(name.value.len(), Location::Query(name.range.clone()))?;
-                bindings
-                    .values
+                std::sync::Arc::make_mut(&mut bindings.values)
                     .insert(name.value.clone(), std::sync::Arc::new(value));
             }
             Statement::Evaluate {
@@ -628,7 +657,7 @@ pub fn evaluate_expression<C, H>(
 where
     H: ProgramHost<C>,
 {
-    let names = bindings.values.keys().map(String::as_str).collect();
+    let names = bindings.iter().map(|(name, _)| name).collect();
     validate_expression(expression, &names, budget)?;
     run_expression(expression, host, input, context, bindings, budget)
 }
