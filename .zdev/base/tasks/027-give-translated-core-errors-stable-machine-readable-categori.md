@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-027"
 key = "typed-core-failure-categories"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -27,11 +27,20 @@ QueryError in src/lib.rs exposes only location and message. Zincite crates/zinci
 
 ## Done when
 
-- [ ] Core errors that existing adapters distinguish have stable typed categories available through the public API.
-- [ ] The affected adapters translate those categories without inspecting message text, while preserving existing public diagnostic intent and ranges.
-- [ ] Focused behavior checks prove classification is independent of message wording and that unclassified diagnostics remain informative.
+- [x] Core errors that existing adapters distinguish have stable typed categories available through the public API.
+- [x] The affected adapters translate those categories without inspecting message text, while preserving existing public diagnostic intent and ranges.
+- [x] Focused behavior checks prove classification is independent of message wording and that unclassified diagnostics remain informative.
 
 ## Validation
 
 - Reuse existing core budget/parser and consumer diagnostic controls; add only the coverage needed to prove category-based translation.
 - Run required core and affected consumer checks and document the public error contract.
+
+## Result
+
+Added public typed core failure categories and migrated Zincite and Zirium translations while preserving original coordinates, native errors and informative fallback messages. Core cef5216; Zincite 4b886c8; Zirium c467e7d.
+
+Validation:
+
+- Independent core and whole-task reviews passed with zero findings; required core and consumer Rust, doctest, Python and documentation checks passed.
+- Focused controls prove wording-independent classification and informative fallback; Zirium CI 38501456278 passed all 12 jobs on c467e7dc6cfe9f8f5a1afe2eeb15b46ab2788d69.
