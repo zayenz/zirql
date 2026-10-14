@@ -21,6 +21,13 @@ pub(crate) enum PreparedKind<'a, Q> {
         function: usize,
         arguments: Vec<PreparedValue<'a, Q>>,
     },
+    Accumulate {
+        items: Box<PreparedValue<'a, Q>>,
+        initial: Box<PreparedValue<'a, Q>>,
+        function: usize,
+        step: &'a Located<String>,
+        scan: bool,
+    },
     NativeValue {
         query: &'a Q,
         arguments: Vec<PreparedArgument<'a, Q>>,
@@ -211,6 +218,25 @@ impl<'a> Preparation<'a> {
                     PreparedKind::Call {
                         function,
                         arguments: values,
+                    }
+                }
+                ValueExpressionKind::Fold {
+                    items,
+                    initial,
+                    step,
+                }
+                | ValueExpressionKind::Scan {
+                    items,
+                    initial,
+                    step,
+                } => {
+                    let (function, _) = queries.accumulator_function(step, budget)?;
+                    PreparedKind::Accumulate {
+                        items: Box::new(self.resolve(items, queries, budget)?),
+                        initial: Box::new(self.resolve(initial, queries, budget)?),
+                        function,
+                        step,
+                        scan: matches!(expression.value, ValueExpressionKind::Scan { .. }),
                     }
                 }
                 ValueExpressionKind::NativeQuery(query)
@@ -594,6 +620,12 @@ impl RuntimeValue {
                 value
             }
         }
+    }
+    pub fn declaration(&self) -> Option<&DeclaredType<()>> {
+        super::declaration(self.as_ref()).or(match self {
+            Self::Shared { declaration, .. } => declaration.as_deref(),
+            Self::Owned(_) => None,
+        })
     }
     pub fn materialize(
         self,

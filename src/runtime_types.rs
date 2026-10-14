@@ -305,19 +305,39 @@ pub(crate) fn compatible_declarations<K>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<bool, QueryError> {
+    compatible_declarations_with(left, right, budget, location, &|_, _| false)
+}
+
+pub(crate) fn compatible_state<K: PartialEq>(
+    left: &DeclaredType<K>,
+    right: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
+    compatible_declarations_with(left, right, budget, location, &|a, b| a == b)
+}
+
+fn compatible_declarations_with<A, B>(
+    left: &DeclaredType<A>,
+    right: &DeclaredType<B>,
+    budget: &mut Budget,
+    location: &Location,
+    native: &impl Fn(&A, &B) -> bool,
+) -> Result<bool, QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         Ok(match (left, right) {
             (DeclaredType::Optional(left), right) => {
-                compatible_declarations(left, right, budget, location)?
+                compatible_declarations_with(left, right, budget, location, native)?
             }
             (left, DeclaredType::Optional(right)) => {
-                compatible_declarations(left, right, budget, location)?
+                compatible_declarations_with(left, right, budget, location, native)?
             }
             (DeclaredType::Boolean, DeclaredType::Boolean)
             | (DeclaredType::Integer, DeclaredType::Integer)
             | (DeclaredType::Float, DeclaredType::Float)
             | (DeclaredType::String, DeclaredType::String) => true,
+            (DeclaredType::Native(a), DeclaredType::Native(b)) => native(a, b),
             (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
             (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
             (DeclaredType::Array(a), DeclaredType::Array(b))
@@ -325,14 +345,14 @@ pub(crate) fn compatible_declarations<K>(
             | (DeclaredType::Sequence(a) | DeclaredType::Keyed(a), DeclaredType::Array(b))
             | (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
             | (DeclaredType::Keyed(a), DeclaredType::Keyed(b)) => {
-                compatible_declarations(a, b, budget, location)?
+                compatible_declarations_with(a, b, budget, location, native)?
             }
             (DeclaredType::Tuple(a), DeclaredType::Tuple(b)) => {
                 if a.len() != b.len() {
                     return Ok(false);
                 }
                 for (a, b) in a.iter().zip(b) {
-                    if !compatible_declarations(a, b, budget, location)? {
+                    if !compatible_declarations_with(a, b, budget, location, native)? {
                         return Ok(false);
                     }
                 }
@@ -354,7 +374,7 @@ pub(crate) fn compatible_declarations<K>(
                     let Some(b) = found else {
                         return Ok(false);
                     };
-                    if !compatible_declarations(a, b, budget, location)? {
+                    if !compatible_declarations_with(a, b, budget, location, native)? {
                         return Ok(false);
                     }
                 }

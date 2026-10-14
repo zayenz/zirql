@@ -2079,7 +2079,17 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 pending.push(*child);
                 continue;
             }
-            K::Binary { left, right, .. }
+            K::Fold {
+                items: left,
+                initial: right,
+                ..
+            }
+            | K::Scan {
+                items: left,
+                initial: right,
+                ..
+            }
+            | K::Binary { left, right, .. }
             | K::Default {
                 value: left,
                 fallback: right,

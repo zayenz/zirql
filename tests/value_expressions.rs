@@ -4101,3 +4101,442 @@ fn pattern_and_guard_work_share_host_validation_allowance() {
     assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
     assert_eq!(error.location, Location::Query(85..86));
 }
+
+fn accumulate(items: E, initial: E, step: &str, scan: bool) -> E {
+    let step = Located::new(step.into(), 70..74);
+    e(if scan {
+        K::Scan {
+            items: Box::new(items),
+            initial: Box::new(initial),
+            step,
+        }
+    } else {
+        K::Fold {
+            items: Box::new(items),
+            initial: Box::new(initial),
+            step,
+        }
+    })
+}
+
+#[test]
+fn named_accumulators_preserve_order_empty_contracts_and_bounded_calls() {
+    let functions = [function(
+        "decimal",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        D::Integer,
+        binary(B::Add, binary(B::Multiply, name("s"), int(10)), name("x")),
+    )];
+    for scan in [false, true] {
+        let result = run_functions(
+            &functions,
+            &accumulate(
+                literal(V::Array(vec![V::Integer(1), V::Integer(2), V::Integer(3)])),
+                int(0),
+                "decimal",
+                scan,
+            ),
+            1,
+            &mut ample(),
+        )
+        .unwrap();
+        if scan {
+            let V::Array(values) = result.data() else {
+                panic!("scan")
+            };
+            assert_eq!(
+                values.iter().map(V::data).collect::<Vec<_>>(),
+                vec![&V::Integer(1), &V::Integer(12), &V::Integer(123)]
+            );
+        } else {
+            assert_eq!(result.data(), &V::Integer(123));
+        }
+        let empty = run_functions(
+            &functions,
+            &accumulate(literal(V::Array(vec![])), int(9), "decimal", scan),
+            1,
+            &mut ample(),
+        )
+        .unwrap();
+        if scan {
+            assert_eq!(empty.data(), &V::Array(vec![]));
+            admit_constructed(
+                &empty,
+                &D::<()>::Sequence(Box::new(D::Integer)),
+                &mut ample(),
+                Location::Query(0..1),
+            )
+            .unwrap();
+        } else {
+            assert_eq!(empty.data(), &V::Integer(9));
+        }
+    }
+    let add = [function(
+        "add",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        D::Integer,
+        binary(B::Add, name("s"), name("x")),
+    )];
+    let mut large = Budget::for_program(ProgramLimits {
+        work: 20_000_000,
+        results: 1_000_000,
+        nesting: 64,
+        stream_items: 20_000,
+    });
+    let expression = accumulate(
+        literal(V::Array((0..10_000).map(|_| V::Integer(1)).collect())),
+        int(0),
+        "add",
+        false,
+    );
+    // The input length does not become active function depth.
+    assert_eq!(
+        run_functions(&add, &expression, 1, &mut large)
+            .unwrap()
+            .data(),
+        &V::Integer(10_000)
+    );
+    assert!(evaluate_value(&expression, &Bindings::default(), &mut ample()).is_err());
+}
+
+#[test]
+fn named_scan_retains_structured_snapshots_and_aliased_payloads() {
+    let state = D::Record(vec![
+        ("total".into(), D::Integer),
+        ("payload".into(), D::Sequence(Box::new(D::Integer))),
+    ]);
+    let step = function(
+        "advance",
+        vec![("s", state.clone()), ("x", D::Integer)],
+        state,
+        record(vec![
+            (
+                "total",
+                binary(B::Add, field(name("s"), "total"), name("x")),
+            ),
+            ("payload", field(name("s"), "payload")),
+        ]),
+    );
+    let initial = || {
+        V::Record(vec![
+            ("total".into(), V::Integer(0)),
+            (
+                "payload".into(),
+                V::Array((0..32).map(|_| V::Integer(7)).collect()),
+            ),
+        ])
+    };
+    let bindings = Bindings::new([
+        (Located::new("initial".into(), 0..1), initial()),
+        (
+            Located::new("items".into(), 0..1),
+            V::Array(vec![V::Integer(2), V::Integer(3)]),
+        ),
+    ])
+    .unwrap();
+    let result = zirql::evaluate_functions(
+        &[step],
+        &accumulate(name("items"), name("initial"), "advance", true),
+        &bindings,
+        &mut ample(),
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap();
+    let V::Array(states) = result.data() else {
+        panic!("scan states")
+    };
+    for (state, expected) in states.iter().zip([2, 5]) {
+        let V::Record(fields) = state.data() else {
+            panic!("state record")
+        };
+        assert_eq!(fields[0].1.data(), &V::Integer(expected));
+        assert_eq!(
+            fields[1].1.data(),
+            &V::Array((0..32).map(|_| V::Integer(7)).collect())
+        );
+    }
+    assert_eq!(bindings.get("initial", 0..1).unwrap(), &initial());
+    assert_eq!(
+        bindings.get("items", 0..1).unwrap(),
+        &V::Array(vec![V::Integer(2), V::Integer(3)])
+    );
+}
+
+#[test]
+fn named_accumulators_preflight_steps_and_check_every_actual_state() {
+    let empty = || literal(V::Array(vec![]));
+    let expression = |step: &str| accumulate(empty(), int(0), step, false);
+    let wrong = function(
+        "wrong",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        D::String,
+        literal(V::String("bad".into())),
+    );
+    let arity = function("arity", vec![("s", D::Integer)], D::Integer, name("s"));
+    for (functions, step) in [
+        (vec![], "unknown"),
+        (vec![wrong], "wrong"),
+        (vec![arity], "arity"),
+    ] {
+        let error = run_functions(&functions, &expression(step), 1, &mut ample()).unwrap_err();
+        assert_eq!(error.error.location, Location::Query(70..74));
+    }
+    let optional_result = function(
+        "maybe",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        D::Optional(Box::new(D::Integer)),
+        call("missing", vec![]),
+    );
+    let missing = function(
+        "missing",
+        vec![],
+        D::Optional(Box::new(D::Integer)),
+        literal(V::Absent),
+    );
+    let mut spending = ample();
+    let error = run_functions(
+        &[optional_result, missing],
+        &accumulate(
+            literal(V::Array(vec![V::Integer(1)])),
+            int(0),
+            "maybe",
+            true,
+        ),
+        1,
+        &mut spending,
+    )
+    .unwrap_err();
+    assert_eq!(error.calls[0].function, "missing");
+    assert_eq!(error.error.location, Location::Query(0..1));
+    assert_eq!(
+        run_functions(&[], &int(8), 1, &mut spending).unwrap(),
+        V::Integer(8)
+    );
+    let optional_state = function(
+        "maybe",
+        vec![("s", D::Optional(Box::new(D::Integer))), ("x", D::Integer)],
+        D::Optional(Box::new(D::Integer)),
+        literal(V::Absent),
+    );
+    let result = run_functions(
+        &[optional_state],
+        &accumulate(
+            literal(V::Array(vec![V::Integer(1)])),
+            int(0),
+            "maybe",
+            true,
+        ),
+        1,
+        &mut ample(),
+    )
+    .unwrap();
+    let V::Array(states) = result.data() else {
+        panic!("optional states")
+    };
+    assert_eq!(states[0].data(), &V::Absent);
+    let add = [function(
+        "add",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        D::Integer,
+        binary(B::Add, name("s"), name("x")),
+    )];
+    assert!(
+        run_functions(
+            &add,
+            &accumulate(empty(), literal(V::Absent), "add", false),
+            1,
+            &mut ample()
+        )
+        .is_err()
+    );
+    assert!(
+        run_functions(
+            &add,
+            &accumulate(
+                literal(V::Array(vec![V::String("bad".into())])),
+                int(0),
+                "add",
+                false
+            ),
+            1,
+            &mut ample()
+        )
+        .is_err()
+    );
+    let keyed = e(K::KeyedArray {
+        axes: Some(vec![KeyAxis {
+            key_type: ValueKeyType::Integer,
+            keys: vec![],
+        }]),
+        entries: vec![],
+    });
+    assert!(
+        run_functions(
+            &add,
+            &accumulate(keyed, int(0), "add", false),
+            1,
+            &mut ample()
+        )
+        .is_err()
+    );
+    let failure = |range| {
+        Located::new(
+            K::Binary {
+                operator: B::Divide,
+                left: Box::new(int(1)),
+                right: Box::new(int(0)),
+            },
+            range,
+        )
+    };
+    let error = run_functions(
+        &add,
+        &accumulate(failure(81..83), failure(91..93), "add", false),
+        1,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(81..83));
+    let division = [function(
+        "divide",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        D::Integer,
+        failure(101..105),
+    )];
+    let error = run_functions(
+        &division,
+        &accumulate(
+            literal(V::Array(vec![V::Integer(1)])),
+            int(0),
+            "divide",
+            false,
+        ),
+        1,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(101..105));
+    assert_eq!(error.calls[0].function, "divide");
+    let items = literal(V::Array((0..20).map(|_| V::Integer(1)).collect()));
+    let request = accumulate(items, int(0), "add", true);
+    let error = run_functions(&add, &request, 1, &mut budget(1000, 100_000, 64)).unwrap_err();
+    assert_eq!(error.error.category, zirql::QueryErrorCategory::WorkLimit);
+    let error = run_functions(&add, &request, 1, &mut budget(100_000, 50, 64)).unwrap_err();
+    assert_eq!(error.error.category, zirql::QueryErrorCategory::ResultLimit);
+}
+
+#[test]
+fn named_accumulators_keep_declared_absence_and_empty_element_types() {
+    let optional_int = || D::Optional(Box::new(D::Integer));
+    let optional_string = || D::Optional(Box::new(D::String));
+    let foreign = || function("foreign", vec![], optional_string(), literal(V::Absent));
+    let keep = || {
+        function(
+            "keep",
+            vec![("s", optional_int()), ("x", D::Integer)],
+            optional_int(),
+            name("s"),
+        )
+    };
+    let empty = || literal(V::Array(vec![]));
+    let mut spending = ample();
+    let error = run_functions(
+        &[foreign(), keep()],
+        &accumulate(empty(), call("foreign", vec![]), "keep", false),
+        2,
+        &mut spending,
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(30..40));
+    assert_eq!(
+        error.error.message,
+        "incompatible declared underlying types"
+    );
+    // A direct declaration and a function's retained declaration have the same meaning.
+    let initial = Located::new(
+        K::Literal(V::Declared {
+            value: Box::new(V::Absent),
+            declaration: optional_string(),
+        }),
+        90..94,
+    );
+    let error = run_functions(
+        &[keep()],
+        &accumulate(empty(), initial, "keep", false),
+        1,
+        &mut spending,
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(90..94));
+    let wrong_return = function(
+        "keep",
+        vec![("s", optional_int()), ("x", D::Integer)],
+        optional_int(),
+        call("foreign", vec![]),
+    );
+    let error = run_functions(
+        &[foreign(), wrong_return],
+        &accumulate(literal(V::Array(vec![V::Integer(1)])), int(0), "keep", true),
+        2,
+        &mut spending,
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(30..40));
+    assert_eq!(error.calls[0].function, "keep");
+
+    // A field view inherits its empty sequence declaration from the shared parent.
+    let outer = V::Declared {
+        value: Box::new(V::Record(vec![("items".into(), V::Array(vec![]))])),
+        declaration: D::Record(vec![("items".into(), D::Sequence(Box::new(D::String)))]),
+    };
+    let bindings = Bindings::new([(Located::new("outer".into(), 0..1), outer)]).unwrap();
+    let source = Located::new(field(name("outer"), "items").value, 80..84);
+    let error = zirql::evaluate_functions(
+        &[keep()],
+        &accumulate(source, int(0), "keep", false),
+        &bindings,
+        &mut spending,
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(80..84));
+    assert_eq!(
+        error.error.message,
+        "incompatible declared underlying types"
+    );
+    let V::Record(fields) = bindings.get("outer", 0..1).unwrap().data() else {
+        panic!("retained parent")
+    };
+    assert_eq!(fields[0].1.data(), &V::Array(vec![]));
+
+    // Unannotated absence and empty collections still acquire their legal context.
+    assert_eq!(
+        run_functions(
+            &[keep()],
+            &accumulate(empty(), literal(V::Absent), "keep", false),
+            1,
+            &mut spending
+        )
+        .unwrap()
+        .data(),
+        &V::Absent
+    );
+    let sequence = D::Sequence(Box::new(D::Integer));
+    let keep_sequence = function(
+        "keep",
+        vec![("s", sequence.clone()), ("x", D::Integer)],
+        sequence,
+        name("s"),
+    );
+    assert_eq!(
+        run_functions(
+            &[keep_sequence],
+            &accumulate(empty(), empty(), "keep", false),
+            1,
+            &mut spending
+        )
+        .unwrap()
+        .data(),
+        &V::Array(vec![])
+    );
+}

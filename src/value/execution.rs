@@ -213,6 +213,24 @@ pub(crate) trait Host<'a, Q> {
         budget: &mut Budget,
         location: Location,
     ) -> Result<(), Self::Error>;
+    fn sequence_items(
+        &mut self,
+        _value: NativeView<Self::Native>,
+        _element: &DeclaredType<Self::Kind>,
+        _budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<ResultValue<'a, Self, Q>>, Self::Error> {
+        Err(error(location, "native positional sequences are unsupported").into())
+    }
+    fn finish_sequence(
+        &mut self,
+        values: Vec<Value<'a, Self::Native, Self::Kind>>,
+        element: &'a DeclaredType<Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        Ok(constructed_sequence(values, element, budget, location)?)
+    }
     fn subjects(
         &mut self,
         _value: NativeView<Self::Native>,
@@ -236,8 +254,11 @@ struct Activation<'a, N, K> {
     base: usize,
     locals: Vec<(&'a str, Value<'a, N, K>)>,
     names: &'a [&'a str],
+    return_contract: Option<&'a DeclaredType<K>>,
 }
 type ResultValue<'a, H, Q> = Value<'a, <H as Host<'a, Q>>::Native, <H as Host<'a, Q>>::Kind>;
+type ResultSource<'a, H, Q> =
+    GeneratorSource<'a, <H as Host<'a, Q>>::Native, <H as Host<'a, Q>>::Kind>;
 
 enum Pending<'a, Q, N, K> {
     Eval(&'a PreparedValue<'a, Q>, usize, bool),
@@ -275,6 +296,17 @@ enum Pending<'a, Q, N, K> {
         bool,
         Vec<Value<'a, N, K>>,
     ),
+    Invoke {
+        expression: &'a PreparedValue<'a, Q>,
+        function: usize,
+        arguments: Vec<Value<'a, N, K>>,
+        ranges: Vec<&'a std::ops::Range<usize>>,
+        tail: bool,
+        return_contract: Option<&'a DeclaredType<K>>,
+    },
+    AccumulatorItems(&'a PreparedValue<'a, Q>, usize),
+    AccumulatorInitial(&'a PreparedValue<'a, Q>, usize, Value<'a, N, K>),
+    AccumulatorStep(&'a PreparedValue<'a, Q>, usize, Accumulator<'a, N, K>),
     Set(
         &'a PreparedValue<'a, Q>,
         usize,
@@ -316,6 +348,12 @@ enum Pending<'a, Q, N, K> {
     FinishComprehension(Rc<Comprehension<'a, Q>>),
     EmptyAxes(Rc<Comprehension<'a, Q>>, usize, Vec<KeyAxis>),
 }
+struct Accumulator<'a, N, K> {
+    source: GeneratorSource<'a, N, K>,
+    index: usize,
+    snapshots: Vec<Value<'a, N, K>>,
+}
+
 enum GeneratorSource<'a, N, K> {
     Constructed(RuntimeValue),
     Native(Vec<Value<'a, N, K>>),
@@ -385,6 +423,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
             base: 0,
             locals: Vec::new(),
             names,
+            return_contract: None,
         });
         let mut result: Option<ResultValue<'a, H, Q>> = None;
         let outcome = (|| {
@@ -403,6 +442,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Default(e, ..)
                     | Pending::Fallback(e, ..)
                     | Pending::Call(e, ..)
+                    | Pending::AccumulatorItems(e, ..)
+                    | Pending::AccumulatorInitial(e, ..)
+                    | Pending::AccumulatorStep(e, ..)
+                    | Pending::Invoke { expression: e, .. }
                     | Pending::Set(e, ..)
                     | Pending::KeyedKey(e, ..)
                     | Pending::KeyedValue(e, ..) => Location::Query(e.range.clone()),
@@ -420,6 +463,9 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Default(_, depth, _)
                     | Pending::Fallback(_, depth, _)
                     | Pending::Call(_, depth, ..)
+                    | Pending::AccumulatorItems(_, depth)
+                    | Pending::AccumulatorInitial(_, depth, ..)
+                    | Pending::AccumulatorStep(_, depth, ..)
                     | Pending::Set(_, depth, ..)
                     | Pending::KeyedKey(_, depth, ..)
                     | Pending::KeyedValue(_, depth, ..) => *depth,
@@ -429,7 +475,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Filter(c, index, _) => c.depth + index + 1,
                     Pending::Head(c) | Pending::KeyHead(c, _) => c.depth + c.clauses.len(),
                     Pending::FinishComprehension(c) | Pending::EmptyAxes(c, ..) => c.depth,
-                    Pending::Let(..) | Pending::Return(_) | Pending::Restore(_) => 0,
+                    Pending::Let(..)
+                    | Pending::Return(_)
+                    | Pending::Restore(_)
+                    | Pending::Invoke { .. } => 0,
                 };
                 budget.within_evaluation(
                     depth,
@@ -493,6 +542,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         if let Some(first) = arguments.first() {
                                             push!(Pending::Eval(first, depth + 1, false));
                                         }
+                                    }
+                                    PreparedKind::Accumulate { items, .. } => {
+                                        push!(Pending::AccumulatorItems(expression, depth));
+                                        push!(Pending::Eval(items, depth + 1, false));
                                     }
                                     PreparedKind::Block { .. } => {
                                         push!(Pending::Restore(frame.locals.len()));
@@ -954,22 +1007,45 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     push!(Pending::Eval(next, depth + 1, false));
                                     return Ok(());
                                 }
+                                let mut ranges = metadata_vec(sources.len(), budget, &location)?;
+                                ranges.extend(sources.iter().map(|source| &source.range));
+                                push!(Pending::Invoke {
+                                    expression,
+                                    function: *function,
+                                    arguments,
+                                    ranges,
+                                    tail,
+                                    return_contract: None
+                                });
+                            }
+                            Pending::Invoke {
+                                expression,
+                                function,
+                                mut arguments,
+                                ranges,
+                                tail,
+                                return_contract,
+                            } => {
                                 budget.charge(1, location.clone())?;
-                                let body = bodies.get(*function).ok_or_else(|| {
+                                let call_range = match &expression.value {
+                                    PreparedKind::Accumulate { step, .. } => &step.range,
+                                    _ => &expression.range,
+                                };
+                                let body = bodies.get(function).ok_or_else(|| {
                                     error(&location, "function was not prepared in this request")
                                 })?;
                                 // All arguments still refer to old slots until admission completes.
                                 for ((argument, parameter), source) in arguments
                                     .iter_mut()
                                     .zip(body.declaration.parameters.iter())
-                                    .zip(sources)
+                                    .zip(ranges)
                                 {
                                     admit(
                                         argument,
                                         parameter.declaration,
                                         host,
                                         budget,
-                                        &Location::Query(source.range.clone()),
+                                        &Location::Query(source.clone()),
                                     )?;
                                 }
                                 let mut locals = Vec::new();
@@ -1010,8 +1086,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     // Arguments retain any old-slot aliases until admission has
                                     // finished; installing them then releases dead locals.
                                     frame.locals = locals;
-                                    frame.function = Some(*function);
-                                    frame.range = expression.range.clone();
+                                    frame.function = Some(function);
+                                    frame.range = call_range.clone();
                                 } else {
                                     if offset + frames.len() > limit {
                                         return Err(error(
@@ -1024,18 +1100,134 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     push_metadata(
                                         &mut frames,
                                         Activation {
-                                            function: Some(*function),
-                                            range: expression.range.clone(),
+                                            function: Some(function),
+                                            range: call_range.clone(),
                                             base,
                                             locals,
                                             names: &[],
+                                            return_contract,
                                         },
                                         budget,
                                         &location,
                                     )?;
                                 }
-                                push!(Pending::Return(*function));
-                                push!(Pending::Let(*function, 0));
+                                push!(Pending::Return(function));
+                                push!(Pending::Let(function, 0));
+                            }
+                            Pending::AccumulatorItems(expression, depth) => {
+                                let PreparedKind::Accumulate { initial, .. } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                let items = result.take().expect("accumulator items");
+                                push!(Pending::AccumulatorInitial(expression, depth, items));
+                                push!(Pending::Eval(initial, depth + 1, false));
+                            }
+                            Pending::AccumulatorInitial(expression, depth, items_value) => {
+                                let PreparedKind::Accumulate {
+                                    items,
+                                    initial,
+                                    function,
+                                    ..
+                                } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                let declaration = &bodies[*function].declaration;
+                                let mut parameters = declaration.parameters.iter();
+                                let state = parameters.next().expect("step state").declaration;
+                                let element = parameters.next().expect("step item").declaration;
+                                let mut initial_value = result.take().expect("accumulator initial");
+                                admit(
+                                    &mut initial_value,
+                                    state,
+                                    host,
+                                    budget,
+                                    &Location::Query(initial.range.clone()),
+                                )?;
+                                let source_location = Location::Query(items.range.clone());
+                                let source = accumulator_source(
+                                    items_value,
+                                    element,
+                                    host,
+                                    budget,
+                                    &source_location,
+                                )?;
+                                result = Some(initial_value);
+                                push!(Pending::AccumulatorStep(
+                                    expression,
+                                    depth,
+                                    Accumulator {
+                                        source,
+                                        index: 0,
+                                        snapshots: Vec::new()
+                                    }
+                                ));
+                            }
+                            Pending::AccumulatorStep(expression, depth, mut accumulator) => {
+                                let PreparedKind::Accumulate {
+                                    items,
+                                    function,
+                                    step,
+                                    scan,
+                                    ..
+                                } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                budget.charge(1, location.clone())?;
+                                let state_contract = bodies[*function]
+                                    .declaration
+                                    .parameters
+                                    .iter()
+                                    .next()
+                                    .expect("step state")
+                                    .declaration;
+                                let mut state = result.take().expect("accumulator state");
+                                if *scan && accumulator.index > 0 {
+                                    budget.charge_results(1, location.clone())?;
+                                    let snapshot = state.share(budget, &location)?;
+                                    push_metadata(
+                                        &mut accumulator.snapshots,
+                                        snapshot,
+                                        budget,
+                                        &location,
+                                    )?;
+                                }
+                                if accumulator.index == accumulator.source.len() {
+                                    result = Some(if *scan {
+                                        host.finish_sequence(
+                                            accumulator.snapshots,
+                                            state_contract,
+                                            budget,
+                                            &location,
+                                        )?
+                                    } else {
+                                        state
+                                    });
+                                } else {
+                                    let item = accumulator.source.child(
+                                        accumulator.index,
+                                        budget,
+                                        &Location::Query(items.range.clone()),
+                                    )?;
+                                    accumulator.index += 1;
+                                    let mut arguments = metadata_vec(2, budget, &location)?;
+                                    arguments.push(state);
+                                    arguments.push(item);
+                                    let mut ranges = metadata_vec(2, budget, &location)?;
+                                    ranges.push(&step.range);
+                                    ranges.push(&items.range);
+                                    push!(Pending::AccumulatorStep(expression, depth, accumulator));
+                                    push!(Pending::Invoke {
+                                        expression,
+                                        function: *function,
+                                        arguments,
+                                        ranges,
+                                        tail: false,
+                                        return_contract: Some(state_contract)
+                                    });
+                                }
                             }
                             Pending::Set(expression, depth, index, mut values, mut ty) => {
                                 let value = result
@@ -1137,6 +1329,15 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     budget,
                                     &Location::Query(bodies[function].value.range.clone()),
                                 )?;
+                                if let Some(expected) = frame.return_contract {
+                                    admit(
+                                        &mut value,
+                                        expected,
+                                        host,
+                                        budget,
+                                        &Location::Query(bodies[function].value.range.clone()),
+                                    )?;
+                                }
                                 frames.pop();
                                 result = Some(value);
                             }
@@ -1454,6 +1655,83 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
     })
 }
 
+fn accumulator_source<'a, Q, H: Host<'a, Q>>(
+    items_value: ResultValue<'a, H, Q>,
+    element: &DeclaredType<H::Kind>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultSource<'a, H, Q>, H::Error> {
+    if let Some(previous) = items_value.contract
+        && let Some(previous) = sequence_element(previous, budget, location)?
+        && !crate::runtime_types::compatible_state(previous, element, budget, location)?
+    {
+        return Err(error(location, "incompatible declared underlying types").into());
+    }
+    Ok(match items_value.data {
+        Data::Constructed(mut value) => {
+            if let Some(previous) = value.declaration()
+                && let Some(previous) = sequence_element(previous, budget, location)?
+                && !crate::runtime_types::compatible_declarations(
+                    previous, element, budget, location,
+                )?
+            {
+                return Err(error(location, "incompatible declared underlying types").into());
+            }
+            let value = value
+                .share(budget, location)?
+                .into_present(budget, location)?;
+            let ConstructedValue::Array(values) = value.as_ref() else {
+                return Err(
+                    error(location, "named accumulator needs a positional sequence").into(),
+                );
+            };
+            budget.check_items(values.len(), location.clone())?;
+            GeneratorSource::Constructed(value)
+        }
+        Data::Native(value) => {
+            let values = host.sequence_items(value, element, budget, location)?;
+            budget.check_items(values.len(), location.clone())?;
+            GeneratorSource::Native(values)
+        }
+    })
+}
+
+fn sequence_element<'t, K>(
+    mut declaration: &'t DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Option<&'t DeclaredType<K>>, QueryError> {
+    loop {
+        budget.charge(1, location.clone())?;
+        match declaration {
+            DeclaredType::Optional(child) => declaration = child,
+            DeclaredType::Array(child) | DeclaredType::Sequence(child) => return Ok(Some(child)),
+            _ => return Ok(None),
+        }
+    }
+}
+
+pub(crate) fn constructed_sequence<'a, N, K>(
+    values: Vec<Value<'a, N, K>>,
+    element: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value<'a, N, K>, QueryError> {
+    let element = crate::runtime_types::constructed_declaration(element, budget, location)?;
+    let mut output = admit_container::<ConstructedValue>(values.len(), budget, location)?;
+    for value in values {
+        output.push(value.materialize(budget, location)?);
+    }
+    let value = annotate(
+        ConstructedValue::Array(output),
+        DeclaredType::Sequence(Box::new(element)),
+        budget,
+        location,
+    )?;
+    Ok(Value::constructed(RuntimeValue::Owned(value)))
+}
+
 fn admit<'a, Q, H: Host<'a, Q>>(
     value: &mut ResultValue<'a, H, Q>,
     expected: &'a DeclaredType<H::Kind>,
@@ -1461,6 +1739,18 @@ fn admit<'a, Q, H: Host<'a, Q>>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), H::Error> {
+    if let Some(previous) = value.contract
+        && !std::ptr::eq(previous, expected)
+        && !crate::runtime_types::compatible_state(previous, expected, budget, location)?
+    {
+        return Err(error(location, "incompatible declared underlying types").into());
+    }
+    if let Data::Constructed(data) = &value.data
+        && let Some(previous) = data.declaration()
+        && !crate::runtime_types::compatible_declarations(previous, expected, budget, location)?
+    {
+        return Err(error(location, "incompatible declared underlying types").into());
+    }
     let reusable = matches!(value.data, Data::Constructed(_)) || host.retains_native_admission();
     if reusable
         && let Some(previous) = value.contract

@@ -207,7 +207,7 @@ pub(crate) struct Resolver<'h, 'a, Q, K, H> {
     pub queries: &'h mut H,
     pub declarations: &'a [DeclarationRef<'a, Q, K>],
 }
-impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H> {
+impl<Q, K: PartialEq, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H> {
     type Error = H::Error;
     fn function(
         &mut self,
@@ -239,6 +239,18 @@ impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H>
             budget,
             &Location::Query(name.range.clone()),
         )
+    }
+    fn accumulator_function(
+        &mut self,
+        step: &Located<String>,
+        budget: &mut Budget,
+    ) -> Result<(usize, Vec<ValueType>), QueryError> {
+        let (id, _) = self.function(step, budget)?;
+        let state = accumulator_state(&self.declarations[id], step, budget)?;
+        Ok((
+            id,
+            crate::value::function_facts(state, budget, &Location::Query(step.range.clone()))?,
+        ))
     }
     fn query_types(
         &mut self,
@@ -283,6 +295,34 @@ impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H>
         self.queries.read_binding(n, r, b)
     }
 }
+fn accumulator_state<'a, Q, K: PartialEq>(
+    declaration: &DeclarationRef<'a, Q, K>,
+    step: &Located<String>,
+    budget: &mut Budget,
+) -> Result<&'a DeclaredType<K>, QueryError> {
+    let location = Location::Query(step.range.clone());
+    if declaration.parameters.len() != 2 {
+        return Err(QueryError::query(
+            step.range.clone(),
+            "accumulator step needs two parameters",
+        ));
+    }
+    let state = declaration
+        .parameters
+        .iter()
+        .next()
+        .expect("two parameters")
+        .declaration;
+    if !crate::runtime_types::compatible_state(state, &declaration.result.value, budget, &location)?
+    {
+        return Err(QueryError::query(
+            step.range.clone(),
+            "accumulator result is incompatible with state",
+        ));
+    }
+    Ok(state)
+}
+
 fn register<'a, Q: 'a, K: 'a>(
     declarations: impl Clone + Iterator<Item = DeclarationRef<'a, Q, K>>,
     budget: &mut Budget,
@@ -327,7 +367,9 @@ fn register<'a, Q: 'a, K: 'a>(
 fn builtin(name: &str) -> bool {
     matches!(
         name,
-        "one"
+        "fold"
+            | "scan"
+            | "one"
             | "occurs"
             | "absent"
             | "lookup"
@@ -456,6 +498,34 @@ pub trait FunctionHost<C>:
     ) -> Result<<Self as ProjectionHost<C>>::Kind, QueryError>;
     /// Recognize registered domain operation names, including effectful ones.
     fn is_operation_name(&self, name: &str) -> bool;
+
+    /// Enumerate one eager positional native container in order, preserving
+    /// native identity and coordinates. Reject keyed/non-positional storage and
+    /// incompatible empty element metadata. Charge scans and output allocation.
+    fn sequence_items(
+        &self,
+        _value: &Self::Value,
+        _element: &DeclaredType<<Self as ProjectionHost<C>>::Kind>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<Self::Value>, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native positional sequences are unsupported").into())
+    }
+
+    /// Construct a positional sequence of immutable native scan snapshots.
+    /// Preserve the supplied element contract even for empty output, retaining
+    /// each value's identity/coordinates and charging host allocation.
+    fn construct_sequence(
+        &self,
+        _values: Vec<Self::Value>,
+        _element: &DeclaredType<<Self as ProjectionHost<C>>::Kind>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native scan construction is unsupported").into())
+    }
 
     /// Successful native admission remains valid for an unchanged immutable
     /// value and equivalent contract throughout this request. Opt in only when
@@ -724,6 +794,25 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         &value.range,
                     )?)
                 }
+                ValueExpressionKind::Fold { step, .. } => {
+                    let (id, _) = self.function(step, budget)?;
+                    let state = accumulator_state(&self.declarations[id], step, budget)?;
+                    Some(self.host.declaration_kind(state, budget, &value.range)?)
+                }
+                ValueExpressionKind::Scan { step, .. } => {
+                    let (id, _) = self.function(step, budget)?;
+                    let state = accumulator_state(&self.declarations[id], step, budget)?;
+                    let sequence =
+                        DeclaredType::Sequence(Box::new(crate::runtime_types::copy_declaration(
+                            state,
+                            budget,
+                            &Location::Query(value.range.clone()),
+                        )?));
+                    Some(
+                        self.host
+                            .declaration_kind(&sequence, budget, &value.range)?,
+                    )
+                }
                 ValueExpressionKind::NativeValue(query) => Some(
                     self.prepared
                         .get(&(query.as_ref() as *const _ as usize))
@@ -878,6 +967,18 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
             budget,
             &Location::Query(name.range.clone()),
         )
+    }
+    fn accumulator_function(
+        &mut self,
+        step: &Located<String>,
+        budget: &mut Budget,
+    ) -> Result<(usize, Vec<ValueType>), QueryError> {
+        let (id, _) = self.function(step, budget)?;
+        let state = accumulator_state(&self.declarations[id], step, budget)?;
+        Ok((
+            id,
+            crate::value::function_facts(state, budget, &Location::Query(step.range.clone()))?,
+        ))
     }
     fn query_types(
         &mut self,
@@ -1630,6 +1731,67 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         location: Location,
     ) -> Result<(), Self::Error> {
         admit_value(value, expected, self.host, self.context, budget, location)
+    }
+    fn sequence_items(
+        &mut self,
+        value: NativeView<H::Value>,
+        element: &DeclaredType<Kind<C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<HostValue<'a, C, H>>, Self::Error> {
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        budget.charge(value.path.len(), location.clone())?;
+        let source = native_view::<C, H>(&value, self.host);
+        let values = self
+            .host
+            .sequence_items(source, element, self.context, budget, range)?;
+        budget.check_items(values.len(), location.clone())?;
+        crate::projection::admit_slots::<HostValue<'a, C, H>>(values.len(), budget, range)?;
+        let mut output = Vec::with_capacity(values.len());
+        for value in values {
+            budget.charge(1, location.clone())?;
+            budget.charge_results(1, location.clone())?;
+            output.push(self.retained(std::sync::Arc::new(value), budget, range)?);
+        }
+        Ok(output)
+    }
+    fn finish_sequence(
+        &mut self,
+        values: Vec<HostValue<'a, C, H>>,
+        element: &'a DeclaredType<Kind<C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        if !crate::runtime_types::contains_native(element, budget, location)? {
+            return Ok(execution::constructed_sequence(
+                values, element, budget, location,
+            )?);
+        }
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+        let mut output = Vec::with_capacity(values.len());
+        for value in values {
+            output.push(self.finish_value(value, budget, location)?);
+        }
+        let value = self
+            .host
+            .construct_sequence(output, element, self.context, budget, range)?;
+        let expected = DeclaredType::Sequence(Box::new(crate::runtime_types::copy_declaration(
+            element, budget, location,
+        )?));
+        admit_value(
+            &value,
+            &expected,
+            self.host,
+            self.context,
+            budget,
+            location.clone(),
+        )?;
+        self.retained(std::sync::Arc::new(value), budget, range)
     }
     fn subjects(
         &mut self,

@@ -155,6 +155,10 @@ enum SourceValue<'a> {
     Count(usize),
     Record(zirql::NativeCapture<SourceValue<'a>>),
     Tuple(Vec<SourceValue<'a>>),
+    Sequence {
+        values: Vec<SourceValue<'a>>,
+        element: DeclaredType<SourceKind>,
+    },
 }
 
 type SourceExpression = Expression<SourceStage, (), &'static str>;
@@ -230,6 +234,16 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                         })
                         .collect(),
                 )
+            }
+            SourceValue::Sequence { values, element } => {
+                budget.charge_results(values.len() + 1, location.clone())?;
+                SourceValue::Sequence {
+                    values: values
+                        .iter()
+                        .map(|v| self.copy_value(v, _context, budget, range))
+                        .collect::<Result<_, _>>()?,
+                    element: element.clone(),
+                }
             }
             SourceValue::Count(count) => {
                 budget.charge_results(1, location)?;
@@ -412,6 +426,7 @@ enum SourceKind {
     Count,
     Record(zirql::NativeCapture<SourceKind>),
     Tuple(Vec<SourceKind>),
+    Sequence(Box<DeclaredType<SourceKind>>),
 }
 fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
     match kind {
@@ -422,6 +437,7 @@ fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
                 .map(|(s, k)| (s.clone(), source_declaration(k)))
                 .collect(),
         ),
+        SourceKind::Sequence(element) => DeclaredType::Sequence(element.clone()),
         SourceKind::Tuple(children) => {
             DeclaredType::Tuple(children.iter().map(source_declaration).collect())
         }
@@ -441,7 +457,12 @@ impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
         location: Location,
     ) -> Result<(), EvaluationError<SourceFailure>> {
         match (expected, value) {
-            (DeclaredType::Native(kind @ (SourceKind::Record(_) | SourceKind::Tuple(_))), _) => {
+            (
+                DeclaredType::Native(
+                    kind @ (SourceKind::Record(_) | SourceKind::Tuple(_) | SourceKind::Sequence(_)),
+                ),
+                _,
+            ) => {
                 return self.admit_native(
                     value,
                     &source_declaration(kind),
@@ -449,6 +470,14 @@ impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
                     budget,
                     location,
                 );
+            }
+            (DeclaredType::Sequence(ty), SourceValue::Sequence { values, element })
+                if ty.as_ref() == element =>
+            {
+                for value in values {
+                    self.admit_native(value, ty, context, budget, location.clone())?;
+                }
+                return Ok(());
             }
             (DeclaredType::Tuple(types), SourceValue::Tuple(values))
                 if types.len() == values.len() =>
@@ -514,6 +543,9 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     ) -> Result<SourceKind, QueryError> {
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match value {
+            SourceValue::Sequence { element, .. } => {
+                SourceKind::Sequence(Box::new(element.clone()))
+            }
             SourceValue::Words(_) => SourceKind::Words,
             SourceValue::Count(_) => SourceKind::Count,
             SourceValue::Record(record) => SourceKind::Record(zirql::NativeCapture {
@@ -614,6 +646,48 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     }
 }
 impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
+    fn sequence_items(
+        &self,
+        value: &SourceValue<'a>,
+        element: &DeclaredType<SourceKind>,
+        context: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<SourceValue<'a>>, EvaluationError<SourceFailure>> {
+        let SourceValue::Sequence {
+            values,
+            element: actual,
+        } = value
+        else {
+            return Err(QueryError::query(range.clone(), "expected native sequence").into());
+        };
+        if element != actual {
+            return Err(
+                QueryError::query(range.clone(), "wrong native element declaration").into(),
+            );
+        }
+        budget.check_items(values.len(), Location::Query(range.clone()))?;
+        values
+            .iter()
+            .map(|v| self.copy_value(v, context, budget, range))
+            .collect()
+    }
+    fn construct_sequence(
+        &self,
+        values: Vec<SourceValue<'a>>,
+        element: &DeclaredType<SourceKind>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        budget.charge(1 + values.len(), Location::Query(range.clone()))?;
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(SourceValue::Sequence {
+            values,
+            element: element.clone(),
+        })
+    }
+
     fn declaration_kind(
         &self,
         declaration: &DeclaredType<SourceKind>,
@@ -623,6 +697,7 @@ impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match declaration {
             DeclaredType::Native(kind) => kind.clone(),
+            DeclaredType::Sequence(element) => SourceKind::Sequence(element.clone()),
             DeclaredType::Tuple(children) => SourceKind::Tuple(
                 children
                     .iter()
@@ -642,6 +717,238 @@ impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
         name == "prefix"
     }
 }
+#[test]
+fn named_native_accumulators_keep_handles_empty_schema_and_failed_context() {
+    use zirql::{
+        FunctionDeclaration, FunctionLimits, FunctionParameter, FunctionRequest,
+        ValueExpressionKind as K,
+    };
+    let source = String::from("alpha beta");
+    let foreign = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        ..limits()
+    });
+    let element = DeclaredType::Native(SourceKind::Words);
+    let mut step = FunctionDeclaration {
+        name: at("last".into(), 1),
+        parameters: ["state", "item"]
+            .into_iter()
+            .map(|name| {
+                at(
+                    FunctionParameter {
+                        name: at(name.into(), 2),
+                        declaration: element.clone(),
+                    },
+                    2,
+                )
+            })
+            .collect(),
+        result: at(element.clone(), 3),
+        bindings: vec![],
+        value: at(K::Name("item".into()), 4),
+    };
+    let native = |name: &str| {
+        at(
+            K::NativeValue(Box::new(at(ExpressionKind::Binding(name.into()), 12))),
+            12,
+        )
+    };
+    let entry = |scan, items: &str| {
+        at(
+            if scan {
+                K::Scan {
+                    items: Box::new(native(items)),
+                    initial: Box::new(native("initial")),
+                    step: at("last".into(), 15),
+                }
+            } else {
+                K::Fold {
+                    items: Box::new(native(items)),
+                    initial: Box::new(native("initial")),
+                    step: at("last".into(), 15),
+                }
+            },
+            11,
+        )
+    };
+    let words = |range: Range<usize>| {
+        SourceValue::Words(vec![Word {
+            text: &source[range.clone()],
+            range,
+        }])
+    };
+    let bindings = Bindings::new([
+        (
+            at("items".into(), 0),
+            SourceValue::Sequence {
+                values: vec![words(0..5), words(6..10)],
+                element: element.clone(),
+            },
+        ),
+        (
+            at("empty".into(), 0),
+            SourceValue::Sequence {
+                values: vec![],
+                element: element.clone(),
+            },
+        ),
+        (
+            at("wrong_empty".into(), 0),
+            SourceValue::Sequence {
+                values: vec![],
+                element: DeclaredType::Native(SourceKind::Count),
+            },
+        ),
+        (at("initial".into(), 0), source_input(&source, &mut budget)),
+    ])
+    .unwrap();
+    for scan in [false, true] {
+        let result = FunctionRequest::prepare(
+            std::slice::from_ref(&step),
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&entry(scan, "items"), &bindings)
+        .unwrap();
+        let states = if scan {
+            let SourceValue::Sequence {
+                values,
+                element: actual,
+            } = result
+            else {
+                panic!("native scan")
+            };
+            assert_eq!(actual, element);
+            values
+        } else {
+            vec![result]
+        };
+        for (index, value) in states.iter().enumerate() {
+            let range = if scan && index == 0 { 0..5 } else { 6..10 };
+            let SourceValue::Words(words) = value else {
+                panic!("native state")
+            };
+            assert_eq!(words[0].range, range);
+            assert_eq!(words[0].text.as_ptr(), source[range.clone()].as_ptr());
+        }
+    }
+    let empty = FunctionRequest::prepare(
+        std::slice::from_ref(&step),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry(true, "empty"), &bindings)
+    .unwrap();
+    assert!(
+        matches!(empty, SourceValue::Sequence { values, element: actual } if values.is_empty() && actual == element)
+    );
+    assert!(
+        FunctionRequest::prepare(
+            std::slice::from_ref(&step),
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 }
+        )
+        .unwrap()
+        .evaluate(&entry(false, "wrong_empty"), &bindings)
+        .is_err()
+    );
+    context.source = &foreign;
+    let error = FunctionRequest::prepare(
+        std::slice::from_ref(&step),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry(false, "items"), &bindings)
+    .unwrap_err();
+    assert!(matches!(
+        error.error,
+        EvaluationError::Host(SourceFailure::Source(_))
+    ));
+    context.source = &source;
+    FunctionRequest::prepare(
+        std::slice::from_ref(&step),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry(false, "empty"), &bindings)
+    .unwrap();
+    step.result = at(DeclaredType::Native(SourceKind::Count), 3);
+    let incompatible = FunctionRequest::prepare(
+        std::slice::from_ref(&step),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry(false, "empty"), &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(incompatible.error, EvaluationError::Core(ref error)
+        if error.location == Location::Query(15..16))
+    );
+    step.result = at(element.clone(), 3);
+    step.value = at(
+        K::NativeValue(Box::new(sequence(
+            at(ExpressionKind::Binding("item".into()), 40),
+            vec![at(ExpressionStep::Stage(SourceStage::Fail), 41)],
+        ))),
+        40,
+    );
+    let failed = FunctionRequest::prepare(
+        std::slice::from_ref(&step),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry(true, "items"), &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(failed.error, EvaluationError::Host(SourceFailure::Source(ref range))
+        if *range == (0..source.len()))
+    );
+    assert_eq!(failed.calls[0].function, "last");
+    assert_eq!(failed.calls[0].range, 15..16);
+    FunctionRequest::prepare(
+        std::slice::from_ref(&step),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry(false, "empty"), &bindings)
+    .unwrap();
+    let SourceValue::Words(initial) = bindings.get("initial", 0..1).unwrap() else {
+        panic!("initial alias")
+    };
+    assert_eq!(initial.len(), 2);
+    assert_eq!(initial[0].text.as_ptr(), source.as_ptr());
+}
+
 #[test]
 fn functions_keep_borrowed_source_coordinates_and_reject_foreign_context() {
     use zirql::{
@@ -2570,6 +2877,86 @@ mod projection {
             stream_items: 100,
         })
     }
+    #[test]
+    fn named_accumulators_use_prepared_native_arguments_and_refuse_impure_steps() {
+        use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest, ValueBinaryOperator as B};
+        let mut add = native_function(
+            "add",
+            function_value(K::Binary {
+                operator: B::Add,
+                left: Box::new(fn_name("n")),
+                right: Box::new(fn_name("xs")),
+            }),
+        );
+        add.parameters[1].value.declaration = D::Integer;
+        add.result = super::at(D::Integer, 4);
+        let scan = function_value(K::Scan {
+            items: Box::new(function_value(K::Array(vec![fn_int(2), fn_int(3)]))),
+            initial: Box::new(fn_int(0)),
+            step: super::at("add".into(), 70),
+        });
+        let mut apply = native_function(
+            "apply",
+            function_value(K::NativeQuery(Box::new(native_operand(Stage::Argument {
+                value: Box::new(scan),
+                selected: true,
+            })))),
+        );
+        apply.result = super::at(D::Integer, 4);
+        let functions = [add, apply];
+        let bindings =
+            Bindings::new([(super::at("input".into(), 0), Value::Subjects(vec!["alpha"]))])
+                .unwrap();
+        let entry = function_call(
+            "apply",
+            vec![
+                fn_int(0),
+                function_value(K::NativeValue(Box::new(super::at(
+                    ExpressionKind::Binding("input".into()),
+                    61,
+                )))),
+            ],
+        );
+        let mut budget = Budget::for_program(ProgramLimits {
+            work: 1_000_000,
+            results: 100_000,
+            nesting: 64,
+            stream_items: 100,
+        });
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap();
+        assert!(matches!(result, Value::Constructed(value) if value.data() == &V::Integer(4)));
+        let impure = native_function(
+            "impure",
+            function_value(K::NativeValue(Box::new(native_operand(Stage::Edit)))),
+        );
+        let empty = function_value(K::Fold {
+            items: Box::new(function_value(K::Array(vec![]))),
+            initial: Box::new(fn_int(0)),
+            step: super::at("impure".into(), 70),
+        });
+        let functions = [impure];
+        assert!(
+            FunctionRequest::prepare(
+                &functions,
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 1 }
+            )
+            .and_then(|request| request.evaluate(&empty, &bindings))
+            .is_err()
+        );
+    }
+
     #[test]
     fn named_native_functions_keep_arguments_results_projections_and_callback_limits() {
         use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest, ValueBinaryOperator as B};

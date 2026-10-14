@@ -258,3 +258,35 @@ matches and conditionals. Host text syntax for patterns, blocks and value
 matching is separate work. When releasing lowered native trees, use
 `dispose_native_value` or `dispose_pattern_functions`; `dispose_pattern` releases
 a standalone nested pattern iteratively.
+
+
+## Fold and scan named functions
+
+Callable programs use `ValueExpressionKind::Fold { items, initial, step }` or
+`Scan` with the same fields. `step` is a located function name in this closed
+position. The [compiled fold example in the API source](https://github.com/zayenz/zirql/blob/main/src/value.rs)
+adds `[2, 3]` to initial state `0` with one active function frame. Replacing
+`Fold` with `Scan` returns `[2, 5]`. Consumer text syntax is separate integration
+work; the common reader does not accept these forms yet.
+
+The request resolves the step and checks its two-parameter signature and purity
+before execution, including empty input. Its result declaration must be
+compatible with parameter zero, which fixes the state contract. Optional
+wrappers permit compatible signatures, but every actual state must satisfy that
+fixed contract: an optional integer result cannot return absence to an integer
+state. Initial state admission also runs for empty input.
+
+Items evaluate first, then initial, once each. The eager positional input is
+visited left-to-right, calling `step(state, item)` through the prepared function
+runner. Keyed arrays need an explicit conversion. Fold returns initial on empty
+input and the final state otherwise. Scan excludes initial and retains every
+post-step state; empty scan retains its element declaration. Earlier snapshots
+and aliases remain immutable.
+
+Native hosts opt in through defaulted `FunctionHost::sequence_items` and
+`construct_sequence` hooks. The first establishes positional storage and its
+empty element contract, then enumerates original native handles in order. The
+second assembles native scan snapshots, including typed empty output. Both
+hooks preserve identity, source coordinates and aliases, and charge their scans
+and allocations to the active budget. Existing hosts can leave these hooks
+unsupported. Constructed states use ordinary constructed arrays.

@@ -233,6 +233,47 @@ pub enum ValueExpressionKind<Q = ()> {
         function: Located<String>,
         arguments: Vec<ValueExpression<Q>>,
     },
+    /// Apply a named pure step to an eager positional sequence in input order.
+    ///
+    /// ```
+    /// use zirql::{Bindings, Budget, ConstructedValue as V, DeclaredType as D,
+    ///     FunctionDeclaration, FunctionParameter, FunctionLimits, Located,
+    ///     ProgramLimits, ValueExpression as E, ValueExpressionKind as K,
+    ///     ValueBinaryOperator as B, evaluate_functions};
+    /// fn e(value: K) -> E { Located::new(value, 0..1) }
+    /// let step = FunctionDeclaration {
+    ///     name: Located::new("add".into(), 0..1),
+    ///     parameters: ["state", "item"].into_iter().map(|name| Located::new(
+    ///         FunctionParameter { name: Located::new(name.into(), 0..1),
+    ///                             declaration: D::Integer }, 0..1)).collect(),
+    ///     result: Located::new(D::Integer, 0..1), bindings: vec![],
+    ///     value: e(K::Binary { operator: B::Add,
+    ///         left: Box::new(e(K::Name("state".into()))),
+    ///         right: Box::new(e(K::Name("item".into()))) }),
+    /// };
+    /// let entry = e(K::Fold {
+    ///     items: Box::new(e(K::Literal(V::Array(vec![V::Integer(2), V::Integer(3)])))),
+    ///     initial: Box::new(e(K::Literal(V::Integer(0)))),
+    ///     step: Located::new("add".into(), 0..1),
+    /// });
+    /// let mut budget = Budget::for_program(ProgramLimits {
+    ///     work: 100_000, results: 10_000, nesting: 64, stream_items: 100,
+    /// });
+    /// let result = evaluate_functions(&[step], &entry, &Bindings::default(),
+    ///     &mut budget, FunctionLimits { active_depth: 1 }).unwrap();
+    /// assert_eq!(result.data(), &V::Integer(5));
+    /// ```
+    Fold {
+        items: Box<ValueExpression<Q>>,
+        initial: Box<ValueExpression<Q>>,
+        step: Located<String>,
+    },
+    /// Retain every post-step state, excluding the initial state.
+    Scan {
+        items: Box<ValueExpression<Q>>,
+        initial: Box<ValueExpression<Q>>,
+        step: Located<String>,
+    },
     /// Extract exactly one positional child without copying it.
     One(Box<ValueExpression<Q>>),
     Name(String),
@@ -469,6 +510,18 @@ pub trait ValueQueryHost<Q> {
     ) -> Result<Vec<ValueType>, QueryError> {
         self.function(name, budget)?;
         Ok(vec![ValueType::Unestablished])
+    }
+    /// Resolve a closed named accumulator step and validate its signature.
+    /// Ordinary value requests reject function-dependent collection operations.
+    fn accumulator_function(
+        &mut self,
+        step: &Located<String>,
+        _budget: &mut Budget,
+    ) -> Result<(usize, Vec<ValueType>), QueryError> {
+        Err(QueryError::query(
+            step.range.clone(),
+            "named accumulators require a function request",
+        ))
     }
     fn native_value_types(
         &mut self,
@@ -2698,6 +2751,40 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     self.walk(argument, budget)?;
                 }
                 self.queries.function_types(function, budget)
+            }
+            ValueExpressionKind::Fold {
+                items,
+                initial,
+                step,
+            }
+            | ValueExpressionKind::Scan {
+                items,
+                initial,
+                step,
+            } => {
+                let (_, state) = self.queries.accumulator_function(step, budget)?;
+                let types = self.walk(items, budget)?;
+                for ty in types {
+                    if !matches!(
+                        shape_type(ty, budget, location)?,
+                        ValueType::Array(_) | ValueType::ArrayKind(_) | ValueType::Unestablished
+                    ) {
+                        return Err(error(
+                            &Location::Query(items.range.clone()),
+                            "named accumulator needs a positional sequence",
+                        ));
+                    }
+                }
+                self.walk(initial, budget)?;
+                if matches!(expression.value, ValueExpressionKind::Scan { .. }) {
+                    one_type(
+                        ValueType::Array(ArrayType::Elements(state)),
+                        budget,
+                        location,
+                    )
+                } else {
+                    Ok(state)
+                }
             }
             ValueExpressionKind::NativeValue(query) => {
                 self.queries

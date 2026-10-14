@@ -318,3 +318,25 @@ Pattern metadata can increase preparation work for requests near an earlier
 threshold; allowance defaults and result-copy charges are unchanged. Finished
 match/guard work releases its subject before the selected result runs. Compatible
 tail calls discard completed block/arm cleanup when replacing the activation.
+
+
+## Named accumulator work
+
+Fold and scan prepare the named step once. Each item uses ordinary whole
+argument admission, parameter patterns, function execution and result admission.
+The fixed state contract is checked before the step frame returns, so a bad
+actual state keeps its active function context, including after a compatible
+tail call. Finished steps release their frames; sequence length does not add
+active call depth. Nested calls and native reentry retain their separate guards.
+
+Preparation, source selection, each step, immutable owner sharing, temporary
+slots and scan snapshots spend the same request budget. Native sequence hooks
+also charge their own scans and construction. Fold retains its source and
+current state; scan additionally retains the requested post-step snapshots.
+Constructed snapshots receive owned copies at the existing public result
+boundary. Releasing a state refunds no allowance, and failure releases partial
+output and pending work without requiring spare budget.
+
+Step lookup and signature errors point to the step name. Initial admission uses
+the initial expression's range, while item/container failures use the items
+range. Errors within a step retain their body or native source locations.
