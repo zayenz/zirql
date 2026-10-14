@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-028"
 key = "core-ci-msrv"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -26,12 +26,21 @@ The reviewed core revision 6fef2436a311b6f83379d129d3000db0b494b314 has no repos
 
 ## Done when
 
-- [ ] Pushes to main and pull requests execute formatting, Clippy with the repository warning policy, and workspace tests including doctests.
-- [ ] A Rust 1.88 job exercises the locked crate and test suite; stable-toolchain lint/format checks have an explicit owner.
-- [ ] The workflow completes successfully on the resulting revision and its required commands are documented without duplicating the full contributor guidance.
+- [x] Pushes to main and pull requests execute formatting, Clippy with the repository warning policy, and workspace tests including doctests.
+- [x] A Rust 1.88 job exercises the locked crate and test suite; stable-toolchain lint/format checks have an explicit owner.
+- [x] The workflow completes successfully on the resulting revision and its required commands are documented without duplicating the full contributor guidance.
 
 ## Validation
 
 - Run the exact workflow commands locally using installed supported toolchains; do not change the crate edition or declared minimum version merely to pass.
 - Observe one successful GitHub Actions run for the resulting revision.
 - Run git diff --check and zdev check base --format json.
+
+## Result
+
+Added main-push and pull-request CI for stable formatting, warning-fatal Clippy and locked workspace tests, plus the declared Rust 1.88 minimum. Documented exact contributor commands. Source commit 3af6eb9.
+
+Validation:
+
+- Independent source and whole-task reviews passed with zero findings. Exact workflow commands passed locally on stable and 1.88.0, including 40 integration tests and four doctests each.
+- GitHub Actions run 38502242105 passed both jobs on exact source revision 3af6eb9b4dedb4fbd3dbbde92f54603ec22d267a; diff and zdev checks passed.

@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 28
-- Ready: 2
+- Ready: 1
 - Blocked: 1
-- Done: 25
+- Done: 26
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -36,4 +36,4 @@
 | [base-025](tasks/025-explain-native-connections-with-bounded-shortest-path-witnes.md) | Explain native connections with bounded shortest path witnesses | done | base-022 |
 | [base-026](tasks/026-release-native-expression-trees-safely-on-shared-reader-erro.md) | Release native expression trees safely on shared reader errors | done | — |
 | [base-027](tasks/027-give-translated-core-errors-stable-machine-readable-categori.md) | Give translated core errors stable machine-readable categories | done | — |
-| [base-028](tasks/028-run-core-validation-and-the-declared-rust-version-in-ci.md) | Run core validation and the declared Rust version in CI | ready | — |
+| [base-028](tasks/028-run-core-validation-and-the-declared-rust-version-in-ci.md) | Run core validation and the declared Rust version in CI | done | — |
