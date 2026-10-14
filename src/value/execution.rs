@@ -14,7 +14,7 @@ use super::{
 use std::rc::Rc;
 
 pub(crate) struct Body<'a, Q, K> {
-    pub declaration: &'a crate::FunctionDeclaration<Q, K>,
+    pub declaration: crate::FunctionDeclarationRef<'a, Q, K>,
     pub bindings: Vec<(&'a str, PreparedValue<'a, Q>)>,
     pub value: PreparedValue<'a, Q>,
 }
@@ -716,7 +716,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 // All arguments still refer to old slots until admission completes.
                                 for ((argument, parameter), source) in arguments
                                     .iter_mut()
-                                    .zip(&body.declaration.parameters)
+                                    .zip(body.declaration.parameters)
                                     .zip(sources)
                                 {
                                     admit(

@@ -27,6 +27,32 @@ pub struct FunctionDeclaration<Q = (), K = ()> {
     pub bindings: Vec<(Located<String>, ValueExpression<Q>)>,
     pub value: ValueExpression<Q>,
 }
+/// A resolved header borrowing an immutable body. A host can resolve nominal
+/// types for its current request without cloning or reparsing expression trees.
+pub struct FunctionDeclarationRef<'a, Q = (), K = ()> {
+    pub name: &'a Located<String>,
+    pub parameters: &'a [Located<FunctionParameter<K>>],
+    pub result: &'a Located<DeclaredType<K>>,
+    pub bindings: &'a [(Located<String>, ValueExpression<Q>)],
+    pub value: &'a ValueExpression<Q>,
+}
+impl<Q, K> Copy for FunctionDeclarationRef<'_, Q, K> {}
+impl<Q, K> Clone for FunctionDeclarationRef<'_, Q, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<Q, K> FunctionDeclaration<Q, K> {
+    pub fn as_borrowed(&self) -> FunctionDeclarationRef<'_, Q, K> {
+        FunctionDeclarationRef {
+            name: &self.name,
+            parameters: &self.parameters,
+            result: &self.result,
+            bindings: &self.bindings,
+            value: &self.value,
+        }
+    }
+}
 /// The maximum simultaneously active user-function activations. Compatible
 /// tail calls reuse one activation. Expression nesting and host reentry have
 /// separate existing guards in [`Budget`]. Every call still spends work.
@@ -166,7 +192,7 @@ impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H>
     }
 }
 fn register<'a, Q: 'a, K: 'a>(
-    declarations: impl Clone + Iterator<Item = &'a FunctionDeclaration<Q, K>>,
+    declarations: impl Clone + Iterator<Item = FunctionDeclarationRef<'a, Q, K>>,
     budget: &mut Budget,
     mut conflict: impl FnMut(&str) -> bool,
 ) -> Result<(), QueryError> {
@@ -304,7 +330,11 @@ pub fn evaluate_functions(
     budget: &mut Budget,
     limits: FunctionLimits,
 ) -> Result<ConstructedValue, FunctionError<QueryError>> {
-    register(declarations.iter(), budget, |_| false)?;
+    register(
+        declarations.iter().map(FunctionDeclaration::as_borrowed),
+        budget,
+        |_| false,
+    )?;
     crate::value::run_functions(declarations, entry, bindings, budget, limits)
 }
 
@@ -335,7 +365,7 @@ struct Operand<K> {
 }
 struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
-    declarations: Vec<&'a Declaration<C, H>>,
+    declarations: Vec<FunctionDeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
     scope: BTreeMap<String, Kind<C, H>>,
     generator_kinds: BTreeMap<String, Kind<C, H>>,
     relative: Option<Kind<C, H>>,
@@ -706,9 +736,28 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         host: &'h H,
         budget: &mut Budget,
     ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        Self::prepare_borrowed(
+            declarations
+                .into_iter()
+                .map(FunctionDeclaration::as_borrowed),
+            host,
+            budget,
+        )
+    }
+
+    /// Prepare request-resolved headers that borrow existing body trees.
+    /// Scope, purity, type and allowance checks are identical to [`Self::prepare`].
+    ///
+    /// # Errors
+    /// Invalid declarations or written bodies fail before execution.
+    pub fn prepare_borrowed(
+        declarations: impl IntoIterator<Item = FunctionDeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+        host: &'h H,
+        budget: &mut Budget,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
         let mut retained = Vec::new();
         for declaration in declarations {
-            crate::projection::admit_slots::<&Declaration<C, H>>(
+            crate::projection::admit_slots::<FunctionDeclarationRef<'_, Query<C, H>, Kind<C, H>>>(
                 1,
                 budget,
                 &declaration.name.range,
@@ -742,7 +791,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             let declaration = preflight.declarations[index];
             preflight.scope.clear();
             preflight.generator_kinds.clear();
-            for p in &declaration.parameters {
+            for p in declaration.parameters {
                 budget.charge(
                     p.value.name.value.len() + 1,
                     Location::Query(p.range.clone()),

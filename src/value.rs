@@ -4914,14 +4914,14 @@ pub(crate) fn function_facts<K>(
 }
 
 pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
-    declaration: &'a crate::FunctionDeclaration<Q, K>,
+    declaration: crate::FunctionDeclarationRef<'a, Q, K>,
     queries: &mut H,
     budget: &mut Budget,
 ) -> Result<execution::Body<'a, Q, K>, QueryError> {
     let globals = BTreeMap::new();
     let mut analysis = Analysis::new(Globals::Facts(&globals), queries);
     let mut preparation = Preparation::new();
-    for parameter in &declaration.parameters {
+    for parameter in declaration.parameters {
         let name = &parameter.value.name;
         function_local(name, &analysis.locals, budget)?;
         let types = function_facts(
@@ -4947,7 +4947,7 @@ pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
         budget,
         &Location::Query(declaration.name.range.clone()),
     )?;
-    for (name, value) in &declaration.bindings {
+    for (name, value) in declaration.bindings {
         function_local(name, &analysis.locals, budget)?;
         let types = analysis.walk(value, budget)?;
         let expression = preparation.resolve(value, analysis.queries, budget)?;
@@ -4968,8 +4968,8 @@ pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
         )?;
         bindings.push((name.value.as_str(), expression));
     }
-    analysis.walk(&declaration.value, budget)?;
-    let value = preparation.resolve(&declaration.value, analysis.queries, budget)?;
+    analysis.walk(declaration.value, budget)?;
+    let value = preparation.resolve(declaration.value, analysis.queries, budget)?;
     Ok(execution::Body {
         declaration,
         bindings,
@@ -5011,7 +5011,11 @@ pub(crate) fn run_functions(
     let location = Location::Query(entry.range.clone());
     let mut bodies = metadata_vec(declarations.len(), budget, &location)?;
     for declaration in declarations {
-        bodies.push(prepare_function_body(declaration, &mut resolver, budget)?);
+        bodies.push(prepare_function_body(
+            declaration.as_borrowed(),
+            &mut resolver,
+            budget,
+        )?);
     }
     Analysis::new(Globals::Available(bindings), &mut resolver).walk(entry, budget)?;
     let mut preparation = Preparation::new();

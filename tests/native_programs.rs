@@ -2653,8 +2653,11 @@ mod projection {
             declarations.push(function);
         }
         let entry = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
-        let mut functions = PreparedFunctions::prepare(
-            declarations[..2].iter().chain(&declarations[2..]),
+        let mut functions = PreparedFunctions::prepare_borrowed(
+            declarations[..2]
+                .iter()
+                .chain(&declarations[2..])
+                .map(zirql::FunctionDeclaration::as_borrowed),
             &Host,
             &mut budget,
         )
@@ -2788,6 +2791,78 @@ mod projection {
                 .to_string()
                 .contains("different prepared")
         );
+    }
+
+    #[test]
+    fn request_resolved_headers_borrow_host_lowered_bodies() {
+        use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
+        let source = "fn saved(xs: sequence<set<Colour>>) -> sequence<set<Colour>> { let local = yield xs; yield local }";
+        let mut budget = function_budget();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let parsed =
+            zirql::read_unresolved_function_declaration(&mut reader, &mut Host, &mut budget, 64)
+                .unwrap()
+                .unwrap();
+        assert_eq!(reader.position(), source.len());
+        assert_eq!(&source[parsed.bindings[0].1.range.clone()], "xs");
+        assert_eq!(&source[parsed.value.range.clone()], "local");
+        let header = parsed
+            .resolve_signature(&mut budget, |name, _| {
+                assert_eq!(&source[name.range], "Colour");
+                Ok::<_, QueryError>(D::<Kind>::Member(zirql::NominalTypeId(7)))
+            })
+            .unwrap();
+        assert_eq!(
+            header.result.value,
+            D::Sequence(Box::new(D::Set(zirql::SetElementType::Member(
+                zirql::NominalTypeId(7)
+            ))))
+        );
+        let entry = function_call(
+            "saved",
+            vec![function_value(K::Array(vec![function_value(K::Literal(
+                V::Set {
+                    element_type: Some(zirql::SetElementType::Member(zirql::NominalTypeId(7))),
+                    elements: vec![],
+                },
+            ))]))],
+        );
+        let mut prepared = PreparedFunctions::prepare_borrowed(
+            [parsed.with_signature(&header)],
+            &Host,
+            &mut budget,
+        )
+        .unwrap();
+        let entry = prepared
+            .prepare_value(&entry, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        let result = prepared
+            .evaluate(
+                &entry,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 1 },
+            )
+            .unwrap();
+        assert!(matches!(result, Value::Constructed(_)));
+        let error = parsed
+            .resolve_signature(&mut budget, |name, _| {
+                Err::<D<Kind>, _>(QueryError::query(name.range, "unresolved current owner"))
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.location,
+            Location::Query(source.find("Colour").unwrap()..source.find("Colour").unwrap() + 6)
+        );
+        assert!(
+            parsed
+                .resolve_signature(&mut budget, |_, _| Ok(D::Native(Kind::Subjects)))
+                .is_err()
+        );
+        drop(prepared);
+        zirql::dispose_unresolved_functions(vec![parsed]);
     }
 
     #[test]
@@ -2974,6 +3049,23 @@ mod projection {
         type SetOperator = ();
         type Emitter = ();
         type Predicate = Truth;
+        fn parse_function_value(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            locals: &[&str],
+            budget: &mut Budget,
+            _: usize,
+        ) -> Result<Option<zirql::ValueExpression<Query>>, QueryError> {
+            if !reader.keyword("yield") {
+                return Ok(None);
+            }
+            let name = reader.word()?;
+            if !locals.contains(&name.value) {
+                return Err(QueryError::query(name.range, "unknown host local"));
+            }
+            budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+            Ok(Some(Located::new(K::Name(name.value.into()), name.range)))
+        }
         fn is_binding(&self, name: &str) -> bool {
             name == "f"
         }

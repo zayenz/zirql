@@ -99,6 +99,23 @@ pub trait ValueReaderHost {
         false
     }
 
+    /// Lower a function's local initializer or final value using host syntax.
+    /// The cursor and lexical names refer to the original source. Consume one
+    /// expression, leaving its `;` or closing `}` to the common declaration
+    /// reader. `None` selects the existing common value grammar.
+    fn parse_function_value(
+        &mut self,
+        _reader: &mut ArgumentReader<'_>,
+        _locals: &[&str],
+        _budget: &mut Budget,
+        _nesting: usize,
+    ) -> Result<Option<ValueExpression<ReadExpression<Self>>>, QueryError>
+    where
+        Self: Sized,
+    {
+        Ok(None)
+    }
+
     /// Lower an explicit value source for a native pipeline. The host retains
     /// this value as a declared native argument and evaluates it with the active
     /// function runner. The default preserves scalar-only frontends.
@@ -125,6 +142,164 @@ pub enum CommonStatement {
     Let(Located<String>),
     Report,
     Param(ParameterDeclaration),
+}
+
+/// Common type syntax before a host has resolved nominal/native names.
+/// Nested locations and named leaves retain their original query coordinates.
+#[derive(Debug, PartialEq)]
+pub enum SignatureType {
+    Boolean,
+    Integer,
+    Float,
+    String,
+    Named(Located<String>),
+    Optional(Box<Located<Self>>),
+    Sequence(Box<Located<Self>>),
+    Tuple(Vec<Located<Self>>),
+    Record(Vec<(Located<String>, Located<Self>)>),
+    Set(Box<Located<Self>>),
+    Keyed(Box<Located<Self>>),
+}
+#[derive(Debug, PartialEq)]
+pub struct UnresolvedFunctionParameter {
+    pub name: Located<String>,
+    pub declaration: SignatureType,
+}
+/// Parsed body trees and signature syntax, independent of model ownership.
+#[derive(Debug, PartialEq)]
+pub struct UnresolvedFunctionDeclaration<Q> {
+    pub name: Located<String>,
+    pub parameters: Vec<Located<UnresolvedFunctionParameter>>,
+    pub result: Located<SignatureType>,
+    pub bindings: Vec<(Located<String>, ValueExpression<Q>)>,
+    pub value: ValueExpression<Q>,
+}
+/// Small request-owned metadata, separate from immutable parsed body trees.
+#[derive(Debug, PartialEq)]
+pub struct ResolvedFunctionSignature<K> {
+    pub name: Located<String>,
+    pub parameters: Vec<Located<crate::FunctionParameter<K>>>,
+    pub result: Located<crate::DeclaredType<K>>,
+}
+impl<Q> UnresolvedFunctionDeclaration<Q> {
+    /// Resolve named leaves against the current host owner. Set element names
+    /// must resolve to real nominal identities, never a native kind tag.
+    ///
+    /// # Errors
+    /// Host refusals retain named-leaf ranges; unsupported sets and limits fail.
+    pub fn resolve_signature<K>(
+        &self,
+        budget: &mut Budget,
+        mut resolve: impl FnMut(
+            Located<&str>,
+            &mut Budget,
+        ) -> Result<crate::DeclaredType<K>, QueryError>,
+    ) -> Result<ResolvedFunctionSignature<K>, QueryError> {
+        let mut parameters = Vec::new();
+        for parameter in &self.parameters {
+            let p = &parameter.value;
+            budget.charge(
+                p.name.value.len() + 1,
+                Location::Query(p.name.range.clone()),
+            )?;
+            budget.charge_results(1, Location::Query(parameter.range.clone()))?;
+            parameters.push(Located::new(
+                crate::FunctionParameter {
+                    name: p.name.clone(),
+                    declaration: p
+                        .declaration
+                        .resolve(budget, &parameter.range, &mut resolve)?,
+                },
+                parameter.range.clone(),
+            ));
+        }
+        budget.charge(
+            self.name.value.len() + 1,
+            Location::Query(self.name.range.clone()),
+        )?;
+        Ok(ResolvedFunctionSignature {
+            name: self.name.clone(),
+            parameters,
+            result: Located::new(
+                self.result
+                    .value
+                    .resolve(budget, &self.result.range, &mut resolve)?,
+                self.result.range.clone(),
+            ),
+        })
+    }
+
+    /// Borrow this body's trees with a header resolved for the current request.
+    pub fn with_signature<'a, K>(
+        &'a self,
+        signature: &'a ResolvedFunctionSignature<K>,
+    ) -> crate::FunctionDeclarationRef<'a, Q, K> {
+        crate::FunctionDeclarationRef {
+            name: &signature.name,
+            parameters: &signature.parameters,
+            result: &signature.result,
+            bindings: &self.bindings,
+            value: &self.value,
+        }
+    }
+}
+impl SignatureType {
+    fn resolve<K>(
+        &self,
+        budget: &mut Budget,
+        range: &Range<usize>,
+        resolve: &mut impl FnMut(
+            Located<&str>,
+            &mut Budget,
+        ) -> Result<crate::DeclaredType<K>, QueryError>,
+    ) -> Result<crate::DeclaredType<K>, QueryError> {
+        use crate::{DeclaredType as D, SetElementType as S};
+        let location = Location::Query(range.clone());
+        budget.charge(1, location.clone())?;
+        budget.charge_results(1, location.clone())?;
+        let child = |value: &Located<Self>, budget: &mut Budget, resolve: &mut _| {
+            value.value.resolve(budget, &value.range, resolve)
+        };
+        Ok(match self {
+            Self::Boolean => D::Boolean,
+            Self::Integer => D::Integer,
+            Self::Float => D::Float,
+            Self::String => D::String,
+            Self::Named(name) => resolve(
+                Located::new(name.value.as_str(), name.range.clone()),
+                budget,
+            )?,
+            Self::Optional(value) => D::Optional(Box::new(child(value, budget, resolve)?)),
+            Self::Sequence(value) => D::Sequence(Box::new(child(value, budget, resolve)?)),
+            Self::Keyed(value) => D::Keyed(Box::new(child(value, budget, resolve)?)),
+            Self::Tuple(values) => D::Tuple(
+                values
+                    .iter()
+                    .map(|value| child(value, budget, resolve))
+                    .collect::<Result<_, _>>()?,
+            ),
+            Self::Record(fields) => {
+                let mut resolved = Vec::new();
+                for (label, value) in fields {
+                    budget.charge(label.value.len() + 1, location.clone())?;
+                    resolved.push((label.value.clone(), child(value, budget, resolve)?));
+                }
+                D::Record(resolved)
+            }
+            Self::Set(value) => D::Set(match child(value, budget, resolve)? {
+                D::Boolean => S::Boolean,
+                D::Integer => S::Integer,
+                D::Float => S::Float,
+                D::Member(id) => S::Member(id),
+                _ => {
+                    return Err(QueryError::query(
+                        value.range.clone(),
+                        "unsupported set element type",
+                    ));
+                }
+            }),
+        })
+    }
 }
 
 /// Recognize `let name =`, `report expression` and `param name: type` without
@@ -212,6 +387,39 @@ pub fn read_function_declaration<H: ValueReaderHost, T>(
         &mut Budget,
     ) -> Result<crate::DeclaredType<T>, QueryError>,
 ) -> Result<Option<crate::FunctionDeclaration<ReadExpression<H>, T>>, QueryError> {
+    let Some(function) = read_unresolved_function_declaration(reader, host, budget, nesting)?
+    else {
+        return Ok(None);
+    };
+    let mut guard = FunctionGuard(Some(function));
+    let signature = guard
+        .0
+        .as_ref()
+        .expect("retained function")
+        .resolve_signature(budget, &mut resolve_type)?;
+    let function = guard.0.take().expect("retained function");
+    Ok(Some(crate::FunctionDeclaration {
+        name: signature.name,
+        parameters: signature.parameters,
+        result: signature.result,
+        bindings: function.bindings,
+        value: function.value,
+    }))
+}
+
+/// Read common function declarations while retaining located host/nominal
+/// names. Resolve their small headers once against the current request's owner;
+/// expression trees remain reusable. Host lowering uses
+/// [`ValueReaderHost::parse_function_value`].
+///
+/// # Errors
+/// Malformed declarations, unsupported type structure and limits are located.
+pub fn read_unresolved_function_declaration<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<Option<UnresolvedFunctionDeclaration<ReadExpression<H>>>, QueryError> {
     let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
     if !probe.keyword("fn") || probe.word().is_err() || !probe.consume('(') {
         return Ok(None);
@@ -231,15 +439,15 @@ pub fn read_function_declaration<H: ValueReaderHost, T>(
         loop {
             let parameter = parser.name()?;
             parser.reader.expect(':')?;
-            let declaration = parser.signature(0, &mut resolve_type)?;
+            let declaration = parser.signature(0)?;
             let range = parameter.range.start..parser.reader.position();
-            parser.slots::<crate::FunctionParameter<T>>(1)?;
+            parser.slots::<UnresolvedFunctionParameter>(1)?;
             parser.slots::<&str>(1)?;
             parser
                 .locals
                 .push(&parser.reader.source()[parameter.range.clone()]);
             parameters.push(Located::new(
-                crate::FunctionParameter {
+                UnresolvedFunctionParameter {
                     name: parameter,
                     declaration: declaration.value,
                 },
@@ -253,9 +461,9 @@ pub fn read_function_declaration<H: ValueReaderHost, T>(
     }
     parser.reader.expect('-')?;
     parser.reader.expect('>')?;
-    let result = parser.signature(0, &mut resolve_type)?;
+    let result = parser.signature(0)?;
     parser.reader.expect('{')?;
-    let mut guard = FunctionGuard(Some(crate::FunctionDeclaration {
+    let mut guard = FunctionGuard(Some(UnresolvedFunctionDeclaration {
         name,
         parameters,
         result,
@@ -270,7 +478,7 @@ pub fn read_function_declaration<H: ValueReaderHost, T>(
             None
         }
     } {
-        let value = ValueGuard::new(parser.expression(0, 0)?);
+        let value = ValueGuard::new(parser.function_value()?);
         parser.reader.expect(';')?;
         parser.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(1)?;
         parser.slots::<&str>(1)?;
@@ -284,19 +492,32 @@ pub fn read_function_declaration<H: ValueReaderHost, T>(
             .bindings
             .push((name, value.into_value()));
     }
-    let value = ValueGuard::new(parser.expression(0, 0)?);
+    let value = ValueGuard::new(parser.function_value()?);
     parser.reader.expect('}')?;
     let mut function = guard.0.take().expect("retained function");
     function.value = value.into_value();
     Ok(Some(function))
 }
 
-struct FunctionGuard<S, O, E, T>(Option<crate::FunctionDeclaration<Expression<S, O, E>, T>>);
-impl<S, O, E, T> Drop for FunctionGuard<S, O, E, T> {
+struct FunctionGuard<S, O, E>(Option<UnresolvedFunctionDeclaration<Expression<S, O, E>>>);
+impl<S, O, E> Drop for FunctionGuard<S, O, E> {
     fn drop(&mut self) {
         if let Some(function) = self.0.take() {
-            crate::dispose_functions(vec![function]);
+            for (_, value) in function.bindings {
+                dispose_native_value(value);
+            }
+            dispose_native_value(function.value);
         }
+    }
+}
+
+/// Release parsed function bodies through the same iterative value disposal
+/// used by the common reader, including native expression wrappers.
+pub fn dispose_unresolved_functions<S, O, E>(
+    functions: Vec<UnresolvedFunctionDeclaration<Expression<S, O, E>>>,
+) {
+    for function in functions {
+        drop(FunctionGuard(Some(function)));
     }
 }
 
@@ -416,15 +637,18 @@ struct Reader<'a, 's, 'h, H> {
 }
 
 impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
-    fn signature<T>(
-        &mut self,
-        depth: usize,
-        resolve: &mut impl FnMut(
-            Located<&str>,
-            &mut Budget,
-        ) -> Result<crate::DeclaredType<T>, QueryError>,
-    ) -> Result<Located<crate::DeclaredType<T>>, QueryError> {
-        use crate::{DeclaredType as D, SetElementType as S};
+    fn function_value(&mut self) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        if let Some(value) =
+            self.host
+                .parse_function_value(self.reader, &self.locals, self.budget, self.nesting)?
+        {
+            return Ok(value);
+        }
+        self.expression(0, 0)
+    }
+
+    fn signature(&mut self, depth: usize) -> Result<Located<SignatureType>, QueryError> {
+        use SignatureType as S;
         self.depth(depth)?;
         self.reader.skip_whitespace();
         let start = self.reader.position();
@@ -432,44 +656,44 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.budget
             .charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
         let ty = match name.value {
-            "int" => D::Integer,
-            "float" => D::Float,
-            "bool" => D::Boolean,
-            "string" => D::String,
-            "opt" => D::Optional(Box::new(self.signature(depth + 1, resolve)?.value)),
+            "int" => S::Integer,
+            "float" => S::Float,
+            "bool" => S::Boolean,
+            "string" => S::String,
+            "opt" => S::Optional(Box::new(self.signature(depth + 1)?)),
             "sequence" | "keyed" | "set" => {
                 self.reader.expect('<')?;
-                let element = self.signature(depth + 1, resolve)?;
+                let element = self.signature(depth + 1)?;
                 self.reader.expect('>')?;
                 match name.value {
-                    "sequence" => D::Sequence(Box::new(element.value)),
-                    "keyed" => D::Keyed(Box::new(element.value)),
-                    _ => D::Set(match element.value {
-                        D::Boolean => S::Boolean,
-                        D::Integer => S::Integer,
-                        D::Float => S::Float,
-                        D::Member(id) => S::Member(id),
-                        _ => {
+                    "sequence" => S::Sequence(Box::new(element)),
+                    "keyed" => S::Keyed(Box::new(element)),
+                    _ => {
+                        if !matches!(
+                            element.value,
+                            S::Boolean | S::Integer | S::Float | S::Named(_)
+                        ) {
                             return Err(QueryError::query(
                                 element.range,
                                 "unsupported set element type",
                             ));
                         }
-                    }),
+                        S::Set(Box::new(element))
+                    }
                 }
             }
             "tuple" => {
                 self.reader.expect('<')?;
                 let mut values = Vec::new();
                 loop {
-                    self.slots::<D<T>>(1)?;
-                    values.push(self.signature(depth + 1, resolve)?.value);
+                    self.slots::<Located<S>>(1)?;
+                    values.push(self.signature(depth + 1)?);
                     if !self.reader.consume(',') {
                         self.reader.expect('>')?;
                         break;
                     }
                 }
-                D::Tuple(values)
+                S::Tuple(values)
             }
             "record" => {
                 self.reader.expect('{')?;
@@ -483,20 +707,20 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                             self.name()?
                         };
                         self.reader.expect(':')?;
-                        let value = self.signature(depth + 1, resolve)?.value;
-                        self.slots::<(String, D<T>)>(1)?;
-                        fields.push((label.value, value));
+                        let value = self.signature(depth + 1)?;
+                        self.slots::<(Located<String>, Located<S>)>(1)?;
+                        fields.push((label, value));
                         if !self.reader.consume(',') {
                             self.reader.expect('}')?;
                             break;
                         }
                     }
                 }
-                D::Record(fields)
+                S::Record(fields)
             }
-            _ => resolve(name, self.budget)?,
+            _ => S::Named(Located::new(name.value.to_owned(), name.range)),
         };
-        self.slots::<D<T>>(1)?;
+        self.slots::<S>(1)?;
         Ok(Located::new(ty, start..self.reader.position()))
     }
 

@@ -19,8 +19,8 @@ pub use eval::{
     Truth, evaluate,
 };
 pub use functions::{
-    FunctionCall, FunctionDeclaration, FunctionError, FunctionHost, FunctionLimits,
-    FunctionParameter, FunctionRequest, PreparedFunctionValue, PreparedFunctions,
+    FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
+    FunctionLimits, FunctionParameter, FunctionRequest, PreparedFunctionValue, PreparedFunctions,
     dispose_functions, evaluate_functions,
 };
 pub use matching::{
@@ -42,9 +42,11 @@ pub use projection::{
     native_expression_kind, native_value_types, projection_types,
 };
 pub use reader::{
-    CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value,
-    read_function_declaration, read_match, read_native_expression, read_paths, read_projection,
-    read_statement_prefix, read_value_expression,
+    CommonStatement, ReadExpression, ResolvedFunctionSignature, SignatureType,
+    UnresolvedFunctionDeclaration, UnresolvedFunctionParameter, ValueReaderHost,
+    dispose_native_value, dispose_unresolved_functions, read_function_declaration, read_match,
+    read_native_expression, read_paths, read_projection, read_statement_prefix,
+    read_unresolved_function_declaration, read_value_expression,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,

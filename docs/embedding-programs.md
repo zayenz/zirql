@@ -165,3 +165,26 @@ Ordinary calls accept zero or more positional arguments. Conditionals use
 branches and a required final `else`. Both written branches are preflighted;
 only the selected result executes. Branch-local blocks belong to the later
 patterns/control-flow work.
+
+Hosts with their own expression parser can implement
+`ValueReaderHost::parse_function_value`. It receives the original cursor and
+the function's current parameter/local names. Lower one initializer or final
+expression and leave its `;` or closing `}` to the common declaration reader.
+Returning `None` keeps the common expression grammar. The shared reader still
+owns function headers, local binding order and declaration boundaries.
+
+If parsing precedes model loading, use `read_unresolved_function_declaration`.
+It retains located `SignatureType` names, including names nested in `set<T>`.
+For each request, call `resolve_signature` with the current model's native and
+nominal resolver. Keep the resulting small headers alive, pair each with its
+parsed body using `with_signature`, then call
+`PreparedFunctions::prepare_borrowed`. The resolved declarations borrow the
+original bindings and final expression. They do not copy or reparse bodies.
+Existing owned declarations and `read_function_declaration` remain usable.
+Use `dispose_unresolved_functions` when releasing parsed native body trees.
+
+Signature syntax, resolved headers and borrowed declaration slots spend the
+active metadata allowance before growth. The common reader also pays for this
+metadata when resolving an owned declaration immediately. Requests near an
+earlier work/result threshold may therefore fail earlier during preparation;
+defaults and execution charges are unchanged.
