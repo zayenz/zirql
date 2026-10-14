@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 38
-- Ready: 3
+- Ready: 2
 - Blocked: 7
-- Done: 28
+- Done: 29
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -37,7 +37,7 @@
 | [base-026](tasks/026-release-native-expression-trees-safely-on-shared-reader-erro.md) | Release native expression trees safely on shared reader errors | done | — |
 | [base-027](tasks/027-give-translated-core-errors-stable-machine-readable-categori.md) | Give translated core errors stable machine-readable categories | done | — |
 | [base-028](tasks/028-run-core-validation-and-the-declared-rust-version-in-ci.md) | Run core validation and the declared Rust version in CI | done | — |
-| [base-029](tasks/029-measure-repeated-evaluation-and-value-ownership-costs.md) | Measure repeated evaluation and value ownership costs | ready | — |
+| [base-029](tasks/029-measure-repeated-evaluation-and-value-ownership-costs.md) | Measure repeated evaluation and value ownership costs | done | — |
 | [base-030](tasks/030-declare-and-enforce-host-runtime-type-contracts.md) | Declare and enforce host runtime type contracts | ready | — |
 | [base-031](tasks/031-use-optional-lookup-and-lazy-defaults-in-both-query-language.md) | Use optional lookup and lazy defaults in both query languages | blocked | base-030 |
 | [base-032](tasks/032-prepare-local-slots-and-share-values-during-repeated-project.md) | Prepare local slots and share values during repeated projections | blocked | base-029, base-030 |
