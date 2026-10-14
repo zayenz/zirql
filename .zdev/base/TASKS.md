@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 28
-- Ready: 0
-- Blocked: 0
+- Total: 38
+- Ready: 3
+- Blocked: 7
 - Done: 28
 
 | ID | Task | State | Blocked by |
@@ -37,3 +37,13 @@
 | [base-026](tasks/026-release-native-expression-trees-safely-on-shared-reader-erro.md) | Release native expression trees safely on shared reader errors | done | — |
 | [base-027](tasks/027-give-translated-core-errors-stable-machine-readable-categori.md) | Give translated core errors stable machine-readable categories | done | — |
 | [base-028](tasks/028-run-core-validation-and-the-declared-rust-version-in-ci.md) | Run core validation and the declared Rust version in CI | done | — |
+| [base-029](tasks/029-measure-repeated-evaluation-and-value-ownership-costs.md) | Measure repeated evaluation and value ownership costs | ready | — |
+| [base-030](tasks/030-declare-and-enforce-host-runtime-type-contracts.md) | Declare and enforce host runtime type contracts | ready | — |
+| [base-031](tasks/031-use-optional-lookup-and-lazy-defaults-in-both-query-language.md) | Use optional lookup and lazy defaults in both query languages | blocked | base-030 |
+| [base-032](tasks/032-prepare-local-slots-and-share-values-during-repeated-project.md) | Prepare local slots and share values during repeated projections | blocked | base-029, base-030 |
+| [base-033](tasks/033-execute-typed-functions-with-bounded-recursion-and-tail-call.md) | Execute typed functions with bounded recursion and tail-call frame reuse | blocked | base-032 |
+| [base-034](tasks/034-expose-typed-recursive-functions-in-zirium-programs.md) | Expose typed recursive functions in Zirium programs | blocked | base-033, base-031 |
+| [base-035](tasks/035-expose-typed-recursive-functions-in-zincite-programs.md) | Expose typed recursive functions in Zincite programs | blocked | base-033, base-031 |
+| [base-036](tasks/036-sort-constructed-reports-and-select-optional-extrema.md) | Sort constructed reports and select optional extrema | blocked | base-031 |
+| [base-037](tasks/037-share-exact-string-matching-for-projected-names.md) | Share exact string matching for projected names | ready | — |
+| [base-038](tasks/038-measure-and-document-the-completed-computation-model.md) | Measure and document the completed computation model | blocked | base-034, base-035, base-036, base-037 |

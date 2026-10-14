@@ -476,3 +476,385 @@ policy in User decisions.
 The approved extension bundle records the selected concrete language choices.
 Result schemas and broader function syntax remain future
 design work. Shared base ownership and short command-line usage are settled.
+
+
+## Next language design: types, absence and functions
+
+On 2026-10-14, the user endorsed further language design covering the three
+review suggestions below, host-defined domain types, optional values with a
+MiniZinc-style default operator, and user-defined recursive functions. This
+section records the design for the requested next task bundle. Approval of that
+bundle does not extend the completion conditions of the current adoption work.
+
+### Confirmed direction
+
+- Keep checking mostly at runtime for now. Hosts describe their domain types
+  and operation contracts; function parameters and results have explicit types.
+  Retain existing preflight validation without requiring a new whole-program
+  static type checker or local type-inference system.
+- Support named, explicitly typed, pure query functions with bounded recursion,
+  including calls to read-only domain operations. Function execution shares the
+  request's work, result and nesting limits. Exhaustion remains a located error.
+- Include presence checks and absence-specific defaults for sparse keys and
+  optional fields. Defaults must not swallow arithmetic or budget failures.
+- Include stable sorting and min/max for constructed reports. The user selected
+  optional extrema results: absence for empty input and the first input item
+  when keys tie. Callers can supply an absence-specific `default`.
+- Include small shared string operations: contains, starts_with and ends_with
+  for projected names.
+
+### Proposed contract for discussion
+
+Use existing scalar and collection concepts, structural report records and
+nominal host types. For example, Zirium can describe operations and SSA values;
+Zincite can describe nodes, declarations and semantic type handles. Hosts retain
+native representations, identity and lifetimes. A query type describing a
+MiniZinc declaration is distinct from the model-language type of that
+declaration. Start with existing host kind and operation hooks; avoid building
+a parallel registry unless the implementation demonstrates a concrete need.
+
+Runtime contracts should check supplied arguments, returned values and executed
+operations against declared types. Keep unknown validation information
+(`ValueType::Unestablished`) distinct from a runtime absent value. Known host
+uncertainty, an empty collection, missing data and execution failure remain
+different outcomes. Existing heterogeneous constructed values need an explicit
+compatibility decision before narrowing their accepted types.
+
+Represent nullability as an optional type, conceptually `opt T`. The proposed
+`x default y` evaluates `x` once and evaluates `y` only when `x` is absent;
+a present false, zero, empty string or empty collection remains present.
+Both selected values must satisfy the declared result contract. Provide an
+explicit optional lookup/presence operation so existing strict field and key
+access continues to report mistakes. Invalid key types and unknown declared
+field names must not silently become absence. An omitted sparse cell and a
+present cell containing absence must retain distinguishable membership.
+
+MiniZinc's [option types](https://docs.minizinc.org/en/2.10.1/optiontypes.html)
+provide the `opt`, presence and `default` reference. Its additional arithmetic
+and comparison rules for absence are a separate choice. The recommendation is
+to require explicit presence handling before ordinary arithmetic or ordering.
+Surface spelling of absence may differ between hosts under the shared rules.
+
+Functions should initially use explicit parameters and lexical scope. Native
+arguments and results should remain native. Pure functions cannot emit or edit;
+read-only host failures retain their meaning. Recursion must stop at an admitted
+limit without overflowing the Rust stack, including on error and cleanup paths.
+No termination proof is required. First-class functions, closures, polymorphic
+inference and module loading are outside this initial proposal.
+
+### Remaining choices and sequence
+
+The task-bundle choices below make the remaining surface and behavior decisions
+reviewable together. Extrema's optional empty result and first-in-input tie
+selection and mandatory tail recursion are user decisions. Other choices below
+are conservative defaults proposed for this bundle, not implemented behavior.
+
+Refine host/runtime type contracts and optional values together, then typed
+functions. Sorting/extrema and string helpers remain independently useful work;
+their inclusion does not depend on finishing recursive functions. Keep short
+inline queries free of mandatory declarations. Before task creation, show one
+concrete function example per consumer and focused acceptance cases for absence,
+wrong runtime types, recursive limits, stable ties and string operations.
+
+
+### Execution model and efficiency proposal
+
+On 2026-10-14, the user requested reasonable computational efficiency and a
+well-considered execution model alongside the language additions. The following
+is the proposed implementation direction, subject to the language choices above
+and focused measurements. It does not authorize a runtime rewrite.
+
+The current implementation supplies concrete starting points: `value.rs`
+preflights expressions before running them, `projection.rs` invokes that path
+again for each projected field and subject, local value reads scan names and
+copy constructed values, and `Bindings::with_local` copies the outer name map
+while sharing its native values. Function calls must not multiply these costs.
+These are source observations, not measured performance regressions.
+
+#### Prepare once, execute with runtime contracts
+
+Use the conceptual path:
+
+```text
+host syntax / typed builder
+    -> located shared representation
+    -> prepared program: resolved names, calls and host operations
+    -> interpreter: local slots, continuations and function call frames
+    -> native / constructed result
+    -> host emission
+```
+
+Preparation resolves local names to slots and function names to stable entries,
+checks arity, lexical scope and pure/effect boundaries, and retains existing
+preflight guarantees. Register declared signatures before preparing bodies so
+self-recursion does not require recursively analysing a function's body at each
+call. The selected task proposal includes mutually recursive named functions.
+This preparation
+is name resolution and structural checking, not a new static type-inference
+requirement. Never validate a recursive call by expanding its body.
+
+Retain source ranges on prepared operations and calls. Execute each ordinary
+argument once in written order. Check argument and result contracts at runtime;
+check data-dependent access, shape and host results when encountered. Avoid
+re-walking a function body or rebuilding unchanged scope/type metadata for
+every call or report row. Immutable values already checked against a contract
+can retain that fact within the request; externally supplied or newly built
+values still need admission. A type tag alone cannot establish every element's
+type in an arbitrary host-supplied collection.
+
+Start with a compact resolved representation executed directly. Node indices
+and flat storage are candidates where they simplify execution and destruction;
+there is no requirement for a general bytecode instruction set, optimizer or
+JIT. Keep public parsing/building entry points usable through this path and
+avoid maintaining two independent language evaluators.
+
+Prepare once per submitted program and reuse function bodies throughout that
+execution. Library reuse across requests is desirable only for preparation
+independent of document values and host state. Initially bind prepared domain
+payloads to the context that produced them; never reuse captured handles,
+dynamic enum identities or inferred shape facts against a different document.
+Preparation and fresh parameter admission remain bounded even if later runs
+reuse a prepared representation.
+
+#### Calls, recursion and native operations
+
+Use explicit interpreter call/continuation frames for user functions, storing
+the return position, local slots and query call location. Language recursion
+must not grow the Rust call stack once per function invocation. Frames share
+one request budget and release local temporaries on return or failure.
+
+The user requires tail recursion in the first function release. A tail call
+reuses its caller's frame and does not increase active function depth; every
+call still consumes work. Non-tail calls consume active depth, and expression
+nesting and host reentry retain their separate guards. This is an explicit new
+function contract; existing expression limits and defaults remain unchanged.
+Tail position includes the final expression and selected conditional branches,
+requirement values and default fallbacks when no return conversion/check needs
+a retained continuation. Guarantee frame reuse for self recursion and mutual
+tail calls with the same declared result contract. Evaluate and check all new
+arguments in written order before replacing locals. Do not retain a growing
+chain of old frames, values, deferred return checks or diagnostic entries.
+Validate and dispose prepared bodies and runtime values without introducing
+stack-overflow paths. Tail-call diagnostics retain the current call location
+and a bounded summary, rather than an unbounded logical call history.
+
+Native host operations remain typed adapter calls using the same active budget.
+An explicit core stack is insufficient if each recursive turn reenters through
+a Rust host callback: integrate continuations where required or preserve a
+separate bounded host reentry guard. Exercise a function that calls a native
+projection while recursion is active. Failure reports include the failing
+expression and a bounded chain of function call locations.
+
+Functions receive their subject and data explicitly, with lexical locals and
+no copying of the complete caller environment. Ordinary top-level ordered
+bindings keep their existing rules. Proposed initial functions can access their
+parameters, local bindings, named functions and registered pure host operations;
+pass query parameters or outer report data explicitly. Effects remain visible
+at the program/host boundary. Never memoize read-only host results merely because
+they are read-only: surrounding host edits or context can change their meaning.
+
+#### Values, collections and allocation
+
+Move single-owner temporaries into their consumer. Borrow or share immutable
+strings, constructed collections and native handles for repeated reads and
+function arguments, rather than copying their whole contents. Choose borrowing
+or reference counting where the actual lifetimes require it; retain owned
+public results and explicit budgeted copies at boundaries that need ownership.
+No JSON conversion is part of evaluation. Release dead frame values and loop
+temporaries promptly; avoid a request-wide value arena that retains every
+intermediate result until the request ends.
+
+Preserve existing written evaluation order, eager comprehensions and eager
+reductions. In particular, `forall([false, failing_expression])` still evaluates
+the complete collection and fails. Conditions, Boolean short circuit, requirements
+and defaults retain their specified branch laziness. Streaming/fusing a
+comprehension into a reducer is deferred unless it preserves failure order,
+checked-arithmetic behavior, host calls and documented budget accounting. A
+separate lazy operation would require an explicit language decision.
+
+For the new operations, target stable comparison sorting with O(n log n)
+comparisons, one key extraction per row, and O(n) auxiliary entries. Use a
+single scan for min/max, selecting the first tied item. Key extraction/type
+failures and budget exhaustion must return located errors rather than being
+hidden inside an infallible sorting comparator. Charge comparison work,
+including string/key inspection, and admit scratch allocations. These are
+algorithmic targets, not constant-cost promises for arbitrary keys.
+
+String helpers inspect existing strings without constructing lowercase or
+substring copies. Begin with exact, case-sensitive substring/prefix/suffix
+semantics; propose true for an empty search string, without implicit Unicode
+normalization or case folding. Keep traversal cost budgeted. Optional lookup
+should reuse established record/key access, with an index added only when actual
+repeated-lookup workloads justify its build and memory costs.
+
+#### Budget and compatibility contract
+
+Document the charges for preparation, calls, local reads, type admission,
+collection construction, comparisons, host work, copies and rendering. Existing
+work/results counters measure cumulative spending, not peak resident memory.
+Charge newly allocated frames, temporary containers and copied bytes before
+growth, and preserve the per-stream item ceiling. Releasing memory does not
+refund cumulative spending. Sharing an already admitted value is distinct from
+materializing another owned output; neither operation may bypass result limits.
+
+Before changing existing copy/validation charges, specify the compatibility
+impact on queries near their limits. Preserve defaults and existing entry-point
+contracts until an explicit change is selected. Do not claim timing or memory
+improvements by silently increasing allowances or skipping required checks.
+The first implementation must demonstrate bounded scratch/frame allocation;
+add a separate live-memory limit only if the existing allowance model cannot
+express the needed bound simply. Host-internal allocation remains the host's
+responsibility under its declared budget contract.
+
+#### Two concrete function examples
+
+The following is semantic pseudocode, not accepted syntax. Host primitive names
+are proposed adapter contracts. Both examples lower to the same function/call
+machinery and keep native arguments native.
+
+Zirium: recursively total per-operation costs over direct containment children.
+The adapter exposes `direct_children(Operation) -> sequence<Operation>` and
+`cost_annotation(Operation) -> opt int`. A missing annotation is absent; a
+malformed annotation is an error. Given an unannotated root and two leaf
+operations with costs 3 and 4, the result is 8.
+
+```text
+fn subtree_cost(op: Operation) -> int {
+    (cost_annotation(op) default 1)
+        + sum([subtree_cost(child) for child in direct_children(op)])
+}
+```
+
+Zincite: count calls with a chosen written name in a syntax subtree. The adapter
+exposes `direct_children(Node) -> sequence<Node>`, `node_kind(Node) -> string`
+and `written_call_name(Node) -> opt string`. The optional projection returns
+absence when no direct written call name exists; it does not resolve or execute
+a model function. A tree containing two calls written `sum` and one written
+`max` returns 2 when the target is `sum`.
+
+```text
+fn count_calls(node: Node, target: string) -> int {
+    let here = if node_kind(node) == "call"
+                  and (written_call_name(node) default "") == target
+               then 1 else 0;
+    here + sum([count_calls(child, target)
+                for child in direct_children(node)])
+}
+```
+
+Both functions traverse containment, not arbitrary reference graphs. Repeated
+reference paths would need an explicit visited-set or depth policy; recursion
+does not implicitly deduplicate or replace the existing bounded path operation.
+These examples make function overhead, native-handle passing, optional values,
+integer overflow, eager reduction and depth limits observable without general
+higher-order functions or a solver.
+
+#### Measurement and delivery sequence
+
+1. Record current parse/preflight/run/render costs for a small existing report,
+   repeated field projection and repeated reads of a large constructed binding.
+   Use representative inputs at a few increasing sizes. Attribute cost before
+   selecting a storage rewrite; source inspection alone is insufficient.
+2. Establish the host/runtime type and optional-value contract. Prototype
+   prepared local slots and shared immutable arguments on one concrete path,
+   measuring both small-query overhead and repeated evaluation costs.
+3. Deliver named typed functions using the prepared path and explicit frames,
+   with the two host examples. Include a branching recursive case so frame
+   reuse alone cannot conceal exponential work; the shared work limit must
+   bound it. Nontermination ends in an ordinary located limit error.
+4. Deliver sorting/extrema and string helpers as separate focused slices. Keep
+   all three original review suggestions visible; functions do not displace them.
+5. Compare outputs and failure behavior, elapsed time by phase, available peak
+   memory and temporary allocation/copy evidence. Include a wide report, bounded
+   deep recursion, a repeated collection argument and stable sorting. Report
+   limit refusals separately from completed throughput.
+
+Use existing measurement drivers where practical and temporary instrumentation
+for body-preparation, environment-copy and value-copy costs. Record revisions,
+inputs, build profile, environment, repeated samples and spread. Set numerical
+acceptance targets after collecting a baseline; do not invent a speedup target.
+Acceptance must show that call setup does not rescan the body or deep-copy an
+unchanged argument, local access uses resolved slots, and retained frame/value
+memory follows live work rather than all completed calls. These are measurement
+questions, not permanent tests of internal call counts. Retain focused public
+behavior checks for runtime type errors, defaults, eager failure ordering,
+recursive limits/cleanup, tie order and host identity.
+
+
+### Selected contract for the next task bundle
+
+The user requested tail recursion and a task split on 2026-10-14, then approved
+the exact independently reviewed ten-task bundle. The following concrete choices
+are the approved contract for that bundle. Ordinary existing programs retain
+their accepted syntax, values and preflight guarantees.
+
+- Optional values use `opt T`, `occurs(x)`, `absent(x)` and lazy `x default y`.
+  Absence spells `<>` in Zincite and `null` in Zirium. There is one runtime
+  absence state, distinct from unknown facts and errors. Arithmetic and ordering
+  require present operands; optional equality compares absence with absence as
+  equal and absence with a present value as unequal, subject to compatible
+  declared underlying types. No absent-as-zero or absent-as-identity arithmetic.
+- `lookup(value, key)` returns an optional field/cell value and `has_key(value,
+  key)` reports membership, including a present cell containing absence. Use a
+  string for a record label, an integer for a positional index and existing
+  scalar/tuple keys for keyed arrays. Valid missing positions or sparse cells
+  are absent; wrong key type/rank is an error. Missing fields of an untyped
+  structural record are absent; a label outside a declared record schema is an
+  error. Existing strict access stays strict. Declared optional record fields
+  may be omitted; required fields may not. Output retains present absent fields
+  distinctly from omitted fields/cells. Existing data-edit targets reject
+  newly unsupported optional values before writing; expanding MiniZinc data
+  serialization is outside this bundle.
+- `default` checks runtime compatibility against available declared types;
+  it never evaluates or scans the fallback on a present left value. Retain
+  existing structural/preflight checks of all written branches. Bare absence
+  can acquire its underlying type from a signature, collection context or
+  fallback; absence by itself is not a universal escape from runtime checking.
+- Host contracts describe scalars, optional values, positional sequences,
+  tuples, records, sets, keyed arrays and nominal/native host types. Reuse
+  current kinds and shape validation. Keep declaration constraints distinct
+  from observed per-position `ValueType` facts. Typed interfaces check all
+  elements; existing heterogeneous values remain legal outside incompatible
+  typed interfaces. Native identity, enum resolution and model/MLIR type
+  semantics stay with the host. No user-defined recursive data types are needed.
+- Common function declarations use `fn name(arg: Type, ...) -> Type { body }`.
+  A body has optional immutable local `let name = expression;` statements and
+  one final expression. Expressions retain each host's natural syntax and
+  pure native-query forms. Type spellings are `int`, `float`, `bool`, `string`,
+  `opt T`, `sequence<T>`, `tuple<T, ...>`, `record {field: T, ...}`, `set<T>`,
+  `keyed<T>` and registered host/nominal names. Keyed rank/axes remain runtime
+  facts; this syntax adds no dependent types or implicit shape conversion.
+- Function names are program-wide, declared before execution and available
+  for direct and mutual recursion. Duplicate declarations and conflicts with
+  host/builtin operation names are rejected. Parameters and locals use lexical
+  scope without shadowing; functions receive outer program inputs explicitly.
+  Signatures are mandatory, ordinary local types need no annotations. Existing
+  external `param` declarations and CLI/library parameter transport remain
+  `int`, `string` and `bool`; `opt` and native signature types do not implicitly
+  expand those external inputs. Functions can return native values and use pure
+  registered domain operations; they
+  cannot emit or edit. No user overloads, function values, closures or imports.
+- `sort(xs)` and `sort_by(rows, "field")` are ascending and stable; an optional
+  `descending=true` reverses key ordering while retaining input order for ties.
+  `min(xs)`/`max(xs)` return an optional scalar, and
+  `min_by(rows, "field")`/`max_by(rows, "field")` return an optional original
+  record. Empty input is absent and the first tied item wins. Keys must be
+  present, homogeneous integers, finite floats, strings or members of one
+  nominal type. Nominal order uses declared member order; string order is exact
+  lexicographic order. Missing, absent or incompatible keys fail. A query can
+  construct a key with `default` before ordering. No arbitrary comparators.
+- `contains(text, fragment)`, `starts_with(text, prefix)` and
+  `ends_with(text, suffix)` are exact, case-sensitive string operations with
+  no normalization, coercion or regex. Empty search strings match. Non-string
+  arguments fail; scans and diagnostic work share the request budget.
+
+The new features require one compact public-behavior control for each changed
+contract, including optional lookup/default failure distinctions, runtime type
+refusals, native identities, direct/mutual and non-tail recursion, tail calls
+beyond the active-depth ceiling, budget failure and cleanup, stable ties and
+exact string matching. Reuse these cases across CLI/file/library paths rather
+than multiplying a syntax matrix. Temporary instrumentation supports the stated
+allocation and execution measurements; do not add timing or call-count tests.
+Integration tasks may change the named consumer and Zirql adapter seams after
+checking ownership and repository guidance. They retain separate consumer
+commits and pinned Git dependencies. Publication and deployment are separate.
