@@ -1965,6 +1965,20 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
+            if let Stage::Paths(paths) = stage {
+                let input_kind = self.kind(&input, budget, range)?;
+                let schema = Arc::new(zirql::path_types(
+                    paths,
+                    self,
+                    &input_kind,
+                    &BTreeMap::new(),
+                    budget,
+                )?);
+                let rows =
+                    zirql::evaluate_paths_with_arguments(paths, self, input, arguments, budget)?;
+                budget.charge_results(1, Location::Query(range.clone()))?;
+                return Ok(Value::Captures { rows, schema });
+            }
             if let Stage::NativeArgument(value) = stage {
                 let read = arguments.evaluate_native(value, Value::Subjects(vec![]), budget)?;
                 if matches!(value.value, K::Call { .. }) {

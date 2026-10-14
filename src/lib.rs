@@ -27,7 +27,9 @@ pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match, match_types,
 };
 pub use parser::{ArgumentReader, parse_pipeline};
-pub use paths::{NativePaths, PathHost, dispose_paths, evaluate_paths, path_types};
+pub use paths::{
+    NativePaths, PathHost, dispose_paths, evaluate_paths, evaluate_paths_with_arguments, path_types,
+};
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, ParameterDeclaration,
     ParameterInputs, ParameterType, Program, ProgramHost, Statement, admit_parameters,

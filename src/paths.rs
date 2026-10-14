@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
-    Bindings, Budget, EvaluationError, Located, Location, NativeCapture, Predicate, ProjectionHost,
-    QueryError, QueryErrorCategory, Truth,
+    Bindings, Budget, EvaluationError, Located, Location, NativeArguments, NativeCapture,
+    Predicate, ProjectionHost, QueryError, QueryErrorCategory, Truth,
 };
 
 /// One shortest native witness per source/sink pair within an explicit edge bound.
@@ -50,6 +50,23 @@ pub trait PathHost<C>: ProjectionHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Truth, EvaluationError<Self::Error>>;
+
+    /// Evaluate a selected target with the enclosing prepared native arguments.
+    /// Existing hosts keep their ordinary target callback and current context.
+    fn evaluate_target_leaf_with_arguments(
+        &self,
+        target: &Self::Target,
+        input: &Self::Value,
+        arguments: &mut dyn NativeArguments<C, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Truth, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        let (context, bindings) = arguments.parts();
+        self.evaluate_target_leaf(target, input, context, bindings, budget, range)
+    }
 
     /// Return admitted singleton neighbors in the host's direct edge order.
     /// Retain unresolved-edge limitations and refuse owner/stale-handle failures.
@@ -142,6 +159,78 @@ pub fn evaluate_paths<C, H: PathHost<C>>(
     bindings: &Bindings<H::Value>,
     budget: &mut Budget,
 ) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
+    evaluate_paths_context(
+        paths,
+        host,
+        input,
+        &mut PathContext::Direct { context, bindings },
+        budget,
+    )
+}
+
+/// Execute the same path traversal with an enclosing prepared argument runner.
+/// Target leaves remain selected by the ordinary Boolean and source traversal;
+/// empty inputs and unchosen leaves do not evaluate their arguments.
+///
+/// # Errors
+/// Path, target, function and resource failures use the current request budget
+/// and retain their original locations and active call obligations.
+pub fn evaluate_paths_with_arguments<C, H: PathHost<C>>(
+    paths: &NativePaths<H::Stage, H::Target>,
+    host: &H,
+    input: H::Value,
+    arguments: &mut dyn NativeArguments<C, H>,
+    budget: &mut Budget,
+) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
+    evaluate_paths_context(
+        paths,
+        host,
+        input,
+        &mut PathContext::Arguments(arguments),
+        budget,
+    )
+}
+
+enum PathContext<'a, C, H: PathHost<C>> {
+    Direct {
+        context: &'a mut C,
+        bindings: &'a Bindings<H::Value>,
+    },
+    Arguments(&'a mut dyn NativeArguments<C, H>),
+}
+impl<C, H: PathHost<C>> PathContext<'_, C, H> {
+    fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
+        match self {
+            Self::Direct { context, bindings } => (context, bindings),
+            Self::Arguments(arguments) => arguments.parts(),
+        }
+    }
+    fn target(
+        &mut self,
+        host: &H,
+        target: &H::Target,
+        input: &H::Value,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Truth, EvaluationError<H::Error>> {
+        match self {
+            Self::Direct { context, bindings } => {
+                host.evaluate_target_leaf(target, input, context, bindings, budget, range)
+            }
+            Self::Arguments(arguments) => {
+                host.evaluate_target_leaf_with_arguments(target, input, *arguments, budget, range)
+            }
+        }
+    }
+}
+
+fn evaluate_paths_context<C, H: PathHost<C>>(
+    paths: &NativePaths<H::Stage, H::Target>,
+    host: &H,
+    input: H::Value,
+    context: &mut PathContext<'_, C, H>,
+    budget: &mut Budget,
+) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
     if budget.remaining_results().is_none() {
         return Err(QueryError::query(
             paths.range.clone(),
@@ -150,23 +239,30 @@ pub fn evaluate_paths<C, H: PathHost<C>>(
         .into());
     }
     budget.within_evaluation(1, Location::Query(paths.range.clone()), |budget| {
+        let (current, bindings) = context.parts();
         let input_kind = host.kind(&input, budget, &paths.range)?;
         let scope = crate::projection::scope_kinds(host, bindings, budget, &paths.range)?;
         path_types(paths, host, &input_kind, &scope, budget)?;
-        let sources = host.subjects(input, context, budget, &paths.range)?;
+        let sources = host.subjects(input, current, budget, &paths.range)?;
         budget.check_items(sources.len(), Location::Query(paths.range.clone()))?;
         slots::<Vec<H::Value>>(1, budget, &paths.range)?;
         let mut rows = Vec::new();
         'sources: for (index, source) in sources.iter().enumerate() {
             for earlier in &sources[..index] {
                 budget.charge(1, Location::Query(paths.range.clone()))?;
-                if host.same_path_identity(source, earlier, context, budget, &paths.range)? {
+                if host.same_path_identity(
+                    source,
+                    earlier,
+                    context.parts().0,
+                    budget,
+                    &paths.range,
+                )? {
                     continue 'sources;
                 }
             }
             slots::<Node<H::Value>>(1, budget, &paths.range)?;
             let mut nodes = vec![Node {
-                value: host.copy_value(source, context, budget, &paths.range)?,
+                value: host.copy_value(source, context.parts().0, budget, &paths.range)?,
                 depth: 0,
                 previous: None,
             }];
@@ -178,20 +274,18 @@ pub fn evaluate_paths<C, H: PathHost<C>>(
                     &paths.target,
                     crate::Nesting::Nodes,
                     budget,
-                    |leaf, budget, range| {
-                        host.evaluate_target_leaf(
-                            leaf,
-                            &node.value,
-                            context,
-                            bindings,
-                            budget,
-                            range,
-                        )
-                    },
+                    |leaf, budget, range| context.target(host, leaf, &node.value, budget, range),
                 )? {
                     Truth::True => {
                         grow::<H::Value>(rows.len(), budget, &paths.range)?;
-                        rows.push(witness(paths, host, &nodes, cursor, context, budget)?);
+                        rows.push(witness(
+                            paths,
+                            host,
+                            &nodes,
+                            cursor,
+                            context.parts().0,
+                            budget,
+                        )?);
                     }
                     Truth::False => {}
                     Truth::Unknown => {
@@ -205,10 +299,11 @@ pub fn evaluate_paths<C, H: PathHost<C>>(
                 }
                 if node.depth < paths.max_depth.value {
                     budget.charge(1, Location::Query(paths.edge.range.clone()))?;
+                    let (current, bindings) = context.parts();
                     let neighbors = host.path_neighbors(
                         &paths.edge.value,
                         &node.value,
-                        context,
+                        current,
                         bindings,
                         budget,
                         &paths.edge.range,
@@ -222,7 +317,7 @@ pub fn evaluate_paths<C, H: PathHost<C>>(
                             if host.same_path_identity(
                                 &value,
                                 &visited.value,
-                                context,
+                                context.parts().0,
                                 budget,
                                 &paths.edge.range,
                             )? {
