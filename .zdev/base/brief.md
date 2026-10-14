@@ -7,10 +7,9 @@ and Zincite. Provide a substantial shared base language, including query
 execution and bounded comprehension evaluation. Consumers primarily adapt that
 language to their domains through native types, operations and surface syntax.
 
-Zincite is about to add programs, bindings and comprehensions. Zirium already
-implements programs and structured reports. A common owner should prevent
-parallel implementations of those language rules and preserve the useful
-differences between the tools.
+Both tools use shared programs, bindings and comprehensions. Zirql owns their
+common language execution; the adapters retain domain operations, native values
+and surface forms that fit their users.
 
 Observable success:
 
@@ -157,7 +156,7 @@ captures. The examples expose unresolved choices and are not executable
 contracts. The existing comprehension contract and approved task boundaries
 continue to govern implementation until a design change is selected.
 
-### Proposed extension bundle
+### Implemented extension bundle
 
 The task bundle selects the examples' explicit `project(subject, {fields})`,
 required `param name: type` declarations with `int`, `string` or `bool` types,
@@ -167,11 +166,11 @@ after a true condition. It includes shared `match` clauses (`from`, `bind`,
 `where`) returning native capture records. Named result schemas, parameter
 defaults, arbitrary functions and lazy generator reduction remain deferred.
 The user approved this exact bundle on 2026-10-13. Tasks base-018 through
-base-025 record its implementation scope; the language forms below remain
-unimplemented until their tasks are completed.
+base-025 record the implemented scope. These forms are available through the
+pinned development Git dependency; the published alpha.5 predates them.
 
-Use Zirium's existing query argument for inline programs. Add `--program TEXT`
-to both Zincite query commands, mutually exclusive with `--program-file` and
+Use Zirium's existing query argument for inline programs. Both Zincite query
+commands accept `--program TEXT`, mutually exclusive with `--program-file` and
 the legacy positional query. Both hosts accept repeated `--param name=value`
 for declared inputs: strings are passed verbatim, integers are checked decimal
 `i64`, and Booleans are exactly `true` or `false`. Duplicate, missing, extra or
@@ -179,7 +178,7 @@ incompatible parameters fail before domain execution. Library callers supply
 typed values. Files remain useful for longer programs; single expressions and
 pipelines keep their existing host emission conventions.
 
-The remaining selected forms are `group_by(rows, "field")` with first-seen
+The shared forms include `group_by(rows, "field")` with first-seen
 groups and typed keys; `entries(a)` for keyed cells; `zip_exact(a, b)` for
 keyed arrays with identical ordered axes and present keys, including identical
 sparse coverage, producing two-element tuple cells; and one deterministic
@@ -189,7 +188,7 @@ side rules survive shared execution. Path queries are read-only and do not
 enumerate all possible paths.
 
 Path steps include both endpoints. Zirium's `users` edge means one operation
-to one direct SSA user operation. Zincite's new `referenced_declarations` edge
+to one direct SSA user operation. Zincite's `referenced_declarations` edge
 means one declaration to a proven target of a reference written anywhere in
 its owning region, following `transitive_references`' existing region and
 reference-order rules. Each such declaration-to-declaration connection counts
@@ -197,7 +196,7 @@ as one edge; reference occurrences are not additional steps. Repeated targets
 are considered in first-reference order. Unknown target predicates cause a
 located refusal, and unresolved edges retain the host's incompleteness.
 
-For the MLIR fixture in the examples, this proposed command has one witness
+For the MLIR fixture in the examples, this command has one witness
 with steps `[arith.muli, arith.addi, func.return]` in `mix`:
 
 ```sh
@@ -205,7 +204,7 @@ zirium 'filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=
 ```
 
 For a model containing `int: c = 1; int: b = c; int: a = b; solve satisfy;`,
-this proposed command has one native declaration witness `[a, b, c]`. At depth
+this command has one native declaration witness `[a, b, c]`. At depth
 one it has no witness for `c`:
 
 ```sh
@@ -315,7 +314,7 @@ This does not promise rollback for Zirium library edits after a later failure.
 Read [the comprehension design](background/comprehensions.md) for examples,
 generator rules, numeric behavior and the split between generic keyed
 collections and MiniZinc target validation. MiniZinc surface spelling is
-required for Zincite. The proposed Zirium surface extends its JSON-shaped
+required for Zincite. Zirium extends its JSON-shaped
 values with `for` and optional `if` clauses. Both lower to the same evaluator.
 
 Zincite's existing comprehension contract is the compatibility baseline for its
@@ -399,11 +398,11 @@ progress and coordinate before overlapping source, planning-record or semantic
 API changes. Begin with independent Zirql work; agree consumer ownership before
 integration and avoid a second programs/comprehension implementation.
 
-Zincite currently has unrelated in-progress semantic-owner edits. Consume its
-public APIs and preserve that work. Before implementing its integrations,
-reconcile Zincite base-126 (read-only programs), base-127 (data construction) and
-base-128 (measurement) with this plan so their outcomes do not get implemented
-twice. Do not mark a consumer task done merely because Zirql has an equivalent
+Zincite owns its semantic facts and source edits. Consume its public APIs and
+preserve unrelated work. Its base-126 (read-only programs), base-127 (data
+construction) and base-128 (measurement) have accepted consumer results. Reuse
+that evidence with its recorded revisions and validate changed integration
+paths; do not implement those outcomes twice. Do not mark a consumer task done merely because Zirql has an equivalent
 core feature. Zdev task dependencies remain within an area; consumer readiness
 is a precondition checked against the live repository, not a fabricated
 cross-repository `blocked_by` entry.

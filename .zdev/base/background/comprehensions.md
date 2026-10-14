@@ -7,10 +7,11 @@ resource accounting.
 
 Read this design when working on value expressions, either comprehension
 frontend, structured reports or constructed data. The base brief owns framework
-boundaries. Zincite's `docs/query-comprehension-contract.md` owns its current
-proposal for model-backed data edits and must be read before that integration.
-The positional report examples work through both host frontends. Keyed arrays
-and data-edit examples describe future host work.
+boundaries. Zincite's `docs/query-comprehension-contract.md` owns its approved
+bounded model-backed data-edit contract and must be read before changing that
+integration. Positional reports work through both host frontends. Zincite also
+implements keyed reports and data construction through the shared evaluator;
+its base-127 and Zirql base-008 record actual library and CLI acceptance.
 
 ## Equivalent positional reports
 
@@ -113,7 +114,7 @@ consumer use; a second consumer is not a prerequisite. MiniZinc target policy
 remains with Zincite.
 
 Queries that need keys use explicit key projections/access, for example the
-existing proposed Zincite `index_set(a)` helper. Host helpers run with the same
+existing Zincite `index_set(a)` helper. Host helpers run with the same
 budget and bounded operation whitelist. They do not enable arbitrary callbacks.
 
 ## Budgets, diagnostics and data effects

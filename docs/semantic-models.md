@@ -51,7 +51,11 @@ Zincite also owns the supported MiniZinc value subset. Nominal members get
 their identities from the model. Keyed values must meet the host's axis and
 shape rules where those rules apply. A generic sparse keyed array can be valid
 in Zirql and still be refused by Zincite. Source edits have separate target,
-comment and atomic-write requirements.
+comment and atomic-write requirements. Legacy terminal edits retain native
+`Document` or `Reduction` candidates while their preceding filters, selection
+limits and common stages run through Zirql. Model-backed `create`/`replace`
+programs use the same shared comprehension evaluator as reports; Zincite checks
+the coherent candidate and controls preview, diff and explicit atomic writes.
 
 See [Zincite source queries](https://zayenz.se/zincite/guides/queries/) for syntax
 inspection and semantic context requirements.
@@ -128,28 +132,45 @@ argument position. Different results of one operation remain different values;
 a defining operation or printed SSA name cannot replace that identity. Field
 selection preserves the handle, while a later explicit projection can produce
 strings for a report. The [native match adapter](host-integration.md#native-match-adapter)
-defines the callable hooks; concrete consumer primitives require their own
-integration.
+defines the callable hooks. Both consumers implement them: Zincite captures
+declarations and their uses, while Zirium captures operations and SSA operands.
+Their guides contain complete [Zincite native reports](https://zayenz.se/zincite/guides/reference/#native-projections-and-captures)
+and [Zirium SSA captures](https://zayenz.se/zirium/guides/query-language/#native-ssa-captures).
 
 ## Define native path edges
 
 The shared [path evaluator](native-programs.md#explain-native-connections)
-works with a host's ordered native edges. Consumer path adoption requires the
-adapter described in [host integration](host-integration.md#native-path-adapter);
-the callable core alone does not enable a consumer command.
+works with a host's ordered native edges. Both consumers use the
+adapter described in [host integration](host-integration.md#native-path-adapter).
+The core owns bounded shortest-witness traversal; each host supplies its edges
+and native identity.
 
 For Zirium, `users` means one operation to one direct SSA user operation.
 The selected connection from the multiplication above to `func.return` has
 steps `[arith.muli, arith.addi, func.return]` and uses two edges. Result positions
 and retained use-site order determine equal-length choices. The host keeps
-document ownership, stale-handle checks and diff-side boundaries.
+document ownership, stale-handle checks and diff-side boundaries. Run the
+connection query against `operations.mlir` above:
+
+```sh
+zirium 'filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=2) | json' operations.mlir
+```
 
 For Zincite, `referenced_declarations` means one declaration to a proven target
 of a reference written in its owning region. With `int: c = 1; int: b = c;
 int: a = b; solve satisfy;`, the connection from `a` to `c` has declaration
 steps `[a, b, c]`. Reference occurrences are not extra steps. The adapter follows
 existing file, range and reference-kind order, retaining the first occurrence
-of each target and any unresolved-reference limitations.
+of each target and any unresolved-reference limitations. Save that model as
+`chain.mzn`. Set `MZN_STDLIB_DIR` to your installed MiniZinc standard-library
+directory before running this semantic query. For MiniZincIDE on macOS it is
+`/Applications/MiniZincIDE.app/Contents/Resources/share/minizinc`. Without
+configured builtin declarations, Zincite retains the witness with an incomplete
+status and a located limitation. With the library configured, run:
+
+```sh
+zincite query --stdlib-dir "$MZN_STDLIB_DIR" --program 'subtree | declarations | filter(name("a")) | paths(referenced_declarations, to=name("c"), max_depth=2) | json' chain.mzn
+```
 
 Both connections need a bound of at least two. A bound of one gives no witness
 for those pairs, which does not prove global disconnection. Endpoints and steps

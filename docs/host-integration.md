@@ -49,7 +49,8 @@ comprehensions, reducers and requirements. `read_projection` reads an explicit
 subject and ordered fields. A `ValueReaderHost` supplies one domain stage or
 predicate leaf; the reader owns native composition and Boolean wrappers.
 `read_statement_prefix` recognizes contextual `let name =` and `report` forms.
-The host retains its program sequencing and emission policy.
+The frontend lowers ordered statements and defines emission policy. Zirql owns
+program sequencing, binding scope and nested execution.
 Comprehension-local names take precedence over native stage names in value
 expressions. The head sees every binder; each source sees earlier binders, and
 each filter also sees its current binder.
