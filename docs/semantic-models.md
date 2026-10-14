@@ -224,3 +224,25 @@ serve different host APIs.
 For your own integration, choose native items, identity and domain hooks first.
 Then decide which text forms to accept and how to expose results. The
 [Rust embedding guide](host-integration.md) describes those boundaries.
+
+## Inspect syntax with recursive query functions
+
+Zincite accepts typed `fn` declarations in read-only query programs. Its
+[written-call example](https://zayenz.se/zincite/guides/queries/#count-written-calls-with-a-function)
+passes native roots and direct children explicitly, counts ordinary and generator
+call syntax, and includes scalar and mutual tail recursion. `Node` and
+`Declaration` are host contracts; enum signatures resolve to identities from
+the current retained model. Query functions inspect syntax and facts without
+executing a model function or solver.
+
+The adapter retains parsed bodies, resolves small request-local headers and
+prepares one shared function unit before statements run. Projection fields,
+dependent match sources, guards and path targets use that unit's active runner.
+Written match scope, lazy Boolean evaluation, native source owners and final
+Unknown refusals remain the existing shared/host boundaries. Native admission
+checks actual elements and coordinates at the first boundary; Zincite opts into
+retaining that admission only for immutable request-owned values. Fresh values
+or changed contracts are admitted again. Materialization and rendering still
+spend the request budget. See [embedding programs](embedding-programs.md#call-typed-pure-functions)
+for the shared APIs and active-depth rules. Atomic Data programs exclude query
+functions.
