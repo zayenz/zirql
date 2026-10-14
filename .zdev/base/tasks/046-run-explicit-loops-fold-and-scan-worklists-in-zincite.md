@@ -1,0 +1,39 @@
++++
+schema_version = 1
+id = "base-046"
+key = "zincite-worklists"
+area = "base"
+status = "open"
+complexity = "advanced"
+afk = true
+priority = "normal"
+blocked_by = ["base-040", "base-041", "base-042", "base-044"]
++++
+# Run explicit loops, fold and scan worklists in Zincite
+
+## Outcome
+
+Zincite users can execute explicit-state loops, named fold/scan steps and native worklist queries using the shared runtime.
+
+## Context
+
+Read the selected loop/library contracts and worked example. Build on zincite-patterns and existing host functions; adapt adjacency to Declaration identity and existing referenced_declarations edge meaning/order. The host must expose complete adjacency or a located refusal. Use the worked declaration graph with a cycle, duplicate route and disconnected declaration.
+
+## Boundaries
+
+- Zincite integration plus necessary shared adapter seams; no solver execution, new rewrite/diff effects, all-path search, package publication or website deployment.
+
+## Done when
+
+- [ ] Both text and typed-library entry points expose loop/break/continue, named fold/scan, typed queue/identity-set constructors and operations through the shared evaluator.
+- [ ] The host supplies explicit native identity and complete-or-error adjacency views; identity-set membership and target comparison agree. Unknown/incomplete facts cannot become false reachability.
+- [ ] The reachability program handles target-is-start, reachable and disconnected targets, duplicate routes and cyclic work where the host can represent it. Pattern decomposition of optional pop results does not copy or rescan the remaining queue. The reducer example uses a destructured step parameter and retains scan states correctly.
+- [ ] Pure loop scopes, runtime state/step checks, tail calls, locations, buffering and default limits remain compatible. Invalid direct rendering of queue/set values is a located refusal.
+- [ ] Document complete executable programs and measure small-query overhead plus increasing worklists, aliases and scan states with exact revisions, samples/spread and available peak memory; separate limit failures from throughput and report any unresolved scaling concern.
+- [ ] Record separately reviewable consumer/core commits and pinned Git dependencies.
+
+## Validation
+
+- Run the brief’s Rust and record checks. Extend existing public native/value controls only for the named new behavior; no internal call-count or timing assertions.
+- Run Zirql and the affected host’s required checks. Reuse compact examples for inline/file/typed-library agreement, located failures and later-error output buffering; record separate consumer commits and Git pins.
+- Reuse shared controls and real host fixtures; add focused host acceptance for adjacency/identity/unknown facts and transfers. Use temporary allocation/copy evidence, not timing assertions.
