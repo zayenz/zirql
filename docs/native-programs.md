@@ -193,3 +193,25 @@ See [the native path adapter](host-integration.md#native-path-adapter).
 These callable APIs require a development revision; they are absent from
 published alpha.5. Consumer adoption is separate: a host must supply its edge
 adapter and stage wrapper before its CLI or library accepts paths.
+
+## Optional projected fields
+
+A native subject remains native while its scalar fields use the optional-value
+runner. A host supplying a `names` projection can construct a report like this:
+
+```text
+project(subject, {
+  "name": one(subject | names),
+  "caption": (lookup({"caption": null}, "caption") default "untitled"),
+  "stored": has_key({"caption": null}, "caption"),
+  "omitted": has_key({}, "caption")
+})
+```
+
+The name uses the ordinary native projection. The other fields report
+`"untitled"`, true and false. A present left default operand skips the native
+fallback entirely; a selected native failure retains its host error and source
+coordinates. Every native query in either branch still passes scope, kind and
+purity preflight. See [optional values](values.md#absence-lookup-and-defaults)
+for the shared nodes and the distinction between absence and missing membership.
+These forms require a development revision containing optional values.

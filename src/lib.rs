@@ -39,7 +39,7 @@ pub use reader::{
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
-    checked_invoke,
+    checked_invoke, declare_constructed,
 };
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,
@@ -76,7 +76,7 @@ pub enum QueryErrorCategory {
     ItemLimit,
     /// The aggregate produced/copied result allowance was exhausted.
     ResultLimit,
-    /// The shared value reader refused a null literal.
+    /// Retained for hosts that refuse null; the shared reader accepts absence.
     UnsupportedNull,
     /// A required native match guard or path target remained Unknown.
     UnknownPredicate,

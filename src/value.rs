@@ -2,7 +2,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
-use crate::{Bindings, Budget, Located, Location, QueryError, QueryErrorCategory};
+use crate::runtime_types::{annotate, check_known_type, compatible_declarations, copy_declaration};
+use crate::{Bindings, Budget, DeclaredType, Located, Location, QueryError, QueryErrorCategory};
 
 /// Host-supplied enum identity, scoped to one immutable host context per request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +87,12 @@ pub enum SetElementType {
 /// There is deliberately no deep `Clone`; use [`copy_constructed_value`].
 #[derive(Debug, PartialEq)]
 pub enum ConstructedValue {
+    Absent,
+    /// An admitted immutable value with an explicit constructed declaration.
+    Declared {
+        value: Box<Self>,
+        declaration: DeclaredType<()>,
+    },
     Boolean(bool),
     Integer(i64),
     Float(f64),
@@ -117,6 +124,12 @@ pub enum ArrayType {
 /// source's element type. It is never a runtime value or Boolean truth.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ValueType {
+    Absent,
+    /// Keep declaration constraints separate from the observed value facts.
+    Declared {
+        actual: Box<Self>,
+        declaration: DeclaredType<()>,
+    },
     Boolean,
     Integer,
     Float,
@@ -125,7 +138,11 @@ pub enum ValueType {
     KeyedArray(KeyedArrayType),
     Array(ArrayType),
     Tuple(Vec<Self>),
+    /// A tuple whose positions have not been inspected; no arity is known.
+    TupleKind,
     Record(Vec<(String, Self)>),
+    /// A record whose stored fields have not been inspected; no schema is known.
+    RecordKind,
     Set(Option<SetElementType>),
     Unestablished,
 }
@@ -187,6 +204,20 @@ pub enum ValueExpressionKind<Q = ()> {
     /// Extract exactly one positional child without copying it.
     One(Box<ValueExpression<Q>>),
     Name(String),
+    Occurs(Box<ValueExpression<Q>>),
+    Absent(Box<ValueExpression<Q>>),
+    Lookup {
+        value: Box<ValueExpression<Q>>,
+        key: Box<ValueExpression<Q>>,
+    },
+    HasKey {
+        value: Box<ValueExpression<Q>>,
+        key: Box<ValueExpression<Q>>,
+    },
+    Default {
+        value: Box<ValueExpression<Q>>,
+        fallback: Box<ValueExpression<Q>>,
+    },
     Array(Vec<ValueExpression<Q>>),
     Tuple(Vec<ValueExpression<Q>>),
     Record(Vec<(Located<String>, ValueExpression<Q>)>),
@@ -506,6 +537,14 @@ pub fn constructed_value_type(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         match value {
+            ConstructedValue::Absent => Ok(ValueType::Absent),
+            ConstructedValue::Declared { value, declaration } => {
+                crate::admit_constructed(value, declaration, budget, location.clone())?;
+                Ok(ValueType::Declared {
+                    actual: Box::new(constructed_value_type(value, budget, location.clone())?),
+                    declaration: copy_declaration(declaration, budget, &location)?,
+                })
+            }
             ConstructedValue::Boolean(_) => Ok(ValueType::Boolean),
             ConstructedValue::Integer(_) => Ok(ValueType::Integer),
             ConstructedValue::Float(value) => {
@@ -565,7 +604,8 @@ pub fn constructed_value_type(
     })
 }
 
-/// Validate actual referenced binding types, then evaluate a pure expression.
+/// Validate referenced binding types, then evaluate a pure expression. Default
+/// fallbacks use available metadata until selected, without scanning their data.
 /// All branches are validated before runtime choice. Execution evaluates only
 /// needed Boolean operands and selected conditional branches. The host owns
 /// source projections and subsequent rendering with this same budget.
@@ -606,10 +646,25 @@ pub fn evaluate_value_with_host_validation(
     let mut types = BTreeMap::new();
     for name in analysis.free {
         let location = Location::Query(name.range.clone());
+        let mut fallback_only = false;
+        for candidate in &analysis.fallback_names {
+            budget.charge(
+                1 + candidate.value.len().min(name.value.len()),
+                location.clone(),
+            )?;
+            if candidate.value == name.value {
+                fallback_only = true;
+                break;
+            }
+        }
         budget.charge(1, location.clone())?;
         admit_diagnostic("undefined binding: ", &name.value, budget, &location)?;
         let value = bindings.get(&name.value, name.range)?;
-        let ty = constructed_value_type(value, budget, location)?;
+        let ty = if !fallback_only {
+            constructed_value_type(value, budget, location)?
+        } else {
+            shallow_type(value, budget, &location)?
+        };
         types.insert(name.value, ty);
     }
     validate_value_expression(expression, &types, budget)?;
@@ -640,6 +695,461 @@ pub fn copy_constructed_value(
     budget.charge(bytes, location.clone())?;
     budget.charge_results(units, location.clone())?;
     copy_admitted(value, budget, &location)
+}
+
+impl ConstructedValue {
+    /// Borrow data through its transparent declaration annotation.
+    pub fn data(&self) -> &Self {
+        let mut value = self;
+        while let Self::Declared { value: inner, .. } = value {
+            value = inner;
+        }
+        value
+    }
+
+    /// Whether this value is present, including false, zero and empty data.
+    pub fn occurs(&self) -> bool {
+        !matches!(self.data(), Self::Absent)
+    }
+
+    /// Consume transparent annotations when crossing an explicit data boundary.
+    pub fn into_data(self) -> Self {
+        let mut value = self;
+        while let Self::Declared { value: inner, .. } = value {
+            value = *inner;
+        }
+        value
+    }
+}
+
+fn declaration(value: &ConstructedValue) -> Option<&DeclaredType<()>> {
+    match value {
+        ConstructedValue::Declared { declaration, .. } => Some(declaration),
+        _ => None,
+    }
+}
+
+fn underlying(mut declaration: &DeclaredType<()>) -> &DeclaredType<()> {
+    while let DeclaredType::Optional(child) = declaration {
+        declaration = child;
+    }
+    declaration
+}
+
+fn declared_facts(
+    declaration: &DeclaredType<()>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match declaration {
+            DeclaredType::Optional(child) => declared_facts(child, budget, location)?,
+            DeclaredType::Boolean => ValueType::Boolean,
+            DeclaredType::Integer => ValueType::Integer,
+            DeclaredType::Float => ValueType::Float,
+            DeclaredType::String => ValueType::String,
+            DeclaredType::Member(id) => ValueType::Member(*id),
+            DeclaredType::Set(element) => ValueType::Set(Some(*element)),
+            DeclaredType::Sequence(child) => ValueType::Array(ArrayType::Elements(one_type(
+                declared_fact(child, ValueType::Unestablished, budget, location)?,
+                budget,
+                location,
+            )?)),
+            DeclaredType::Keyed(child) => ValueType::KeyedArray(KeyedArrayType {
+                axes: None,
+                elements: one_type(
+                    declared_fact(child, ValueType::Unestablished, budget, location)?,
+                    budget,
+                    location,
+                )?,
+            }),
+            DeclaredType::Tuple(children) => {
+                let mut fields = metadata_vec(children.len(), budget, location)?;
+                for child in children {
+                    fields.push(declared_fact(
+                        child,
+                        ValueType::Unestablished,
+                        budget,
+                        location,
+                    )?);
+                }
+                ValueType::Tuple(fields)
+            }
+            DeclaredType::Record(children) => {
+                let mut fields = metadata_vec(children.len(), budget, location)?;
+                for (label, child) in children {
+                    budget.charge(label.len(), location.clone())?;
+                    fields.push((
+                        label.clone(),
+                        declared_fact(child, ValueType::Unestablished, budget, location)?,
+                    ));
+                }
+                ValueType::Record(fields)
+            }
+            DeclaredType::Native(()) => {
+                return Err(error(location, "native declaration requires a host"));
+            }
+        })
+    })
+}
+
+fn declared_fact(
+    declaration: &DeclaredType<()>,
+    actual: ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    budget.charge(1, location.clone())?;
+    Ok(ValueType::Declared {
+        actual: Box::new(actual),
+        declaration: copy_declaration(declaration, budget, location)?,
+    })
+}
+
+// Spread a container's declaration onto selected values, without inventing a
+// schema for unannotated structural data.
+fn shape_type(
+    ty: ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    let ValueType::Declared {
+        actual,
+        declaration,
+    } = ty
+    else {
+        return Ok(ty);
+    };
+    let actual = match *actual {
+        ValueType::Unestablished => return declared_facts(&declaration, budget, location),
+        actual => shape_type(actual, budget, location)?,
+    };
+    Ok(match (actual, underlying(&declaration)) {
+        (ValueType::Array(array), DeclaredType::Sequence(child)) => {
+            let positional = matches!(array, ArrayType::Positions(_));
+            let (ArrayType::Positions(entries) | ArrayType::Elements(entries)) = array;
+            let mut fields = metadata_vec(entries.len(), budget, location)?;
+            for entry in entries {
+                fields.push(declared_fact(child, entry, budget, location)?);
+            }
+            if fields.is_empty() {
+                push_metadata(
+                    &mut fields,
+                    declared_fact(child, ValueType::Unestablished, budget, location)?,
+                    budget,
+                    location,
+                )?;
+                return Ok(ValueType::Array(ArrayType::Elements(fields)));
+            }
+            ValueType::Array(if positional {
+                ArrayType::Positions(fields)
+            } else {
+                ArrayType::Elements(fields)
+            })
+        }
+        (ValueType::KeyedArray(mut keyed), DeclaredType::Keyed(child)) => {
+            let mut fields = metadata_vec(keyed.elements.len(), budget, location)?;
+            for entry in keyed.elements {
+                fields.push(declared_fact(child, entry, budget, location)?);
+            }
+            if fields.is_empty() {
+                push_metadata(
+                    &mut fields,
+                    declared_fact(child, ValueType::Unestablished, budget, location)?,
+                    budget,
+                    location,
+                )?;
+            }
+            keyed.elements = fields;
+            ValueType::KeyedArray(keyed)
+        }
+        (ValueType::Tuple(entries), DeclaredType::Tuple(children)) => {
+            let mut fields = metadata_vec(entries.len(), budget, location)?;
+            for (entry, child) in entries.into_iter().zip(children) {
+                fields.push(declared_fact(child, entry, budget, location)?);
+            }
+            ValueType::Tuple(fields)
+        }
+        (ValueType::Record(entries), DeclaredType::Record(children)) => {
+            let mut fields = metadata_vec(entries.len(), budget, location)?;
+            for (label, entry) in entries {
+                let child = record_declaration(children, &label, budget, location)?;
+                fields.push((label, declared_fact(child, entry, budget, location)?));
+            }
+            ValueType::Record(fields)
+        }
+        (actual, _) => actual,
+    })
+}
+
+fn record_declaration<'a>(
+    fields: &'a [(String, DeclaredType<()>)],
+    label: &str,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<&'a DeclaredType<()>, QueryError> {
+    for (candidate, declaration) in fields {
+        budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
+        if label == candidate {
+            return Ok(declaration);
+        }
+    }
+    Err(error(location, "record label outside declared schema"))
+}
+
+fn expose(
+    value: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let ConstructedValue::Declared { value, declaration } = value else {
+        return Ok(value);
+    };
+    let mut value = expose(*value, budget, location)?;
+    match (&mut value, underlying(&declaration)) {
+        (ConstructedValue::Array(values), DeclaredType::Sequence(child)) => {
+            for value in values {
+                annotate_child(value, child, budget, location)?;
+            }
+        }
+        (ConstructedValue::Tuple(values), DeclaredType::Tuple(children)) => {
+            for (value, child) in values.iter_mut().zip(children) {
+                annotate_child(value, child, budget, location)?;
+            }
+        }
+        (ConstructedValue::Record(values), DeclaredType::Record(children)) => {
+            for (label, value) in values {
+                annotate_child(
+                    value,
+                    record_declaration(children, label, budget, location)?,
+                    budget,
+                    location,
+                )?;
+            }
+        }
+        (ConstructedValue::KeyedArray { entries, .. }, DeclaredType::Keyed(child)) => {
+            for entry in entries {
+                annotate_child(&mut entry.value, child, budget, location)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(value)
+}
+
+fn annotate_child(
+    value: &mut ConstructedValue,
+    declaration: &DeclaredType<()>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    let declaration = copy_declaration(declaration, budget, location)?;
+    let child = std::mem::replace(value, ConstructedValue::Absent);
+    *value = annotate(child, declaration, budget, location)?;
+    Ok(())
+}
+
+fn shallow_type(
+    value: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    Ok(match value {
+        ConstructedValue::Declared { declaration, .. } => {
+            declared_fact(declaration, ValueType::Unestablished, budget, location)?
+        }
+        ConstructedValue::Absent => ValueType::Absent,
+        ConstructedValue::Boolean(_) => ValueType::Boolean,
+        ConstructedValue::Integer(_) => ValueType::Integer,
+        ConstructedValue::Float(value) => {
+            finite(*value, location)?;
+            ValueType::Float
+        }
+        ConstructedValue::String(_) => ValueType::String,
+        ConstructedValue::Member(member) => ValueType::Member(member.type_id),
+        ConstructedValue::Array(_) => ValueType::Array(ArrayType::Elements(Vec::new())),
+        ConstructedValue::Tuple(_) => ValueType::TupleKind,
+        ConstructedValue::Record(_) => ValueType::RecordKind,
+        ConstructedValue::Set { .. } => ValueType::Set(None),
+        ConstructedValue::KeyedArray { .. } => ValueType::KeyedArray(KeyedArrayType {
+            axes: None,
+            elements: Vec::new(),
+        }),
+    })
+}
+
+fn access_type(
+    ty: ValueType,
+    keys: &[ValueType],
+    label: Option<&str>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    let mut child = None;
+    if let ValueType::Declared { declaration, .. } = &ty {
+        child = match underlying(declaration) {
+            DeclaredType::Record(fields) => match label {
+                Some(label) => Some(copy_declaration(
+                    record_declaration(fields, label, budget, location)?,
+                    budget,
+                    location,
+                )?),
+                None => None,
+            },
+            DeclaredType::Sequence(element) | DeclaredType::Keyed(element) => {
+                Some(copy_declaration(element, budget, location)?)
+            }
+            _ => None,
+        };
+    }
+    let mut result = Vec::new();
+    match shape_type(ty, budget, location)? {
+        record @ (ValueType::RecordKind | ValueType::Record(_)) => {
+            for key in keys {
+                let key = shape_type(copy_type(key, budget, location)?, budget, location)?;
+                if !matches!(key, ValueType::String | ValueType::Unestablished) {
+                    return Err(error(location, "record lookup needs a string label"));
+                }
+            }
+            if let ValueType::Record(fields) = record {
+                for (candidate, ty) in fields {
+                    budget.charge(
+                        1 + label.map_or(0, |label| label.len().min(candidate.len())),
+                        location.clone(),
+                    )?;
+                    if label.is_none_or(|label| label == candidate) {
+                        push_metadata(&mut result, ty, budget, location)?;
+                    }
+                }
+            } else {
+                push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
+            }
+        }
+        ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements)) => {
+            for key in keys {
+                require_type(key, ScalarRequirement::Integer, location)?;
+            }
+            result = elements;
+        }
+        ValueType::KeyedArray(keyed) => {
+            let mut facts = None;
+            merge_key_facts(&mut facts, keys, budget, location)?;
+            if let Some(axes) = &keyed.axes {
+                check_key_facts(&facts, axes, budget, location)?;
+            }
+            result = keyed.elements;
+        }
+        ValueType::Unestablished => {
+            push_metadata(&mut result, ValueType::Unestablished, budget, location)?
+        }
+        _ => return Err(error(location, "lookup needs a record or array")),
+    }
+    if let Some(child) = child {
+        return one_type(
+            declared_fact(
+                &DeclaredType::Optional(Box::new(child)),
+                ValueType::Unestablished,
+                budget,
+                location,
+            )?,
+            budget,
+            location,
+        );
+    }
+    push_metadata(&mut result, ValueType::Absent, budget, location)?;
+    Ok(result)
+}
+
+fn optional_access(
+    value: ConstructedValue,
+    key: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(bool, ConstructedValue), QueryError> {
+    let mut child = None;
+    if let Some(declaration) = declaration(&value) {
+        child = match underlying(declaration) {
+            DeclaredType::Record(fields) => {
+                let ConstructedValue::String(label) = key.data() else {
+                    return Err(error(location, "record lookup needs a string label"));
+                };
+                Some(copy_declaration(
+                    record_declaration(fields, label, budget, location)?,
+                    budget,
+                    location,
+                )?)
+            }
+            DeclaredType::Sequence(element) | DeclaredType::Keyed(element) => {
+                Some(copy_declaration(element, budget, location)?)
+            }
+            _ => None,
+        };
+    }
+    let mut selected = None;
+    match expose(value, budget, location)? {
+        ConstructedValue::Record(fields) => {
+            let ConstructedValue::String(label) = key.into_data() else {
+                return Err(error(location, "record lookup needs a string label"));
+            };
+            for (candidate, value) in fields {
+                budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
+                if label == candidate {
+                    selected = Some(value);
+                    break;
+                }
+            }
+        }
+        ConstructedValue::Array(values) => {
+            let position = integer(key, location)?;
+            if let Some(index) = usize::try_from(position)
+                .ok()
+                .and_then(|position| position.checked_sub(1))
+            {
+                budget.charge(values.len().min(index.saturating_add(1)), location.clone())?;
+                selected = values.into_iter().nth(index);
+            }
+        }
+        ConstructedValue::KeyedArray { axes, entries } => {
+            let key = value_keys(key.into_data(), budget, location)?;
+            if key.len() != axes.len() {
+                return Err(error(location, "key rank mismatch"));
+            }
+            for (component, axis) in key.iter().zip(&axes) {
+                budget.charge(1, location.clone())?;
+                if key_type(component) != axis.key_type {
+                    return Err(error(location, "incompatible key type"));
+                }
+                // Validate nominal metadata even for a key outside the axis.
+                for candidate in &axis.keys {
+                    compare_keys(component, candidate, budget, location)?;
+                }
+            }
+            for entry in entries {
+                budget.charge(1, location.clone())?;
+                if equal_keys(&key, &entry.key, budget, location)? {
+                    selected = Some(entry.value);
+                    break;
+                }
+            }
+        }
+        _ => return Err(error(location, "lookup needs a record or array")),
+    }
+    let present = selected.is_some();
+    let value = match selected {
+        Some(value) => value,
+        None => scalar(ConstructedValue::Absent, budget, location)?,
+    };
+    let value = match child {
+        Some(child) => annotate(
+            value,
+            DeclaredType::Optional(Box::new(child)),
+            budget,
+            location,
+        )?,
+        None => value,
+    };
+    Ok((present, value))
 }
 
 fn error(location: &Location, message: impl Into<String>) -> QueryError {
@@ -1088,6 +1598,7 @@ fn value_keys(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Vec<ValueKey>, QueryError> {
+    let value = expose(value, budget, location)?;
     let values = match value {
         ConstructedValue::Tuple(values) if !values.is_empty() => values,
         value @ (ConstructedValue::Integer(_) | ConstructedValue::Member(_)) => {
@@ -1108,7 +1619,7 @@ fn value_keys(
     let mut keys = Vec::with_capacity(values.len());
     for value in values {
         budget.charge(1, location.clone())?;
-        keys.push(match value {
+        keys.push(match value.into_data() {
             ConstructedValue::Integer(value) => ValueKey::Integer(value),
             ConstructedValue::Member(member) => ValueKey::Member(member),
             _ => return Err(error(location, "key components need integers or members")),
@@ -1232,6 +1743,7 @@ fn source_axis(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<KeyAxis, QueryError> {
+    let value = expose(value, budget, location)?;
     let (declared, values) = match value {
         ConstructedValue::Array(values) => (None, values),
         ConstructedValue::KeyedArray { entries, .. } => {
@@ -1269,7 +1781,7 @@ fn source_axis(
     let mut ty = declared;
     for value in values {
         budget.charge(1, location.clone())?;
-        let key = match value {
+        let key = match value.into_data() {
             ConstructedValue::Integer(value) => ValueKey::Integer(value),
             ConstructedValue::Member(member) => ValueKey::Member(member),
             _ => {
@@ -1294,7 +1806,7 @@ fn source_axis(
 }
 
 fn scalar_set_type(value: &ConstructedValue) -> Option<SetElementType> {
-    match value {
+    match value.data() {
         ConstructedValue::Boolean(_) => Some(SetElementType::Boolean),
         ConstructedValue::Integer(_) => Some(SetElementType::Integer),
         ConstructedValue::Float(_) => Some(SetElementType::Float),
@@ -1310,7 +1822,7 @@ fn compare_set_values(
     location: &Location,
 ) -> Result<Ordering, QueryError> {
     budget.charge(1, location.clone())?;
-    match (left, right) {
+    match (left.data(), right.data()) {
         (ConstructedValue::Boolean(a), ConstructedValue::Boolean(b)) => Ok(a.cmp(b)),
         (ConstructedValue::Integer(a), ConstructedValue::Integer(b)) => Ok(a.cmp(b)),
         (ConstructedValue::Float(a), ConstructedValue::Float(b)) => {
@@ -1402,7 +1914,16 @@ fn copy_size(
         let mut units = 1;
         let mut bytes = 0;
         match value {
-            ConstructedValue::Boolean(_) | ConstructedValue::Integer(_) => {}
+            ConstructedValue::Absent
+            | ConstructedValue::Boolean(_)
+            | ConstructedValue::Integer(_) => {}
+            ConstructedValue::Declared { value, declaration } => {
+                crate::admit_constructed(value, declaration, budget, location.clone())?;
+                let (child_units, child_bytes) = copy_size(value, budget, location)?;
+                units = sum(units, child_units, location)?;
+                bytes = child_bytes;
+                // Declarations are copied with their own metadata charges below.
+            }
             ConstructedValue::Float(value) => finite(*value, location)?,
             ConstructedValue::Member(member) => {
                 bytes = member_bytes(member, budget, location)?;
@@ -1468,6 +1989,11 @@ fn copy_admitted(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         Ok(match value {
+            ConstructedValue::Absent => ConstructedValue::Absent,
+            ConstructedValue::Declared { value, declaration } => ConstructedValue::Declared {
+                value: Box::new(copy_admitted(value, budget, location)?),
+                declaration: copy_declaration(declaration, budget, location)?,
+            },
             ConstructedValue::Boolean(value) => ConstructedValue::Boolean(*value),
             ConstructedValue::Integer(value) => ConstructedValue::Integer(*value),
             ConstructedValue::Float(value) => ConstructedValue::Float(*value),
@@ -1535,6 +2061,14 @@ fn copy_type(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         Ok(match ty {
+            ValueType::Absent => ValueType::Absent,
+            ValueType::Declared {
+                actual,
+                declaration,
+            } => ValueType::Declared {
+                actual: Box::new(copy_type(actual, budget, location)?),
+                declaration: copy_declaration(declaration, budget, location)?,
+            },
             ValueType::Boolean => ValueType::Boolean,
             ValueType::Integer => ValueType::Integer,
             ValueType::Float => ValueType::Float,
@@ -1551,6 +2085,8 @@ fn copy_type(
                 })
             }
             ValueType::Unestablished => ValueType::Unestablished,
+            ValueType::TupleKind => ValueType::TupleKind,
+            ValueType::RecordKind => ValueType::RecordKind,
             ValueType::Set(element_type) => ValueType::Set(*element_type),
             ValueType::Array(array) => {
                 let (ArrayType::Positions(entries) | ArrayType::Elements(entries)) = array;
@@ -1620,6 +2156,8 @@ struct Analysis<'a, 'h, Q, H> {
     globals: Globals<'a>,
     locals: Vec<(&'a str, Vec<ValueType>)>,
     free: Vec<Located<String>>,
+    fallback_names: Vec<Located<String>>,
+    fallback: bool,
 }
 
 impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
@@ -1630,6 +2168,8 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             query: std::marker::PhantomData,
             locals: Vec::new(),
             free: Vec::new(),
+            fallback_names: Vec::new(),
+            fallback: false,
         }
     }
 
@@ -1694,8 +2234,21 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 &location,
             )?,
             Globals::Available(bindings) => {
-                bindings.get(name, expression.range.clone())?;
-                one_type(ValueType::Unestablished, budget, &location)?
+                let value = bindings.get(name, expression.range.clone())?;
+                let ty = if !self.fallback
+                    && matches!(
+                        value,
+                        ConstructedValue::Array(_)
+                            | ConstructedValue::Tuple(_)
+                            | ConstructedValue::Record(_)
+                            | ConstructedValue::Set { .. }
+                            | ConstructedValue::KeyedArray { .. }
+                    ) {
+                    ValueType::Unestablished
+                } else {
+                    shallow_type(value, budget, &location)?
+                };
+                one_type(ty, budget, &location)?
             }
         };
         let mut found = false;
@@ -1707,6 +2260,27 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             if previous.value == name {
                 found = true;
                 break;
+            }
+        }
+        if self.fallback && !found {
+            budget.charge(name.len(), location.clone())?;
+            push_metadata(
+                &mut self.fallback_names,
+                Located::new(name.to_owned(), expression.range.clone()),
+                budget,
+                &location,
+            )?;
+        } else if !self.fallback {
+            let mut selected = None;
+            for (index, previous) in self.fallback_names.iter().enumerate() {
+                budget.charge(1 + name.len().min(previous.value.len()), location.clone())?;
+                if previous.value == name {
+                    selected = Some(index);
+                    break;
+                }
+            }
+            if let Some(index) = selected {
+                self.fallback_names.remove(index);
             }
         }
         if !found {
@@ -1774,8 +2348,87 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
     ) -> Result<Vec<ValueType>, QueryError> {
         match &expression.value {
             ValueExpressionKind::Literal(value) => {
-                let ty = constructed_value_type(value, budget, location.clone())?;
+                let ty = if self.fallback {
+                    shallow_type(value, budget, location)?
+                } else {
+                    constructed_value_type(value, budget, location.clone())?
+                };
                 one_type(ty, budget, location)
+            }
+            ValueExpressionKind::Occurs(value) | ValueExpressionKind::Absent(value) => {
+                self.walk(value, budget)?;
+                one_type(ValueType::Boolean, budget, location)
+            }
+            ValueExpressionKind::Lookup { value, key }
+            | ValueExpressionKind::HasKey { value, key } => {
+                let values = self.walk(value, budget)?;
+                let keys = self.walk(key, budget)?;
+                let label = match &key.value {
+                    ValueExpressionKind::Literal(ConstructedValue::String(label)) => {
+                        Some(label.as_str())
+                    }
+                    _ => None,
+                };
+                let mut result = Vec::new();
+                for value in values {
+                    append_types(
+                        &mut result,
+                        access_type(value, &keys, label, budget, location)?,
+                        budget,
+                        location,
+                    )?;
+                }
+                if matches!(expression.value, ValueExpressionKind::HasKey { .. }) {
+                    one_type(ValueType::Boolean, budget, location)
+                } else {
+                    Ok(result)
+                }
+            }
+            ValueExpressionKind::Default { value, fallback } => {
+                let left = self.walk(value, budget)?;
+                let saved = self.fallback;
+                self.fallback = true;
+                let right = self.walk(fallback, budget);
+                self.fallback = saved;
+                let right = right?;
+                for a in &left {
+                    for b in &right {
+                        if !compatible_types(a, b, budget, location)? {
+                            return Err(error(
+                                location,
+                                "default needs compatible underlying types",
+                            ));
+                        }
+                    }
+                }
+                let mut result = Vec::new();
+                for ty in left.into_iter().chain(right) {
+                    let ty = match ty {
+                        ValueType::Absent => continue,
+                        ValueType::Declared {
+                            actual,
+                            declaration,
+                        } => {
+                            let declaration =
+                                copy_declaration(underlying(&declaration), budget, location)?;
+                            ValueType::Declared {
+                                actual: Box::new(if matches!(*actual, ValueType::Absent) {
+                                    ValueType::Unestablished
+                                } else {
+                                    *actual
+                                }),
+                                declaration,
+                            }
+                        }
+                        ty => ty,
+                    };
+                    push_metadata(&mut result, ty, budget, location)?;
+                }
+                if result.is_empty() {
+                    one_type(ValueType::Absent, budget, location)
+                } else {
+                    Ok(result)
+                }
             }
             ValueExpressionKind::Name(name) => self.name(name, expression, budget),
             ValueExpressionKind::NativeQuery(query) => {
@@ -1785,7 +2438,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             ValueExpressionKind::One(array) => {
                 let mut result = Vec::new();
                 for ty in self.walk(array, budget)? {
-                    match ty {
+                    match shape_type(ty, budget, location)? {
                         ValueType::Array(
                             ArrayType::Positions(types) | ArrayType::Elements(types),
                         ) => append_types(&mut result, types, budget, location)?,
@@ -1986,7 +2639,19 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let types = self.walk(value, budget)?;
                 let mut result = Vec::new();
                 for ty in types {
-                    let selected = match ty {
+                    if let ValueType::Declared { declaration, .. } = &ty
+                        && let DeclaredType::Record(fields) = underlying(declaration)
+                    {
+                        let selected = record_declaration(fields, &field.value, budget, location)?;
+                        push_metadata(
+                            &mut result,
+                            declared_fact(selected, ValueType::Unestablished, budget, location)?,
+                            budget,
+                            location,
+                        )?;
+                        continue;
+                    }
+                    let selected = match shape_type(ty, budget, location)? {
                         ValueType::Record(fields) => {
                             let mut selected = None;
                             for (label, ty) in fields {
@@ -2000,7 +2665,9 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             }
                             selected.unwrap_or(ValueType::Unestablished)
                         }
-                        ValueType::Unestablished => ValueType::Unestablished,
+                        ValueType::Unestablished | ValueType::RecordKind => {
+                            ValueType::Unestablished
+                        }
                         _ => return Err(error(location, "field access needs a record")),
                     };
                     push_metadata(&mut result, selected, budget, location)?;
@@ -2012,7 +2679,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut result = Vec::new();
                 for ty in types {
                     budget.charge(1, location.clone())?;
-                    let selected = match ty {
+                    let selected = match shape_type(ty, budget, location)? {
                         ValueType::Tuple(entries) => {
                             budget.charge(entries.len().min(position.value), location.clone())?;
                             position
@@ -2021,7 +2688,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                                 .and_then(|index| entries.into_iter().nth(index))
                                 .unwrap_or(ValueType::Unestablished)
                         }
-                        ValueType::Unestablished => ValueType::Unestablished,
+                        ValueType::Unestablished | ValueType::TupleKind => ValueType::Unestablished,
                         _ => return Err(error(location, "tuple access needs a tuple")),
                     };
                     push_metadata(&mut result, selected, budget, location)?;
@@ -2037,7 +2704,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 };
                 let mut result = Vec::new();
                 for array in arrays {
-                    match array {
+                    match shape_type(array, budget, location)? {
                         ValueType::KeyedArray(keyed) => {
                             let mut facts = None;
                             merge_key_facts(&mut facts, &indices, budget, location)?;
@@ -2094,7 +2761,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut result = Vec::new();
                 for ty in self.walk(array, budget)? {
                     budget.charge(1, location.clone())?;
-                    let element_type = match ty {
+                    let element_type = match shape_type(ty, budget, location)? {
                         ValueType::Array(_) => Some(SetElementType::Integer),
                         ValueType::KeyedArray(keyed) => match keyed.axes {
                             Some(axes) if axes.len() == 1 => Some(key_set_type(axes[0])),
@@ -2112,7 +2779,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut result = Vec::new();
                 for ty in self.walk(array, budget)? {
                     budget.charge(1, location.clone())?;
-                    let keyed = match ty {
+                    let keyed = match shape_type(ty, budget, location)? {
                         ValueType::KeyedArray(keyed) => keyed,
                         ValueType::Unestablished => {
                             push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
@@ -2170,7 +2837,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             ValueExpressionKind::Reduce { operator, array } => {
                 for ty in self.walk(array, budget)? {
                     budget.charge(1, location.clone())?;
-                    let elements = match ty {
+                    let elements = match shape_type(ty, budget, location)? {
                         ValueType::Array(
                             ArrayType::Positions(elements) | ArrayType::Elements(elements),
                         ) => elements,
@@ -2205,7 +2872,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut result = Vec::new();
                 for ty in self.walk(rows, budget)? {
                     budget.charge(1, location.clone())?;
-                    let elements = match ty {
+                    let elements = match shape_type(ty, budget, location)? {
                         ValueType::Array(
                             ArrayType::Positions(elements) | ArrayType::Elements(elements),
                         ) => elements,
@@ -2218,9 +2885,18 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     let mut key_type = None;
                     for row in &elements {
                         budget.charge(1, location.clone())?;
-                        let fields = match row {
+                        let normalized = if matches!(row, ValueType::Declared { .. }) {
+                            Some(shape_type(
+                                copy_type(row, budget, location)?,
+                                budget,
+                                location,
+                            )?)
+                        } else {
+                            None
+                        };
+                        let fields = match normalized.as_ref().unwrap_or(row) {
                             ValueType::Record(fields) => fields,
-                            ValueType::Unestablished => continue,
+                            ValueType::Unestablished | ValueType::RecordKind => continue,
                             _ => return Err(error(location, "group_by needs record rows")),
                         };
                         for (label, ty) in fields {
@@ -2351,7 +3027,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     let source_types = self.walk(source, budget)?;
                     let mut elements = Vec::new();
                     for ty in source_types {
-                        match ty {
+                        match shape_type(ty, budget, &clause_location)? {
                             ValueType::Array(
                                 ArrayType::Positions(entries) | ArrayType::Elements(entries),
                             ) => append_types(&mut elements, entries, budget, &clause_location)?,
@@ -2450,6 +3126,11 @@ fn zip_exact_type(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ValueType, QueryError> {
+    if matches!(left, ValueType::Declared { .. }) || matches!(right, ValueType::Declared { .. }) {
+        let left = shape_type(copy_type(left, budget, location)?, budget, location)?;
+        let right = shape_type(copy_type(right, budget, location)?, budget, location)?;
+        return zip_exact_type(&left, &right, budget, location);
+    }
     let [left, right] = [left, right].map(|ty| match ty {
         ValueType::KeyedArray(keyed) => Ok(Some(keyed)),
         ValueType::Unestablished => Ok(None),
@@ -2493,6 +3174,19 @@ fn key_component_type(
     location: &Location,
 ) -> Result<Option<ValueKeyType>, QueryError> {
     match ty {
+        ValueType::Declared {
+            actual,
+            declaration,
+        } => {
+            if !matches!(actual.as_ref(), ValueType::Unestablished) {
+                return key_component_type(actual, location);
+            }
+            match underlying(declaration) {
+                DeclaredType::Integer => Ok(Some(ValueKeyType::Integer)),
+                DeclaredType::Member(id) => Ok(Some(ValueKeyType::Member(*id))),
+                _ => Err(error(location, "key components need integers or members")),
+            }
+        }
         ValueType::Integer => Ok(Some(ValueKeyType::Integer)),
         ValueType::Member(id) => Ok(Some(ValueKeyType::Member(*id))),
         ValueType::Unestablished => Ok(None),
@@ -2508,8 +3202,18 @@ fn merge_key_facts(
 ) -> Result<(), QueryError> {
     for ty in types {
         budget.charge(1, location.clone())?;
+        let normalized = if matches!(ty, ValueType::Declared { .. }) {
+            Some(shape_type(
+                copy_type(ty, budget, location)?,
+                budget,
+                location,
+            )?)
+        } else {
+            None
+        };
+        let ty = normalized.as_ref().unwrap_or(ty);
         let components = match ty {
-            ValueType::Unestablished => continue,
+            ValueType::Unestablished | ValueType::TupleKind => continue,
             ValueType::Tuple(types) if !types.is_empty() => {
                 let mut result = metadata_vec(types.len(), budget, location)?;
                 for ty in types {
@@ -2598,6 +3302,16 @@ fn source_key_type(
     let mut result = None;
     for ty in types {
         budget.charge(1, location.clone())?;
+        let normalized = if matches!(ty, ValueType::Declared { .. }) {
+            Some(shape_type(
+                copy_type(ty, budget, location)?,
+                budget,
+                location,
+            )?)
+        } else {
+            None
+        };
+        let ty = normalized.as_ref().unwrap_or(ty);
         let keys = match ty {
             ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
             | ValueType::KeyedArray(KeyedArrayType { elements, .. }) => {
@@ -2667,6 +3381,27 @@ fn require_type(
     requirement: ScalarRequirement,
     location: &Location,
 ) -> Result<(), QueryError> {
+    if let ValueType::Declared {
+        actual,
+        declaration,
+    } = ty
+    {
+        if !matches!(actual.as_ref(), ValueType::Unestablished) {
+            return require_type(actual, requirement, location);
+        }
+        let expected = underlying(declaration);
+        let accepted = match requirement {
+            ScalarRequirement::Boolean => matches!(expected, DeclaredType::Boolean),
+            ScalarRequirement::Integer => matches!(expected, DeclaredType::Integer),
+            ScalarRequirement::Numeric => {
+                matches!(expected, DeclaredType::Integer | DeclaredType::Float)
+            }
+        };
+        if accepted {
+            return Ok(());
+        }
+        return Err(error(location, "incompatible declared operand type"));
+    }
     let accepted = matches!(ty, ValueType::Unestablished)
         || match requirement {
             ScalarRequirement::Boolean => matches!(ty, ValueType::Boolean),
@@ -2704,6 +3439,16 @@ fn merge_set_types(
 ) -> Result<(), QueryError> {
     for ty in types {
         budget.charge(1, location.clone())?;
+        let normalized = if matches!(ty, ValueType::Declared { .. }) {
+            Some(shape_type(
+                copy_type(ty, budget, location)?,
+                budget,
+                location,
+            )?)
+        } else {
+            None
+        };
+        let ty = normalized.as_ref().unwrap_or(ty);
         let ty = match ty {
             ValueType::Boolean => SetElementType::Boolean,
             ValueType::Integer => SetElementType::Integer,
@@ -2736,12 +3481,36 @@ fn compatible_types(
 ) -> Result<bool, QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
+        if let ValueType::Declared { declaration, .. } = left {
+            if let ValueType::Declared {
+                declaration: expected,
+                ..
+            } = right
+            {
+                return compatible_declarations(declaration, expected, budget, location);
+            }
+            let expected = DeclaredType::Optional(Box::new(copy_declaration(
+                underlying(declaration),
+                budget,
+                location,
+            )?));
+            check_known_type(right, &expected, budget, location)?;
+            return Ok(true);
+        }
+        if matches!(right, ValueType::Declared { .. }) {
+            return compatible_types(right, left, budget, location);
+        }
         Ok(match (left, right) {
+            (ValueType::Absent, _) | (_, ValueType::Absent) => true,
             (ValueType::Unestablished, _) | (_, ValueType::Unestablished) => true,
             (ValueType::Boolean, ValueType::Boolean)
             | (ValueType::Integer, ValueType::Integer)
             | (ValueType::Float, ValueType::Float)
             | (ValueType::String, ValueType::String) => true,
+            (ValueType::RecordKind, ValueType::RecordKind | ValueType::Record(_))
+            | (ValueType::Record(_), ValueType::RecordKind)
+            | (ValueType::TupleKind, ValueType::TupleKind | ValueType::Tuple(_))
+            | (ValueType::Tuple(_), ValueType::TupleKind) => true,
             (ValueType::Member(a), ValueType::Member(b)) => a == b,
             (ValueType::KeyedArray(a), ValueType::KeyedArray(b)) => {
                 if let (Some(a), Some(b)) = (&a.axes, &b.axes)
@@ -2852,6 +3621,16 @@ fn binary_type(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ValueType, QueryError> {
+    if !matches!(
+        operator,
+        ValueBinaryOperator::Equal | ValueBinaryOperator::NotEqual
+    ) && (matches!(left, ValueType::Declared { .. })
+        || matches!(right, ValueType::Declared { .. }))
+    {
+        let left = shape_type(copy_type(left, budget, location)?, budget, location)?;
+        let right = shape_type(copy_type(right, budget, location)?, budget, location)?;
+        return binary_type(operator, &left, &right, budget, location);
+    }
     match operator {
         ValueBinaryOperator::Add
         | ValueBinaryOperator::Subtract
@@ -2954,7 +3733,7 @@ fn binary_type(
 }
 
 fn boolean(value: ConstructedValue, location: &Location) -> Result<bool, QueryError> {
-    if let ConstructedValue::Boolean(value) = value {
+    if let ConstructedValue::Boolean(value) = value.into_data() {
         Ok(value)
     } else {
         Err(error(location, "condition needs a fixed Boolean"))
@@ -2962,7 +3741,7 @@ fn boolean(value: ConstructedValue, location: &Location) -> Result<bool, QueryEr
 }
 
 fn integer(value: ConstructedValue, location: &Location) -> Result<i64, QueryError> {
-    if let ConstructedValue::Integer(value) = value {
+    if let ConstructedValue::Integer(value) = value.into_data() {
         Ok(value)
     } else {
         Err(error(location, "operation needs integers"))
@@ -2993,7 +3772,7 @@ fn exact_float(value: i64, location: &Location) -> Result<f64, QueryError> {
 }
 
 fn numeric_float(value: ConstructedValue, location: &Location) -> Result<f64, QueryError> {
-    match value {
+    match value.into_data() {
         ConstructedValue::Integer(value) => exact_float(value, location),
         ConstructedValue::Float(value) => {
             finite(value, location)?;
@@ -3009,7 +3788,7 @@ fn unary(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
-    let value = match (operator, value) {
+    let value = match (operator, value.into_data()) {
         (ValueUnaryOperator::Not, value) => ConstructedValue::Boolean(!boolean(value, location)?),
         (
             ValueUnaryOperator::Positive,
@@ -3037,6 +3816,17 @@ fn binary(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    let (left, right) = if matches!(
+        operator,
+        ValueBinaryOperator::Equal | ValueBinaryOperator::NotEqual
+    ) {
+        (left, right)
+    } else {
+        (
+            expose(left, budget, location)?,
+            expose(right, budget, location)?,
+        )
+    };
     match operator {
         ValueBinaryOperator::Concatenate => match (left, right) {
             (ConstructedValue::String(left), ConstructedValue::String(right)) => {
@@ -3209,7 +3999,19 @@ fn equal_values(
 ) -> Result<bool, QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
-        Ok(match (left, right) {
+        if declaration(left).is_some() || declaration(right).is_some() {
+            let a = constructed_value_type(left, budget, location.clone())?;
+            let b = constructed_value_type(right, budget, location.clone())?;
+            if !compatible_types(&a, &b, budget, location)? {
+                return Err(error(
+                    location,
+                    "equality needs compatible underlying types",
+                ));
+            }
+        }
+        Ok(match (left.data(), right.data()) {
+            (ConstructedValue::Absent, ConstructedValue::Absent) => true,
+            (ConstructedValue::Absent, _) | (_, ConstructedValue::Absent) => false,
             (ConstructedValue::Boolean(a), ConstructedValue::Boolean(b)) => a == b,
             (ConstructedValue::Integer(a), ConstructedValue::Integer(b)) => a == b,
             (ConstructedValue::Float(a), ConstructedValue::Float(b)) => a == b,
@@ -3318,9 +4120,63 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                 ValueExpressionKind::NativeQuery(query) => {
                     queries.evaluate_query(query, locals, budget)
                 }
+                ValueExpressionKind::Occurs(value) | ValueExpressionKind::Absent(value) => {
+                    let present = run(value, queries, locals, budget, check_value)?.occurs();
+                    Ok(scalar(
+                        ConstructedValue::Boolean(
+                            if matches!(expression.value, ValueExpressionKind::Occurs(_)) {
+                                present
+                            } else {
+                                !present
+                            },
+                        ),
+                        budget,
+                        &location,
+                    )?)
+                }
+                ValueExpressionKind::Lookup { value, key }
+                | ValueExpressionKind::HasKey { value, key } => {
+                    let value = run(value, queries, locals, budget, check_value)?;
+                    let key = run(key, queries, locals, budget, check_value)?;
+                    let (present, value) = optional_access(value, key, budget, &location)?;
+                    if matches!(expression.value, ValueExpressionKind::HasKey { .. }) {
+                        Ok(scalar(
+                            ConstructedValue::Boolean(present),
+                            budget,
+                            &location,
+                        )?)
+                    } else {
+                        Ok(value)
+                    }
+                }
+                ValueExpressionKind::Default { value, fallback } => {
+                    let left = run(value, queries, locals, budget, check_value)?;
+                    if left.occurs() {
+                        return Ok(left);
+                    }
+                    let right = run(fallback, queries, locals, budget, check_value)?;
+                    if let Some(expected) = declaration(&left) {
+                        let expected = if right.occurs() {
+                            underlying(expected)
+                        } else {
+                            expected
+                        };
+                        crate::admit_constructed(&right, expected, budget, location.clone())?;
+                        return Ok(annotate(
+                            right,
+                            copy_declaration(expected, budget, &location)?,
+                            budget,
+                            &location,
+                        )?);
+                    }
+                    Ok(right)
+                }
                 ValueExpressionKind::One(array) => {
-                    let ConstructedValue::Array(values) =
-                        run(array, queries, locals, budget, check_value)?
+                    let ConstructedValue::Array(values) = expose(
+                        run(array, queries, locals, budget, check_value)?,
+                        budget,
+                        &location,
+                    )?
                     else {
                         return Err(error(&location, "one needs a positional array").into());
                     };
@@ -3460,7 +4316,7 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                 } => {
                     let left = run(left, queries, locals, budget, check_value)?;
                     if matches!(operator, ValueBinaryOperator::And | ValueBinaryOperator::Or) {
-                        let a = match left {
+                        let a = match left.into_data() {
                             ConstructedValue::Boolean(value) => value,
                             _ => {
                                 return Err(
@@ -3486,8 +4342,11 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                     Ok(binary(*operator, left, right, budget, &location)?)
                 }
                 ValueExpressionKind::Field { value, field } => {
-                    let ConstructedValue::Record(fields) =
-                        run(value, queries, locals, budget, check_value)?
+                    let ConstructedValue::Record(fields) = expose(
+                        run(value, queries, locals, budget, check_value)?,
+                        budget,
+                        &location,
+                    )?
                     else {
                         return Err(error(&location, "field access needs a record").into());
                     };
@@ -3504,15 +4363,22 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                     Err(error(&location, format!("missing record field: {}", field.value)).into())
                 }
                 ValueExpressionKind::TupleAccess { value, position } => {
-                    let ConstructedValue::Tuple(values) =
-                        run(value, queries, locals, budget, check_value)?
+                    let ConstructedValue::Tuple(values) = expose(
+                        run(value, queries, locals, budget, check_value)?,
+                        budget,
+                        &location,
+                    )?
                     else {
                         return Err(error(&location, "tuple access needs a tuple").into());
                     };
                     Ok(take_position(values, position.value, budget, &location)?)
                 }
                 ValueExpressionKind::ArrayAccess { array, index } => {
-                    let array = run(array, queries, locals, budget, check_value)?;
+                    let array = expose(
+                        run(array, queries, locals, budget, check_value)?,
+                        budget,
+                        &location,
+                    )?;
                     let index = run(index, queries, locals, budget, check_value)?;
                     match array {
                         ConstructedValue::Array(values) => {
@@ -3541,7 +4407,11 @@ fn run<'a, Q, H: ValueQueryHost<Q>>(
                     }
                 }
                 ValueExpressionKind::IndexSet(array) => {
-                    match run(array, queries, locals, budget, check_value)? {
+                    match expose(
+                        run(array, queries, locals, budget, check_value)?,
+                        budget,
+                        &location,
+                    )? {
                         ConstructedValue::Array(values) => {
                             let len = i64::try_from(values.len())
                                 .map_err(|_| error(&location, "index overflow"))?;
@@ -3679,6 +4549,7 @@ fn entries(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    let array = expose(array, budget, location)?;
     let ConstructedValue::KeyedArray { axes, entries } = array else {
         return Err(error(location, "entries needs a keyed array"));
     };
@@ -3718,6 +4589,8 @@ fn zip_exact(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    let left = expose(left, budget, location)?;
+    let right = expose(right, budget, location)?;
     let (
         ConstructedValue::KeyedArray {
             axes,
@@ -3774,6 +4647,7 @@ fn group_by(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    let rows = expose(rows, budget, location)?;
     let ConstructedValue::Array(rows) = rows else {
         return Err(error(location, "group_by needs a positional array"));
     };
@@ -3782,7 +4656,7 @@ fn group_by(
     let mut key_type = None;
     for row in rows {
         budget.charge(1, location.clone())?;
-        let ConstructedValue::Record(fields) = &row else {
+        let ConstructedValue::Record(fields) = row.data() else {
             return Err(error(location, "group_by needs record rows"));
         };
         // Moving rows adds a group record and items array around them. Check
@@ -3808,7 +4682,7 @@ fn group_by(
                 format!("missing record field: {}", field.value),
             ));
         };
-        let ty = match key {
+        let ty = match key.data() {
             ConstructedValue::Integer(_) => ValueType::Integer,
             ConstructedValue::String(_) => ValueType::String,
             ConstructedValue::Member(member) => ValueType::Member(member.type_id),
@@ -3872,6 +4746,7 @@ fn reduce(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    let array = expose(array, budget, location)?;
     // Borrow the materialized values so keyed arrays need no intermediate copy.
     let (positional, keyed) = match &array {
         ConstructedValue::Array(values) => (values.as_slice(), &[][..]),
@@ -3893,7 +4768,7 @@ fn reduce(
             let mut total = 0_i64;
             for value in values {
                 budget.charge(1, location.clone())?;
-                let ConstructedValue::Integer(value) = value else {
+                let ConstructedValue::Integer(value) = value.data() else {
                     return Err(error(location, "sum needs integer array elements"));
                 };
                 total = total
@@ -3906,7 +4781,7 @@ fn reduce(
             let mut result = operator == ValueReducer::Forall;
             for value in values {
                 budget.charge(1, location.clone())?;
-                let ConstructedValue::Boolean(value) = value else {
+                let ConstructedValue::Boolean(value) = value.data() else {
                     return Err(error(
                         location,
                         "quantifier needs fixed Boolean array elements",
@@ -4122,7 +4997,7 @@ fn expand<'a, Q, H: ValueQueryHost<Q>>(
                     filter,
                 } => {
                     let source_value = run(source, queries, locals, budget, check_value)?;
-                    let values = match source_value {
+                    let values = match expose(source_value, budget, &clause_location)? {
                         ConstructedValue::Array(values)
                         | ConstructedValue::Set {
                             elements: values, ..

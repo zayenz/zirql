@@ -3,8 +3,8 @@ use std::ops::Range;
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
     Located, Location, MatchClause, NativeMatch, NativePaths, ParameterDeclaration, ParameterType,
-    Predicate, PredicateKind, Projection, QueryError, QueryErrorCategory, ValueBinaryOperator as B,
-    ValueConstructor, ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
+    Predicate, PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
+    ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
     ValueUnaryOperator as U,
 };
 
@@ -421,6 +421,21 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     range,
                 )?);
             } else {
+                if minimum <= 9 && self.word_is("default") {
+                    self.reader.advance("default".len())?;
+                    let right = self.expression(10, depth + chain + 1)?;
+                    let range = left.value().range.start..right.range.end;
+                    left = ValueGuard::new(self.node(
+                        K::Default {
+                            value: Box::new(left.into_value()),
+                            fallback: Box::new(right),
+                        },
+                        range,
+                    )?);
+                    chain += 1;
+                    self.depth(depth + chain)?;
+                    continue;
+                }
                 let rest = self.reader.remaining();
                 let operator = [
                     ("or", 1, Some(B::Or)),
@@ -484,6 +499,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             .chars()
             .next()
             .ok_or_else(|| self.reader.error("expected a value expression"))?;
+        if self.reader.remaining().starts_with("<>") {
+            self.reader.advance(2)?;
+            return self.node(K::Literal(V::Absent), start..self.reader.position());
+        }
         if first == '[' {
             return self.array(depth);
         }
@@ -566,20 +585,29 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let kind = match name.value.as_str() {
             "true" => K::Literal(V::Boolean(true)),
             "false" => K::Literal(V::Boolean(false)),
-            "null" => {
-                return Err(QueryError::query(
-                    name.range,
-                    "null is unsupported in constructed values",
-                )
-                .with_category(QueryErrorCategory::UnsupportedNull));
-            }
+            "null" => K::Literal(V::Absent),
             "not" => K::Unary {
                 operator: U::Not,
                 operand: Box::new(self.expression(9, depth + 1)?),
             },
             _ if self.reader.consume('(') => {
                 let value = ValueGuard::new(self.expression(0, depth + 1)?);
-                if name.value == "group_by" {
+                if matches!(name.value.as_str(), "lookup" | "has_key") {
+                    self.reader.expect(',')?;
+                    let key = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.reader.expect(')')?;
+                    if name.value == "lookup" {
+                        K::Lookup {
+                            value: Box::new(value.into_value()),
+                            key: Box::new(key.into_value()),
+                        }
+                    } else {
+                        K::HasKey {
+                            value: Box::new(value.into_value()),
+                            key: Box::new(key.into_value()),
+                        }
+                    }
+                } else if name.value == "group_by" {
                     self.reader.expect(',')?;
                     let field = self.string()?;
                     self.reader.expect(')')?;
@@ -613,6 +641,14 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         "sum" => ValueReducer::Sum,
                         "forall" => ValueReducer::Forall,
                         "exists" => ValueReducer::Exists,
+                        "occurs" | "absent" => {
+                            let kind = if name.value == "occurs" {
+                                K::Occurs(Box::new(value.into_value()))
+                            } else {
+                                K::Absent(Box::new(value.into_value()))
+                            };
+                            return self.node(kind, start..self.reader.position());
+                        }
                         "entries" => {
                             return self.node(
                                 K::Entries(Box::new(value.into_value())),
@@ -1300,6 +1336,8 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::One(child)
+            | K::Occurs(child)
+            | K::Absent(child)
             | K::IndexSet(child)
             | K::Entries(child)
             | K::Unary { operand: child, .. }
@@ -1311,6 +1349,18 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::Binary { left, right, .. }
+            | K::Default {
+                value: left,
+                fallback: right,
+            }
+            | K::Lookup {
+                value: left,
+                key: right,
+            }
+            | K::HasKey {
+                value: left,
+                key: right,
+            }
             | K::ZipExact { left, right }
             | K::ArrayAccess {
                 array: left,

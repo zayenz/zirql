@@ -152,6 +152,57 @@ label, nominal, set and keyed-shape validation. A heterogeneous array remains
 accepted through existing value APIs and fails here only if the declared
 contract excludes one of its elements.
 
+Use `declare_constructed(value, declaration, budget, location)` when the
+runtime value must retain its schema. It admits the actual value and returns a
+`ConstructedValue::Declared` annotation with an owned `DeclaredType<()>`.
+This subset cannot contain `Native(())`; native declarations remain with the
+host. `ValueType::Declared` keeps this constraint beside the observed facts,
+including `Unestablished` when only declaration metadata is available.
+
+For an optional record, the declaration can contain a missing field:
+
+```rust
+use zirql::{Budget, ConstructedValue, DeclaredType, Location, ProgramLimits,
+            declare_constructed};
+
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000, results: 1_000, nesting: 64, stream_items: 100,
+});
+let row = declare_constructed(
+    ConstructedValue::Record(vec![("id".into(), ConstructedValue::Integer(4))]),
+    DeclaredType::Record(vec![
+        ("id".into(), DeclaredType::Integer),
+        ("caption".into(), DeclaredType::Optional(Box::new(DeclaredType::String))),
+    ]),
+    &mut budget, Location::Query(0..20),
+)?;
+```
+
+Pass `row` through ordinary `Bindings` and the value APIs. Access transfers the
+selected field or element declaration; lookup of an omitted optional field
+returns a typed absence. Re-admission checks the previous and new underlying
+contracts, including when the actual value is absent. Repeated compatible
+annotations replace the outer annotation instead of stacking wrappers.
+
+Renderers borrow `value.data()` to inspect an annotation's underlying data,
+and use `value.occurs()` for presence. Rendering must still walk only stored
+record fields and keyed entries. It must preserve a stored absence separately
+from an omitted field or cell. `into_data()` consumes an annotation at an
+explicit data boundary. Removing it before further evaluation loses its schema.
+
+Preflight uses existing `ValueQueryHost` facts and `ProjectionHost::scalar_types`
+for native operands. Include `ValueType::Declared` when the adapter has a real
+source declaration; observed record labels alone do not establish a schema.
+Shallow fallback facts retain a container's kind while leaving its contents
+uninspected. `ValueType::RecordKind` carries no labels or schema, and `TupleKind`
+carries no positions or arity. Array element facts, keyed axes/cells and set
+element identity may likewise remain unknown; these facts never claim that a
+container is empty.
+Supply metadata without projecting or scanning fallback data. Binding reads,
+nominal-member resolution and native queries belong in the selected runtime
+callbacks. An adapter that eagerly projects all free names before calling the
+evaluator would defeat `default`'s lazy contract.
+
 For native calls, implement the optional `RuntimeTypeHost<C>` alongside
 `ProgramHost<C>`. It needs no projection implementation. Reuse the host's own
 kind type as its `Kind`. `admit_native` receives the whole declaration, so a
@@ -202,7 +253,8 @@ Each call performs its checks under the active work and nesting limits.
 These declarations and calls are Rust library APIs in the development revision.
 They introduce no type syntax, function declarations or operation registry into
 the existing readers or CLIs. External `param` transport remains `int`, `string`
-and `bool`; optional values and prepared execution belong to later work.
+and `bool`. Optional report values use the contracts below; prepared execution
+and user function signatures remain deferred.
 
 ## Domain policy
 

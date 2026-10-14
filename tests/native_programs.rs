@@ -1153,6 +1153,10 @@ impl RuntimeTypeHost<DocumentContext> for DocumentHost {
         let DocumentValue::Handles(ids) = value else {
             return Err(runtime_refusal("expected operation handles", budget, location)?.into());
         };
+        let expected = match expected {
+            DeclaredType::Optional(element) => element.as_ref(),
+            expected => expected,
+        };
         match expected {
             DeclaredType::Native(DocumentKind::Operation) if ids.len() == 1 => {}
             DeclaredType::Sequence(element)
@@ -1195,7 +1199,9 @@ fn typed_document_calls_retain_owner_and_native_failures() {
         parameters: vec![DeclaredType::Sequence(Box::new(DeclaredType::Native(
             DocumentKind::Operation,
         )))],
-        result: DeclaredType::Sequence(Box::new(DeclaredType::Native(DocumentKind::Operation))),
+        result: DeclaredType::Optional(Box::new(DeclaredType::Sequence(Box::new(
+            DeclaredType::Native(DocumentKind::Operation),
+        )))),
     };
     let mut budget = Budget::for_program(limits());
     let input = document_input(&mut budget);
@@ -3006,14 +3012,69 @@ mod projection {
             }
             zirql::dispose_native_value(expression);
         }
-        let mut reader = zirql::ArgumentReader::new("  null", 0).unwrap();
-        let error =
-            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap_err();
+        for (source, expected) in [
+            (
+                "lookup({\"caption\": null}, \"caption\") default \"untitled\"",
+                V::String("untitled".into()),
+            ),
+            (
+                "has_key({\"caption\": null}, \"caption\")",
+                V::Boolean(true),
+            ),
+            ("has_key({}, \"caption\")", V::Boolean(false)),
+            ("absent(lookup([], 1))", V::Boolean(true)),
+            ("occurs(false)", V::Boolean(true)),
+            ("<> default 3", V::Integer(3)),
+            ("null default 3 + 2", V::Integer(5)),
+            (
+                "one(f | names) default one(f | fail | names)",
+                V::String("beta".into()),
+            ),
+        ] {
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let expression =
+                zirql::read_value_expression(&mut reader, &mut SavedNames, &mut allowance, 32)
+                    .unwrap();
+            assert!(reader.remaining().is_empty());
+            let result = zirql::evaluate_native_value(
+                &expression,
+                &Host,
+                Value::Subjects(vec!["beta"]),
+                &mut (),
+                &bindings,
+                &mut allowance,
+            )
+            .unwrap();
+            assert_eq!(result, expected);
+            zirql::dispose_native_value(expression);
+        }
+        let source = "null default one(f | fail | names)";
+        let expression = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+            &mut SavedNames,
+            &mut allowance,
+            32,
+        )
+        .unwrap();
+        let error = zirql::evaluate_native_value(
+            &expression,
+            &Host,
+            Value::Subjects(vec!["beta"]),
+            &mut (),
+            &bindings,
+            &mut allowance,
+        )
+        .unwrap_err();
         assert_eq!(
             error,
-            QueryError::query(2..6, "null is unsupported in constructed values")
-                .with_category(QueryErrorCategory::UnsupportedNull)
+            EvaluationError::Host(QueryError::source(20..21, "native failure"))
         );
+        zirql::dispose_native_value(expression);
+        let mut reader = zirql::ArgumentReader::new("  null", 0).unwrap();
+        let absence =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
+        assert_eq!(absence.range, 2..6);
+        assert!(matches!(absence.value, K::Literal(V::Absent)));
         for source in [
             "entries()",
             "entries([], [])",

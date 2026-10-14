@@ -7,11 +7,13 @@ use crate::{
 
 /// An opt-in interface contract, distinct from discovered [`ValueType`] facts.
 /// Sequences and keyed cells are homogeneous; tuples have fixed positions and
-/// records have exactly the declared labels, in any stored order. Keyed axes
+/// records have the declared labels in any stored order, with optional fields
+/// allowed to be omitted. Keyed axes
 /// remain runtime facts. Sets use the existing supported scalar identities.
 /// `Native` uses the adapter's own kind identity, without erasing its values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeclaredType<K> {
+    Optional(Box<Self>),
     Boolean,
     Integer,
     Float,
@@ -151,6 +153,208 @@ pub fn admit_constructed<K>(
     admit_constructed_value(value, expected, budget, location)
 }
 
+/// Admit an actual constructed value and retain its declaration through ordinary
+/// bindings, access, copying and evaluation. Native declarations belong to hosts.
+///
+/// ```
+/// use zirql::{Budget, ConstructedValue as V, DeclaredType as D, Location,
+///             ProgramLimits, declare_constructed, copy_constructed_value};
+/// let mut budget = Budget::for_program(ProgramLimits {
+///     work: 10_000, results: 1_000, nesting: 64, stream_items: 100,
+/// });
+/// let row = declare_constructed(
+///     V::Record(vec![("id".into(), V::Integer(4))]),
+///     D::Record(vec![
+///         ("id".into(), D::Integer),
+///         ("caption".into(), D::Optional(Box::new(D::String))),
+///     ]),
+///     &mut budget, Location::Query(0..20),
+/// )?;
+/// let copy = copy_constructed_value(&row, &mut budget, Location::Query(21..24))?;
+/// assert_eq!(row, copy);
+/// assert!(matches!(row.data(), V::Record(fields) if fields.len() == 1));
+/// # Ok::<(), zirql::QueryError>(())
+/// ```
+///
+/// # Errors
+/// Returns the same located admission failures as [`admit_constructed`].
+/// `Native(())` is not a constructed declaration and is refused at any depth.
+pub fn declare_constructed(
+    value: ConstructedValue,
+    declaration: DeclaredType<()>,
+    budget: &mut Budget,
+    location: Location,
+) -> Result<ConstructedValue, QueryError> {
+    admit_constructed(&value, &declaration, budget, location.clone())?;
+    reject_native(&declaration, budget, &location)?;
+    annotate(value, declaration, budget, &location)
+}
+
+pub(crate) fn annotate(
+    value: ConstructedValue,
+    declaration: DeclaredType<()>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let mut value = value;
+    while let ConstructedValue::Declared {
+        value: inner,
+        declaration: previous,
+    } = value
+    {
+        if !compatible_declarations(&previous, &declaration, budget, location)? {
+            return Err(refusal(
+                "incompatible declared underlying types",
+                budget,
+                location,
+            )?);
+        }
+        value = *inner;
+    }
+    budget.charge(1, location.clone())?;
+    budget.charge_results(1, location.clone())?;
+    Ok(ConstructedValue::Declared {
+        value: Box::new(value),
+        declaration,
+    })
+}
+
+fn reject_native(
+    declaration: &DeclaredType<()>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        match declaration {
+            DeclaredType::Native(()) => {
+                return Err(refusal(
+                    "native declaration requires a host",
+                    budget,
+                    location,
+                )?);
+            }
+            DeclaredType::Optional(child)
+            | DeclaredType::Sequence(child)
+            | DeclaredType::Keyed(child) => reject_native(child, budget, location)?,
+            DeclaredType::Tuple(children) => {
+                for child in children {
+                    reject_native(child, budget, location)?;
+                }
+            }
+            DeclaredType::Record(fields) => {
+                for (_, child) in fields {
+                    reject_native(child, budget, location)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn copy_declaration<K: Clone>(
+    declaration: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<DeclaredType<K>, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match declaration {
+            DeclaredType::Optional(child) => {
+                DeclaredType::Optional(Box::new(copy_declaration(child, budget, location)?))
+            }
+            DeclaredType::Sequence(child) => {
+                DeclaredType::Sequence(Box::new(copy_declaration(child, budget, location)?))
+            }
+            DeclaredType::Keyed(child) => {
+                DeclaredType::Keyed(Box::new(copy_declaration(child, budget, location)?))
+            }
+            DeclaredType::Tuple(children) => {
+                budget.charge(children.len(), location.clone())?;
+                let mut copied = Vec::with_capacity(children.len());
+                for child in children {
+                    copied.push(copy_declaration(child, budget, location)?);
+                }
+                DeclaredType::Tuple(copied)
+            }
+            DeclaredType::Record(fields) => {
+                budget.charge(fields.len(), location.clone())?;
+                let mut copied = Vec::with_capacity(fields.len());
+                for (label, child) in fields {
+                    budget.charge(label.len(), location.clone())?;
+                    copied.push((label.clone(), copy_declaration(child, budget, location)?));
+                }
+                DeclaredType::Record(copied)
+            }
+            other => other.clone(),
+        })
+    })
+}
+
+pub(crate) fn compatible_declarations<K>(
+    left: &DeclaredType<()>,
+    right: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match (left, right) {
+            (DeclaredType::Optional(left), right) => {
+                compatible_declarations(left, right, budget, location)?
+            }
+            (left, DeclaredType::Optional(right)) => {
+                compatible_declarations(left, right, budget, location)?
+            }
+            (DeclaredType::Boolean, DeclaredType::Boolean)
+            | (DeclaredType::Integer, DeclaredType::Integer)
+            | (DeclaredType::Float, DeclaredType::Float)
+            | (DeclaredType::String, DeclaredType::String) => true,
+            (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
+            (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
+            (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
+            | (DeclaredType::Keyed(a), DeclaredType::Keyed(b)) => {
+                compatible_declarations(a, b, budget, location)?
+            }
+            (DeclaredType::Tuple(a), DeclaredType::Tuple(b)) => {
+                if a.len() != b.len() {
+                    return Ok(false);
+                }
+                for (a, b) in a.iter().zip(b) {
+                    if !compatible_declarations(a, b, budget, location)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            (DeclaredType::Record(a), DeclaredType::Record(b)) => {
+                if a.len() != b.len() {
+                    return Ok(false);
+                }
+                for (label, a) in a {
+                    let mut found = None;
+                    for (other, b) in b {
+                        budget.charge(1 + label.len().min(other.len()), location.clone())?;
+                        if label == other {
+                            found = Some(b);
+                            break;
+                        }
+                    }
+                    let Some(b) = found else {
+                        return Ok(false);
+                    };
+                    if !compatible_declarations(a, b, budget, location)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            _ => false,
+        })
+    })
+}
+
 fn admit_host_value<C, H: RuntimeTypeHost<C>>(
     value: &H::Value,
     expected: &DeclaredType<H::Kind>,
@@ -174,9 +378,23 @@ fn admit_constructed_value<K>(
     budget: &mut Budget,
     location: Location,
 ) -> Result<(), QueryError> {
-    // These facts are freshly discovered from actual data, never supplied tags.
-    let actual = constructed_value_type(value, budget, location.clone())?;
-    check_type(&actual, expected, budget, &location)
+    budget.within_evaluation(0, location.clone(), |budget| {
+        if let ConstructedValue::Declared { value, declaration } = value {
+            reject_native(declaration, budget, &location)?;
+            admit_constructed_value(value, declaration, budget, location.clone())?;
+            if !compatible_declarations(declaration, expected, budget, &location)? {
+                return Err(refusal(
+                    "incompatible declared underlying types",
+                    budget,
+                    &location,
+                )?);
+            }
+            return admit_constructed_value(value, expected, budget, location);
+        }
+        // These facts are freshly discovered from actual data, never supplied tags.
+        let actual = constructed_value_type(value, budget, location.clone())?;
+        check_type(&actual, expected, budget, &location)
+    })
 }
 
 fn validate_declaration<K>(
@@ -187,7 +405,9 @@ fn validate_declaration<K>(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         match expected {
-            DeclaredType::Sequence(element) | DeclaredType::Keyed(element) => {
+            DeclaredType::Optional(element)
+            | DeclaredType::Sequence(element)
+            | DeclaredType::Keyed(element) => {
                 validate_declaration(element, budget, location)?;
             }
             DeclaredType::Tuple(elements) => {
@@ -227,9 +447,68 @@ fn check_type<K>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
+    check_type_facts(actual, expected, false, budget, location)
+}
+
+pub(crate) fn check_known_type(
+    actual: &ValueType,
+    expected: &DeclaredType<()>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    check_type_facts(actual, expected, true, budget, location)
+}
+
+fn check_type_facts<K>(
+    actual: &ValueType,
+    expected: &DeclaredType<K>,
+    deferred: bool,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         match (actual, expected) {
+            (ValueType::Unestablished, _) if deferred => Ok(()),
+            (ValueType::RecordKind, DeclaredType::Record(_))
+            | (ValueType::TupleKind, DeclaredType::Tuple(_))
+            | (ValueType::Set(None), DeclaredType::Set(_))
+                if deferred =>
+            {
+                Ok(())
+            }
+            (ValueType::Array(ArrayType::Elements(elements)), DeclaredType::Sequence(element))
+                if deferred =>
+            {
+                check_elements(
+                    elements,
+                    element,
+                    "sequence element",
+                    deferred,
+                    budget,
+                    location,
+                )
+            }
+            (
+                ValueType::Declared {
+                    actual,
+                    declaration,
+                },
+                expected,
+            ) => {
+                if !compatible_declarations(declaration, expected, budget, location)? {
+                    return Err(refusal(
+                        "incompatible declared underlying types",
+                        budget,
+                        location,
+                    )?);
+                }
+                check_type_facts(actual, expected, deferred, budget, location)
+            }
+            (ValueType::Absent, DeclaredType::Optional(_)) => Ok(()),
+            (actual, DeclaredType::Optional(element)) => {
+                check_type_facts(actual, element, deferred, budget, location)
+            }
             (ValueType::Boolean, DeclaredType::Boolean)
             | (ValueType::Integer, DeclaredType::Integer)
             | (ValueType::Float, DeclaredType::Float)
@@ -241,25 +520,48 @@ fn check_type<K>(
                 Ok(())
             }
             (ValueType::Array(ArrayType::Positions(elements)), DeclaredType::Sequence(element)) => {
-                check_elements(elements, element, "sequence element", budget, location)
+                check_elements(
+                    elements,
+                    element,
+                    "sequence element",
+                    deferred,
+                    budget,
+                    location,
+                )
             }
-            (ValueType::KeyedArray(actual), DeclaredType::Keyed(element)) => {
-                check_elements(&actual.elements, element, "keyed cell", budget, location)
-            }
+            (ValueType::KeyedArray(actual), DeclaredType::Keyed(element)) => check_elements(
+                &actual.elements,
+                element,
+                "keyed cell",
+                deferred,
+                budget,
+                location,
+            ),
             (ValueType::Tuple(actual), DeclaredType::Tuple(expected)) => {
                 if actual.len() != expected.len() {
                     return Err(refusal("tuple length mismatch", budget, location)?);
                 }
                 for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
-                    check_type(actual, expected, budget, location).map_err(|error| {
-                        nested_error(error, "tuple position", Some(index), budget)
-                    })?;
+                    check_type_facts(actual, expected, deferred, budget, location).map_err(
+                        |error| nested_error(error, "tuple position", Some(index), budget),
+                    )?;
                 }
                 Ok(())
             }
             (ValueType::Record(actual), DeclaredType::Record(expected)) => {
-                if actual.len() != expected.len() {
-                    return Err(refusal("record labels mismatch", budget, location)?);
+                for (label, _) in actual {
+                    let mut declared = false;
+                    for (candidate, _) in expected {
+                        budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
+                        declared |= label == candidate;
+                    }
+                    if !declared {
+                        return Err(refusal(
+                            "record label outside declared schema",
+                            budget,
+                            location,
+                        )?);
+                    }
                 }
                 for (label, expected) in expected {
                     let mut found = None;
@@ -271,6 +573,9 @@ fn check_type<K>(
                         }
                     }
                     let Some(actual) = found else {
+                        if matches!(expected, DeclaredType::Optional(_)) {
+                            continue;
+                        }
                         return Err(nested_error(
                             refusal("missing declared record field", budget, location)?,
                             label,
@@ -278,7 +583,7 @@ fn check_type<K>(
                             budget,
                         ));
                     };
-                    check_type(actual, expected, budget, location)
+                    check_type_facts(actual, expected, deferred, budget, location)
                         .map_err(|error| nested_error(error, label, None, budget))?;
                 }
                 Ok(())
@@ -292,11 +597,12 @@ fn check_elements<K>(
     elements: &[ValueType],
     expected: &DeclaredType<K>,
     label: &str,
+    deferred: bool,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
     for (index, actual) in elements.iter().enumerate() {
-        check_type(actual, expected, budget, location)
+        check_type_facts(actual, expected, deferred, budget, location)
             .map_err(|error| nested_error(error, label, Some(index), budget))?;
     }
     Ok(())
@@ -305,6 +611,7 @@ fn check_elements<K>(
 impl<K> DeclaredType<K> {
     fn description(&self) -> &'static str {
         match self {
+            Self::Optional(_) => "expected optional value",
             Self::Boolean => "expected Boolean",
             Self::Integer => "expected integer",
             Self::Float => "expected finite float",

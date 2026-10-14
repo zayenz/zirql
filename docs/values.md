@@ -1,7 +1,7 @@
 # Values and comprehensions
 
 A report can contain scalar data while its query retains native domain handles.
-`ConstructedValue` holds the data part: Booleans, signed integers, finite floats, strings,
+`ConstructedValue` holds the data part: absence, Booleans, signed integers, finite floats, strings,
 resolved nominal members, positional arrays, tuples, records, typed sets and
 explicitly keyed arrays. A host handle becomes scalar data only through an
 explicit host projection.
@@ -38,6 +38,58 @@ branch, with a required final else. Known incompatible types still fail validati
 in skipped branches. A skipped missing access or zero division is not evaluated.
 `ValueType::Unestablished` records missing type facts; it is not a runtime null or
 an Unknown Boolean.
+
+## Absence, lookup and defaults
+
+Absence is one runtime value, distinct from an unknown fact and an error. The
+shared reader accepts `null` and `<>`; Zirium uses `null`, and Zincite uses `<>`.
+`occurs(x)` is true for every present value, including false, zero, an empty
+string and an empty collection. `absent(x)` returns the opposite answer.
+
+Use `lookup(value, key)` when missing data is expected. A record key is a string
+label, a positional array key is a one-based integer, and a keyed-array key is
+its existing integer/member scalar or tuple. A valid missing label, position or
+sparse cell returns absence. `has_key(value, key)` distinguishes that miss from
+a stored field or cell containing absence:
+
+```text
+has_key({"caption": null}, "caption") → true
+has_key({}, "caption")                → false
+lookup({"caption": null}, "caption")  → null
+lookup({}, "caption")                → null
+(lookup({}, "caption") default "untitled") → "untitled"
+```
+
+Wrong container types, key types, keyed ranks and nominal identities are errors.
+A label outside an explicitly declared record schema is also an error. Ordinary
+field and bracket access remain strict: they fail when the field or cell is
+missing. Lookup keeps sparse coordinates and does not fill omitted cells.
+
+`x default y` evaluates `x` once. It evaluates `y` only when `x` is absent.
+A present false, zero or empty value keeps its meaning. A selected arithmetic,
+host or resource failure propagates; default does not recover from errors.
+All written branches still receive syntax, scope, purity and known-type checks.
+The shared reader follows MiniZinc's left associativity and tight precedence for
+`default`; parentheses make its boundary clear in arithmetic expressions.
+
+Arithmetic, ordering and Boolean conditions require present values. Supply an
+explicit default before using a possibly absent operand. Optional equality
+makes two absences equal and an absence unequal to a present value, while still
+requiring compatible known underlying types. An absent integer declaration
+cannot compare with or default to an absent string declaration.
+
+Rust hosts can attach `DeclaredType::Optional` and record schemas with
+`declare_constructed`. Optional declared record fields may be omitted; required
+fields must be present and extra labels fail admission. The immutable value
+retains that declaration through bindings, copies, generator locals, access and
+selected defaults. Stored absence remains stored, and omitted data remains
+omitted. Unannotated heterogeneous values remain supported. See
+[constructed declarations](host-integration.md#declared-runtime-contracts).
+
+These forms are available in the development Git revision. Published alpha.5
+predates them. Optional reports do not expand external parameters beyond
+`int`, `string` and `bool`, or authorize optional MiniZinc data-edit targets.
+User function signatures and optional parameter transport remain deferred.
 
 ## Positional comprehensions
 

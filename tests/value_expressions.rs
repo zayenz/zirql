@@ -2397,3 +2397,322 @@ fn false_requirement_skips_runtime_values_but_preflights_names_and_types() {
             .contains("work")
     );
 }
+
+fn lookup(value: E, key: E) -> E {
+    e(K::Lookup {
+        value: Box::new(value),
+        key: Box::new(key),
+    })
+}
+fn has_key(value: E, key: E) -> E {
+    e(K::HasKey {
+        value: Box::new(value),
+        key: Box::new(key),
+    })
+}
+fn default(value: E, fallback: E) -> E {
+    e(K::Default {
+        value: Box::new(value),
+        fallback: Box::new(fallback),
+    })
+}
+fn text(value: &str) -> E {
+    literal(V::String(value.into()))
+}
+fn declared(value: V, declaration: D<()>) -> V {
+    zirql::declare_constructed(value, declaration, &mut ample(), Location::Source(3..9)).unwrap()
+}
+
+#[test]
+fn optional_report_keeps_declared_omissions_stored_absence_and_sparse_membership() {
+    let schema = D::Record(vec![
+        ("id".into(), D::Integer),
+        ("caption".into(), D::Optional(Box::new(D::String))),
+        ("count".into(), D::Optional(Box::new(D::Integer))),
+    ]);
+    let row = declared(
+        V::Record(vec![
+            ("id".into(), V::Integer(4)),
+            ("count".into(), V::Absent),
+        ]),
+        schema.clone(),
+    );
+    let mut row = row;
+    for _ in 0..80 {
+        row = declared(row, schema.clone());
+    }
+    let V::Declared { value, .. } = &row else {
+        panic!("declared row");
+    };
+    assert!(matches!(value.as_ref(), V::Record(_)));
+    let copied = copy_constructed_value(&row, &mut ample(), Location::Query(1..2)).unwrap();
+    assert_eq!(copied, row);
+    let cells = declared(
+        V::KeyedArray {
+            axes: vec![KeyAxis {
+                key_type: ValueKeyType::Integer,
+                keys: vec![
+                    ValueKey::Integer(2),
+                    ValueKey::Integer(5),
+                    ValueKey::Integer(9),
+                ],
+            }],
+            entries: vec![
+                KeyedEntry {
+                    key: vec![ValueKey::Integer(2)],
+                    value: V::Absent,
+                },
+                KeyedEntry {
+                    key: vec![ValueKey::Integer(9)],
+                    value: V::Integer(90),
+                },
+            ],
+        },
+        D::Keyed(Box::new(D::Optional(Box::new(D::Integer)))),
+    );
+    let bindings = Bindings::new([
+        (Located::new("row".into(), 0..0), row),
+        (Located::new("cells".into(), 0..0), cells),
+    ])
+    .unwrap();
+    let report = record(vec![
+        ("omitted", has_key(name("row"), text("caption"))),
+        ("stored", has_key(name("row"), text("count"))),
+        (
+            "caption",
+            default(lookup(name("row"), text("caption")), text("untitled")),
+        ),
+        ("count", default(lookup(name("row"), text("count")), int(7))),
+        ("stored_cell", has_key(name("cells"), int(2))),
+        ("missing_cell", has_key(name("cells"), int(5))),
+        ("outside_axis", has_key(name("cells"), int(8))),
+        (
+            "cell_default",
+            default(lookup(name("cells"), int(5)), int(8)),
+        ),
+    ]);
+    let result = evaluate_value(&report, &bindings, &mut ample()).unwrap();
+    let V::Record(fields) = result else {
+        panic!("report");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|(label, value)| (label.as_str(), value.data()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("omitted", &V::Boolean(false)),
+            ("stored", &V::Boolean(true)),
+            ("caption", &V::String("untitled".into())),
+            ("count", &V::Integer(7)),
+            ("stored_cell", &V::Boolean(true)),
+            ("missing_cell", &V::Boolean(false)),
+            ("outside_axis", &V::Boolean(false)),
+            ("cell_default", &V::Integer(8)),
+        ]
+    );
+    assert!(
+        evaluate_value(&field(name("row"), "caption"), &bindings, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("missing record field")
+    );
+    assert!(
+        evaluate_value(&access(name("cells"), int(5)), &bindings, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("missing keyed array cell")
+    );
+    for expression in [
+        lookup(name("row"), text("typo")),
+        lookup(name("row"), int(1)),
+        lookup(name("cells"), text("bad")),
+        lookup(name("cells"), e(K::Tuple(vec![int(2), int(3)]))),
+    ] {
+        assert!(evaluate_value(&expression, &bindings, &mut ample()).is_err());
+    }
+    for invalid in [
+        V::Record(vec![]),
+        V::Record(vec![
+            ("id".into(), V::Integer(1)),
+            ("extra".into(), V::Absent),
+        ]),
+    ] {
+        let error = zirql::declare_constructed(
+            invalid,
+            schema.clone(),
+            &mut ample(),
+            Location::Source(3..9),
+        )
+        .unwrap_err();
+        assert_eq!(error.location, Location::Source(3..9));
+    }
+    let nominal = V::KeyedArray {
+        axes: vec![KeyAxis {
+            key_type: ValueKeyType::Member(NominalTypeId(7)),
+            keys: vec![ValueKey::Member(member(1, 0))],
+        }],
+        entries: vec![],
+    };
+    let mut foreign = member(1, 0);
+    foreign.type_id = NominalTypeId(8);
+    assert!(evaluate(&lookup(literal(nominal), literal(V::Member(foreign)))).is_err());
+    // Declared element schemas remain available even when there are no rows.
+    let empty = declared(V::Array(vec![]), D::Sequence(Box::new(schema.clone())));
+    let invalid = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("r")],
+            source: literal(empty),
+            filter: None,
+        })],
+        head: Box::new(lookup(name("r"), text("typo"))),
+    });
+    assert!(evaluate(&invalid).is_err());
+    // A declaration follows a record through a sequence and a generator local.
+    let source = declared(V::Array(vec![copied]), D::Sequence(Box::new(schema)));
+    let report = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("r")],
+            source: literal(source),
+            filter: None,
+        })],
+        head: Box::new(default(
+            lookup(name("r"), text("caption")),
+            text("untitled"),
+        )),
+    });
+    let V::Array(rows) = evaluate(&report).unwrap() else {
+        panic!("rows");
+    };
+    assert_eq!(rows[0].data(), &V::String("untitled".into()));
+}
+
+#[test]
+fn optional_types_presence_and_lazy_defaults_preserve_failures_and_budget() {
+    for value in [
+        V::Boolean(false),
+        V::Integer(0),
+        V::String(String::new()),
+        V::Array(vec![]),
+        V::Record(vec![]),
+    ] {
+        let original = copy_constructed_value(&value, &mut ample(), Location::Query(0..1)).unwrap();
+        assert_eq!(
+            evaluate(&default(literal(value), literal(V::Absent)))
+                .unwrap()
+                .data(),
+            &original
+        );
+        assert_eq!(
+            evaluate(&e(K::Occurs(Box::new(literal(original))))).unwrap(),
+            V::Boolean(true)
+        );
+    }
+    assert_eq!(
+        evaluate(&e(K::Absent(Box::new(literal(V::Absent))))).unwrap(),
+        V::Boolean(true)
+    );
+    assert_eq!(
+        evaluate(&binary(B::Equal, literal(V::Absent), literal(V::Absent))).unwrap(),
+        V::Boolean(true)
+    );
+    assert_eq!(
+        evaluate(&binary(B::Equal, literal(V::Absent), int(0))).unwrap(),
+        V::Boolean(false)
+    );
+    let absent_int = || literal(declared(V::Absent, D::Optional(Box::new(D::Integer))));
+    let absent_string = || literal(declared(V::Absent, D::Optional(Box::new(D::String))));
+    for expression in [
+        binary(B::Equal, absent_int(), absent_string()),
+        default(absent_int(), absent_string()),
+        default(default(absent_int(), literal(V::Absent)), text("wrong")),
+        binary(B::Add, literal(V::Absent), int(1)),
+        binary(B::Less, literal(V::Absent), int(1)),
+    ] {
+        assert!(evaluate(&expression).is_err());
+    }
+    assert!(
+        admit_constructed(
+            &declared(V::Absent, D::Optional(Box::new(D::Integer))),
+            &D::<()>::Optional(Box::new(D::String)),
+            &mut ample(),
+            Location::Query(9..10)
+        )
+        .is_err()
+    );
+    let fail = || {
+        Located::new(
+            K::Binary {
+                operator: B::IntegerDivide,
+                left: Box::new(int(1)),
+                right: Box::new(int(0)),
+            },
+            80..90,
+        )
+    };
+    assert_eq!(evaluate(&default(int(4), fail())).unwrap(), V::Integer(4));
+    let error = evaluate(&default(literal(V::Absent), fail())).unwrap_err();
+    assert_eq!(error.location, Location::Query(80..90));
+    assert!(error.message.contains("zero"));
+    // Raw fallback data retains its known outer kind without inspecting fields.
+    assert!(evaluate(&default(int(4), literal(V::Record(vec![])))).is_err());
+    assert!(evaluate(&default(int(4), record(vec![]))).is_err());
+    let records =
+        Bindings::new([(Located::new("record".into(), 0..0), V::Record(vec![]))]).unwrap();
+    assert!(evaluate_value(&default(int(4), name("record")), &records, &mut ample()).is_err());
+    let present_record = || record(vec![("id", int(1))]);
+    let fallback_record = || literal(V::Record(vec![("id".into(), V::Integer(2))]));
+    assert_eq!(
+        evaluate(&default(present_record(), fallback_record())).unwrap(),
+        V::Record(vec![("id".into(), V::Integer(1))])
+    );
+    let present_record = declared(
+        V::Record(vec![("id".into(), V::Integer(1))]),
+        D::Record(vec![("id".into(), D::Integer)]),
+    );
+    assert_eq!(
+        evaluate(&default(literal(present_record), fallback_record()))
+            .unwrap()
+            .data(),
+        &V::Record(vec![("id".into(), V::Integer(1))])
+    );
+    assert!(evaluate(&default(int(4), name("undefined"))).is_err());
+    assert!(evaluate(&default(int(4), binary(B::Add, text("bad"), int(1)))).is_err());
+    let bindings = Bindings::new([(
+        Located::new("large".into(), 0..0),
+        V::Array((0..2000).map(V::Integer).collect()),
+    )])
+    .unwrap();
+    let fallback = || e(K::One(Box::new(name("large"))));
+    assert_eq!(
+        evaluate_value(
+            &default(int(4), fallback()),
+            &bindings,
+            &mut budget(300, 100, 64)
+        )
+        .unwrap(),
+        V::Integer(4)
+    );
+    let error = evaluate_value(
+        &default(literal(V::Absent), fallback()),
+        &bindings,
+        &mut budget(300, 100, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    let mut shallow = budget(1000, 100, 2);
+    assert!(
+        evaluate_value(
+            &default(literal(V::Absent), fallback()),
+            &bindings,
+            &mut shallow
+        )
+        .is_err()
+    );
+    assert_eq!(
+        evaluate_value(&int(1), &Bindings::default(), &mut shallow).unwrap(),
+        V::Integer(1)
+    );
+}

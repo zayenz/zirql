@@ -19,7 +19,7 @@ they translate:
 | `WorkLimit` | Request-wide work allowance exhausted |
 | `ItemLimit` | Native stream item ceiling exceeded |
 | `ResultLimit` | Aggregate produced/copied result limit exceeded |
-| `UnsupportedNull` | Shared value reader refused a null literal |
+| `UnsupportedNull` | Retained compatibility category for hosts that refuse null |
 | `UnknownPredicate` | Required native match guard or path target remained Unknown |
 | `Other` | Any failure without a dedicated category |
 
@@ -103,7 +103,8 @@ copies keep their existing charges. Immutable structural checks can remain
 valid for the same value and contract, but these APIs retain no checked-value
 cache. Native context changes, new values and data-dependent access still need
 runtime checks. Declaration facts do not expand external parameter types or
-change existing value-entry-point costs or host defaults.
+change host defaults. Existing unannotated programs retain their admission
+path; the new declaration annotations charge their metadata and checks.
 
 Result units cover new or copied scalar values, containers and their entry slots.
 Keyed arrays also charge axes, entries, axis-key slots and entry-key slots.
@@ -129,6 +130,22 @@ discovery can still spend work before runtime. A true requirement moves its
 already admitted value without another result or copy charge. Arithmetic errors
 retain their child ranges, and limit errors retain the active operation range.
 Emission snapshots and rendering charge again under the same budget.
+
+Default preflight visits both operands and checks available declarations and
+type facts. A binding referenced only by its fallback supplies shallow kind or
+explicit declaration metadata; the ordinary constructed-value API does not
+scan its data until selected. Existing bindings outside default fallbacks keep
+their full actual-value preflight. Native adapters must also defer fallback-only
+projection, copying, member resolution and host execution.
+
+At runtime, default charges its node and left operand, then only the selected
+fallback. Presence checks charge their selected operand and Boolean result.
+Lookup and membership charge key, label and nominal comparisons with the same
+budget. Lookup adds an absent result on a miss; declared access copies the
+selected contract metadata. Declaration wrappers, copied declarations and
+constructed outputs charge before allocation. An annotation adds bounded
+validation/copy nesting, and repeated re-admission does not accumulate wrappers.
+Arithmetic, host and allowance failures retain their responsible locations.
 
 Grouping materializes its positional rows before scanning them. Row visits,
 selector-label comparisons, typed key comparisons and nominal metadata checks
