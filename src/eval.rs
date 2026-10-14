@@ -4,7 +4,8 @@ use std::hash::Hash;
 use std::ops::Range;
 
 use crate::{
-    Located, Location, MAX_NESTING, Nesting, Pipeline, Predicate, PredicateKind, QueryError, Stage,
+    Located, Location, MAX_NESTING, Nesting, Pipeline, Predicate, PredicateKind, QueryError,
+    QueryErrorCategory, Stage,
 };
 
 /// Core failures retain their location; native host failures retain their type.
@@ -108,6 +109,7 @@ impl Budget {
             *remaining = remaining.checked_sub(units).ok_or_else(|| QueryError {
                 location,
                 message: "result limit exceeded".into(),
+                category: QueryErrorCategory::ResultLimit,
             })?;
         }
         Ok(())
@@ -133,6 +135,7 @@ impl Budget {
             .ok_or_else(|| QueryError {
                 location,
                 message: "work limit exceeded".into(),
+                category: QueryErrorCategory::WorkLimit,
             })?;
         Ok(())
     }
@@ -143,6 +146,7 @@ impl Budget {
             return Err(QueryError {
                 location,
                 message: "item limit exceeded".into(),
+                category: QueryErrorCategory::ItemLimit,
             });
         }
         Ok(())
@@ -153,6 +157,7 @@ impl Budget {
             return Err(QueryError {
                 location,
                 message: "nesting limit exceeded".into(),
+                category: QueryErrorCategory::Other,
             });
         }
         self.depth += units;
@@ -169,12 +174,14 @@ impl Budget {
             return Err(QueryError {
                 location,
                 message: "nested evaluation call limit exceeded".into(),
+                category: QueryErrorCategory::Other,
             });
         }
         if self.depth + depth > self.max_nesting {
             return Err(QueryError {
                 location,
                 message: "nesting limit exceeded".into(),
+                category: QueryErrorCategory::Other,
             });
         }
         Ok(())

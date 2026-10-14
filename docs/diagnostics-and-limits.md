@@ -11,6 +11,31 @@ with a half-open UTF-8 byte range. Query ranges identify the original query
 expression. Source ranges refer to the host's retained source; the host keeps
 any document identity needed to interpret them.
 
+`QueryError::category` gives hosts a stable `QueryErrorCategory` for the failures
+they translate:
+
+| Category | Failure |
+| --- | --- |
+| `WorkLimit` | Request-wide work allowance exhausted |
+| `ItemLimit` | Native stream item ceiling exceeded |
+| `ResultLimit` | Aggregate produced/copied result limit exceeded |
+| `UnsupportedNull` | Shared value reader refused a null literal |
+| `UnknownPredicate` | Required native match guard or path target remained Unknown |
+| `Other` | Any failure without a dedicated category |
+
+The producer assigns the category independently of the message. Host adapters
+match categories for their specific diagnostic wording and forward other messages
+with their original locations. The enum is non-exhaustive; adapters must retain
+an informative fallback for future categories too.
+
+`QueryError::query(range, message)` and `QueryError::source(range, message)`
+construct `Other` errors. A producer that knows the failure uses
+`.with_category(category)` without changing the message or location. Matching
+message text never assigns a category: even `"work limit exceeded"` remains
+`Other` when passed to a general constructor. Direct struct construction must
+supply the public `category` field, and equality compares it along with the
+message and location.
+
 `EvaluationError::Core` retains a shared `QueryError`.
 `EvaluationError::Host` retains the host's native error type. Do not convert a
 runtime error into `Truth::Unknown`: Unknown is a domain predicate answer,

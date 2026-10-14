@@ -130,7 +130,11 @@ result is known or Unknown. Hosts use Unknown for incomplete predicate
 knowledge. Evaluation and host hooks return `EvaluationError<Host::Error>`:
 `Core(QueryError)` retains located core failures, and `Host(error)` retains
 native errors intact, including distinct input and model-file coordinates.
-Native errors need no error trait or serialization.
+Native errors need no error trait or serialization. `QueryError::category` exposes
+stable distinctions for host diagnostic translations. General `query` and `source`
+constructors use `QueryErrorCategory::Other`; adapters forward unclassified messages
+with their original locations. See [diagnostics and limits](docs/diagnostics-and-limits.md)
+for construction and compatibility details.
 
 ## One request budget
 

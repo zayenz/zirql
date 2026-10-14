@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
     ArrayType, Bindings, Budget, ConstructedValue, EvaluationError, Expression, ExpressionKind,
-    ExpressionStep, Located, Location, ProgramHost, QueryError, ValueExpression, ValueQueryHost,
-    ValueType, copy_constructed_value, copy_value_types, evaluate_expression, evaluate_query_value,
-    query_value_types,
+    ExpressionStep, Located, Location, ProgramHost, QueryError, QueryErrorCategory,
+    ValueExpression, ValueQueryHost, ValueType, copy_constructed_value, copy_value_types,
+    evaluate_expression, evaluate_query_value, query_value_types,
 };
 
 /// Correlated native subjects become positional records with written field order.
@@ -475,10 +475,10 @@ pub fn evaluate_projection<C, H: ProjectionHost<C>>(
         let subject_kind = host.subject_kind(&input_kind, budget, range)?;
         let subjects = host.subjects(input, context, budget, range)?;
         budget.charge_results(
-            subjects
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| QueryError::query(range.clone(), "result limit exceeded"))?,
+            subjects.len().checked_add(1).ok_or_else(|| {
+                QueryError::query(range.clone(), "result limit exceeded")
+                    .with_category(QueryErrorCategory::ResultLimit)
+            })?,
             Location::Query(range.clone()),
         )?;
         admit_slots::<ConstructedValue>(subjects.len(), budget, range)?;

@@ -2,8 +2,8 @@ use std::{ops::Range, rc::Rc};
 
 use zirql::{
     ArgumentReader, Budget, EvaluationError, Host, Limits, Located, Location, NativeInput,
-    NativeResult, NativeValue, Pipeline, PredicateKind, ProgramLimits, QueryError, Stage, Truth,
-    evaluate, parse_pipeline,
+    NativeResult, NativeValue, Pipeline, PredicateKind, ProgramLimits, QueryError,
+    QueryErrorCategory, Stage, Truth, evaluate, parse_pipeline,
 };
 
 fn limits() -> Limits {
@@ -312,7 +312,11 @@ fn work_items_and_nesting_refuse_at_the_active_location_without_resetting_budget
         &mut budget,
     )
     .unwrap_err();
-    assert_eq!(error, QueryError::source(0..10, "item limit exceeded"));
+    assert_eq!(
+        error,
+        QueryError::source(0..10, "item limit exceeded")
+            .with_category(QueryErrorCategory::ItemLimit)
+    );
 
     let mut budget = Budget::new(Limits {
         work: 3,
@@ -325,7 +329,10 @@ fn work_items_and_nesting_refuse_at_the_active_location_without_resetting_budget
     let error = source_run("count", "beta", &mut budget).unwrap_err();
     assert_eq!(
         error,
-        EvaluationError::Core(QueryError::query(0..5, "work limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(0..5, "work limit exceeded")
+                .with_category(QueryErrorCategory::WorkLimit)
+        )
     );
 
     let error = parse_pipeline("filter(not yes)", source_leaf, 2)
@@ -402,7 +409,10 @@ fn nested_host_evaluation_shares_work_and_active_depth() {
     let error = evaluate(&pipeline, &host, input, &mut budget).unwrap_err();
     assert_eq!(
         error,
-        EvaluationError::Core(QueryError::query(0..5, "work limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(0..5, "work limit exceeded")
+                .with_category(QueryErrorCategory::WorkLimit)
+        )
     );
 }
 
@@ -805,7 +815,10 @@ fn admitted_input_and_nested_scans_share_one_work_allowance() {
     // obtain a fresh allowance when the host opens its nested count.
     assert_eq!(
         evaluate(&pipeline, &host, input, &mut budget).unwrap_err(),
-        EvaluationError::Core(QueryError::query(7..13, "work limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(7..13, "work limit exceeded")
+                .with_category(QueryErrorCategory::WorkLimit)
+        )
     );
 }
 
@@ -1053,7 +1066,10 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
     });
     assert_eq!(
         evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap_err(),
-        EvaluationError::Core(QueryError::query(9..14, "work limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(9..14, "work limit exceeded")
+                .with_category(QueryErrorCategory::WorkLimit)
+        )
     );
 
     // Four admitted rows, one tally container, and three map entries/counts.
@@ -1077,6 +1093,9 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
     });
     assert_eq!(
         evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap_err(),
-        EvaluationError::Core(QueryError::query(9..14, "result limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(9..14, "result limit exceeded")
+                .with_category(QueryErrorCategory::ResultLimit)
+        )
     );
 }

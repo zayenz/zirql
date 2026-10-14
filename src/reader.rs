@@ -3,8 +3,8 @@ use std::ops::Range;
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
     Located, Location, MatchClause, NativeMatch, NativePaths, ParameterDeclaration, ParameterType,
-    Predicate, PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
-    ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
+    Predicate, PredicateKind, Projection, QueryError, QueryErrorCategory, ValueBinaryOperator as B,
+    ValueConstructor, ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
     ValueUnaryOperator as U,
 };
 
@@ -570,7 +570,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 return Err(QueryError::query(
                     name.range,
                     "null is unsupported in constructed values",
-                ));
+                )
+                .with_category(QueryErrorCategory::UnsupportedNull));
             }
             "not" => K::Unary {
                 operator: U::Not,

@@ -58,25 +58,72 @@ pub enum Location {
     Source(Range<usize>),
 }
 
+/// Stable distinctions used by host diagnostic translations.
+/// Other failures retain their informative message and location.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QueryErrorCategory {
+    /// A failure without a dedicated host translation.
+    Other,
+    /// The request-wide work allowance was exhausted.
+    WorkLimit,
+    /// A native stream exceeded its item ceiling.
+    ItemLimit,
+    /// The aggregate produced/copied result allowance was exhausted.
+    ResultLimit,
+    /// The shared value reader refused a null literal.
+    UnsupportedNull,
+    /// A required native match guard or path target remained Unknown.
+    UnknownPredicate,
+}
+
+/// A core failure with its original location and human-readable message.
+/// Hosts translate known categories and forward other messages informatively;
+/// they must not infer categories from message text. Equality includes category.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryError {
     pub location: Location,
     pub message: String,
+    pub category: QueryErrorCategory,
 }
 
 impl QueryError {
+    /// Construct a query error in the general [`QueryErrorCategory::Other`] category.
     pub fn query(range: Range<usize>, message: impl Into<String>) -> Self {
         Self {
             location: Location::Query(range),
             message: message.into(),
+            category: QueryErrorCategory::Other,
         }
     }
 
+    /// Construct a source error in the general [`QueryErrorCategory::Other`] category.
     pub fn source(range: Range<usize>, message: impl Into<String>) -> Self {
         Self {
             location: Location::Source(range),
             message: message.into(),
+            category: QueryErrorCategory::Other,
         }
+    }
+
+    /// Assign a category without changing the message or location.
+    /// The producer chooses it from the failure, independently of its wording.
+    ///
+    /// ```
+    /// use zirql::{Location, QueryError, QueryErrorCategory};
+    ///
+    /// let general = QueryError::query(3..7, "work limit exceeded");
+    /// assert_eq!(general.category, QueryErrorCategory::Other);
+    /// assert_eq!(QueryError::source(3..7, "source failure").category,
+    ///            QueryErrorCategory::Other);
+    /// let categorized = general.with_category(QueryErrorCategory::WorkLimit);
+    /// assert_eq!(categorized.location, Location::Query(3..7));
+    /// assert_eq!(categorized.message, "work limit exceeded");
+    /// assert_eq!(categorized.category, QueryErrorCategory::WorkLimit);
+    /// ```
+    pub fn with_category(mut self, category: QueryErrorCategory) -> Self {
+        self.category = category;
+        self
     }
 }
 

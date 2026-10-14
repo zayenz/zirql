@@ -3,8 +3,8 @@ use std::{ops::Range, rc::Rc};
 use zirql::{
     Bindings, Budget, EmissionPolicy, EvaluationError, Expression, ExpressionKind, ExpressionStep,
     Host, Located, Location, NativeInput, NativeValue, Pipeline, PredicateKind, Program,
-    ProgramHost, ProgramLimits, QueryError, Stage, Statement, Truth, evaluate, evaluate_expression,
-    evaluate_program,
+    ProgramHost, ProgramLimits, QueryError, QueryErrorCategory, Stage, Statement, Truth, evaluate,
+    evaluate_expression, evaluate_program,
 };
 
 fn limits() -> ProgramLimits {
@@ -528,7 +528,10 @@ fn borrowed_program_restores_native_bindings_and_relative_input_with_one_context
             &mut budget
         )
         .unwrap_err(),
-        EvaluationError::Core(QueryError::query(20..21, "result limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(20..21, "result limit exceeded")
+                .with_category(QueryErrorCategory::ResultLimit)
+        )
     );
     assert!(context.emissions.is_empty());
 
@@ -1183,7 +1186,10 @@ fn document_program_keeps_owner_order_set_operands_and_native_records() {
             &mut budget
         )
         .unwrap_err(),
-        EvaluationError::Core(QueryError::query(20..21, "result limit exceeded"))
+        EvaluationError::Core(
+            QueryError::query(20..21, "result limit exceeded")
+                .with_category(QueryErrorCategory::ResultLimit)
+        )
     );
 }
 
@@ -1193,8 +1199,8 @@ mod projection {
         ArrayType, Bindings, Budget, ConstructedValue as V, EvaluationError, Expression,
         ExpressionKind, ExpressionStep, Located, Location, MatchHost, NativeCapture, NativeMatch,
         NativeOperands, NativePaths, PathHost, Predicate, ProgramHost, ProgramLimits, Projection,
-        ProjectionHost, QueryError, ReadExpression, Truth, ValueExpressionKind as K,
-        ValueReaderHost, ValueType,
+        ProjectionHost, QueryError, QueryErrorCategory, ReadExpression, Truth,
+        ValueExpressionKind as K, ValueReaderHost, ValueType,
     };
 
     #[derive(Debug, PartialEq)]
@@ -2043,10 +2049,10 @@ mod projection {
         .unwrap_err();
         assert_eq!(
             error,
-            EvaluationError::Core(QueryError::query(
-                paths.target.range.clone(),
-                "path target is Unknown"
-            ))
+            EvaluationError::Core(
+                QueryError::query(paths.target.range.clone(), "path target is Unknown")
+                    .with_category(QueryErrorCategory::UnknownPredicate)
+            )
         );
         assert!(
             zirql::evaluate_paths(
@@ -2439,10 +2445,13 @@ mod projection {
         let start = unknown_source.find("not").unwrap();
         assert_eq!(
             error,
-            EvaluationError::Core(QueryError::query(
-                start..start + "not unknown".len(),
-                "required match guard is Unknown"
-            ))
+            EvaluationError::Core(
+                QueryError::query(
+                    start..start + "not unknown".len(),
+                    "required match guard is Unknown"
+                )
+                .with_category(QueryErrorCategory::UnknownPredicate)
+            )
         );
         let mut reader = zirql::ArgumentReader::new(
             r#"match { from x in input; } | project(m, {"bad": m.missing | names})"#,
@@ -2627,6 +2636,14 @@ mod projection {
             }
             zirql::dispose_native_value(expression);
         }
+        let mut reader = zirql::ArgumentReader::new("  null", 0).unwrap();
+        let error =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap_err();
+        assert_eq!(
+            error,
+            QueryError::query(2..6, "null is unsupported in constructed values")
+                .with_category(QueryErrorCategory::UnsupportedNull)
+        );
         for source in [
             "entries()",
             "entries([], [])",

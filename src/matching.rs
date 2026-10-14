@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
     Bindings, Budget, EvaluationError, Located, Location, NativeExpression, Predicate,
-    PredicateKind, ProjectionHost, QueryError, Truth, evaluate_expression, native_expression_kind,
+    PredicateKind, ProjectionHost, QueryError, QueryErrorCategory, Truth, evaluate_expression,
+    native_expression_kind,
 };
 
 /// Ordered native fields. Values retain their host handles and source coordinates.
@@ -248,9 +249,10 @@ fn run_clauses<C, H: MatchHost<C>>(
                 range,
             )?;
             budget.check_items(
-                rows.len()
-                    .checked_add(1)
-                    .ok_or_else(|| QueryError::query(range.clone(), "item limit exceeded"))?,
+                rows.len().checked_add(1).ok_or_else(|| {
+                    QueryError::query(range.clone(), "item limit exceeded")
+                        .with_category(QueryErrorCategory::ItemLimit)
+                })?,
                 Location::Query(range.clone()),
             )?;
             slots::<(String, H::Value)>(schema.fields.len(), budget, range, true)?;
@@ -326,6 +328,7 @@ fn run_clauses<C, H: MatchHost<C>>(
                             predicate.range.clone(),
                             "required match guard is Unknown",
                         )
+                        .with_category(QueryErrorCategory::UnknownPredicate)
                         .into());
                     }
                 }

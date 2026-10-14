@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
-use crate::{Bindings, Budget, Located, Location, QueryError};
+use crate::{Bindings, Budget, Located, Location, QueryError, QueryErrorCategory};
 
 /// Host-supplied enum identity, scoped to one immutable host context per request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -646,6 +646,7 @@ fn error(location: &Location, message: impl Into<String>) -> QueryError {
     QueryError {
         location: location.clone(),
         message: message.into(),
+        category: QueryErrorCategory::Other,
     }
 }
 

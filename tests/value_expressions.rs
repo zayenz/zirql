@@ -1919,11 +1919,13 @@ fn host_value_policy_refuses_inline_sparse_sources_and_keeps_skipped_branches() 
                 .try_fold(1usize, |n, axis| n.checked_mul(axis.keys.len()))
                 .ok_or_else(|| zirql::QueryError {
                     location: location.clone(),
+                    category: zirql::QueryErrorCategory::Other,
                     message: "host product overflow".into(),
                 })?;
             if count != entries.len() {
                 return Err(zirql::QueryError {
                     location: location.clone(),
+                    category: zirql::QueryErrorCategory::Other,
                     message: "host requires complete cells".into(),
                 });
             }
@@ -2249,6 +2251,7 @@ fn false_requirement_skips_runtime_values_but_preflights_names_and_types() {
             if matches!(value, V::Integer(7)) {
                 return Err(zirql::QueryError {
                     location: location.clone(),
+                    category: zirql::QueryErrorCategory::Other,
                     message: "host refuses seven".into(),
                 });
             }

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 use crate::{
     Bindings, Budget, EvaluationError, Located, Location, NativeCapture, Predicate, ProjectionHost,
-    QueryError, Truth,
+    QueryError, QueryErrorCategory, Truth,
 };
 
 /// One shortest native witness per source/sink pair within an explicit edge bound.
@@ -199,6 +199,7 @@ pub fn evaluate_paths<C, H: PathHost<C>>(
                             paths.target.range.clone(),
                             "path target is Unknown",
                         )
+                        .with_category(QueryErrorCategory::UnknownPredicate)
                         .into());
                     }
                 }

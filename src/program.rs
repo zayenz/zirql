@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::{
-    Budget, ConstructedValue, EvaluationError, Located, Location, QueryError, ValueType,
-    copy_constructed_value,
+    Budget, ConstructedValue, EvaluationError, Located, Location, QueryError, QueryErrorCategory,
+    ValueType, copy_constructed_value,
 };
 
 /// Required caller inputs support exactly these three scalar types.
@@ -726,6 +726,7 @@ where
                 ExpressionKind::Record(fields) => {
                     let units = fields.len().checked_add(1).ok_or_else(|| {
                         QueryError::query(expression.range.clone(), "result limit exceeded")
+                            .with_category(QueryErrorCategory::ResultLimit)
                     })?;
                     budget.charge_results(units, Location::Query(expression.range.clone()))?;
                     let mut values = Vec::with_capacity(fields.len());
