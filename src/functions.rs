@@ -165,12 +165,12 @@ impl<Q, K, H: ValueQueryHost<Q>> ValueQueryHost<Q> for Resolver<'_, '_, Q, K, H>
         self.queries.read_binding(n, r, b)
     }
 }
-fn register<Q, K>(
-    declarations: &[FunctionDeclaration<Q, K>],
+fn register<'a, Q: 'a, K: 'a>(
+    declarations: impl Clone + Iterator<Item = &'a FunctionDeclaration<Q, K>>,
     budget: &mut Budget,
     mut conflict: impl FnMut(&str) -> bool,
 ) -> Result<(), QueryError> {
-    for (index, d) in declarations.iter().enumerate() {
+    for (index, d) in declarations.clone().enumerate() {
         let location = Location::Query(d.name.range.clone());
         budget.charge(d.name.value.len() + 1, location.clone())?;
         if d.name.value == "_" || builtin(&d.name.value) || conflict(&d.name.value) {
@@ -179,7 +179,7 @@ fn register<Q, K>(
                 "function conflicts with a reserved operation name",
             ));
         }
-        for previous in &declarations[..index] {
+        for previous in declarations.clone().take(index) {
             budget.charge(
                 1 + d.name.value.len().min(previous.name.value.len()),
                 location.clone(),
@@ -304,7 +304,7 @@ pub fn evaluate_functions(
     budget: &mut Budget,
     limits: FunctionLimits,
 ) -> Result<ConstructedValue, FunctionError<QueryError>> {
-    register(declarations, budget, |_| false)?;
+    register(declarations.iter(), budget, |_| false)?;
     crate::value::run_functions(declarations, entry, bindings, budget, limits)
 }
 
@@ -335,7 +335,7 @@ struct Operand<K> {
 }
 struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
-    declarations: &'a [Declaration<C, H>],
+    declarations: Vec<&'a Declaration<C, H>>,
     scope: BTreeMap<String, Kind<C, H>>,
     generator_kinds: BTreeMap<String, Kind<C, H>>,
     relative: Option<Kind<C, H>>,
@@ -672,7 +672,6 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
 /// Preparation borrows immutable source trees and retains no execution results.
 /// The host must use this unit only with its current request context.
 pub struct PreparedFunctions<'a, 'h, C, H: FunctionHost<C>> {
-    declarations: &'a [Declaration<C, H>],
     bodies: Vec<Body<'a, Query<C, H>, Kind<C, H>>>,
     preflight: Preflight<'h, 'a, C, H>,
     body_prepared: Vec<BTreeMap<usize, Operand<Kind<C, H>>>>,
@@ -703,32 +702,44 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
     /// # Errors
     /// Invalid declarations, scope, effects and allowances fail before execution.
     pub fn prepare(
-        declarations: &'a [Declaration<C, H>],
+        declarations: impl IntoIterator<Item = &'a Declaration<C, H>>,
         host: &'h H,
         budget: &mut Budget,
     ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
-        register(declarations, budget, |name| host.is_operation_name(name))?;
+        let mut retained = Vec::new();
+        for declaration in declarations {
+            crate::projection::admit_slots::<&Declaration<C, H>>(
+                1,
+                budget,
+                &declaration.name.range,
+            )?;
+            retained.push(declaration);
+        }
+        register(retained.iter().copied(), budget, |name| {
+            host.is_operation_name(name)
+        })?;
         let mut preflight = Preflight {
             host,
-            declarations,
+            declarations: retained,
             scope: BTreeMap::new(),
             generator_kinds: BTreeMap::new(),
             relative: None,
             prepared: BTreeMap::new(),
         };
         crate::projection::admit_slots::<Body<'_, Query<C, H>, Kind<C, H>>>(
-            declarations.len(),
+            preflight.declarations.len(),
             budget,
             &(0..0),
         )?;
-        let mut bodies = Vec::with_capacity(declarations.len());
+        let mut bodies = Vec::with_capacity(preflight.declarations.len());
         crate::projection::admit_slots::<BTreeMap<usize, Operand<Kind<C, H>>>>(
-            declarations.len(),
+            preflight.declarations.len(),
             budget,
             &(0..0),
         )?;
-        let mut body_prepared = Vec::with_capacity(declarations.len());
-        for declaration in declarations {
+        let mut body_prepared = Vec::with_capacity(preflight.declarations.len());
+        for index in 0..preflight.declarations.len() {
+            let declaration = preflight.declarations[index];
             preflight.scope.clear();
             preflight.generator_kinds.clear();
             for p in &declaration.parameters {
@@ -751,7 +762,6 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         preflight.scope.clear();
         budget.charge_results(1, Location::Query(0..0))?;
         Ok(Self {
-            declarations,
             bodies,
             preflight,
             body_prepared,
@@ -868,7 +878,12 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
                 .frames
                 .into_iter()
                 .map(|(id, range)| FunctionCall {
-                    function: self.declarations[id].name.value.chars().take(64).collect(),
+                    function: self.preflight.declarations[id]
+                        .name
+                        .value
+                        .chars()
+                        .take(64)
+                        .collect(),
                     range,
                 })
                 .collect(),
@@ -1049,10 +1064,6 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         let mut values = BTreeMap::new();
         let mut contracts = BTreeMap::new();
         if !lexical {
-            for (name, _) in self.bindings.iter() {
-                budget_name(name, budget, range)?;
-                values.insert(name.to_owned(), self.bindings.shared(name, range.clone())?);
-            }
             crate::projection::admit_slots::<(&str, &DeclaredType<Kind<C, H>>)>(
                 self.contracts.len(),
                 budget,
@@ -1096,13 +1107,15 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
             };
             values.insert((*name).to_owned(), value);
         }
-        let bindings = Bindings::from_shared(values);
-        crate::projection::admit_slots::<&H::Value>(operand.names.len(), budget, range)?;
-        let outer = operand
-            .names
-            .iter()
-            .map(|name| bindings.get(name, range.clone()))
-            .collect::<Result<Vec<_>, _>>()?;
+        let bindings = if lexical {
+            Bindings::from_shared(values)
+        } else {
+            self.bindings.with_shared_values(values, budget, range)?
+        };
+        let outer = crate::projection::prepared::NativeOuter::Bindings {
+            values: &bindings,
+            names: &operand.names,
+        };
         let input = if lexical {
             None
         } else {

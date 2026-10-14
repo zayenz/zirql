@@ -2637,7 +2637,12 @@ mod projection {
             declarations.push(function);
         }
         let entry = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
-        let mut functions = PreparedFunctions::prepare(&declarations, &Host, &mut budget).unwrap();
+        let mut functions = PreparedFunctions::prepare(
+            declarations[..2].iter().chain(&declarations[2..]),
+            &Host,
+            &mut budget,
+        )
+        .unwrap();
         let scope = BTreeMap::from([("source".into(), Kind::Subjects)]);
         let entry = functions
             .prepare_value(&entry, &scope, None, &mut budget)

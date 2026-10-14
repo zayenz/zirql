@@ -475,6 +475,27 @@ impl<V> Bindings<V> {
         })
     }
 
+    // Native argument callbacks share ordered program bindings and add only the
+    // current frame's locals. They never rebuild the complete caller name map.
+    pub(crate) fn with_shared_values(
+        &self,
+        mut current: BTreeMap<String, std::sync::Arc<V>>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self, QueryError> {
+        for (name, value) in &self.locals {
+            if !current.contains_key(name) {
+                budget.charge(name.len() + 1, Location::Query(range.clone()))?;
+                current.insert(name.clone(), std::sync::Arc::clone(value));
+            }
+        }
+        parameter_slots::<(String, std::sync::Arc<V>)>(current.len(), budget, range)?;
+        Ok(Self {
+            values: std::sync::Arc::clone(&self.values),
+            locals: current.into_iter().collect(),
+        })
+    }
+
     pub(crate) fn shared(
         &self,
         name: &str,

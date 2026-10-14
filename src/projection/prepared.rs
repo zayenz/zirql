@@ -6,6 +6,22 @@ pub(crate) enum NativeRead {
     Local(usize),
 }
 
+pub(crate) enum NativeOuter<'a, V> {
+    Slots(&'a [&'a V]),
+    Bindings {
+        values: &'a Bindings<V>,
+        names: &'a [String],
+    },
+}
+impl<V> NativeOuter<'_, V> {
+    fn get(&self, index: usize, range: &Range<usize>) -> Result<&V, QueryError> {
+        match self {
+            Self::Slots(values) => Ok(values[index]),
+            Self::Bindings { values, names } => values.get(&names[index], range.clone()),
+        }
+    }
+}
+
 pub(crate) enum PreparedNative {
     Input,
     Binding(NativeRead),
@@ -156,7 +172,7 @@ impl PreparedNative {
             Some(input),
             context,
             bindings,
-            outer,
+            &NativeOuter::Slots(outer),
             Some(subject),
             locals,
             &mut |stage, declared, value, context, bindings, budget, range| {
@@ -185,7 +201,7 @@ impl PreparedNative {
         input: Option<H::Value>,
         context: &mut C,
         bindings: &Bindings<H::Value>,
-        outer: &[&H::Value],
+        outer: &NativeOuter<'_, H::Value>,
         subject: Option<&H::Value>,
         locals: &[&H::Value],
         run_stage: &mut impl FnMut(
@@ -214,7 +230,7 @@ impl PreparedNative {
                     }),
                     (Self::Binding(read), ExpressionKind::Binding(_)) => {
                         let value = match *read {
-                            NativeRead::Outer(index) => outer[index],
+                            NativeRead::Outer(index) => outer.get(index, &expression.range)?,
                             NativeRead::Subject => subject.expect("prepared subject"),
                             NativeRead::Local(index) => locals[index],
                         };

@@ -132,7 +132,9 @@ submitted request, using the current host context and the same cumulative
 budget. Prepared entries carry their unit identity; another unit refuses them.
 Each execution releases its results and frames normally. A host can execute a
 prepared projection field for each subject without preparing the function
-bodies again. `FunctionRequest` retains the one-entry convenience API.
+bodies again. `Bindings::with_local` shares the outer map when introducing its
+subject; native argument callbacks retain that sharing. Declaration inputs can
+be borrowed iterators over separately shared typed-root function trees. `FunctionRequest` retains the one-entry convenience API.
 
 `result` is the host's `Value`. `NativeValue(query)` retains a pure native result;
 `NativeQuery(query)` keeps its existing scalar-projection meaning. Native queries

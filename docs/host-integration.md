@@ -524,6 +524,12 @@ argument tree across lexical scopes cannot replace another body's kinds. The hos
 the unit in one submitted request and passes the current context, bindings,
 relative input and cumulative budget to each execution. These explicit borrows
 let the ordinary statement runner use that same context between value calls.
+`prepare` accepts borrowed declaration iterators, so typed-root composition can
+share separate immutable function trees. It charges and retains references,
+checks duplicate/conflicting names and resolves their signatures together.
+The native argument bridge shares the program's outer binding map and overlays
+only the active lexical locals. Prepared native indices look up their selected
+binding directly, without rebuilding a vector for every caller binding per row.
 `FunctionRequest` preserves the one-shot context/budget-borrowing facade.
 Normal return and failure release live slots and continuations. Use
 `dispose_functions` for iterative cleanup of lowered native function trees,
