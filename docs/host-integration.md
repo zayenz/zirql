@@ -490,7 +490,7 @@ types to the host's preflight kinds. `is_operation_name` reserves registered
 native operation names. The core separately reserves its builtins. Existing
 hosts can continue using their current APIs without implementing these hooks.
 
-`FunctionRequest::prepare` registers every signature before checking bodies. Each
+`PreparedFunctions::prepare` registers every signature before checking bodies. Each
 body can read its parameters and earlier immutable locals. The entry receives
 explicit `Bindings`; functions receive that data through call arguments. Host
 kinds used for native declarations must identify the complete native contract.
@@ -501,9 +501,13 @@ request. Native stages expose primitive argument bodies with `value_arguments`;
 the same evaluator executes a selected body with the exact current context and
 budget. `ConstructedRead::declared_type` retains an established function result
 contract beside borrowed argument data; `into_owned` includes its annotation.
-Native signature results require an explicit scalar projection in a constructed
-primitive argument. Pure operations may project or retain handles. Emitters, effects and
-invalid nested selectors fail preflight even in unused or skipped code.
+A native argument uses `NativeArguments::evaluate_native`, which returns a
+`NativeRead` retaining the host owner and whole declared contract after the
+callee frame ends. `value()` borrows the handle, `declared_type()` borrows its
+metadata, and `into_shared()` transfers the retained owner. Native payloads never
+pass through rendering. Constructed argument consumers retain their existing
+`evaluate` path and require an explicit projection of native handles. Emitters,
+effects and invalid nested selectors fail preflight even in unused or skipped code.
 
 Runtime admission checks every fresh argument and result, including nested
 collections and declared optional fields. An unchanged constructed owner can
@@ -512,8 +516,15 @@ continues through `admit_value` in the current context, preserving owner and
 stale-handle refusals. No `Clone`, `Send`, `Sync` or `'static` bound is added to
 native values, and rendering is never used to pass them between calls.
 
-The request borrows one host context and budget and is consumed by `evaluate`.
-Prepared values and handles cannot be reused against a different context.
+Resolve all written entries with `prepare_value` before executing statements.
+Each entry records its host kind and its owning unit; `evaluate` rejects an entry
+from another unit before reading its resolved slots or call IDs. Native metadata
+belongs to its prepared entry or function body, so sharing an immutable native
+argument tree across lexical scopes cannot replace another body's kinds. The host keeps
+the unit in one submitted request and passes the current context, bindings,
+relative input and cumulative budget to each execution. These explicit borrows
+let the ordinary statement runner use that same context between value calls.
+`FunctionRequest` preserves the one-shot context/budget-borrowing facade.
 Normal return and failure release live slots and continuations. Use
 `dispose_functions` for iterative cleanup of lowered native function trees,
 including rejected declarations; hosts still own disposal inside opaque stages.
@@ -521,6 +532,22 @@ including rejected declarations; hosts still own disposal inside opaque stages.
 `ValueExpressionKind` has two new development API variants, `Call` and
 `NativeValue`. A frontend with an exhaustive match must handle them in traversal,
 lowering and disposal. `dispose_native_value` already traverses them. The common
-reader's grammar is unchanged. Zincite and Zirium textual function, type and
-conditional lowering belongs to their later integrations; the published alpha.5
-predates this API.
+reader accepts declarations, complete signature types, calls and conditional
+expressions; see [function embedding](embedding-programs.md#call-typed-pure-functions).
+The published alpha.5 predates this API.
+
+A frontend that retains native expression results opts into
+`ValueReaderHost::retains_native_values`. Its `value_source` hook lowers an
+explicit function result at the start of a native pipeline to a host stage with
+one declared argument. Mark that stage with `ProjectionHost::is_explicit_source`;
+it must ignore the runner's absent input placeholder and evaluate its declared
+argument. This prevents a source such as `identity(op) | children` from reading
+an ambient subject. Register pure native primitives through the same argument
+runner and admission hooks.
+
+Native `in` sources reuse `subjects` and `subject_kind`. Enumeration preserves
+the host's sequence order, including explicit empty-sequence kinds. Each binder
+retains its native owner; the eager shared continuation runner supplies candidate
+order, filters, reducers and finite allowances. The host charges its enumeration
+before allocation and checks current ownership. The core charges retained item
+owners and grouped candidate expansion.

@@ -112,7 +112,7 @@ pub(crate) trait Host<'a, Q> {
         locals: &mut Slots<'a, Self::Native, Self::Kind>,
         bodies: &'a [Body<'a, Q, Self::Kind>],
         depth: usize,
-        lexical: bool,
+        function: Option<usize>,
         projected: bool,
         budget: &mut Budget,
         range: &std::ops::Range<usize>,
@@ -124,6 +124,14 @@ pub(crate) trait Host<'a, Q> {
         budget: &mut Budget,
         location: Location,
     ) -> Result<(), Self::Error>;
+    fn subjects(
+        &mut self,
+        _value: std::sync::Arc<Self::Native>,
+        _budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<Self::Native>, Self::Error> {
+        Err(error(location, "in source needs an array or supported set").into())
+    }
     fn check(
         &mut self,
         value: &ConstructedValue,
@@ -192,7 +200,7 @@ enum Pending<'a, Q, N, K> {
         Rc<Comprehension<'a, Q>>,
         usize,
         usize,
-        RuntimeValue,
+        GeneratorSource<'a, N, K>,
         Vec<usize>,
         usize,
     ),
@@ -202,6 +210,40 @@ enum Pending<'a, Q, N, K> {
     KeyHead(Rc<Comprehension<'a, Q>>, Vec<ValueKey>),
     FinishComprehension(Rc<Comprehension<'a, Q>>),
     EmptyAxes(Rc<Comprehension<'a, Q>>, usize, Vec<KeyAxis>),
+}
+enum GeneratorSource<'a, N, K> {
+    Constructed(RuntimeValue),
+    Native(Vec<Value<'a, N, K>>),
+}
+impl<'a, N, K> GeneratorSource<'a, N, K> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Constructed(value) => match value.as_ref() {
+                ConstructedValue::Array(values)
+                | ConstructedValue::Set {
+                    elements: values, ..
+                } => values.len(),
+                ConstructedValue::KeyedArray { entries, .. } => entries.len(),
+                _ => unreachable!("admitted generator source"),
+            },
+            Self::Native(values) => values.len(),
+        }
+    }
+    fn child(
+        &mut self,
+        position: usize,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, N, K>, QueryError> {
+        match self {
+            Self::Constructed(value) => Ok(Value::constructed(
+                value
+                    .share(budget, location)?
+                    .child(position, budget, location)?,
+            )),
+            Self::Native(values) => values[position].share(budget, location),
+        }
+    }
 }
 struct Comprehension<'a, Q> {
     expression: &'a PreparedValue<'a, Q>,
@@ -324,7 +366,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             &mut frame.locals,
                                             bodies,
                                             offset + frame_depth - 1,
-                                            frame.function.is_some(),
+                                            frame.function,
                                             matches!(
                                                 expression.value,
                                                 PreparedKind::NativeQuery { .. }
@@ -912,49 +954,77 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         }
                                     }
                                     PreparedGenerator::In { binders, .. } => {
-                                        let value = if value.contract.is_some() {
-                                            Value::constructed(RuntimeValue::Owned(
-                                                value.materialize(budget, &cl)?,
-                                            ))
-                                        } else {
-                                            value
-                                        };
+                                        let contract = value.contract;
                                         let value = match value.data {
-                                            Data::Constructed(v) => v,
-                                            Data::Native(_) => {
-                                                return Err(error(
-                                                    &cl,
-                                                    "in source needs an array or supported set",
-                                                )
-                                                .into());
+                                            Data::Native(owner) => {
+                                                let values = host.subjects(owner, budget, &cl)?;
+                                                budget.check_items(values.len(), cl.clone())?;
+                                                let mut items =
+                                                    metadata_vec(values.len(), budget, &cl)?;
+                                                let element =
+                                                    contract.and_then(|contract| match contract {
+                                                        DeclaredType::Sequence(element)
+                                                        | DeclaredType::Array(element) => {
+                                                            Some(element.as_ref())
+                                                        }
+                                                        _ => None,
+                                                    });
+                                                for value in values {
+                                                    budget.charge(1, cl.clone())?;
+                                                    budget.charge_results(1, cl.clone())?;
+                                                    items.push(Value {
+                                                        data: Data::Native(std::sync::Arc::new(
+                                                            value,
+                                                        )),
+                                                        contract: element,
+                                                    });
+                                                }
+                                                GeneratorSource::Native(items)
+                                            }
+                                            Data::Constructed(data) => {
+                                                let value = Value {
+                                                    data: Data::<H::Native>::Constructed(data),
+                                                    contract,
+                                                };
+                                                let value = if contract.is_some() {
+                                                    RuntimeValue::Owned(
+                                                        value.materialize(budget, &cl)?,
+                                                    )
+                                                } else {
+                                                    let Data::Constructed(value) = value.data
+                                                    else {
+                                                        unreachable!()
+                                                    };
+                                                    value
+                                                };
+                                                let value = if matches!(
+                                                    value.as_ref(),
+                                                    ConstructedValue::Declared { .. }
+                                                ) {
+                                                    RuntimeValue::Owned(expose(
+                                                        value.materialize(budget, &cl)?,
+                                                        budget,
+                                                        &cl,
+                                                    )?)
+                                                } else {
+                                                    value
+                                                };
+                                                if !matches!(
+                                                    value.as_ref(),
+                                                    ConstructedValue::Array(_)
+                                                        | ConstructedValue::Set { .. }
+                                                        | ConstructedValue::KeyedArray { .. }
+                                                ) {
+                                                    return Err(error(
+                                                        &cl,
+                                                        "in source needs an array or supported set",
+                                                    )
+                                                    .into());
+                                                }
+                                                GeneratorSource::Constructed(value)
                                             }
                                         };
-                                        let value = if matches!(
-                                            value.as_ref(),
-                                            ConstructedValue::Declared { .. }
-                                        ) {
-                                            RuntimeValue::Owned(expose(
-                                                value.materialize(budget, &cl)?,
-                                                budget,
-                                                &cl,
-                                            )?)
-                                        } else {
-                                            value
-                                        };
-                                        let len = match value.as_ref() {
-                                            ConstructedValue::Array(v)
-                                            | ConstructedValue::Set { elements: v, .. } => v.len(),
-                                            ConstructedValue::KeyedArray { entries, .. } => {
-                                                entries.len()
-                                            }
-                                            _ => {
-                                                return Err(error(
-                                                    &cl,
-                                                    "in source needs an array or supported set",
-                                                )
-                                                .into());
-                                            }
-                                        };
+                                        let len = value.len();
                                         let mut count = 1usize;
                                         for _ in binders {
                                             budget.charge(1, cl.clone())?;
@@ -992,24 +1062,12 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     unreachable!()
                                 };
                                 let cl = Location::Query(clause.range.clone());
-                                let len = match source.as_ref() {
-                                    ConstructedValue::Array(v)
-                                    | ConstructedValue::Set { elements: v, .. } => v.len(),
-                                    ConstructedValue::KeyedArray { entries, .. } => entries.len(),
-                                    _ => unreachable!(),
-                                };
+                                let len = source.len();
                                 for (binder, position) in binders.iter().zip(&positions) {
                                     budget.charge(1, Location::Query(binder.range.clone()))?;
                                     if let Some(name) = &binder.value {
-                                        let v = source
-                                            .share(budget, &cl)?
-                                            .child(*position, budget, &cl)?;
-                                        push_metadata(
-                                            &mut frame.locals,
-                                            (name, Value::constructed(v)),
-                                            budget,
-                                            &cl,
-                                        )?;
+                                        let v = source.child(*position, budget, &cl)?;
+                                        push_metadata(&mut frame.locals, (name, v), budget, &cl)?;
                                     }
                                 }
                                 for position in positions.iter_mut().rev() {
@@ -1538,7 +1596,7 @@ where
         locals: &mut [(&'a str, Value<'a, Self::Native, ()>)],
         _: &'a [Body<'a, Q, ()>],
         _: usize,
-        _: bool,
+        _: Option<usize>,
         projected: bool,
         budget: &mut Budget,
         range: &std::ops::Range<usize>,

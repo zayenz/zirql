@@ -89,7 +89,7 @@ omitted. Unannotated heterogeneous values remain supported. See
 These forms are available in the development Git revision. Published alpha.5
 predates them. Optional reports do not expand external parameters beyond
 `int`, `string` and `bool`, or authorize optional MiniZinc data-edit targets.
-User function signatures and optional parameter transport remain deferred.
+User function signatures use the [shared function reader](embedding-programs.md#call-typed-pure-functions). Optional external parameter transport remains deferred.
 
 ## Positional comprehensions
 

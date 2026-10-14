@@ -113,16 +113,26 @@ function depth of one. These APIs are available through development Git; the
 published alpha.5 does not include named functions.
 
 For a native host, implement `FunctionHost` alongside `ProjectionHost` and
-`RuntimeTypeHost`. Prepare once, then consume the request with its entry and
-explicit bindings:
+`RuntimeTypeHost`. A submitted program prepares its declarations once, then
+resolves every written value in its lexical scope before executing statements:
 
 ```rust
-let request = FunctionRequest::prepare(
-    &functions, &host, &mut context, &mut budget,
+let mut functions = PreparedFunctions::prepare(&declarations, &host, &mut budget)?;
+let entry = functions.prepare_value(&value, &scope, Some(input_kind), &mut budget)?;
+// Prepare the remaining written values here, before any operation executes.
+let result = functions.evaluate(
+    &entry, &bindings, Some(&input), &mut context, &mut budget,
     FunctionLimits { active_depth: 32 },
 )?;
-let result = request.evaluate(&entry, &bindings)?;
 ```
+
+`entry.kind()` supplies the host kind for subsequent program preflight.
+The unit borrows the immutable source trees and host. Keep it within this
+submitted request, using the current host context and the same cumulative
+budget. Prepared entries carry their unit identity; another unit refuses them.
+Each execution releases its results and frames normally. A host can execute a
+prepared projection field for each subject without preparing the function
+bodies again. `FunctionRequest` retains the one-entry convenience API.
 
 `result` is the host's `Value`. `NativeValue(query)` retains a pure native result;
 `NativeQuery(query)` keeps its existing scalar-projection meaning. Native queries
@@ -138,3 +148,18 @@ equivalent. `1 + recurse(...)`, a typed default's pending fallback check, and an
 incompatible result declaration retain a continuation and consume active depth.
 The [limits guide](diagnostics-and-limits.md#function-calls-and-depth) describes
 the independent guards and failure context.
+
+The common reader accepts contextual declarations through
+`read_function_declaration`. Its resolver handles registered native and nominal
+names; Zirql reads `int`, `float`, `bool`, `string`, `opt T`, `sequence<T>`,
+`tuple<T, ...>`, `record {field: T, ...}`, `set<T>` and `keyed<T>`. Sets keep their
+supported Boolean, integer, float and nominal element types. A bare saved name
+`fn` remains a name. The reader consumes a declaration only after recognizing
+`fn name(`. Collect every declaration before preparing the submitted program.
+
+Bodies contain ordered `let name = expression;` bindings and a final expression.
+Ordinary calls accept zero or more positional arguments. Conditionals use
+`if condition { expression } else { expression }`, with optional `else if`
+branches and a required final `else`. Both written branches are preflighted;
+only the selected result executes. Branch-local blocks belong to the later
+patterns/control-flow work.

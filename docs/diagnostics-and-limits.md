@@ -250,7 +250,10 @@ native argument callbacks can reenter it only within that host guard. Native
 operations share the same context and cumulative work/results allowance.
 
 Preparation charges signature/declaration visits, name comparisons, slots and
-native metadata. Calls charge a visit, argument/frame slots and continuations
+native metadata. A prepared unit retains that work across its written entries
+and repeated executions, without retaining completed results. Native sequence
+enumeration charges host scans, result containers and retained owners before
+growth; grouped generators also charge their candidate product. Calls charge a visit, argument/frame slots and continuations
 before growth. Runtime contracts charge scans of fresh data and declarations;
 unchanged immutable constructed owners share admission within the request.
 Native ownership checks remain the host's responsibility on each typed boundary.

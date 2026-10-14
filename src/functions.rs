@@ -337,6 +337,7 @@ struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
     declarations: &'a [Declaration<C, H>],
     scope: BTreeMap<String, Kind<C, H>>,
+    generator_kinds: BTreeMap<String, Kind<C, H>>,
     relative: Option<Kind<C, H>>,
     prepared: BTreeMap<usize, Operand<Kind<C, H>>>,
 }
@@ -354,16 +355,19 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 budget.charge(name.len() + 1, Location::Query(query.range.clone()))?;
                 scope.insert(
                     (*name).to_owned(),
-                    self.host.constructed_kind(copy_value_types(
-                        types,
-                        budget,
-                        Location::Query(query.range.clone()),
-                    )?),
+                    match self.generator_kinds.get(*name) {
+                        Some(kind) => kind.clone(),
+                        None => self.host.constructed_kind(copy_value_types(
+                            types,
+                            budget,
+                            Location::Query(query.range.clone()),
+                        )?),
+                    },
                 );
             }
         }
         if self.relative.is_none() {
-            no_ambient_input::<C, H>(query, budget)?;
+            no_ambient_input::<C, H>(query, self.host, budget)?;
         }
         let input = self
             .relative
@@ -402,7 +406,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 &mut self.scope,
                 crate::projection::copy_scope::<C, H>(&scope, budget, &query.range)?,
             );
-            let old = self.relative.replace(relative);
+            let old = std::mem::replace(&mut self.relative, relative);
             let mut facts = BTreeMap::new();
             for (name, kind) in &scope {
                 budget.charge(name.len() + 1, Location::Query(query.range.clone()))?;
@@ -454,7 +458,11 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         .kind
                         .clone(),
                 ),
-                ValueExpressionKind::Name(name) => self.scope.get(name).cloned(),
+                ValueExpressionKind::Name(name) => self
+                    .scope
+                    .get(name)
+                    .or_else(|| self.generator_kinds.get(name))
+                    .cloned(),
                 ValueExpressionKind::Require { value, .. } => self.local_kind(value, budget)?,
                 ValueExpressionKind::Conditional {
                     branches,
@@ -488,6 +496,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
 
 fn no_ambient_input<C, H: ProjectionHost<C>>(
     query: &Query<C, H>,
+    host: &H,
     budget: &mut Budget,
 ) -> Result<(), QueryError> {
     let mut pending = vec![query];
@@ -510,7 +519,15 @@ fn no_ambient_input<C, H: ProjectionHost<C>>(
             ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => {
                 pending.push(value)
             }
-            ExpressionKind::Sequence { input, .. } => pending.push(input),
+            ExpressionKind::Sequence { input, steps } => {
+                let explicit = steps.first().is_some_and(|step| match &step.value {
+                    crate::ExpressionStep::Stage(stage) => host.is_explicit_source(stage),
+                    crate::ExpressionStep::Emit { .. } => false,
+                });
+                if !explicit {
+                    pending.push(input);
+                }
+            }
             ExpressionKind::Set { left, right, .. } => {
                 pending.push(right);
                 pending.push(left);
@@ -591,6 +608,34 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         self.scope.insert(name.value.clone(), kind);
         Ok(())
     }
+    fn prepare_generator(
+        &mut self,
+        binder: &Located<Option<String>>,
+        source: &ValueExpression<Query<C, H>>,
+        types: &[ValueType],
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        if let Some(name) = &binder.value {
+            let kind = match self.local_kind(source, budget)? {
+                Some(kind)
+                    if self
+                        .host
+                        .scalar_types(&kind, budget, &source.range)?
+                        .is_none() =>
+                {
+                    self.host.subject_kind(&kind, budget, &source.range)?
+                }
+                _ => self.host.constructed_kind(copy_value_types(
+                    types,
+                    budget,
+                    Location::Query(binder.range.clone()),
+                )?),
+            };
+            budget_name(name, budget, &binder.range)?;
+            self.generator_kinds.insert(name.clone(), kind);
+        }
+        Ok(())
+    }
     fn query_arguments<'q>(
         &self,
         query: &'q Query<C, H>,
@@ -623,35 +668,51 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
     }
 }
 
-/// One submitted function request, bound to its exact host context and budget.
-/// Preparation checks all signatures and bodies; evaluation also prepares the
-/// entry before executing any native operation. The request is consumed once.
-pub struct FunctionRequest<'a, 'r, C, H: FunctionHost<C>> {
+/// Resolved functions and native operands shared by one submitted program.
+/// Preparation borrows immutable source trees and retains no execution results.
+/// The host must use this unit only with its current request context.
+pub struct PreparedFunctions<'a, 'h, C, H: FunctionHost<C>> {
     declarations: &'a [Declaration<C, H>],
     bodies: Vec<Body<'a, Query<C, H>, Kind<C, H>>>,
-    preflight: Preflight<'r, 'a, C, H>,
-    context: &'r mut C,
-    budget: &'r mut Budget,
-    limits: FunctionLimits,
+    preflight: Preflight<'h, 'a, C, H>,
+    body_prepared: Vec<BTreeMap<usize, Operand<Kind<C, H>>>>,
+    identity: std::sync::Arc<()>,
 }
-impl<'a, 'r, C, H: FunctionHost<C>> FunctionRequest<'a, 'r, C, H> {
-    /// Register signatures, then prepare every body in lexical scope.
+
+/// One written value, resolved once in its exact lexical and relative scope.
+/// Execute it through the same [`PreparedFunctions`] that prepared it.
+pub struct PreparedFunctionValue<'a, Q, K = ()> {
+    kind: K,
+    prepared: BTreeMap<usize, Operand<K>>,
+    value: crate::value::prepared::PreparedValue<'a, Q>,
+    names: Vec<&'a str>,
+    identity: std::sync::Arc<()>,
+}
+
+impl<Q, K> PreparedFunctionValue<'_, Q, K> {
+    /// Preflight kind for the written value; runtime whole-type admission still
+    /// checks actual arguments and results.
+    pub fn kind(&self) -> &K {
+        &self.kind
+    }
+}
+
+impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
+    /// Register signatures and prepare every body, including unused functions.
     ///
     /// # Errors
-    /// Invalid declarations, missing names, effects, emitters and allowances
-    /// fail before any body executes, including unused functions.
+    /// Invalid declarations, scope, effects and allowances fail before execution.
     pub fn prepare(
         declarations: &'a [Declaration<C, H>],
-        host: &'r H,
-        context: &'r mut C,
-        budget: &'r mut Budget,
-        limits: FunctionLimits,
+        host: &'h H,
+        budget: &mut Budget,
     ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
         register(declarations, budget, |name| host.is_operation_name(name))?;
         let mut preflight = Preflight {
             host,
             declarations,
             scope: BTreeMap::new(),
+            generator_kinds: BTreeMap::new(),
             relative: None,
             prepared: BTreeMap::new(),
         };
@@ -661,8 +722,15 @@ impl<'a, 'r, C, H: FunctionHost<C>> FunctionRequest<'a, 'r, C, H> {
             &(0..0),
         )?;
         let mut bodies = Vec::with_capacity(declarations.len());
+        crate::projection::admit_slots::<BTreeMap<usize, Operand<Kind<C, H>>>>(
+            declarations.len(),
+            budget,
+            &(0..0),
+        )?;
+        let mut body_prepared = Vec::with_capacity(declarations.len());
         for declaration in declarations {
             preflight.scope.clear();
+            preflight.generator_kinds.clear();
             for p in &declaration.parameters {
                 budget.charge(
                     p.value.name.value.len() + 1,
@@ -678,66 +746,121 @@ impl<'a, 'r, C, H: FunctionHost<C>> FunctionRequest<'a, 'r, C, H> {
                 &mut preflight,
                 budget,
             )?);
+            body_prepared.push(std::mem::take(&mut preflight.prepared));
         }
+        preflight.scope.clear();
+        budget.charge_results(1, Location::Query(0..0))?;
         Ok(Self {
             declarations,
             bodies,
             preflight,
-            context,
-            budget,
-            limits,
+            body_prepared,
+            identity: std::sync::Arc::new(()),
         })
     }
-    /// Evaluate with explicit native/constructed inputs and return the host's
-    /// native value. Function bodies cannot capture these entry bindings.
+
+    /// Resolve one written value without executing native operations. Call this
+    /// for all program values before any statement runs. Functions cannot capture
+    /// this entry's scope. Relative native input is explicit and optional.
     ///
     /// # Errors
-    /// Whole argument/result admission retains native failures and responsible
-    /// ranges. Failure releases active frames without refunding spending.
-    pub fn evaluate(
-        mut self,
-        entry: &ValueExpression<Query<C, H>>,
-        bindings: &Bindings<H::Value>,
-    ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
-        self.preflight.scope.clear();
+    /// All written branches and embedded native arguments are checked.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The prepared entry retains the host's existing native expression and kind types"
+    )]
+    pub fn prepare_value(
+        &mut self,
+        entry: &'a ValueExpression<Query<C, H>>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<
+        PreparedFunctionValue<'a, Query<C, H>, Kind<C, H>>,
+        FunctionError<EvaluationError<H::Error>>,
+    > {
+        self.preflight.scope = crate::projection::copy_scope::<C, H>(scope, budget, &entry.range)?;
+        self.preflight.relative = relative;
+        self.preflight.generator_kinds.clear();
         let mut facts = BTreeMap::new();
-        for (name, value) in bindings.iter() {
-            let kind = self.preflight.host.kind(value, self.budget, &entry.range)?;
-            budget_name(name, self.budget, &entry.range)?;
+        for (name, kind) in scope {
+            budget_name(name, budget, &entry.range)?;
             facts.insert(
-                name.to_owned(),
+                name.clone(),
                 self.preflight
                     .host
-                    .scalar_types(&kind, self.budget, &entry.range)?
+                    .scalar_types(kind, budget, &entry.range)?
                     .unwrap_or_else(|| vec![ValueType::Unestablished]),
             );
-            self.preflight.scope.insert(name.to_owned(), kind);
         }
-        query_value_types(entry, &facts, &mut self.preflight, self.budget)?;
-        let mut preparation = Preparation::new();
-        let entry = preparation.resolve(entry, &mut self.preflight, self.budget)?;
+        let saved = std::mem::take(&mut self.preflight.prepared);
+        let result = (|| {
+            let types = query_value_types(entry, &facts, &mut self.preflight, budget)?;
+            let kind = match self.preflight.local_kind(entry, budget)? {
+                Some(kind) => kind,
+                None => self.preflight.host.constructed_kind(types),
+            };
+            let mut preparation = Preparation::new();
+            let value = preparation.resolve(entry, &mut self.preflight, budget)?;
+            budget.charge(1, Location::Query(entry.range.clone()))?;
+            Ok(PreparedFunctionValue {
+                kind,
+                value,
+                names: preparation.names,
+                prepared: std::mem::take(&mut self.preflight.prepared),
+                identity: std::sync::Arc::clone(&self.identity),
+            })
+        })();
+        self.preflight.prepared = saved;
+        result
+    }
+
+    /// Execute a prepared value with current bindings, relative input and one
+    /// cumulative allowance. Results retain native ownership through the host.
+    ///
+    /// # Errors
+    /// Runtime contracts, active depth, host failures and allowances retain the
+    /// responsible expression and bounded active call context.
+    pub fn evaluate(
+        &self,
+        entry: &PreparedFunctionValue<'a, Query<C, H>, Kind<C, H>>,
+        bindings: &Bindings<H::Value>,
+        relative: Option<&H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
+        if !std::sync::Arc::ptr_eq(&self.identity, &entry.identity) {
+            return Err(QueryError::query(
+                entry.value.range.clone(),
+                "value belongs to a different prepared function program",
+            )
+            .into());
+        }
         let mut calls = CallTrace::default();
         let mut runtime = Runtime {
             host: self.preflight.host,
-            context: self.context,
+            context,
             bindings,
             contracts: &BTreeMap::new(),
-            prepared: &self.preflight.prepared,
-            relative: None,
-            limit: self.limits.active_depth,
+            prepared: &entry.prepared,
+            body_prepared: &self.body_prepared,
+            source_function: None,
+            relative,
+            limit: limits.active_depth,
             calls: &mut calls,
         };
-        let location = Location::Query(entry.range.clone());
+        let location = Location::Query(entry.value.range.clone());
         let result = execution::execute(
-            &entry,
-            &preparation.names,
+            &entry.value,
+            &entry.names,
             &self.bodies,
             &mut runtime,
-            self.budget,
-            self.limits.active_depth,
+            budget,
+            limits.active_depth,
             0,
         )
-        .and_then(|value| runtime.finish_value(value, self.budget, &location));
+        .and_then(|value| runtime.finish_value(value, budget, &location));
         result.map_err(|error| FunctionError {
             error,
             omitted_calls: calls.omitted,
@@ -752,6 +875,69 @@ impl<'a, 'r, C, H: FunctionHost<C>> FunctionRequest<'a, 'r, C, H> {
         })
     }
 }
+
+/// One-shot facade over [`PreparedFunctions`]. Existing callers retain their
+/// context and budget borrowing contract.
+pub struct FunctionRequest<'a, 'r, C, H: FunctionHost<C>> {
+    functions: PreparedFunctions<'a, 'r, C, H>,
+    context: &'r mut C,
+    budget: &'r mut Budget,
+    limits: FunctionLimits,
+}
+impl<'a, 'r, C, H: FunctionHost<C>> FunctionRequest<'a, 'r, C, H> {
+    /// Prepare every declaration before evaluating the entry.
+    ///
+    /// # Errors
+    /// Invalid declarations, scope, effects and allowances fail before execution.
+    pub fn prepare(
+        declarations: &'a [Declaration<C, H>],
+        host: &'r H,
+        context: &'r mut C,
+        budget: &'r mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        let functions = PreparedFunctions::prepare(declarations, host, budget)?;
+        Ok(Self {
+            functions,
+            context,
+            budget,
+            limits,
+        })
+    }
+    /// Prepare and evaluate one entry with explicit input bindings.
+    ///
+    /// # Errors
+    /// Runtime contracts and limits retain the original failure and bounded calls.
+    pub fn evaluate(
+        mut self,
+        entry: &'a ValueExpression<Query<C, H>>,
+        bindings: &Bindings<H::Value>,
+    ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
+        let mut scope = BTreeMap::new();
+        for (name, value) in bindings.iter() {
+            budget_name(name, self.budget, &entry.range)?;
+            scope.insert(
+                name.to_owned(),
+                self.functions
+                    .preflight
+                    .host
+                    .kind(value, self.budget, &entry.range)?,
+            );
+        }
+        let entry = self
+            .functions
+            .prepare_value(entry, &scope, None, self.budget)?;
+        self.functions.evaluate(
+            &entry,
+            bindings,
+            None,
+            self.context,
+            self.budget,
+            self.limits,
+        )
+    }
+}
+
 fn budget_name(name: &str, budget: &mut Budget, range: &Range<usize>) -> Result<(), QueryError> {
     budget.charge(name.len() + 1, Location::Query(range.clone()))
 }
@@ -762,6 +948,8 @@ struct Runtime<'r, 'a, C, H: FunctionHost<C>> {
     bindings: &'r Bindings<H::Value>,
     contracts: &'r BTreeMap<&'a str, &'a DeclaredType<Kind<C, H>>>,
     prepared: &'r BTreeMap<usize, Operand<Kind<C, H>>>,
+    body_prepared: &'r [BTreeMap<usize, Operand<Kind<C, H>>>],
+    source_function: Option<usize>,
     relative: Option<&'r H::Value>,
     limit: usize,
     calls: &'r mut CallTrace,
@@ -844,13 +1032,18 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         locals: &mut [(&'a str, HostValue<'a, C, H>)],
         bodies: &'a Bodies<'a, C, H>,
         depth: usize,
-        lexical: bool,
+        function: Option<usize>,
         projected: bool,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<HostValue<'a, C, H>, Self::Error> {
-        let operand = self
-            .prepared
+        let lexical = function.is_some();
+        let source_function = function.or(self.source_function);
+        let prepared = match source_function {
+            Some(id) => &self.body_prepared[id],
+            None => self.prepared,
+        };
+        let operand = prepared
             .get(&(query as *const _ as usize))
             .expect("request native operand");
         let mut values = BTreeMap::new();
@@ -919,6 +1112,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         };
         let host = self.host;
         let prepared = self.prepared;
+        let body_prepared = self.body_prepared;
         let limit = self.limit;
         let calls = &mut *self.calls;
         let value = operand.native.execute(
@@ -937,6 +1131,8 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
                     bindings,
                     contracts: &contracts,
                     prepared,
+                    body_prepared,
+                    source_function,
                     bodies,
                     arguments,
                     declared,
@@ -951,7 +1147,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
             },
             budget,
         )?;
-        if projected {
+        if projected || host.scalar_types(&operand.kind, budget, range)?.is_some() {
             let value = host.project_value(value, self.context, budget, range)?;
             constructed_value_type(&value, budget, Location::Query(range.clone()))?;
             Ok(Value::constructed(RuntimeValue::Owned(value)))
@@ -967,6 +1163,21 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         location: Location,
     ) -> Result<(), Self::Error> {
         admit_value(value, expected, self.host, self.context, budget, location)
+    }
+    fn subjects(
+        &mut self,
+        value: std::sync::Arc<H::Value>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<H::Value>, Self::Error> {
+        let range = match location {
+            Location::Query(range) | Location::Source(range) => range,
+        };
+        let value = match std::sync::Arc::try_unwrap(value) {
+            Ok(value) => value,
+            Err(value) => self.host.copy_value(&value, self.context, budget, range)?,
+        };
+        self.host.subjects(value, self.context, budget, range)
     }
     fn check(
         &mut self,
@@ -986,6 +1197,8 @@ struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
     bindings: &'r Bindings<H::Value>,
     contracts: &'r BTreeMap<&'a str, &'a DeclaredType<Kind<C, H>>>,
     prepared: &'r BTreeMap<usize, Operand<Kind<C, H>>>,
+    body_prepared: &'r [BTreeMap<usize, Operand<Kind<C, H>>>],
+    source_function: Option<usize>,
     bodies: &'a Bodies<'a, C, H>,
     arguments: &'a [PreparedArgument<'a, Query<C, H>>],
     declared: &'r [usize],
@@ -993,16 +1206,13 @@ struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
     limit: usize,
     calls: &'r mut CallTrace,
 }
-impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
-    fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
-        (self.context, self.bindings)
-    }
-    fn evaluate(
+impl<'a, C, H: FunctionHost<C>> Arguments<'_, 'a, C, H> {
+    fn run(
         &mut self,
         expression: &ValueExpression<Query<C, H>>,
-        input: H::Value,
+        input: &H::Value,
         budget: &mut Budget,
-    ) -> Result<ConstructedRead, EvaluationError<H::Error>> {
+    ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
         let id = expression as *const _ as usize;
         budget.charge(
             self.declared.len() + 1,
@@ -1031,11 +1241,13 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
             bindings: self.bindings,
             contracts: self.contracts,
             prepared: self.prepared,
-            relative: Some(&input),
+            body_prepared: self.body_prepared,
+            source_function: self.source_function,
+            relative: Some(input),
             limit: self.limit,
             calls: self.calls,
         };
-        let value = execution::execute(
+        execution::execute(
             &argument.expression,
             &argument.names,
             self.bodies,
@@ -1043,7 +1255,20 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
             budget,
             self.limit,
             self.depth,
-        )?;
+        )
+    }
+}
+impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
+    fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
+        (self.context, self.bindings)
+    }
+    fn evaluate(
+        &mut self,
+        expression: &ValueExpression<Query<C, H>>,
+        input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<ConstructedRead, EvaluationError<H::Error>> {
+        let value = self.run(expression, &input, budget)?;
         let location = Location::Query(expression.range.clone());
         let declaration = if let Some(contract) = value.contract {
             if crate::runtime_types::contains_native(contract, budget, &location)? {
@@ -1070,6 +1295,39 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
             }
         };
         Ok(ConstructedRead::from_runtime(value, location, declaration))
+    }
+    fn evaluate_native(
+        &mut self,
+        expression: &ValueExpression<Query<C, H>>,
+        input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<crate::NativeRead<H::Value, Kind<C, H>>, EvaluationError<H::Error>> {
+        let value = self.run(expression, &input, budget)?;
+        let location = Location::Query(expression.range.clone());
+        let declaration = value
+            .contract
+            .map(|contract| crate::runtime_types::copy_declaration(contract, budget, &location))
+            .transpose()?;
+        let value = match value.data {
+            Data::Native(owner) => owner,
+            Data::Constructed(data) => {
+                let value = Value {
+                    data: Data::<H::Value>::Constructed(data),
+                    contract: value.contract,
+                }
+                .materialize(budget, &location)?;
+                let types = vec![constructed_value_type(&value, budget, location)?];
+                crate::projection::admit_slots::<H::Value>(1, budget, &expression.range)?;
+                std::sync::Arc::new(self.host.lift_constructed(
+                    value,
+                    types,
+                    self.context,
+                    budget,
+                    &expression.range,
+                )?)
+            }
+        };
+        Ok(crate::NativeRead { value, declaration })
     }
 }
 

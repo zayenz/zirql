@@ -1700,6 +1700,7 @@ mod projection {
     enum Stage {
         Names,
         Count,
+        NativeArgument(Arc<zirql::ValueExpression<Query>>),
         Argument {
             value: Box<zirql::ValueExpression<Query>>,
             selected: bool,
@@ -1733,7 +1734,10 @@ mod projection {
             budget: &mut Budget,
             location: Location,
         ) -> Result<(), EvaluationError<QueryError>> {
-            // This control declares only its native subject selection interface.
+            let expected = match expected {
+                zirql::DeclaredType::Sequence(element) => element.as_ref(),
+                other => other,
+            };
             let (zirql::DeclaredType::Native(Kind::Subjects), Value::Subjects(rows)) =
                 (expected, value)
             else {
@@ -1859,6 +1863,7 @@ mod projection {
                     budget.charge_results(1, Location::Query(range.clone()))?;
                     Ok(Value::Captures { rows, schema })
                 }
+                Stage::NativeArgument(_) => unreachable!("prepared argument runner"),
                 Stage::Neighbors => unreachable!("registered edge only"),
                 Stage::Names => {
                     let Value::Subjects(rows) = value else {
@@ -1942,7 +1947,10 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<zirql::NativeValueArguments<'s, (), Self>, QueryError> {
-            if let Stage::Argument { value, .. } = stage {
+            if let Stage::NativeArgument(value) = stage {
+                budget.charge(1, Location::Query(range.clone()))?;
+                Ok(vec![(value.as_ref(), Kind::Subjects)])
+            } else if let Stage::Argument { value, .. } = stage {
                 budget.charge(1, Location::Query(range.clone()))?;
                 Ok(vec![(value.as_ref(), Kind::Subjects)])
             } else {
@@ -1957,6 +1965,15 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
+            if let Stage::NativeArgument(value) = stage {
+                let read = arguments.evaluate_native(value, Value::Subjects(vec![]), budget)?;
+                if matches!(value.value, K::Call { .. }) {
+                    assert!(read.declared_type().is_some());
+                }
+                let owner = read.into_shared();
+                let (context, _) = arguments.parts();
+                return self.copy_value(&owner, context, budget, range);
+            }
             if let Stage::Argument { value, selected } = stage {
                 if !selected {
                     return Ok(Value::Count(0));
@@ -2105,6 +2122,7 @@ mod projection {
                         budget,
                     )?,
                 ))),
+                Stage::NativeArgument(_) => Ok(Kind::Subjects),
                 Stage::Argument { .. } => Ok(Kind::Count),
                 Stage::Names if *input == Kind::Subjects => Ok(Kind::Strings),
                 Stage::Count if matches!(input, Kind::Subjects | Kind::Strings) => Ok(Kind::Count),
@@ -2114,6 +2132,9 @@ mod projection {
                     "incompatible native stage",
                 )),
             }
+        }
+        fn is_explicit_source(&self, stage: &Stage) -> bool {
+            matches!(stage, Stage::NativeArgument(_))
         }
         fn is_pure(&self, stage: &Stage) -> bool {
             *stage != Stage::Edit
@@ -2227,6 +2248,14 @@ mod projection {
         ) -> Result<Kind, QueryError> {
             Ok(match d {
                 zirql::DeclaredType::Native(kind) => kind.clone(),
+                zirql::DeclaredType::Sequence(element)
+                    if matches!(
+                        element.as_ref(),
+                        zirql::DeclaredType::Native(Kind::Subjects)
+                    ) =>
+                {
+                    Kind::Subjects
+                }
                 _ => self.constructed_kind(vec![ValueType::Unestablished]),
             })
         }
@@ -2581,6 +2610,266 @@ mod projection {
             .is_err()
         );
     }
+    #[test]
+    fn parsed_functions_share_preparation_native_arguments_and_generator_kinds() {
+        use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
+        let source = r#"
+            fn odd(n: int) -> bool { let next = n - 1; if n == 0 { false } else { even(next) } }
+            fn even(n: int) -> bool { if n == 0 { true } else if n == 1 { false } else { odd(n - 1) } }
+            fn identity(xs: Subjects) -> Subjects { let alias = xs; alias }
+            fn counts(xs: sequence<Subjects>) -> int { sum([identity(item) | count for item in xs]) }
+            fn parameter(if: int) -> int { let saved = if; if saved == 0 { if } else { saved } }
+            fn local() -> int { let if = 3; if if == 3 { if } else { 0 } }
+            counts(source)
+        "#;
+        let mut budget = function_budget();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let mut declarations = Vec::new();
+        while let Some(function) =
+            zirql::read_function_declaration(&mut reader, &mut Host, &mut budget, 64, |name, _| {
+                match name.value {
+                    "Subjects" => Ok(D::Native(Kind::Subjects)),
+                    _ => Err(QueryError::query(name.range, "unknown signature type")),
+                }
+            })
+            .unwrap()
+        {
+            declarations.push(function);
+        }
+        let entry = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let mut functions = PreparedFunctions::prepare(&declarations, &Host, &mut budget).unwrap();
+        let scope = BTreeMap::from([("source".into(), Kind::Subjects)]);
+        let entry = functions
+            .prepare_value(&entry, &scope, None, &mut budget)
+            .unwrap();
+        let limits = FunctionLimits { active_depth: 2 };
+        let bindings = Bindings::new([(
+            super::at("source".into(), 0),
+            Value::Subjects(vec!["alpha", "beta", "gamma"]),
+        )])
+        .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(&entry, &bindings, None, &mut (), &mut budget, limits)
+                .unwrap(),
+            Value::Constructed(V::Declared {
+                value: Box::new(V::Integer(3)),
+                declaration: D::Integer
+            })
+        );
+        let empty =
+            Bindings::new([(super::at("source".into(), 0), Value::Subjects(vec![]))]).unwrap();
+        assert_eq!(
+            functions
+                .evaluate(&entry, &empty, None, &mut (), &mut budget, limits)
+                .unwrap(),
+            Value::Constructed(V::Declared {
+                value: Box::new(V::Integer(0)),
+                declaration: D::Integer
+            })
+        );
+        let mut reader = zirql::ArgumentReader::new("even(200)", 0).unwrap();
+        let tail = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let tail = functions
+            .prepare_value(&tail, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(
+                    &tail,
+                    &Bindings::default(),
+                    None,
+                    &mut (),
+                    &mut budget,
+                    FunctionLimits { active_depth: 1 }
+                )
+                .unwrap(),
+            Value::Constructed(V::Declared {
+                value: Box::new(V::Boolean(true)),
+                declaration: D::Boolean
+            })
+        );
+        let mut reader = zirql::ArgumentReader::new("parameter(0) + local()", 0).unwrap();
+        let named_if =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let named_if = functions
+            .prepare_value(&named_if, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(
+                    &named_if,
+                    &Bindings::default(),
+                    None,
+                    &mut (),
+                    &mut budget,
+                    limits
+                )
+                .unwrap(),
+            Value::Constructed(V::Integer(3))
+        );
+        // A typed caller may share the same source tree in two lexical scopes.
+        let mut reader = zirql::ArgumentReader::new("identity(source) | count", 0).unwrap();
+        let pipeline =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let first = functions
+            .prepare_value(&pipeline, &scope, None, &mut budget)
+            .unwrap();
+        let mut expanded = scope.clone();
+        expanded.insert("unused".into(), Kind::Subjects);
+        let _second = functions
+            .prepare_value(&pipeline, &expanded, None, &mut budget)
+            .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(&first, &bindings, None, &mut (), &mut budget, limits)
+                .unwrap(),
+            Value::Constructed(V::Integer(3))
+        );
+        let other = PreparedFunctions::prepare(&declarations, &Host, &mut budget).unwrap();
+        assert!(
+            other
+                .evaluate(&entry, &empty, None, &mut (), &mut budget, limits)
+                .unwrap_err()
+                .to_string()
+                .contains("different prepared")
+        );
+    }
+
+    #[test]
+    fn shared_native_argument_trees_keep_each_function_lexical_kind() {
+        use zirql::{
+            DeclaredType as D, FunctionDeclaration, FunctionLimits, FunctionParameter,
+            PreparedFunctions,
+        };
+        let shared = Arc::new(function_value(K::NativeValue(Box::new(super::at(
+            ExpressionKind::Binding("xs".into()),
+            0,
+        )))));
+        let declaration = |name: &str, ty: D<Kind>| FunctionDeclaration {
+            name: super::at(name.into(), 0),
+            parameters: vec![super::at(
+                FunctionParameter {
+                    name: super::at("xs".into(), 0),
+                    declaration: ty.clone(),
+                },
+                0,
+            )],
+            result: super::at(ty, 0),
+            bindings: vec![],
+            value: function_value(K::NativeValue(Box::new(super::sequence(
+                super::at(ExpressionKind::Input, 0),
+                vec![super::at(
+                    ExpressionStep::Stage(Stage::NativeArgument(Arc::clone(&shared))),
+                    0,
+                )],
+            )))),
+        };
+        let declarations = [
+            declaration("native", D::Native(Kind::Subjects)),
+            declaration("scalar", D::String),
+        ];
+        let mut budget = function_budget();
+        let mut functions = PreparedFunctions::prepare(&declarations, &Host, &mut budget).unwrap();
+        let native = function_call("native", vec![fn_name("source")]);
+        let scalar = function_call(
+            "scalar",
+            vec![function_value(K::Literal(V::String("alpha".into())))],
+        );
+        let native = functions
+            .prepare_value(
+                &native,
+                &BTreeMap::from([("source".into(), Kind::Subjects)]),
+                None,
+                &mut budget,
+            )
+            .unwrap();
+        let scalar = functions
+            .prepare_value(&scalar, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        let bindings = Bindings::new([(
+            super::at("source".into(), 0),
+            Value::Subjects(vec!["alpha"]),
+        )])
+        .unwrap();
+        let limits = FunctionLimits { active_depth: 1 };
+        assert_eq!(
+            functions
+                .evaluate(&native, &bindings, None, &mut (), &mut budget, limits)
+                .unwrap(),
+            Value::Subjects(vec!["alpha"])
+        );
+        let result = functions
+            .evaluate(
+                &scalar,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut budget,
+                limits,
+            )
+            .unwrap();
+        let Value::Constructed(result) = result else {
+            panic!("expected string")
+        };
+        assert_eq!(result.data(), &V::String("alpha".into()));
+    }
+
+    #[test]
+    fn signature_reader_keeps_complete_types_and_located_refusals() {
+        use zirql::{DeclaredType as D, SetElementType as S};
+        let source = "fn types(x: opt record {field: tuple<int, sequence<Subjects>>, flags: set<bool>, cells: keyed<float>, label: string}) -> int { 0 }";
+        let mut budget = function_budget();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let declaration =
+            zirql::read_function_declaration(&mut reader, &mut Host, &mut budget, 64, |name, _| {
+                if name.value == "Subjects" {
+                    Ok(D::Native(Kind::Subjects))
+                } else {
+                    Err(QueryError::query(name.range, "unknown signature type"))
+                }
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            declaration.parameters[0].value.declaration,
+            D::Optional(Box::new(D::Record(vec![
+                (
+                    "field".into(),
+                    D::Tuple(vec![
+                        D::Integer,
+                        D::Sequence(Box::new(D::Native(Kind::Subjects)))
+                    ])
+                ),
+                ("flags".into(), D::Set(S::Boolean)),
+                ("cells".into(), D::Keyed(Box::new(D::Float))),
+                ("label".into(), D::String),
+            ])))
+        );
+        for (source, expected) in [
+            ("fn f(x: Missing) -> int { 0 }", "unknown signature type"),
+            (
+                "fn f(x: set<string>) -> int { 0 }",
+                "unsupported set element",
+            ),
+            ("fn f() -> int { if true { 1 } }", "final else"),
+        ] {
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let error = zirql::read_function_declaration(
+                &mut reader,
+                &mut Host,
+                &mut budget,
+                64,
+                |name, _| {
+                    Err::<D<Kind>, _>(QueryError::query(name.range, "unknown signature type"))
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(matches!(error.location, Location::Query(_)));
+        }
+    }
+
     impl ValueReaderHost for Host {
         type Stage = Stage;
         type SetOperator = ();
@@ -2654,6 +2943,13 @@ mod projection {
                 "neighbors" => Ok(Stage::Neighbors),
                 _ => Err(QueryError::query(edge.range, "unsupported path edge")),
             }
+        }
+        fn value_source(
+            &mut self,
+            value: zirql::ValueExpression<Query>,
+            _: Range<usize>,
+        ) -> Result<Stage, QueryError> {
+            Ok(Stage::NativeArgument(Arc::new(value)))
         }
         fn set_operator(&self, word: &str) -> Option<()> {
             (word == "union").then_some(())
@@ -2799,7 +3095,7 @@ mod projection {
         type Emitter = ();
         type Predicate = Truth;
         fn is_binding(&self, name: &str) -> bool {
-            matches!(name, "f" | "one" | "project")
+            matches!(name, "f" | "one" | "project" | "if")
         }
         fn is_stage(&self, name: &str) -> bool {
             Host.is_stage(name)
@@ -3806,6 +4102,10 @@ mod projection {
                 Located::new("project".into(), 0..0),
                 Value::Strings(vec!["legacy".into()]),
             ),
+            (
+                Located::new("if".into(), 0..0),
+                Value::Constructed(V::Boolean(true)),
+            ),
         ])
         .unwrap();
         for (source, expected) in [
@@ -3834,6 +4134,10 @@ mod projection {
                 V::Array(vec![V::Record(vec![("n".into(), V::Integer(1))])]),
             ),
             ("project", V::Array(vec![V::String("legacy".into())])),
+            ("if", V::Boolean(true)),
+            ("if and true", V::Boolean(true)),
+            ("if true { if } else { false }", V::Boolean(true)),
+            ("if if { 1 } else { 0 }", V::Integer(1)),
             ("f | project", V::Array(vec![V::String("legacy".into())])),
             ("one(f | names)", V::String("beta".into())),
             (

@@ -20,7 +20,8 @@ pub use eval::{
 };
 pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionError, FunctionHost, FunctionLimits,
-    FunctionParameter, FunctionRequest, dispose_functions, evaluate_functions,
+    FunctionParameter, FunctionRequest, PreparedFunctionValue, PreparedFunctions,
+    dispose_functions, evaluate_functions,
 };
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match, match_types,
@@ -33,15 +34,15 @@ pub use program::{
     dispose_expression, evaluate_expression, evaluate_program,
 };
 pub use projection::{
-    ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeValueArguments,
-    Projection, ProjectionFields, ProjectionHost, evaluate_native_value,
+    ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeRead,
+    NativeValueArguments, Projection, ProjectionFields, ProjectionHost, evaluate_native_value,
     evaluate_native_value_with_types, evaluate_projection, evaluate_projection_with_types,
     native_expression_kind, native_value_types, projection_types,
 };
 pub use reader::{
-    CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value, read_match,
-    read_native_expression, read_paths, read_projection, read_statement_prefix,
-    read_value_expression,
+    CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value,
+    read_function_declaration, read_match, read_native_expression, read_paths, read_projection,
+    read_statement_prefix, read_value_expression,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,

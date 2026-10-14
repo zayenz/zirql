@@ -442,6 +442,18 @@ pub trait ValueQueryHost<Q> {
     ) -> Result<(), QueryError> {
         Ok(())
     }
+    /// Preserve a native sequence's declared singleton kind in lexical binders,
+    /// including when runtime enumeration is empty. Ordinary value hosts need
+    /// no extra metadata beyond constructed element facts.
+    fn prepare_generator(
+        &mut self,
+        _binder: &Located<Option<String>>,
+        _source: &ValueExpression<Q>,
+        _types: &[ValueType],
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
     fn query_types(
         &mut self,
         query: &Q,
@@ -3361,6 +3373,8 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     }
                     for binder in binders {
                         self.bind(binder, &elements, budget)?;
+                        self.queries
+                            .prepare_generator(binder, source, &elements, budget)?;
                     }
                     if let Some(filter) = filter {
                         self.condition(filter, budget)?;

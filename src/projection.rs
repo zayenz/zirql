@@ -32,6 +32,25 @@ pub type NativeValueArguments<'s, C, H> = Vec<(
     <H as ProjectionHost<C>>::Kind,
 )>;
 
+/// An immutable native argument retaining its owner after a function frame ends.
+/// Declaration metadata describes the whole admitted value; it does not replace
+/// the host's current-document checks at a later native boundary.
+pub struct NativeRead<V, K> {
+    pub(crate) value: std::sync::Arc<V>,
+    pub(crate) declaration: Option<crate::DeclaredType<K>>,
+}
+impl<V, K> NativeRead<V, K> {
+    pub fn value(&self) -> &V {
+        &self.value
+    }
+    pub fn declared_type(&self) -> Option<&crate::DeclaredType<K>> {
+        self.declaration.as_ref()
+    }
+    pub fn into_shared(self) -> std::sync::Arc<V> {
+        self.value
+    }
+}
+
 /// Borrowed only while a prepared native stage executes. The runner retains the
 /// exact current context and lexical scope; adapters cannot rebind its context.
 pub trait NativeArguments<C, H: ProjectionHost<C>> {
@@ -47,6 +66,27 @@ pub trait NativeArguments<C, H: ProjectionHost<C>> {
         relative_input: H::Value,
         budget: &mut Budget,
     ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>>;
+    /// Evaluate a selected declared argument while retaining native ownership.
+    /// Existing scalar-only runners reject this opt-in bridge.
+    ///
+    /// # Errors
+    /// Undeclared arguments, unavailable native execution and limits are located.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The native argument retains the adapter's value, kind and error types"
+    )]
+    fn evaluate_native(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        _relative_input: H::Value,
+        _budget: &mut Budget,
+    ) -> Result<NativeRead<H::Value, H::Kind>, EvaluationError<H::Error>> {
+        Err(QueryError::query(
+            expression.range.clone(),
+            "native arguments require a prepared function program",
+        )
+        .into())
+    }
 }
 
 /// Domain facts and explicit scalar conversions for shared native projection.
@@ -100,6 +140,12 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Self::Kind, QueryError>;
+    /// A pure stage that supplies its own explicit native input through declared
+    /// arguments, rather than reading the surrounding pipeline input. The runner
+    /// supplies an absent placeholder which this stage must ignore.
+    fn is_explicit_source(&self, _stage: &Self::Stage) -> bool {
+        false
+    }
     fn is_pure(&self, stage: &Self::Stage) -> bool;
     /// Expose domain selector operands as normalized expressions with their relative kind.
     fn nested_queries(
@@ -354,11 +400,16 @@ impl NativePreparation<'_> {
     }
 }
 
+type DeclaredArguments<'q, C, H> = Vec<(
+    &'q ValueExpression<NativeExpression<C, H>>,
+    Option<<H as ProjectionHost<C>>::Kind>,
+)>;
+
 pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
     query: &'q NativeExpression<C, H>,
     host: &H,
     budget: &mut Budget,
-) -> Result<NativeValueArguments<'q, C, H>, QueryError> {
+) -> Result<DeclaredArguments<'q, C, H>, QueryError> {
     enum Pending<'q, S, O, E> {
         Expression(&'q Expression<S, O, E>),
         Step(&'q Located<ExpressionStep<S, E>>),
@@ -376,7 +427,12 @@ pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
                         budget,
                         &step.range,
                     )?;
-                    result.extend(arguments);
+                    let relative = !host.is_explicit_source(stage);
+                    result.extend(
+                        arguments
+                            .into_iter()
+                            .map(|(value, kind)| (value, relative.then_some(kind))),
+                    );
                 }
             }
             Pending::Expression(expression) => match &expression.value {
@@ -488,7 +544,9 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
             for (expression, input_kind) in arguments {
                 let mut queries = NativeValues {
                     host: self.host,
-                    input_kind,
+                    input_kind: input_kind.unwrap_or_else(|| {
+                        self.host.constructed_kind(vec![ValueType::Unestablished])
+                    }),
                     input: None,
                     context: None,
                     bindings: None,

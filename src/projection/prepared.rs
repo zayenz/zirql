@@ -247,10 +247,26 @@ impl PreparedNative {
                             steps,
                         },
                     ) => {
-                        let mut value = prepared.execute(
-                            source, host, input, context, bindings, outer, subject, locals,
-                            run_stage, budget,
-                        )?;
+                        let explicit = matches!(source.value, ExpressionKind::Input)
+                            && steps.first().is_some_and(|step| match &step.value {
+                                ExpressionStep::Stage(stage) => host.is_explicit_source(stage),
+                                ExpressionStep::Emit { .. } => false,
+                            });
+                        let mut value = if explicit {
+                            budget.charge_results(1, Location::Query(expression.range.clone()))?;
+                            host.lift_constructed(
+                                crate::ConstructedValue::Absent,
+                                vec![crate::ValueType::Absent],
+                                context,
+                                budget,
+                                &expression.range,
+                            )?
+                        } else {
+                            prepared.execute(
+                                source, host, input, context, bindings, outer, subject, locals,
+                                run_stage, budget,
+                            )?
+                        };
                         for (step, declared) in steps.iter().zip(declared) {
                             let ExpressionStep::Stage(stage) = &step.value else {
                                 unreachable!("prepared native query is pure")
