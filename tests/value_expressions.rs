@@ -4540,3 +4540,466 @@ fn named_accumulators_keep_declared_absence_and_empty_element_types() {
         &V::Array(vec![])
     );
 }
+
+fn state_loop(states: Vec<(&str, E)>, body: E) -> E {
+    e(K::Loop {
+        states: states
+            .into_iter()
+            .map(|(s, v)| (Located::new(s.into(), 80..81), v))
+            .collect(),
+        body: Box::new(body),
+    })
+}
+fn exit(value: E) -> E {
+    e(K::Break(Box::new(value)))
+}
+fn advance(values: Vec<E>) -> E {
+    e(K::Continue(values))
+}
+
+#[test]
+fn loops_accumulate_beyond_call_depth_and_replace_complete_old_state() {
+    let accumulator = function(
+        "acc",
+        vec![("input", D::Integer)],
+        D::Integer,
+        state_loop(
+            vec![("remaining", name("input")), ("total", int(0))],
+            block(
+                vec![(pattern_name("old"), name("remaining"))],
+                select_branch(
+                    binary(B::Equal, name("remaining"), int(0)),
+                    exit(name("total")),
+                    advance(vec![
+                        binary(B::Subtract, name("remaining"), int(1)),
+                        binary(B::Add, name("total"), name("old")),
+                    ]),
+                ),
+            ),
+        ),
+    );
+    assert_eq!(
+        run_functions(
+            &[accumulator],
+            &call("acc", vec![int(10_000)]),
+            1,
+            &mut budget(20_000_000, 2_000_000, 64)
+        )
+        .unwrap()
+        .data(),
+        &V::Integer(50_005_000)
+    );
+    let swap = state_loop(
+        vec![("n", int(3)), ("x", int(2)), ("y", int(9))],
+        select_branch(
+            binary(B::Equal, name("n"), int(0)),
+            exit(e(K::Tuple(vec![name("x"), name("y")]))),
+            advance(vec![
+                binary(B::Subtract, name("n"), int(1)),
+                name("y"),
+                name("x"),
+            ]),
+        ),
+    );
+    let result = evaluate_value(&swap, &Bindings::default(), &mut ample())
+        .unwrap()
+        .into_data();
+    assert!(
+        matches!(result, V::Tuple(v) if v[0].data()==&V::Integer(9) && v[1].data()==&V::Integer(2))
+    );
+}
+
+#[test]
+fn loop_scopes_and_nested_match_transfers_stay_lexical() {
+    let inner = state_loop(
+        vec![("inner", int(1))],
+        select_branch(
+            binary(B::Equal, name("inner"), int(0)),
+            exit(int(2)),
+            advance(vec![int(0)]),
+        ),
+    );
+    let expression = block(
+        vec![(pattern_name("seed"), int(3))],
+        state_loop(
+            vec![("n", name("seed")), ("total", int(0))],
+            block(
+                vec![(pattern_name("step"), inner)],
+                value_match(
+                    name("n"),
+                    vec![
+                        arm(
+                            pattern(zirql::PatternKind::Literal(V::Integer(0))),
+                            None,
+                            exit(name("total")),
+                        ),
+                        fallback(advance(vec![
+                            binary(B::Subtract, name("n"), int(1)),
+                            binary(B::Add, name("total"), name("step")),
+                        ])),
+                    ],
+                ),
+            ),
+        ),
+    );
+    assert_eq!(
+        evaluate_value(&expression, &Bindings::default(), &mut ample())
+            .unwrap()
+            .data(),
+        &V::Integer(6)
+    );
+    assert!(
+        free_value_names(&expression, &BTreeMap::new(), &mut ample())
+            .unwrap()
+            .is_empty()
+    );
+    let leaked = block(
+        vec![(
+            pattern_name("result"),
+            state_loop(vec![("private", int(1))], exit(name("private"))),
+        )],
+        name("private"),
+    );
+    assert!(
+        evaluate_value(&leaked, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("undefined binding")
+    );
+    let forward = state_loop(vec![("a", int(1)), ("b", name("a"))], exit(name("b")));
+    assert!(
+        evaluate_value(&forward, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("undefined binding")
+    );
+    let duplicate = state_loop(vec![("a", int(1)), ("a", int(2))], exit(name("a")));
+    assert!(
+        validate_value_expression(&duplicate, &BTreeMap::new(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("already defined")
+    );
+    let shadow = block(
+        vec![(pattern_name("a"), int(1))],
+        state_loop(vec![("a", int(2))], exit(name("a"))),
+    );
+    assert!(
+        evaluate_value(&shadow, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("already defined")
+    );
+}
+
+#[test]
+fn loop_preparation_rejects_fallthrough_ordinary_transfers_and_function_escape() {
+    let fallthrough = state_loop(
+        vec![],
+        select_branch(literal(V::Boolean(true)), exit(int(1)), int(2)),
+    );
+    assert!(
+        evaluate_value(&fallthrough, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("must end")
+    );
+    let operand_transfer = state_loop(vec![], exit(binary(B::Add, int(1), exit(int(2)))));
+    assert!(
+        evaluate_value(&operand_transfer, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("terminal loop body")
+    );
+    let wrong_arity = state_loop(vec![("a", int(0))], advance(vec![]));
+    assert!(
+        evaluate_value(&wrong_arity, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("argument count")
+    );
+    let helper = function("escape", vec![], D::Integer, exit(int(1)));
+    assert!(
+        run_functions(
+            &[helper],
+            &state_loop(vec![], exit(call("escape", vec![]))),
+            1,
+            &mut ample()
+        )
+        .unwrap_err()
+        .error
+        .message
+        .contains("terminal loop body")
+    );
+    let outside = advance(vec![]);
+    assert!(validate_value_expression(&outside, &BTreeMap::new(), &mut ample()).is_err());
+    let discard = state_loop(vec![("_", int(0))], exit(int(1)));
+    assert!(
+        evaluate_value(&discard, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("discard")
+    );
+}
+
+#[test]
+fn loop_contracts_keep_optional_empty_and_structured_state_fixed() {
+    let optional = literal(V::Declared {
+        value: Box::new(V::Integer(1)),
+        declaration: D::Optional(Box::new(D::Integer)),
+    });
+    let expression = state_loop(
+        vec![("value", optional)],
+        select_branch(
+            e(K::Occurs(Box::new(name("value")))),
+            advance(vec![literal(V::Absent)]),
+            exit(e(K::Default {
+                value: Box::new(name("value")),
+                fallback: Box::new(int(7)),
+            })),
+        ),
+    );
+    assert_eq!(
+        evaluate_value(&expression, &Bindings::default(), &mut ample())
+            .unwrap()
+            .data(),
+        &V::Integer(7)
+    );
+    let shrink = state_loop(
+        vec![("values", e(K::Array(vec![int(1)])))],
+        select_branch(
+            binary(
+                B::Equal,
+                e(K::Reduce {
+                    operator: R::Length,
+                    array: Box::new(name("values")),
+                }),
+                int(0),
+            ),
+            exit(name("values")),
+            advance(vec![e(K::Array(vec![]))]),
+        ),
+    );
+    let result = evaluate_value(&shrink, &Bindings::default(), &mut ample()).unwrap();
+    assert!(matches!(result.data(), V::Array(v) if v.is_empty()));
+    assert!(matches!(
+        result,
+        V::Declared {
+            declaration: D::Sequence(_),
+            ..
+        }
+    ));
+    let typed_empty = state_loop(
+        vec![(
+            "values",
+            literal(V::Declared {
+                value: Box::new(V::Array(vec![])),
+                declaration: D::Sequence(Box::new(D::Integer)),
+            }),
+        )],
+        exit(name("values")),
+    );
+    assert!(
+        matches!(evaluate_value(&typed_empty, &Bindings::default(), &mut ample()).unwrap().data(), V::Array(v) if v.is_empty())
+    );
+    let wrong_scalar = state_loop(
+        vec![("value", int(1))],
+        advance(vec![literal(V::Boolean(false))]),
+    );
+    assert!(
+        evaluate_value(&wrong_scalar, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("integer")
+    );
+    let wrong_optional = state_loop(
+        vec![(
+            "value",
+            literal(V::Declared {
+                value: Box::new(V::Absent),
+                declaration: D::Optional(Box::new(D::Integer)),
+            }),
+        )],
+        advance(vec![literal(V::String("wrong".into()))]),
+    );
+    assert!(
+        evaluate_value(&wrong_optional, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("integer")
+    );
+    let wrong = state_loop(
+        vec![("pair", e(K::Tuple(vec![int(1), literal(V::Boolean(true))])))],
+        advance(vec![e(K::Tuple(vec![int(2), int(3)]))]),
+    );
+    assert!(
+        evaluate_value(&wrong, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("Boolean")
+    );
+    let bare = state_loop(vec![("value", literal(V::Absent))], exit(int(0)));
+    assert!(
+        evaluate_value(&bare, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("established type")
+    );
+    let empty = state_loop(vec![("value", e(K::Array(vec![])))], exit(int(0)));
+    assert!(
+        evaluate_value(&empty, &Bindings::default(), &mut ample())
+            .unwrap_err()
+            .message
+            .contains("explicit element contract")
+    );
+    let absent_string = function(
+        "missing_text",
+        vec![],
+        D::Optional(Box::new(D::String)),
+        literal(V::Absent),
+    );
+    let typed_absence = state_loop(
+        vec![(
+            "value",
+            literal(V::Declared {
+                value: Box::new(V::Absent),
+                declaration: D::Optional(Box::new(D::Integer)),
+            }),
+        )],
+        advance(vec![call("missing_text", vec![])]),
+    );
+    assert!(
+        run_functions(&[absent_string], &typed_absence, 1, &mut ample())
+            .unwrap_err()
+            .error
+            .message
+            .contains("incompatible declared")
+    );
+    let absent_int = function(
+        "missing_int",
+        vec![],
+        D::Optional(Box::new(D::Integer)),
+        literal(V::Absent),
+    );
+    let borrowed = function(
+        "keep_int",
+        vec![("input", D::Optional(Box::new(D::Integer)))],
+        D::Integer,
+        state_loop(
+            vec![("value", name("input"))],
+            advance(vec![call("missing_text", vec![])]),
+        ),
+    );
+    let absent_string = function(
+        "missing_text",
+        vec![],
+        D::Optional(Box::new(D::String)),
+        literal(V::Absent),
+    );
+    assert!(
+        run_functions(
+            &[absent_int, borrowed, absent_string],
+            &call("keep_int", vec![call("missing_int", vec![])]),
+            2,
+            &mut ample()
+        )
+        .unwrap_err()
+        .error
+        .message
+        .contains("incompatible declared")
+    );
+    let wrong_exit = function(
+        "wrong",
+        vec![],
+        D::Integer,
+        state_loop(vec![], exit(literal(V::Boolean(true)))),
+    );
+    assert!(
+        run_functions(&[wrong_exit], &call("wrong", vec![]), 1, &mut ample())
+            .unwrap_err()
+            .error
+            .message
+            .contains("integer")
+    );
+}
+
+#[test]
+fn loop_failures_release_scope_and_keep_spent_budget_and_depth_limits() {
+    let mut allowance = ample();
+    let failing = state_loop(
+        vec![("x", int(1)), ("y", int(2))],
+        advance(vec![int(3), binary(B::IntegerDivide, int(1), int(0))]),
+    );
+    let remaining = allowance.remaining_work();
+    assert!(
+        evaluate_value(&failing, &Bindings::default(), &mut allowance)
+            .unwrap_err()
+            .message
+            .contains("zero")
+    );
+    assert!(allowance.remaining_work() < remaining);
+    assert_eq!(
+        evaluate_value(&int(8), &Bindings::default(), &mut allowance).unwrap(),
+        V::Integer(8)
+    );
+    let infinite = state_loop(vec![], advance(vec![]));
+    assert_eq!(
+        evaluate_value(&infinite, &Bindings::default(), &mut budget(2000, 1000, 16))
+            .unwrap_err()
+            .category,
+        zirql::QueryErrorCategory::WorkLimit
+    );
+    let nested = function(
+        "nested",
+        vec![],
+        D::Integer,
+        state_loop(vec![], exit(binary(B::Add, int(1), call("nested", vec![])))),
+    );
+    assert!(
+        run_functions(&[nested], &call("nested", vec![]), 1, &mut ample())
+            .unwrap_err()
+            .error
+            .message
+            .contains("active function depth")
+    );
+    let tail = function(
+        "tail",
+        vec![("n", D::Integer)],
+        D::Integer,
+        state_loop(
+            vec![],
+            exit(select_branch(
+                binary(B::Equal, name("n"), int(0)),
+                int(0),
+                call("tail", vec![binary(B::Subtract, name("n"), int(1))]),
+            )),
+        ),
+    );
+    assert_eq!(
+        run_functions(
+            &[tail],
+            &call("tail", vec![int(1000)]),
+            1,
+            &mut budget(5_000_000, 500_000, 64)
+        )
+        .unwrap()
+        .data(),
+        &V::Integer(0)
+    );
+}
+
+#[test]
+fn loops_inside_named_steps_keep_the_fixed_state_return_contract() {
+    let optional = D::Optional(Box::new(D::Integer));
+    let step = function(
+        "loop_step",
+        vec![("s", D::Integer), ("x", D::Integer)],
+        optional.clone(),
+        state_loop(vec![], exit(call("selected", vec![]))),
+    );
+    let selected = function("selected", vec![], optional, literal(V::Absent));
+    let request = accumulate(e(K::Array(vec![int(1)])), int(0), "loop_step", false);
+    let error = run_functions(&[step, selected], &request, 1, &mut ample()).unwrap_err();
+    assert_eq!(error.calls[0].function, "selected");
+    assert!(error.error.message.contains("integer"));
+}

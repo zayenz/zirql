@@ -143,6 +143,12 @@ pub(crate) enum PreparedKind<'a, Q> {
         branches: Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>,
         otherwise: Box<PreparedValue<'a, Q>>,
     },
+    Loop {
+        states: Vec<(&'a Located<String>, PreparedValue<'a, Q>)>,
+        body: Box<PreparedValue<'a, Q>>,
+    },
+    Break(Box<PreparedValue<'a, Q>>),
+    Continue(Vec<PreparedValue<'a, Q>>),
     Block {
         bindings: Vec<(&'a Pattern, PreparedValue<'a, Q>)>,
         value: Box<PreparedValue<'a, Q>>,
@@ -198,9 +204,20 @@ impl<'a> Preparation<'a> {
         queries: &mut H,
         budget: &mut Budget,
     ) -> Result<PreparedValue<'a, Q>, QueryError> {
+        self.resolve_control(expression, queries, budget, None)
+    }
+
+    fn resolve_control<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        expression: &'a ValueExpression<Q>,
+        queries: &mut H,
+        budget: &mut Budget,
+        transfer: Option<usize>,
+    ) -> Result<PreparedValue<'a, Q>, QueryError> {
         let location = Location::Query(expression.range.clone());
         budget.within_evaluation(1, location.clone(), |budget| {
             budget.charge(1, location.clone())?;
+            check_loop_terminal(&expression.value, transfer, &location)?;
             let kind = match &expression.value {
                 ValueExpressionKind::Literal(value) => PreparedKind::Literal(value),
                 ValueExpressionKind::Call {
@@ -425,13 +442,46 @@ impl<'a> Preparation<'a> {
                     for (condition, value) in branches {
                         children.push((
                             self.resolve(condition, queries, budget)?,
-                            self.resolve(value, queries, budget)?,
+                            self.resolve_control(value, queries, budget, transfer)?,
                         ));
                     }
                     PreparedKind::Conditional {
                         branches: children,
-                        otherwise: Box::new(self.resolve(otherwise, queries, budget)?),
+                        otherwise: Box::new(
+                            self.resolve_control(otherwise, queries, budget, transfer)?,
+                        ),
                     }
+                }
+                ValueExpressionKind::Loop { states, body } => {
+                    let mut resolved = metadata_vec(states.len(), budget, &location)?;
+                    for (name, value) in states {
+                        resolved.push((name, self.resolve(value, queries, budget)?));
+                    }
+                    let saved = self.locals.len();
+                    for (name, _) in states {
+                        push_metadata(&mut self.locals, name.value.as_str(), budget, &location)?;
+                    }
+                    let body = Box::new(self.resolve_control(
+                        body,
+                        queries,
+                        budget,
+                        Some(states.len()),
+                    )?);
+                    self.locals.truncate(saved);
+                    PreparedKind::Loop {
+                        states: resolved,
+                        body,
+                    }
+                }
+                ValueExpressionKind::Break(value) => {
+                    PreparedKind::Break(Box::new(self.resolve(value, queries, budget)?))
+                }
+                ValueExpressionKind::Continue(values) => {
+                    let mut resolved = metadata_vec(values.len(), budget, &location)?;
+                    for value in values {
+                        resolved.push(self.resolve(value, queries, budget)?);
+                    }
+                    PreparedKind::Continue(resolved)
                 }
                 ValueExpressionKind::Block { bindings, value } => {
                     let saved = self.locals.len();
@@ -441,7 +491,7 @@ impl<'a> Preparation<'a> {
                         pattern::names(pattern, &mut self.locals, budget)?;
                         resolved.push((pattern, value));
                     }
-                    let value = Box::new(self.resolve(value, queries, budget)?);
+                    let value = Box::new(self.resolve_control(value, queries, budget, transfer)?);
                     self.locals.truncate(saved);
                     PreparedKind::Block {
                         bindings: resolved,
@@ -459,7 +509,7 @@ impl<'a> Preparation<'a> {
                             .as_ref()
                             .map(|v| self.resolve(v, queries, budget))
                             .transpose()?;
-                        let value = self.resolve(&arm.value, queries, budget)?;
+                        let value = self.resolve_control(&arm.value, queries, budget, transfer)?;
                         self.locals.truncate(saved);
                         resolved.push(PreparedArm {
                             pattern: &arm.pattern,
@@ -626,6 +676,26 @@ impl RuntimeValue {
             Self::Shared { declaration, .. } => declaration.as_deref(),
             Self::Owned(_) => None,
         })
+    }
+    pub fn retain_declaration(
+        &mut self,
+        contract: &Arc<DeclaredType<()>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), QueryError> {
+        budget.charge(1, location.clone())?;
+        if let Self::Owned(_) = self {
+            let Self::Owned(value) = std::mem::replace(self, Self::Owned(ConstructedValue::Absent))
+            else {
+                unreachable!()
+            };
+            *self = Self::shared(Arc::new(value));
+        }
+        let Self::Shared { declaration, .. } = self else {
+            unreachable!()
+        };
+        *declaration = Some(Arc::clone(contract));
+        Ok(())
     }
     pub fn materialize(
         self,

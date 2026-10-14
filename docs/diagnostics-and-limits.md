@@ -340,3 +340,17 @@ output and pending work without requiring spare budget.
 Step lookup and signature errors point to the step name. Initial admission uses
 the initial expression's range, while item/container failures use the items
 range. Errors within a step retain their body or native source locations.
+
+
+## Loop work
+
+Callable loop initialization, each body visit, transfer search, next-state
+operand and contract admission spend the same active allowance. Metadata for
+state slots, staged values, fixed contracts and continuations is admitted before
+growth. Completed iterations release their locals and pending work, with no
+refund of cumulative work or results. A fixed-width loop can run beyond the
+active function-depth ceiling; non-tail calls, expression nesting and native
+reentry retain their separate limits. An endless `Continue` receives an ordinary
+located work-limit error. Operand, contract and budget failures release staged
+state and restore active evaluation state; a later operation may use any
+remaining allowance.

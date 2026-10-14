@@ -2065,6 +2065,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::One(child)
+            | K::Break(child)
             | K::Occurs(child)
             | K::Absent(child)
             | K::IndexSet(child)
@@ -2121,6 +2122,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::Array(values)
+            | K::Continue(values)
             | K::Tuple(values)
             | K::Set(values)
             | K::Call {
@@ -2138,6 +2140,11 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                     pending.push(key);
                     pending.push(value);
                 }
+                continue;
+            }
+            K::Loop { states, body } => {
+                pending.push(*body);
+                pending.extend(states.into_iter().map(|(_, value)| value));
                 continue;
             }
             K::Block { bindings, value } => {

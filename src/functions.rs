@@ -778,6 +778,74 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         })
     }
 
+    // The outer Option distinguishes no break (continue) from a constructed
+    // break result. Nested loops are ordinary values, never outer exits.
+    fn loop_kind(
+        &mut self,
+        value: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Option<Option<Kind<C, H>>>, QueryError> {
+        budget.within_evaluation(1, Location::Query(value.range.clone()), |budget| {
+            budget.charge(1, Location::Query(value.range.clone()))?;
+            match &value.value {
+                ValueExpressionKind::Break(value) => Ok(Some(self.local_kind(value, budget)?)),
+                ValueExpressionKind::Continue(_) => Ok(None),
+                ValueExpressionKind::Block { bindings, value } => {
+                    self.enter_scope(budget, &value.range)?;
+                    let result = (|| {
+                        for (pattern, source) in bindings {
+                            let kind = self.local_kind(source, budget)?;
+                            self.pattern_kind(PatternRef::Pattern(pattern), kind, None, budget)?;
+                        }
+                        self.loop_kind(value, budget)
+                    })();
+                    self.leave_scope();
+                    result
+                }
+                ValueExpressionKind::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    let mut kind = self.loop_kind(otherwise, budget)?;
+                    for (_, branch) in branches {
+                        if let Some(next) = self.loop_kind(branch, budget)? {
+                            if kind.as_ref().is_some_and(|previous| *previous != next) {
+                                return Ok(Some(None));
+                            }
+                            kind = Some(next);
+                        }
+                    }
+                    Ok(kind)
+                }
+                ValueExpressionKind::ValueMatch { subject, arms } => {
+                    let subject = self.local_kind(subject, budget)?;
+                    let mut kind = None;
+                    for arm in arms {
+                        self.enter_scope(budget, &arm.pattern.range)?;
+                        let result = (|| {
+                            self.pattern_kind(
+                                PatternRef::Pattern(&arm.pattern),
+                                subject.clone(),
+                                None,
+                                budget,
+                            )?;
+                            self.loop_kind(&arm.value, budget)
+                        })();
+                        self.leave_scope();
+                        if let Some(next) = result? {
+                            if kind.as_ref().is_some_and(|previous| *previous != next) {
+                                return Ok(Some(None));
+                            }
+                            kind = Some(next);
+                        }
+                    }
+                    Ok(kind)
+                }
+                _ => Ok(None), // Structural preparation reports a missing terminal transfer.
+            }
+        })
+    }
+
     fn local_kind(
         &mut self,
         value: &ValueExpression<Query<C, H>>,
@@ -825,6 +893,33 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     .get(name)
                     .or_else(|| self.generator_kinds.get(name))
                     .cloned(),
+                ValueExpressionKind::Loop { states, body } => {
+                    crate::projection::admit_slots::<Option<Kind<C, H>>>(
+                        states.len(),
+                        budget,
+                        &value.range,
+                    )?;
+                    let mut kinds = Vec::with_capacity(states.len());
+                    for (_, value) in states {
+                        kinds.push(self.local_kind(value, budget)?);
+                    }
+                    self.enter_scope(budget, &value.range)?;
+                    let result = (|| {
+                        for ((name, _), kind) in states.iter().zip(kinds) {
+                            if let Some(kind) = kind {
+                                budget.charge(
+                                    name.value.len() + 1,
+                                    Location::Query(name.range.clone()),
+                                )?;
+                                self.scope.insert(name.value.clone(), kind);
+                            }
+                        }
+                        self.loop_kind(body, budget)
+                    })();
+                    self.leave_scope();
+                    result?.flatten()
+                }
+                ValueExpressionKind::Break(value) => self.local_kind(value, budget)?,
                 ValueExpressionKind::Block { bindings, value } => {
                     self.enter_scope(budget, &value.range)?;
                     let result = (|| {
@@ -1792,6 +1887,17 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
             location.clone(),
         )?;
         self.retained(std::sync::Arc::new(value), budget, range)
+    }
+    fn native_contract(
+        &mut self,
+        value: &H::Value,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<DeclaredType<Kind<C, H>>, Self::Error> {
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        Ok(DeclaredType::Native(self.host.kind(value, budget, range)?))
     }
     fn subjects(
         &mut self,

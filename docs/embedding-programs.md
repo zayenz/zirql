@@ -290,3 +290,70 @@ second assembles native scan snapshots, including typed empty output. Both
 hooks preserve identity, source coordinates and aliases, and charge their scans
 and allocations to the active budget. Existing hosts can leave these hooks
 unsupported. Constructed states use ordinary constructed arrays.
+
+
+## Repeat with explicit state
+
+Callable frontends construct `ValueExpressionKind::Loop { states, body }`,
+`Break(value)` and `Continue(values)`. These nodes use the same preparation and
+runner as values and functions. Consumer text syntax comes in later integration
+work; the current common reader does not parse these forms.
+
+Each state pairs a located fresh name with an initializer. All initializers
+run left-to-right in the outer scope, before any state name becomes visible.
+The body must end in a transfer on every path. A block's final expression,
+conditional branches and value-match arms can contain those transfers. Ordinary
+operands, guards and let initializers require values; they can contain a nested
+loop, whose transfers belong to that inner loop. Transfers never cross a
+function boundary. Even unused branches and function bodies receive these
+checks during preparation.
+
+The [compiled callable accumulator](https://github.com/zayenz/zirql/blob/main/src/value.rs)
+adds 1 through 10,000 with an active function depth of one. `Continue` reads
+every operand against the complete old state, checks every fixed state contract,
+then installs the whole tuple. For example, a two-slot swap uses:
+
+```rust
+K::Continue(vec![name("right"), name("left")])
+```
+
+Here `name` constructs `ValueExpressionKind::Name`, as in the compiled example.
+Both values see the old slots, so the two values exchange places. A separate
+countdown slot can bound repeated swaps; all three replacement values must be
+supplied.
+
+Nested loops return ordinary values to the expression containing them. With the
+same `node` and `int` helpers, this returns 7 from the inner loop, then breaks the
+outer loop with that value:
+
+```rust
+let nested = node(K::Loop {
+    states: vec![],
+    body: Box::new(node(K::Break(Box::new(node(K::Loop {
+        states: vec![],
+        body: Box::new(node(K::Break(Box::new(int(7))))),
+    }))))),
+});
+```
+
+An inner `Continue` similarly advances only its own state. The callable controls
+in [`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/main/tests/value_expressions.rs)
+combine inner continues with outer block/match transfers, simultaneous swaps,
+contract failures and ordinary work-limit refusal. A body containing only
+`Continue` is valid; it eventually exhausts work rather than returning an
+implicit value.
+
+Initialization establishes each state's runtime contract. Function parameters
+and results retain their explicit contracts; constructed annotations can supply
+optional, empty collection or record schemas. Otherwise actual values establish
+scalar, tuple, record, homogeneous collection or nominal contracts. Collection
+length can change. Bare absence and collections without an element contract
+cannot establish state by themselves. A native host's inferred kind must define
+its whole native contract, including element information for empty native
+collections; whole-value admission still checks the actual owner and coordinates.
+A signature supplies that information when the runtime kind cannot.
+
+State and iteration locals release on transfer, normal exit and failure.
+Immutable outer aliases and selected native children keep their original owners.
+A failed operand or admission never installs a partial next state. Work and
+result spending remain cumulative; releasing state does not refund either.

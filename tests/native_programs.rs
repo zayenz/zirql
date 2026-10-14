@@ -2973,9 +2973,14 @@ mod projection {
         let mut walk = native_function("walk", body);
         walk.bindings.push((
             super::at("chosen".into(), 9),
-            function_value(K::Conditional {
-                branches: vec![(function_value(K::Literal(V::Boolean(true))), fn_name("xs"))],
-                otherwise: Box::new(fn_name("xs")),
+            function_value(K::Loop {
+                states: vec![(super::at("loop_subject".into(), 9), fn_name("xs"))],
+                body: Box::new(function_value(K::Break(Box::new(function_value(
+                    K::NativeValue(Box::new(super::at(
+                        ExpressionKind::Binding("loop_subject".into()),
+                        20,
+                    ))),
+                ))))),
             }),
         ));
         walk.bindings.push((
@@ -3013,7 +3018,21 @@ mod projection {
         .evaluate(&entry, &bindings)
         .unwrap();
         assert!(matches!(result,Value::Subjects(rows) if rows==vec!["alpha"]));
-        let mut items = native_function("items", function_value(K::Array(vec![fn_int(1)])));
+        let mut items = native_function(
+            "items",
+            function_value(K::Loop {
+                states: vec![(super::at("tick".into(), 9), fn_int(0))],
+                body: Box::new(function_value(K::Conditional {
+                    branches: vec![(
+                        fn_binary(B::Equal, fn_name("tick"), fn_int(1)),
+                        function_value(K::Break(Box::new(function_value(K::Array(vec![fn_int(
+                            1,
+                        )]))))),
+                    )],
+                    otherwise: Box::new(function_value(K::Continue(vec![fn_int(1)]))),
+                })),
+            }),
+        );
         items.parameters.clear();
         items.result = super::at(D::Sequence(Box::new(D::Integer)), 4);
         let mut apply = native_function(
@@ -5853,6 +5872,22 @@ fn shared_reader_releases_native_values_on_errors() {
     .unwrap();
     assert_eq!(reader.position(), prefix.len());
     assert!(host.0.borrow().upgrade().is_some());
+    let mut value = value;
+    for _ in 0..20_000 {
+        value = at(
+            zirql::ValueExpressionKind::Loop {
+                states: vec![(at("state".into(), 0), value)],
+                body: Box::new(at(
+                    zirql::ValueExpressionKind::Break(Box::new(at(
+                        zirql::ValueExpressionKind::Continue(vec![]),
+                        0,
+                    ))),
+                    0,
+                )),
+            },
+            0,
+        );
+    }
     zirql::dispose_native_value(value);
     assert!(host.0.borrow().upgrade().is_none());
     let mut reader = zirql::ArgumentReader::new(&prefix, 0).unwrap();
@@ -6234,4 +6269,157 @@ fn native_pattern_views_keep_child_handles_coordinates_and_guard_failures() {
         error.error,
         EvaluationError::Host(SourceFailure::Source(0..5))
     );
+}
+
+#[test]
+fn loop_native_state_keeps_borrowed_identity_aliases_and_failure_cleanup() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, ValueBinaryOperator as B,
+        ValueExpressionKind as K,
+    };
+    fn scalar(value: i64) -> zirql::ValueExpression<SourceExpression> {
+        at(K::Literal(V::Integer(value)), 82)
+    }
+    fn name(value: &str) -> zirql::ValueExpression<SourceExpression> {
+        at(K::Name(value.into()), 83)
+    }
+    fn native(value: &str) -> zirql::ValueExpression<SourceExpression> {
+        at(
+            K::NativeValue(Box::new(at(ExpressionKind::Binding(value.into()), 84))),
+            84,
+        )
+    }
+    fn loop_value(
+        next: zirql::ValueExpression<SourceExpression>,
+        last: zirql::ValueExpression<SourceExpression>,
+    ) -> zirql::ValueExpression<SourceExpression> {
+        at(
+            K::Loop {
+                states: vec![
+                    (at("held".into(), 80), native("source")),
+                    (at("n".into(), 81), scalar(0)),
+                ],
+                body: Box::new(at(
+                    K::Conditional {
+                        branches: vec![(
+                            at(
+                                K::Binary {
+                                    operator: B::Equal,
+                                    left: Box::new(name("n")),
+                                    right: Box::new(scalar(2)),
+                                },
+                                85,
+                            ),
+                            at(K::Break(Box::new(name("held"))), 86),
+                        )],
+                        otherwise: Box::new(at(K::Continue(vec![next, last]), 87)),
+                    },
+                    85,
+                )),
+            },
+            80,
+        )
+    }
+    let source = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: Vec::new(),
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        ..limits()
+    });
+    let bindings = Bindings::new([
+        (at("source".into(), 1), source_input(&source, &mut budget)),
+        (at("wrong".into(), 2), SourceValue::Count(1)),
+    ])
+    .unwrap();
+    let alias = bindings.get("source", 1..2).unwrap();
+    let next_n = || {
+        at(
+            K::Binary {
+                operator: B::Add,
+                left: Box::new(name("n")),
+                right: Box::new(scalar(1)),
+            },
+            88,
+        )
+    };
+    let entry = loop_value(name("held"), next_n());
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    let SourceValue::Words(words) = result else {
+        panic!("native loop result")
+    };
+    assert_eq!(words[0].text.as_ptr(), source.as_ptr());
+    assert_eq!(words[1].range, 6..10);
+    let failing = loop_value(
+        name("held"),
+        at(
+            K::Binary {
+                operator: B::IntegerDivide,
+                left: Box::new(scalar(1)),
+                right: Box::new(scalar(0)),
+            },
+            90,
+        ),
+    );
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&failing, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(r), .. }) if r == (90..91))
+    );
+    let wrong = loop_value(name("wrong"), next_n());
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&wrong, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(ref e) if e.message.contains("borrowed words"))
+    );
+    assert_eq!(bindings.get("source", 1..2).unwrap(), alias);
+    assert!(
+        FunctionRequest::prepare(
+            &[],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 }
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .is_ok()
+    );
+    let SourceValue::Words(words) = alias else {
+        panic!("retained alias")
+    };
+    assert_eq!(words[0].text.as_ptr(), source.as_ptr());
+    assert_eq!(words[1].range, 6..10);
+    zirql::dispose_native_value(entry);
+    zirql::dispose_native_value(failing);
+    zirql::dispose_native_value(wrong);
 }

@@ -231,6 +231,14 @@ pub(crate) trait Host<'a, Q> {
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
         Ok(constructed_sequence(values, element, budget, location)?)
     }
+    fn native_contract(
+        &mut self,
+        _value: &Self::Native,
+        _budget: &mut Budget,
+        location: &Location,
+    ) -> Result<DeclaredType<Self::Kind>, Self::Error> {
+        Err(error(location, "loop state needs an established native contract").into())
+    }
     fn subjects(
         &mut self,
         _value: NativeView<Self::Native>,
@@ -269,6 +277,16 @@ enum Pending<'a, Q, N, K> {
         Vec<&'a PreparedValue<'a, Q>>,
         Vec<Value<'a, N, K>>,
     ),
+    Initialize(
+        &'a PreparedValue<'a, Q>,
+        usize,
+        usize,
+        bool,
+        Vec<Value<'a, N, K>>,
+    ),
+    Loop(Loop<'a, Q, K>),
+    Break(&'a PreparedValue<'a, Q>, usize),
+    Next(&'a PreparedValue<'a, Q>, usize, Vec<Value<'a, N, K>>),
     Branch(&'a PreparedValue<'a, Q>, usize, usize, bool),
     Block(&'a PreparedValue<'a, Q>, usize, usize, bool),
     Match(
@@ -353,6 +371,18 @@ struct Accumulator<'a, N, K> {
     index: usize,
     snapshots: Vec<Value<'a, N, K>>,
 }
+struct Loop<'a, Q, K> {
+    expression: &'a PreparedValue<'a, Q>,
+    depth: usize,
+    tail: bool,
+    saved: usize,
+    contracts: Vec<StateContract<'a, K>>,
+}
+enum StateContract<'a, K> {
+    Borrowed(&'a DeclaredType<K>),
+    Constructed(std::sync::Arc<DeclaredType<()>>),
+    Native(DeclaredType<K>),
+}
 
 enum GeneratorSource<'a, N, K> {
     Constructed(RuntimeValue),
@@ -434,6 +464,9 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     Pending::Eval(e, ..)
                     | Pending::Check(e, ..)
                     | Pending::Apply(e, ..)
+                    | Pending::Initialize(e, ..)
+                    | Pending::Break(e, ..)
+                    | Pending::Next(e, ..)
                     | Pending::Block(e, ..)
                     | Pending::Match(e, ..)
                     | Pending::Guard(e, ..)
@@ -449,12 +482,16 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Set(e, ..)
                     | Pending::KeyedKey(e, ..)
                     | Pending::KeyedValue(e, ..) => Location::Query(e.range.clone()),
+                    Pending::Loop(state) => Location::Query(state.expression.range.clone()),
                     _ => Location::Query(frame.range.clone()),
                 };
                 let depth = match &next {
                     Pending::Eval(_, depth, _)
                     | Pending::Check(_, depth)
                     | Pending::Apply(_, depth, ..)
+                    | Pending::Initialize(_, depth, ..)
+                    | Pending::Break(_, depth)
+                    | Pending::Next(_, depth, ..)
                     | Pending::Block(_, depth, ..)
                     | Pending::Match(_, depth, ..)
                     | Pending::Guard(_, depth, ..)
@@ -475,6 +512,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Filter(c, index, _) => c.depth + index + 1,
                     Pending::Head(c) | Pending::KeyHead(c, _) => c.depth + c.clauses.len(),
                     Pending::FinishComprehension(c) | Pending::EmptyAxes(c, ..) => c.depth,
+                    Pending::Loop(state) => state.depth,
                     Pending::Let(..)
                     | Pending::Return(_)
                     | Pending::Restore(_)
@@ -546,6 +584,19 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     PreparedKind::Accumulate { items, .. } => {
                                         push!(Pending::AccumulatorItems(expression, depth));
                                         push!(Pending::Eval(items, depth + 1, false));
+                                    }
+                                    PreparedKind::Loop { .. }
+                                    | PreparedKind::Break(_)
+                                    | PreparedKind::Continue(_) => {
+                                        enter_loop(
+                                            expression,
+                                            depth,
+                                            tail,
+                                            frame.base,
+                                            &mut pending,
+                                            budget,
+                                            &location,
+                                        )?;
                                     }
                                     PreparedKind::Block { .. } => {
                                         push!(Pending::Restore(frame.locals.len()));
@@ -760,6 +811,20 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     result = Some(apply(expression, values, budget)?);
                                 }
                             }
+                            next @ (Pending::Initialize(..)
+                            | Pending::Loop(_)
+                            | Pending::Break(..)
+                            | Pending::Next(..)) => {
+                                loop_step(
+                                    next,
+                                    &mut pending,
+                                    frame,
+                                    &mut result,
+                                    host,
+                                    budget,
+                                    &location,
+                                )?;
+                            }
                             Pending::Branch(expression, depth, index, tail) => {
                                 let PreparedKind::Conditional {
                                     branches,
@@ -816,7 +881,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         unreachable!()
                                     };
                                     let typed = left.contract.is_some()
-                                        || declaration(left.scalar(&location)?).is_some();
+                                        || match &left.data {
+                                            Data::Constructed(data) => data.declaration().is_some(),
+                                            Data::Native(_) => false,
+                                        };
                                     if typed {
                                         push!(Pending::Fallback(expression, depth, left));
                                     }
@@ -843,7 +911,12 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         c, budget, &location,
                                     )?,
                                     None => copy_declaration(
-                                        declaration(left.scalar(&location)?).expect("typed absent"),
+                                        match &left.data {
+                                            Data::Constructed(data) => {
+                                                data.declaration().expect("typed absent")
+                                            }
+                                            Data::Native(_) => unreachable!(),
+                                        },
                                         budget,
                                         &location,
                                     )?,
@@ -1730,6 +1803,352 @@ pub(crate) fn constructed_sequence<'a, N, K>(
         location,
     )?;
     Ok(Value::constructed(RuntimeValue::Owned(value)))
+}
+
+fn enter_loop<'a, Q, N, K>(
+    expression: &'a PreparedValue<'a, Q>,
+    depth: usize,
+    tail: bool,
+    base: usize,
+    pending: &mut Vec<Pending<'a, Q, N, K>>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    macro_rules! push {
+        ($value:expr) => {
+            push_metadata(pending, $value, budget, location)?
+        };
+    }
+    match &expression.value {
+        PreparedKind::Loop { states, .. } => {
+            let values = metadata_vec(states.len(), budget, location)?;
+            push!(Pending::Initialize(expression, depth, 0, tail, values));
+            if let Some((_, first)) = states.first() {
+                push!(Pending::Eval(first, depth + 1, false));
+            }
+        }
+        PreparedKind::Break(value) => {
+            let index = loop_target(pending, base, budget, location)?;
+            let Pending::Loop(state) = &pending[index] else {
+                unreachable!()
+            };
+            let tail = state.tail;
+            push!(Pending::Break(expression, depth));
+            push!(Pending::Eval(value, depth + 1, tail));
+        }
+        PreparedKind::Continue(values) => {
+            let staged = metadata_vec(values.len(), budget, location)?;
+            push!(Pending::Next(expression, depth, staged));
+            if let Some(first) = values.first() {
+                push!(Pending::Eval(first, depth + 1, false));
+            }
+        }
+        _ => unreachable!("loop expression dispatch"),
+    }
+    Ok(())
+}
+
+fn loop_step<'a, Q, H: Host<'a, Q>>(
+    next: Pending<'a, Q, H::Native, H::Kind>,
+    pending: &mut Vec<Pending<'a, Q, H::Native, H::Kind>>,
+    frame: &mut Activation<'a, H::Native, H::Kind>,
+    result: &mut Option<ResultValue<'a, H, Q>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), H::Error> {
+    macro_rules! push {
+        ($value:expr) => {
+            push_metadata(pending, $value, budget, location)?
+        };
+    }
+    match next {
+        Pending::Initialize(expression, depth, index, tail, mut values) => {
+            let PreparedKind::Loop { states, body } = &expression.value else {
+                unreachable!()
+            };
+            if !states.is_empty() {
+                values.push(result.take().expect("loop initializer"));
+            }
+            if let Some((_, next)) = states.get(index + 1) {
+                push!(Pending::Initialize(
+                    expression,
+                    depth,
+                    index + 1,
+                    tail,
+                    values
+                ));
+                push!(Pending::Eval(next, depth + 1, false));
+                return Ok(());
+            }
+            let mut contracts = metadata_vec(values.len(), budget, location)?;
+            for ((_, source), value) in states.iter().zip(&mut values) {
+                let at = Location::Query(source.range.clone());
+                let contract = match value.contract {
+                    Some(contract) => StateContract::Borrowed(contract),
+                    None => match &value.data {
+                        Data::Constructed(data) => StateContract::Constructed(std::sync::Arc::new(
+                            match data.declaration() {
+                                Some(contract) => copy_declaration(contract, budget, &at)?,
+                                None => infer_state(data.as_ref(), budget, &at)?,
+                            },
+                        )),
+                        Data::Native(view) => StateContract::Native(host.native_contract(
+                            host.native_data(view, budget, &at)?,
+                            budget,
+                            &at,
+                        )?),
+                    },
+                };
+                admit_state(value, &contract, host, budget, &at)?;
+                contracts.push(contract);
+            }
+            let saved = frame.locals.len();
+            for ((name, _), value) in states.iter().zip(values) {
+                push_metadata(
+                    &mut frame.locals,
+                    (name.value.as_str(), value),
+                    budget,
+                    location,
+                )?;
+            }
+            push!(Pending::Loop(Loop {
+                expression,
+                depth,
+                tail,
+                saved,
+                contracts
+            }));
+            push!(Pending::Eval(body, depth + 1, false));
+        }
+        Pending::Loop(_) => {
+            return Err(error(location, "loop body fell through").into());
+        }
+        Pending::Break(_, _) => {
+            let index = loop_target(pending, frame.base, budget, location)?;
+            pending.truncate(index + 1);
+            let Pending::Loop(state) = pending.pop().expect("loop boundary") else {
+                unreachable!()
+            };
+            frame.locals.truncate(state.saved);
+        }
+        Pending::Next(expression, depth, mut values) => {
+            let PreparedKind::Continue(sources) = &expression.value else {
+                unreachable!()
+            };
+            if !sources.is_empty() {
+                values.push(result.take().expect("next state operand"));
+            }
+            if let Some(next) = sources.get(values.len()) {
+                push!(Pending::Next(expression, depth, values));
+                push!(Pending::Eval(next, depth + 1, false));
+                return Ok(());
+            }
+            let index = loop_target(pending, frame.base, budget, location)?;
+            let Pending::Loop(state) = &pending[index] else {
+                unreachable!()
+            };
+            for ((value, contract), source) in values.iter_mut().zip(&state.contracts).zip(sources)
+            {
+                admit_state(
+                    value,
+                    contract,
+                    host,
+                    budget,
+                    &Location::Query(source.range.clone()),
+                )?;
+            }
+            // Keep all old slots and iteration locals until every operand
+            // and contract succeeds. The selected tuple then replaces them.
+            pending.truncate(index + 1);
+            let Pending::Loop(state) = pending.pop().expect("loop boundary") else {
+                unreachable!()
+            };
+            frame.locals.truncate(state.saved + values.len());
+            for (slot, value) in frame.locals[state.saved..].iter_mut().zip(values) {
+                slot.1 = value;
+            }
+            let PreparedKind::Loop { body, .. } = &state.expression.value else {
+                unreachable!()
+            };
+            let body_depth = state.depth + 1;
+            push!(Pending::Loop(state));
+            push!(Pending::Eval(body, body_depth, false));
+        }
+        _ => unreachable!("loop continuation dispatch"),
+    }
+    Ok(())
+}
+
+fn loop_target<Q, N, K>(
+    pending: &[Pending<'_, Q, N, K>],
+    base: usize,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<usize, QueryError> {
+    for index in (base..pending.len()).rev() {
+        budget.charge(1, location.clone())?;
+        if matches!(pending[index], Pending::Loop(_)) {
+            return Ok(index);
+        }
+    }
+    unreachable!("prepared terminal transfer has a loop in this activation")
+}
+
+fn admit_state<'a, Q, H: Host<'a, Q>>(
+    value: &mut ResultValue<'a, H, Q>,
+    contract: &StateContract<'a, H::Kind>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), H::Error> {
+    let expected = match contract {
+        StateContract::Borrowed(expected) => return admit(value, expected, host, budget, location),
+        StateContract::Constructed(expected) => {
+            if let Some(previous) = value.contract
+                && !crate::runtime_types::compatible_declarations(
+                    expected, previous, budget, location,
+                )?
+            {
+                return Err(error(location, "incompatible declared loop state types").into());
+            }
+            let Data::Constructed(data) = &mut value.data else {
+                return Err(error(location, "loop state needs a constructed value").into());
+            };
+            if let Some(previous) = data.declaration()
+                && !crate::runtime_types::compatible_declarations(
+                    previous,
+                    expected.as_ref(),
+                    budget,
+                    location,
+                )?
+            {
+                return Err(error(location, "incompatible declared loop state types").into());
+            }
+            crate::admit_constructed(data.as_ref(), expected.as_ref(), budget, location.clone())?;
+            data.retain_declaration(expected, budget, location)?;
+            return Ok(());
+        }
+        StateContract::Native(expected) => expected,
+    };
+    check_state_contract(value, expected, budget, location)?;
+    match &value.data {
+        Data::Native(view) => host.admit_native(
+            host.native_data(view, budget, location)?,
+            expected,
+            budget,
+            location.clone(),
+        ),
+        Data::Constructed(data) => Ok(crate::admit_constructed(
+            data.as_ref(),
+            expected,
+            budget,
+            location.clone(),
+        )?),
+    }
+}
+
+fn check_state_contract<N, K: PartialEq>(
+    value: &Value<'_, N, K>,
+    expected: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    let borrowed = match value.contract {
+        Some(previous) => {
+            crate::runtime_types::compatible_state(previous, expected, budget, location)?
+        }
+        None => true,
+    };
+    let constructed = match &value.data {
+        Data::Constructed(data) => match data.declaration() {
+            Some(previous) => {
+                crate::runtime_types::compatible_declarations(previous, expected, budget, location)?
+            }
+            None => true,
+        },
+        Data::Native(_) => true,
+    };
+    if !borrowed || !constructed {
+        return Err(error(location, "incompatible declared loop state types"));
+    }
+    Ok(())
+}
+
+fn infer_state(
+    value: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<DeclaredType<()>, QueryError> {
+    let facts = constructed_value_type(value, budget, location.clone())?;
+    infer_state_type(facts, budget, location)
+}
+fn infer_state_type(
+    facts: super::ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<DeclaredType<()>, QueryError> {
+    use super::{ArrayType, ValueType as T};
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match facts {
+            T::Declared { declaration, .. } => declaration,
+            T::Boolean => DeclaredType::Boolean,
+            T::Integer => DeclaredType::Integer,
+            T::Float => DeclaredType::Float,
+            T::String => DeclaredType::String,
+            T::Member(id) => DeclaredType::Member(id),
+            T::Set(Some(kind)) => DeclaredType::Set(kind),
+            T::Tuple(fields) => {
+                let mut types = metadata_vec(fields.len(), budget, location)?;
+                for field in fields {
+                    types.push(infer_state_type(field, budget, location)?);
+                }
+                DeclaredType::Tuple(types)
+            }
+            T::Record(fields) => {
+                let mut types = metadata_vec(fields.len(), budget, location)?;
+                for (name, field) in fields {
+                    types.push((name, infer_state_type(field, budget, location)?));
+                }
+                DeclaredType::Record(types)
+            }
+            T::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements)) => {
+                DeclaredType::Sequence(Box::new(infer_state_element(elements, budget, location)?))
+            }
+            T::KeyedArray(array) => {
+                DeclaredType::Keyed(Box::new(infer_state_element(array.elements, budget, location)?))
+            }
+            T::Absent | T::Unestablished | T::ArrayKind(_) | T::TupleKind | T::RecordKind | T::Set(None) => {
+                return Err(error(location,
+                    "loop state needs an established type; use an explicit contract for absent or empty values"));
+            }
+        })
+    })
+}
+fn infer_state_element(
+    elements: Vec<super::ValueType>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<DeclaredType<()>, QueryError> {
+    let mut types = elements.into_iter();
+    let first = types.next().ok_or_else(|| {
+        error(
+            location,
+            "empty loop state needs an explicit element contract",
+        )
+    })?;
+    let expected = infer_state_type(first, budget, location)?;
+    for element in types {
+        let actual = infer_state_type(element, budget, location)?;
+        if !crate::runtime_types::same_declaration(&actual, &expected, budget, location)? {
+            return Err(error(
+                location,
+                "loop state needs homogeneous collection elements",
+            ));
+        }
+    }
+    Ok(expected)
 }
 
 fn admit<'a, Q, H: Host<'a, Q>>(

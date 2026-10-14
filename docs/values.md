@@ -425,3 +425,23 @@ before matching the complete parameter set. See the
 [embedding guide](embedding-programs.md#destructure-values-and-select-match-arms)
 for the callable types and host hooks. Consumer textual frontends do not yet
 expose these forms.
+
+
+## Callable loop values
+
+`Loop` returns the value selected by its innermost `Break`. Its fresh state names
+are immutable during each body execution. `Continue` computes a complete next
+state left-to-right against the old slots and checks every established contract
+before replacing any slot. Blocks and value-match bindings remain local to one
+iteration. Nested loops own their own transfers; called functions cannot transfer
+to a caller's loop.
+
+Preparation rejects outside-loop transfers, wrong state arity and any body path
+that falls through. Transfers appear only in terminal block, conditional or match
+positions. Fixed runtime contracts preserve optional/schema/nominal information;
+collection lengths can vary. Unannotated absence and an untyped empty collection
+need an explicit initializer contract. Selected break values still receive the
+enclosing function's result check.
+
+These are callable representations. The [embedding guide](embedding-programs.md#repeat-with-explicit-state)
+contains examples and explains the later textual integration boundary.

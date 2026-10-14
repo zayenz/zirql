@@ -386,6 +386,56 @@ pub enum ValueExpressionKind<Q = ()> {
         branches: Vec<(ValueExpression<Q>, ValueExpression<Q>)>,
         otherwise: Box<ValueExpression<Q>>,
     },
+    /// Initialize fresh state names in the outer scope, then repeat the body.
+    /// Every body path ends in `Break` or `Continue`. State contracts stay fixed;
+    /// each complete next state is evaluated against the old state and admitted
+    /// before any slot changes. Textual host syntax is a separate frontend step.
+    ///
+    /// This callable accumulator runs 10,000 transitions at active depth one:
+    ///
+    /// ```
+    /// use zirql::{Bindings, Budget, ConstructedValue as V, DeclaredType as D,
+    ///     FunctionDeclaration, FunctionLimits, Located, ProgramLimits,
+    ///     ValueBinaryOperator as B, ValueExpression as E, ValueExpressionKind as K};
+    /// fn node(kind: K) -> E { Located::new(kind, 0..1) }
+    /// fn int(value: i64) -> E { node(K::Literal(V::Integer(value))) }
+    /// fn name(value: &str) -> E { node(K::Name(value.into())) }
+    /// fn binary(operator: B, left: E, right: E) -> E {
+    ///     node(K::Binary { operator, left: Box::new(left), right: Box::new(right) })
+    /// }
+    /// let body = node(K::Loop {
+    ///     states: vec![(Located::new("n".into(), 0..1), int(10_000)),
+    ///                  (Located::new("total".into(), 0..1), int(0))],
+    ///     body: Box::new(node(K::Conditional {
+    ///         branches: vec![(binary(B::Equal, name("n"), int(0)),
+    ///                         node(K::Break(Box::new(name("total")))))],
+    ///         otherwise: Box::new(node(K::Continue(vec![
+    ///             binary(B::Subtract, name("n"), int(1)),
+    ///             binary(B::Add, name("total"), name("n")),
+    ///         ]))),
+    ///     })),
+    /// });
+    /// let functions = [FunctionDeclaration {
+    ///     name: Located::new("accumulate".into(), 0..1), parameters: vec![],
+    ///     result: Located::new(D::Integer, 0..1), bindings: vec![], value: body,
+    /// }];
+    /// let entry = node(K::Call { function: Located::new("accumulate".into(), 0..1), arguments: vec![] });
+    /// let mut budget = Budget::for_program(ProgramLimits {
+    ///     work: 20_000_000, results: 2_000_000, nesting: 64, stream_items: 100,
+    /// });
+    /// let result = zirql::evaluate_functions(&functions, &entry, &Bindings::default(),
+    ///     &mut budget, FunctionLimits { active_depth: 1 })?;
+    /// assert_eq!(result.data(), &V::Integer(50_005_000));
+    /// # Ok::<(), zirql::FunctionError<zirql::QueryError>>(())
+    /// ```
+    Loop {
+        states: Vec<(Located<String>, ValueExpression<Q>)>,
+        body: Box<ValueExpression<Q>>,
+    },
+    /// Return a value from the innermost loop in this function.
+    Break(Box<ValueExpression<Q>>),
+    /// Replace every state slot of the innermost loop simultaneously.
+    Continue(Vec<ValueExpression<Q>>),
     /// Ordered lexical bindings and a final pure expression.
     Block {
         bindings: Vec<(Pattern, ValueExpression<Q>)>,
@@ -2542,6 +2592,36 @@ enum Globals<'a> {
     Available(&'a Bindings<ConstructedValue>),
 }
 
+/// Only selected terminal control positions may transfer to their loop.
+fn check_loop_terminal<Q>(
+    kind: &ValueExpressionKind<Q>,
+    transfer: Option<usize>,
+    location: &Location,
+) -> Result<(), QueryError> {
+    match (kind, transfer) {
+        (ValueExpressionKind::Break(_), Some(_)) => Ok(()),
+        (ValueExpressionKind::Continue(values), Some(arity)) if values.len() == arity => Ok(()),
+        (ValueExpressionKind::Continue(_), Some(_)) => {
+            Err(error(location, "loop state argument count mismatch"))
+        }
+        (ValueExpressionKind::Break(_) | ValueExpressionKind::Continue(_), None) => Err(error(
+            location,
+            "loop transfer requires a terminal loop body position",
+        )),
+        (
+            ValueExpressionKind::Block { .. }
+            | ValueExpressionKind::Conditional { .. }
+            | ValueExpressionKind::ValueMatch { .. },
+            Some(_),
+        )
+        | (_, None) => Ok(()),
+        (_, Some(_)) => Err(error(
+            location,
+            "loop body path must end in break or continue",
+        )),
+    }
+}
+
 struct Analysis<'a, 'h, Q, H> {
     queries: &'h mut H,
     query: std::marker::PhantomData<Q>,
@@ -2725,10 +2805,20 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         expression: &'a ValueExpression<Q>,
         budget: &mut Budget,
     ) -> Result<Vec<ValueType>, QueryError> {
+        self.walk_control(expression, budget, None)
+    }
+
+    fn walk_control(
+        &mut self,
+        expression: &'a ValueExpression<Q>,
+        budget: &mut Budget,
+        transfer: Option<usize>,
+    ) -> Result<Vec<ValueType>, QueryError> {
         let location = Location::Query(expression.range.clone());
         budget.within_evaluation(1, location.clone(), |budget| {
             budget.charge(1, location.clone())?;
-            self.node(expression, budget, &location)
+            check_loop_terminal(&expression.value, transfer, &location)?;
+            self.node(expression, budget, &location, transfer)
         })
     }
 
@@ -2737,6 +2827,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         expression: &'a ValueExpression<Q>,
         budget: &mut Budget,
         location: &Location,
+        transfer: Option<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
         match &expression.value {
             ValueExpressionKind::Call {
@@ -3467,10 +3558,57 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut types = Vec::new();
                 for (condition, branch) in branches {
                     self.condition(condition, budget)?;
-                    append_types(&mut types, self.walk(branch, budget)?, budget, location)?;
+                    append_types(
+                        &mut types,
+                        self.walk_control(branch, budget, transfer)?,
+                        budget,
+                        location,
+                    )?;
                 }
-                append_types(&mut types, self.walk(otherwise, budget)?, budget, location)?;
+                append_types(
+                    &mut types,
+                    self.walk_control(otherwise, budget, transfer)?,
+                    budget,
+                    location,
+                )?;
                 Ok(types)
+            }
+            ValueExpressionKind::Loop { states, body } => {
+                let mut initial = metadata_vec(states.len(), budget, location)?;
+                for (_, value) in states {
+                    initial.push(self.walk(value, budget)?);
+                }
+                let saved = self.locals.len();
+                self.queries.enter_scope(budget, &expression.range)?;
+                let result = (|| {
+                    for ((name, value), facts) in states.iter().zip(initial) {
+                        function_local(name, &self.locals, budget)?;
+                        if self.global_exists(&name.value, name.range.clone(), budget)? {
+                            return Err(error(
+                                &Location::Query(name.range.clone()),
+                                "binding shadows an existing source or let",
+                            ));
+                        }
+                        self.queries.prepare_local(name, value, &facts, budget)?;
+                        push_metadata(
+                            &mut self.locals,
+                            (name.value.as_str(), facts),
+                            budget,
+                            location,
+                        )?;
+                    }
+                    self.walk_control(body, budget, Some(states.len()))
+                })();
+                self.locals.truncate(saved);
+                self.queries.leave_scope();
+                result
+            }
+            ValueExpressionKind::Break(value) => self.walk(value, budget),
+            ValueExpressionKind::Continue(values) => {
+                for value in values {
+                    self.walk(value, budget)?;
+                }
+                Ok(Vec::new())
             }
             ValueExpressionKind::Block { bindings, value } => {
                 let saved = self.locals.len();
@@ -3481,7 +3619,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         self.pattern(pattern, &types, budget)?;
                         self.queries.prepare_pattern(pattern, value, budget)?;
                     }
-                    self.walk(value, budget)
+                    self.walk_control(value, budget, transfer)
                 })();
                 self.locals.truncate(saved);
                 self.queries.leave_scope();
@@ -3520,7 +3658,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         if let Some(guard) = &arm.guard {
                             self.condition(guard, budget)?;
                         }
-                        self.walk(&arm.value, budget)
+                        self.walk_control(&arm.value, budget, transfer)
                     })();
                     self.locals.truncate(saved);
                     self.queries.leave_scope();
