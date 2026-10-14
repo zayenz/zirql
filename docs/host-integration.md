@@ -242,3 +242,41 @@ Native handles still retain the host's document ownership, source coordinates,
 completeness and diff-side rules. Operand lookup and SSA equality, for example,
 remain Zirium operations. Rendering is an explicit host boundary and does not
 supply identity to the matcher.
+
+## Native path adapter
+
+Implement `PathHost<C>` on the existing `ProjectionHost<C>`. Its `Target`
+holds an ordinary domain predicate leaf. Keep it separate from any narrower
+match guard language. `validate_path_edge` admits one pure native primitive,
+and `validate_target_leaf` checks every operand, type and scope before scans.
+The core also refuses edges declared effectful by `is_pure`.
+
+`path_neighbors` returns admitted singleton neighbors in direct edge order.
+An edge preserves the subject kind and native owner. It retains unresolved-edge
+limitations and existing stale-handle or owner refusals. `same_path_identity`
+compares real native identities after the core charges a comparison;
+printed names and debug text cannot replace that identity.
+
+The callable pair is `path_types(&paths, host, &input_kind, &scope, budget)`
+and `evaluate_paths(&paths, host, input, context, bindings, budget)`.
+Type discovery returns the ordered `NativeCapture<Kind>` schema for `source`,
+`sink` and `steps`. Execution returns rows through `construct_record`, using
+`subjects`, `subject_kind` and charged `copy_value` calls. Retain the schema
+when wrapping an empty result, as for matching.
+
+`path_steps` moves admitted singleton values into one ordered native selection.
+Its declared kind agrees with `subject_kind`, and its sequence shape survives
+a one-step witness. Charge any additional host allocation before constructing
+it. The core owns breadth-first traversal, visited comparisons, predecessor
+indices and witness reconstruction; adapters supply no second traversal.
+
+In a text frontend, `parse_stage` calls `read_paths` with the original reader
+and budget. `ValueReaderHost::parse_path_edge` receives one located identifier
+and maps it to an existing typed primitive without consuming more syntax.
+Its default refuses paths. Target leaves use `parse_predicate_leaf`; shared
+Boolean wrappers remain with the common reader. Preserve host parameter
+discovery and purity checks for native operands inside those leaves.
+
+Release returned path trees with `dispose_paths`. It drops shared Boolean
+wrappers iteratively; opaque edge and target payloads retain their host disposal
+contract. Native results and later emitter snapshots use the same budget.

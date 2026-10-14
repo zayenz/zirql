@@ -1192,8 +1192,9 @@ mod projection {
     use zirql::{
         ArrayType, Bindings, Budget, ConstructedValue as V, EvaluationError, Expression,
         ExpressionKind, ExpressionStep, Located, Location, MatchHost, NativeCapture, NativeMatch,
-        NativeOperands, Predicate, ProgramHost, ProgramLimits, Projection, ProjectionHost,
-        QueryError, ReadExpression, Truth, ValueExpressionKind as K, ValueReaderHost, ValueType,
+        NativeOperands, NativePaths, PathHost, Predicate, ProgramHost, ProgramLimits, Projection,
+        ProjectionHost, QueryError, ReadExpression, Truth, ValueExpressionKind as K,
+        ValueReaderHost, ValueType,
     };
 
     #[derive(Debug, PartialEq)]
@@ -1226,6 +1227,8 @@ mod projection {
         Saved(String),
         Projection(Box<Projection<Query>>),
         Match(Box<NativeMatch<Query, Truth>>),
+        Paths(Box<NativePaths<Stage, Truth>>),
+        Neighbors,
     }
     struct Host;
     type Query = Expression<Stage, (), ()>;
@@ -1324,6 +1327,21 @@ mod projection {
                     budget.charge_results(1, Location::Query(range.clone()))?;
                     Ok(Value::Captures { rows, schema })
                 }
+                Stage::Paths(paths) => {
+                    let input_kind = self.kind(&value, budget, range)?;
+                    let schema = Arc::new(zirql::path_types(
+                        paths,
+                        self,
+                        &input_kind,
+                        &BTreeMap::new(),
+                        budget,
+                    )?);
+                    let rows =
+                        zirql::evaluate_paths(paths, self, value, context, bindings, budget)?;
+                    budget.charge_results(1, Location::Query(range.clone()))?;
+                    Ok(Value::Captures { rows, schema })
+                }
+                Stage::Neighbors => unreachable!("registered edge only"),
                 Stage::Names => {
                     let Value::Subjects(rows) = value else {
                         return Err(QueryError::query(range.clone(), "names needs subjects").into());
@@ -1464,6 +1482,9 @@ mod projection {
                 Stage::Match(matching) => Ok(Kind::Captures(Arc::new(zirql::match_types(
                     matching, self, input, scope, budget,
                 )?))),
+                Stage::Paths(paths) => Ok(Kind::Captures(Arc::new(zirql::path_types(
+                    paths, self, input, scope, budget,
+                )?))),
                 Stage::Projection(projection) => Ok(Kind::Constructed(Arc::new(
                     zirql::projection_types::<(), _>(
                         projection,
@@ -1589,13 +1610,21 @@ mod projection {
             name == "f"
         }
         fn is_stage(&self, name: &str) -> bool {
-            matches!(name, "names" | "count" | "fail" | "edit" | "project")
+            matches!(
+                name,
+                "names" | "count" | "fail" | "edit" | "project" | "paths"
+            )
         }
         fn parse_stage(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
-            _: &mut Budget,
+            budget: &mut Budget,
         ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
+            let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
+            if probe.keyword("paths") {
+                return zirql::read_paths(reader, self, budget, 32)
+                    .map(|paths| ExpressionStep::Stage(Stage::Paths(Box::new(paths))));
+            }
             let word = reader.word()?;
             let stage = match word.value {
                 "names" => Stage::Names,
@@ -1636,6 +1665,16 @@ mod projection {
         ) -> Result<Stage, QueryError> {
             Ok(Stage::Match(Box::new(matching)))
         }
+        fn parse_path_edge(
+            &mut self,
+            edge: Located<&str>,
+            _: &mut Budget,
+        ) -> Result<Stage, QueryError> {
+            match edge.value {
+                "neighbors" => Ok(Stage::Neighbors),
+                _ => Err(QueryError::query(edge.range, "unsupported path edge")),
+            }
+        }
         fn set_operator(&self, word: &str) -> Option<()> {
             (word == "union").then_some(())
         }
@@ -1662,6 +1701,115 @@ mod projection {
             _: &Range<usize>,
         ) -> Result<Truth, EvaluationError<QueryError>> {
             Ok(*guard)
+        }
+    }
+    impl PathHost<()> for Host {
+        type Target = Truth;
+        fn validate_path_edge(
+            &self,
+            edge: &Stage,
+            input: &Kind,
+            _: &BTreeMap<String, Kind>,
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<(), QueryError> {
+            if *edge != Stage::Neighbors || *input != Kind::Subjects {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "paths need native graph subjects",
+                ));
+            }
+            Ok(())
+        }
+        fn validate_target_leaf(
+            &self,
+            _: &Truth,
+            input: &Kind,
+            _: &BTreeMap<String, Kind>,
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<(), QueryError> {
+            if *input != Kind::Subjects {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "target needs graph subjects",
+                ));
+            }
+            Ok(())
+        }
+        fn evaluate_target_leaf(
+            &self,
+            target: &Truth,
+            _: &Value,
+            _: &mut (),
+            _: &Bindings<Value>,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            Ok(*target)
+        }
+        fn path_neighbors(
+            &self,
+            _: &Stage,
+            input: &Value,
+            _: &mut (),
+            _: &Bindings<Value>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Vec<Value>, EvaluationError<QueryError>> {
+            let Value::Subjects(subjects) = input else {
+                unreachable!()
+            };
+            let [subject] = subjects.as_slice() else {
+                unreachable!()
+            };
+            let neighbors: &[&'static str] = match *subject {
+                "alpha" => &["beta", "gamma"],
+                "beta" => &["delta", "alpha"],
+                "gamma" => &["delta", "epsilon"],
+                "delta" => &["epsilon"],
+                "epsilon" => &["beta"],
+                _ => &[],
+            };
+            budget.check_items(neighbors.len(), Location::Query(range.clone()))?;
+            budget.charge(neighbors.len(), Location::Query(range.clone()))?;
+            budget.charge_results(neighbors.len() * 2, Location::Query(range.clone()))?;
+            Ok(neighbors
+                .iter()
+                .map(|subject| Value::Subjects(vec![subject]))
+                .collect())
+        }
+        fn same_path_identity(
+            &self,
+            left: &Value,
+            right: &Value,
+            _: &mut (),
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<bool, EvaluationError<QueryError>> {
+            // This borrowed host's subjects identify their native word value.
+            Ok(left == right)
+        }
+        fn path_steps(
+            &self,
+            steps: Vec<Value>,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            budget.charge(steps.len(), Location::Query(range.clone()))?;
+            budget.charge_results(steps.len(), Location::Query(range.clone()))?;
+            let mut subjects = Vec::with_capacity(steps.len());
+            for step in steps {
+                let Value::Subjects(value) = step else {
+                    unreachable!()
+                };
+                let [value] = value.as_slice() else {
+                    unreachable!()
+                };
+                subjects.push(*value);
+            }
+            Ok(Value::Subjects(subjects))
         }
     }
     struct SavedNames;
@@ -1735,6 +1883,284 @@ mod projection {
         let matching = zirql::read_match(&mut reader, &mut Host, &mut budget(), 32).unwrap();
         assert!(reader.remaining().is_empty());
         matching
+    }
+
+    fn parse_paths(source: &str) -> NativePaths<Stage, Truth> {
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let paths = zirql::read_paths(&mut reader, &mut Host, &mut budget(), 32).unwrap();
+        assert_eq!(reader.position(), source.len());
+        paths
+    }
+
+    #[test]
+    fn native_paths_choose_shortest_witnesses_and_keep_native_fields() {
+        let paths = parse_paths("paths(neighbors, to=true, max_depth=3)");
+        let rows = zirql::evaluate_paths(
+            &paths,
+            &Host,
+            Value::Subjects(vec!["gamma", "alpha", "gamma"]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget(),
+        )
+        .unwrap();
+        let witnesses = rows
+            .iter()
+            .map(|row| {
+                let Value::Capture(record) = row else {
+                    panic!("native path record")
+                };
+                assert_eq!(
+                    record
+                        .fields
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect::<Vec<_>>(),
+                    ["source", "sink", "steps"]
+                );
+                let native = |index: usize| {
+                    let Value::Subjects(subjects) = &record.fields[index].1 else {
+                        panic!("native field")
+                    };
+                    subjects.clone()
+                };
+                (native(0), native(1), native(2))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            witnesses,
+            [
+                (vec!["gamma"], vec!["gamma"], vec!["gamma"]),
+                (vec!["gamma"], vec!["delta"], vec!["gamma", "delta"]),
+                (vec!["gamma"], vec!["epsilon"], vec!["gamma", "epsilon"]),
+                (
+                    vec!["gamma"],
+                    vec!["beta"],
+                    vec!["gamma", "epsilon", "beta"]
+                ),
+                (
+                    vec!["gamma"],
+                    vec!["alpha"],
+                    vec!["gamma", "epsilon", "beta", "alpha"]
+                ),
+                (vec!["alpha"], vec!["alpha"], vec!["alpha"]),
+                (vec!["alpha"], vec!["beta"], vec!["alpha", "beta"]),
+                (vec!["alpha"], vec!["gamma"], vec!["alpha", "gamma"]),
+                (vec!["alpha"], vec!["delta"], vec!["alpha", "beta", "delta"]),
+                (
+                    vec!["alpha"],
+                    vec!["epsilon"],
+                    vec!["alpha", "gamma", "epsilon"]
+                ),
+            ]
+        );
+
+        let zero = parse_paths("paths(neighbors, to=true, max_depth=0)");
+        let rows = zirql::evaluate_paths(
+            &zero,
+            &Host,
+            Value::Subjects(vec!["alpha"]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget(),
+        )
+        .unwrap();
+        let Value::Capture(record) = &rows[0] else {
+            panic!("native record")
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(record.fields[2].1, Value::Subjects(vec!["alpha"]));
+        let one = parse_paths("paths(neighbors, to=true, max_depth=1)");
+        let rows = zirql::evaluate_paths(
+            &one,
+            &Host,
+            Value::Subjects(vec!["alpha"]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget(),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 3); // delta and epsilon have no witness at one edge
+
+        let source = r#"input | paths(neighbors, to=true, max_depth=2) | project(p, {"source": p.source | names | one, "steps": p.steps | names})"#;
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let query =
+            zirql::read_native_expression(&mut reader, &mut Host, &mut budget(), 32).unwrap();
+        let value = zirql::evaluate_expression(
+            &query,
+            &Host,
+            Value::Subjects(vec!["alpha"]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget(),
+        )
+        .unwrap();
+        let Value::Constructed(V::Array(values)) = value else {
+            panic!("projected rows")
+        };
+        assert_eq!(
+            values[3],
+            V::Record(vec![
+                ("source".into(), V::String("alpha".into())),
+                (
+                    "steps".into(),
+                    V::Array(
+                        ["alpha", "beta", "delta"]
+                            .map(|s| V::String(s.into()))
+                            .into_iter()
+                            .collect()
+                    )
+                ),
+            ])
+        );
+        let empty = zirql::evaluate_expression(
+            &query,
+            &Host,
+            Value::Subjects(vec![]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget(),
+        )
+        .unwrap();
+        assert_eq!(empty, Value::Constructed(V::Array(vec![])));
+        zirql::dispose_expression(query);
+        for paths in [paths, zero, one] {
+            zirql::dispose_paths(paths);
+        }
+    }
+
+    #[test]
+    fn native_paths_preflight_empty_inputs_and_refuse_unknown_and_exhaustion() {
+        let mut paths = parse_paths("paths(neighbors, to=not unknown, max_depth=2)");
+        let error = zirql::evaluate_paths(
+            &paths,
+            &Host,
+            Value::Subjects(vec!["alpha"]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            EvaluationError::Core(QueryError::query(
+                paths.target.range.clone(),
+                "path target is Unknown"
+            ))
+        );
+        assert!(
+            zirql::evaluate_paths(
+                &paths,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &Bindings::default(),
+                &mut budget()
+            )
+            .unwrap()
+            .is_empty()
+        );
+        paths.target = Located::new(
+            zirql::PredicateKind::Or(vec![
+                Located::new(zirql::PredicateKind::Leaf(Truth::True), 0..1),
+                Located::new(zirql::PredicateKind::And(vec![]), 2..3),
+            ]),
+            0..3,
+        );
+        assert!(
+            matches!(zirql::evaluate_paths(&paths, &Host, Value::Subjects(vec![]),
+            &mut (), &Bindings::default(), &mut budget()),
+            Err(EvaluationError::Core(QueryError { message, .. })) if message == "a Boolean combination needs at least one predicate")
+        );
+        let valid = parse_paths("paths(neighbors, to=unknown or true, max_depth=2)");
+        assert_eq!(
+            zirql::evaluate_paths(
+                &valid,
+                &Host,
+                Value::Subjects(vec!["alpha"]),
+                &mut (),
+                &Bindings::default(),
+                &mut budget()
+            )
+            .unwrap()
+            .len(),
+            5
+        );
+        assert!(
+            zirql::evaluate_paths(
+                &valid,
+                &Host,
+                Value::Strings(vec![]),
+                &mut (),
+                &Bindings::default(),
+                &mut budget()
+            )
+            .is_err()
+        );
+        let mut legacy = Budget::new(zirql::Limits {
+            work: 10_000,
+            items: 100,
+            nesting: 32,
+        });
+        assert!(
+            matches!(zirql::evaluate_paths(&valid, &Host, Value::Subjects(vec![]),
+            &mut (), &Bindings::default(), &mut legacy),
+            Err(EvaluationError::Core(QueryError { message, .. })) if message == "native paths require aggregate result limits")
+        );
+        let mut scarce = Budget::for_program(ProgramLimits {
+            results: 20,
+            ..super::limits()
+        });
+        assert!(
+            matches!(zirql::evaluate_paths(&valid, &Host, Value::Subjects(vec!["alpha"]),
+            &mut (), &Bindings::default(), &mut scarce),
+            Err(EvaluationError::Core(QueryError { message, .. })) if message == "result limit exceeded")
+        );
+        let mut little_work = Budget::for_program(ProgramLimits {
+            work: 50,
+            ..super::limits()
+        });
+        assert!(
+            matches!(zirql::evaluate_paths(&valid, &Host, Value::Subjects(vec!["alpha"]),
+            &mut (), &Bindings::default(), &mut little_work),
+            Err(EvaluationError::Core(QueryError { message, .. })) if message == "work limit exceeded")
+        );
+        let mut small_stream = Budget::for_program(ProgramLimits {
+            stream_items: 2,
+            ..super::limits()
+        });
+        assert!(
+            matches!(zirql::evaluate_paths(&valid, &Host, Value::Subjects(vec!["alpha"]),
+            &mut (), &Bindings::default(), &mut small_stream),
+            Err(EvaluationError::Core(QueryError { message, .. })) if message == "item limit exceeded")
+        );
+        paths.edge.value = Stage::Edit;
+        assert!(
+            matches!(zirql::evaluate_paths(&paths, &Host, Value::Subjects(vec![]),
+            &mut (), &Bindings::default(), &mut budget()),
+            Err(EvaluationError::Core(QueryError { message, .. })) if message == "path edges must be pure")
+        );
+        for paths in [paths, valid] {
+            zirql::dispose_paths(paths);
+        }
+
+        for source in [
+            "paths(neighbors, to=true)",
+            "paths(neighbors, to=true, max_depth=-1)",
+            "paths(neighbors, to=true, max_depth=184467440737095516160)",
+            "paths(neighbors | names, to=true, max_depth=2)",
+            "paths(neighbors, max_depth=2, to=true)",
+            "paths(neighbors, to=true, max_depth=2, extra=1)",
+        ] {
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            assert!(zirql::read_paths(&mut reader, &mut Host, &mut budget(), 32).is_err());
+        }
+        let source = "paths(neighbors, to=true, max_depth=2)";
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        assert!(
+            matches!(zirql::read_paths(&mut reader, &mut SavedNames, &mut budget(), 32),
+            Err(QueryError { message, .. }) if message == "native paths are unsupported by this host")
+        );
     }
 
     #[test]
@@ -2602,7 +3028,7 @@ fn shared_reader_releases_native_values_on_errors() {
         type Stage = ();
         type SetOperator = Rc<()>;
         type Emitter = ();
-        type Predicate = ();
+        type Predicate = Rc<()>;
         fn is_binding(&self, _: &str) -> bool {
             false
         }
@@ -2620,10 +3046,16 @@ fn shared_reader_releases_native_values_on_errors() {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<(), QueryError> {
-            Err(reader.error("no domain predicates"))
+        ) -> Result<Rc<()>, QueryError> {
+            reader.word()?;
+            let retained = self.0.borrow().upgrade().unwrap_or_else(|| Rc::new(()));
+            *self.0.borrow_mut() = Rc::downgrade(&retained);
+            Ok(retained)
         }
-        fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) {}
+        fn filter(&mut self, _: zirql::Predicate<Rc<()>>, _: Range<usize>) {}
+        fn parse_path_edge(&mut self, _: Located<&str>, _: &mut Budget) -> Result<(), QueryError> {
+            Ok(())
+        }
         fn projection(
             &mut self,
             projection: zirql::Projection<zirql::ReadExpression<Self>>,
@@ -2650,6 +3082,30 @@ fn shared_reader_releases_native_values_on_errors() {
     };
     let prefix = format!("input{}", " union input".repeat(100_000));
     let mut host = ReaderHost::default();
+    let source = "paths(edge, to=not leaf or leaf, max_depth=0)";
+    let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+    let paths = zirql::read_paths(
+        &mut reader,
+        &mut host,
+        &mut Budget::for_program(generous),
+        64,
+    )
+    .unwrap();
+    assert!(host.0.borrow().upgrade().is_some());
+    zirql::dispose_paths(paths);
+    assert!(host.0.borrow().upgrade().is_none());
+    let source = "paths(edge, to=not leaf or leaf, max_depth=-1)";
+    let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+    assert!(
+        zirql::read_paths(
+            &mut reader,
+            &mut host,
+            &mut Budget::for_program(generous),
+            64
+        )
+        .is_err()
+    );
+    assert!(host.0.borrow().upgrade().is_none());
     let mut reader = zirql::ArgumentReader::new(&prefix, 0).unwrap();
     let value = zirql::read_value_expression(
         &mut reader,

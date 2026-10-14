@@ -110,6 +110,17 @@ before later filters. Capture rows, field slots, labels, native copies and host
 materialization share the same request budget. Exhaustion fails the match and
 returns no partial row vector.
 
+Native paths require aggregate program result limits too. Preflight visits the
+edge and all target branches before source enumeration. Source and neighbor
+scans, identity comparisons, traversal slots and predecessor records charge
+before growth. Witness reconstruction admits steps, native copies, field slots,
+labels and result rows before allocating them. The per-stream ceiling also
+bounds retained traversal nodes, witness steps and result rows. Hosts charge
+their native materialization and later rendering with the same active budget.
+A final Unknown target fails at its target range; host source errors retain
+their locations. A depth-bound absence gives no witness within that bound,
+and exhaustion fails the request instead of truncating it.
+
 Spent allowances are not refunded after success or failure. Active scope and
 nesting state are restored on both outcomes, so a failed operation does not
 leave the budget stuck inside a nested call.

@@ -131,6 +131,31 @@ strings for a report. The [native match adapter](host-integration.md#native-matc
 defines the callable hooks; concrete consumer primitives require their own
 integration.
 
+## Define native path edges
+
+The shared [path evaluator](native-programs.md#explain-native-connections)
+works with a host's ordered native edges. Consumer path adoption requires the
+adapter described in [host integration](host-integration.md#native-path-adapter);
+the callable core alone does not enable a consumer command.
+
+For Zirium, `users` means one operation to one direct SSA user operation.
+The selected connection from the multiplication above to `func.return` has
+steps `[arith.muli, arith.addi, func.return]` and uses two edges. Result positions
+and retained use-site order determine equal-length choices. The host keeps
+document ownership, stale-handle checks and diff-side boundaries.
+
+For Zincite, `referenced_declarations` means one declaration to a proven target
+of a reference written in its owning region. With `int: c = 1; int: b = c;
+int: a = b; solve satisfy;`, the connection from `a` to `c` has declaration
+steps `[a, b, c]`. Reference occurrences are not extra steps. The adapter follows
+existing file, range and reference-kind order, retaining the first occurrence
+of each target and any unresolved-reference limitations.
+
+Both connections need a bound of at least two. A bound of one gives no witness
+for those pairs, which does not prove global disconnection. Endpoints and steps
+retain native handles and source coordinates. A final Unknown target refuses;
+the host retains incompleteness separately from that refusal.
+
 ## Build records from labels
 
 Once native items have been projected to strings, both hosts can supply the

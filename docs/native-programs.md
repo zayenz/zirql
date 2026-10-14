@@ -154,3 +154,42 @@ requires a program budget with aggregate result limits and charges candidates
 before filtering. See [the adapter contract](host-integration.md#native-match-adapter).
 These callable matching APIs require a development revision that contains them;
 they are absent from the published alpha.5 release.
+
+## Explain native connections
+
+`NativePaths<S, P>` retains one typed edge, an ordinary target predicate and a
+required nonnegative `max_depth` measured in edges. Supporting frontends use
+`read_paths` for the common form:
+
+```text
+paths(edge, to=predicate, max_depth=2)
+```
+
+The edge is one registered identifier. It cannot be a pipeline. The target
+uses the shared `not`, `and`, `or` and grouping rules. Typed callers build the
+same representation with located edge, target and bound values.
+
+`evaluate_paths` returns one shortest witness for each reachable source/sink
+pair within the bound. Distinct sources keep their incoming identity order.
+For each source, sinks follow breadth-first discovery order, and the host's
+neighbor order chooses between equal-length witnesses. Repeated source handles
+and cycles do not duplicate a pair. Searching continues through matching sinks.
+
+Each row is a native capture with ordered `source`, `sink` and `steps` fields.
+Endpoints remain singleton native selections. Steps retain an ordered native
+selection containing both endpoints, so a matching source yields `[source]`
+at depth zero. Field access and `project` use the existing native capture path;
+no handle becomes a scalar or JSON value during traversal.
+
+The evaluator preflights the edge and every target branch before obtaining
+subjects, including empty input and unchosen Boolean branches. A final Unknown
+target refuses at its query range; host failures retain their responsible
+source locations. Separate host limitations remain attached to the request.
+No witness within the bound does not establish global disconnection.
+
+Paths require aggregate program limits and share the active budget through
+scans, identity comparisons, traversal slots, witness copies and rendering.
+See [the native path adapter](host-integration.md#native-path-adapter).
+These callable APIs require a development revision; they are absent from
+published alpha.5. Consumer adoption is separate: a host must supply its edge
+adapter and stage wrapper before its CLI or library accepts paths.

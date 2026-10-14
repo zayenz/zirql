@@ -2,8 +2,8 @@ use std::ops::Range;
 
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
-    Located, Location, MatchClause, NativeMatch, ParameterDeclaration, ParameterType, Predicate,
-    PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
+    Located, Location, MatchClause, NativeMatch, NativePaths, ParameterDeclaration, ParameterType,
+    Predicate, PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
     ValueExpression, ValueExpressionKind as K, ValueGenerator, ValueReducer,
     ValueUnaryOperator as U,
 };
@@ -57,6 +57,18 @@ pub trait ValueReaderHost {
         Err(QueryError::query(
             range,
             "native matching is unsupported by this host",
+        ))
+    }
+    /// Map one located edge identifier to an existing typed native primitive.
+    /// The shared reader consumes the identifier; this hook consumes no syntax.
+    fn parse_path_edge(
+        &mut self,
+        edge: Located<&str>,
+        _budget: &mut Budget,
+    ) -> Result<Self::Stage, QueryError> {
+        Err(QueryError::query(
+            edge.range,
+            "native paths are unsupported by this host",
         ))
     }
     fn set_operator(&self, word: &str) -> Option<Self::SetOperator>;
@@ -201,6 +213,28 @@ pub fn read_match<H: ValueReaderHost>(
         locals: Vec::new(),
     }
     .matching(0)
+}
+
+/// Read `paths(edge, to=predicate, max_depth=n)` using common Boolean rules.
+/// The edge is one registered name and the required bound is a literal usize.
+///
+/// # Errors
+/// Unsupported edges, malformed arguments, negative/overflowing bounds and
+/// exhausted parse allowances fail at their original query ranges.
+pub fn read_paths<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<NativePaths<H::Stage, H::Predicate>, QueryError> {
+    Reader {
+        reader,
+        host,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+        locals: Vec::new(),
+    }
+    .paths(0)
 }
 
 /// Read `project(subject, {static quoted fields})` with shared value fields.
@@ -1094,6 +1128,44 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.locals.truncate(scope);
         result
     }
+    fn paths(&mut self, depth: usize) -> Result<NativePaths<H::Stage, H::Predicate>, QueryError> {
+        self.depth(depth)?;
+        self.reader.skip_whitespace();
+        let start = self.reader.position();
+        if !self.reader.keyword("paths") {
+            return Err(self.reader.error("expected `paths`"));
+        }
+        self.reader.expect('(')?;
+        let edge = self.reader.word()?;
+        self.budget
+            .charge(edge.value.len(), Location::Query(edge.range.clone()))?;
+        let edge_range = edge.range.clone();
+        let edge = self.host.parse_path_edge(edge, self.budget)?;
+        self.reader.expect(',')?;
+        if !self.reader.keyword("to") {
+            return Err(self.reader.error("expected `to` target argument"));
+        }
+        self.reader.expect('=')?;
+        let mut target = PredicateGuard(Some(self.predicate_or(depth + 1)?));
+        self.reader.expect(',')?;
+        if !self.reader.keyword("max_depth") {
+            return Err(self.reader.error("expected `max_depth` edge bound"));
+        }
+        self.reader.expect('=')?;
+        let max_depth = self.reader.unsigned_integer()?;
+        self.reader.expect(')')?;
+        self.slots::<NativePaths<H::Stage, H::Predicate>>(1)?;
+        self.budget.charge(
+            self.reader.position() - start,
+            Location::Query(start..self.reader.position()),
+        )?;
+        Ok(NativePaths {
+            edge: Located::new(edge, edge_range),
+            target: target.0.take().expect("retained path target"),
+            max_depth,
+            range: start..self.reader.position(),
+        })
+    }
     fn predicate_or(&mut self, depth: usize) -> Result<Predicate<H::Predicate>, QueryError> {
         let first = self.predicate_and(depth)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
@@ -1129,6 +1201,15 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         };
         self.slots::<Predicate<H::Predicate>>(1)?;
         Ok(Located::new(value, start..self.reader.position()))
+    }
+}
+
+struct PredicateGuard<P>(Option<Predicate<P>>);
+impl<P> Drop for PredicateGuard<P> {
+    fn drop(&mut self) {
+        if let Some(predicate) = self.0.take() {
+            crate::matching::dispose_predicate(predicate);
+        }
     }
 }
 

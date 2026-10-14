@@ -502,6 +502,59 @@ enum PredicateFrame<'a, L> {
     },
 }
 
+/// Visit every leaf before runtime Boolean short-circuiting can hide a refusal.
+pub(crate) fn validate_predicate_leaves<L>(
+    predicate: &Predicate<L>,
+    budget: &mut Budget,
+    mut leaf: impl FnMut(&L, &mut Budget, &Range<usize>) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    admit_validation_slots::<L>(1, budget, &predicate.range)?;
+    let mut pending = vec![(predicate, 1)];
+    while let Some((predicate, depth)) = pending.pop() {
+        budget.check_evaluation_depth(depth, 1, Location::Query(predicate.range.clone()))?;
+        budget.charge(1, Location::Query(predicate.range.clone()))?;
+        match &predicate.value {
+            PredicateKind::Leaf(value) => budget.within_evaluation(
+                depth,
+                Location::Query(predicate.range.clone()),
+                |budget| leaf(value, budget, &predicate.range),
+            )?,
+            PredicateKind::Not(child) | PredicateKind::Group(child) => {
+                admit_validation_slots::<L>(1, budget, &predicate.range)?;
+                pending.push((child, depth + 1));
+            }
+            PredicateKind::And(children) | PredicateKind::Or(children) => {
+                if children.is_empty() {
+                    return Err(QueryError::query(
+                        predicate.range.clone(),
+                        "a Boolean combination needs at least one predicate",
+                    ));
+                }
+                admit_validation_slots::<L>(children.len(), budget, &predicate.range)?;
+                pending.extend(children.iter().rev().map(|child| (child, depth + 1)));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn admit_validation_slots<L>(
+    count: usize,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<(), QueryError> {
+    if count
+        .checked_mul(std::mem::size_of::<(&Predicate<L>, usize)>())
+        .is_none_or(|bytes| bytes > isize::MAX as usize)
+    {
+        return Err(QueryError::query(
+            range.clone(),
+            "predicate allocation size overflow",
+        ));
+    }
+    budget.charge(count, Location::Query(range.clone()))
+}
+
 pub(crate) fn evaluate_predicate<L, E: From<QueryError>>(
     predicate: &Predicate<L>,
     nesting: Nesting,

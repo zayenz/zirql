@@ -2,12 +2,13 @@
 
 The current [word examples](examples.md) select words and construct values.
 These sketches use that small domain to combine projection, reducers and
-parameters, native captures and grouping with proposed bounded paths.
+parameters, native captures, grouping and bounded paths.
 
 These complete word-host programs remain design sketches. The core supplies
 callable projection, reducers, requirements and typed parameter admission;
-common native matching, grouping and keyed helper APIs are also available on
-the development branch, while paths remain proposals. A host frontend supplies
+common native matching, grouping, keyed helper and bounded path APIs are also
+available on the development branch. The word-domain frontends below remain
+sketches. A host frontend supplies
 its domain syntax and supported subset. Callable behavior is covered by the
 [Rust guides](getting-started.md).
 
@@ -174,12 +175,14 @@ filter(prefix("ash"))
 | paths(next_word, to=prefix("birch"), max_depth=2)
 ```
 
-The proposed result has one witness with steps `[ash, apple, birch]`, including
+With that adapter, the result has one witness with steps `[ash, apple, birch]`, including
 both endpoints. A bound of one gives no witness for that pair. The selected
 direction is one deterministic shortest witness per reachable source/sink pair
 within the explicit edge bound, rather than an enumeration of every path.
 
-The host would supply edges and occurrence identity. Zirql would own bounded
-traversal and witness selection, preserving host uncertainty. The query would
-be read-only. [Semantic model integrations](semantic-models.md) explains why a
+The host supplies edges and occurrence identity. Zirql owns bounded traversal
+and witness selection, preserving host uncertainty. A matching source has a
+zero-edge witness, and a final Unknown target refuses. The query is read-only.
+See [the callable path contract](native-programs.md#explain-native-connections).
+[Semantic model integrations](semantic-models.md) explains why a
 different host can give the same language constructs different domain meanings.

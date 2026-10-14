@@ -3,6 +3,7 @@
 mod eval;
 mod matching;
 mod parser;
+mod paths;
 mod program;
 mod projection;
 mod reader;
@@ -19,6 +20,7 @@ pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match, match_types,
 };
 pub use parser::{ArgumentReader, parse_pipeline};
+pub use paths::{NativePaths, PathHost, dispose_paths, evaluate_paths, path_types};
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, ParameterDeclaration,
     ParameterInputs, ParameterType, Program, ProgramHost, Statement, admit_parameters,
@@ -31,7 +33,8 @@ pub use projection::{
 };
 pub use reader::{
     CommonStatement, ReadExpression, ValueReaderHost, dispose_native_value, read_match,
-    read_native_expression, read_projection, read_statement_prefix, read_value_expression,
+    read_native_expression, read_paths, read_projection, read_statement_prefix,
+    read_value_expression,
 };
 pub use value::{
     ArrayType, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry, NominalMember,

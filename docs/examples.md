@@ -139,7 +139,10 @@ The common reader and [native projection APIs](host-integration.md#correlated-na
 support correlated rows and scalar summaries. The core admits
 [required typed parameters](native-programs.md#required-caller-parameters)
 through immutable bindings. The [design examples](language-direction.md)
-show complete candidate surfaces, including proposed matching and paths.
+show complete word-domain candidate surfaces. Callable
+[native matching](native-programs.md#retain-native-captures) and
+[bounded paths](native-programs.md#explain-native-connections) keep handles
+native until explicit projection; each host supplies its domain adapters.
 
 ## Project each native subject
 

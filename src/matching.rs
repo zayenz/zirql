@@ -166,39 +166,20 @@ fn validate_guard<C, H: MatchHost<C>>(
     scope: &BTreeMap<String, H::Kind>,
     budget: &mut Budget,
 ) -> Result<(), QueryError> {
-    slots::<(&Predicate<H::Guard>, usize)>(1, budget, &predicate.range, false)?;
-    let mut pending = vec![(predicate, 1)];
-    while let Some((predicate, depth)) = pending.pop() {
-        budget.check_evaluation_depth(depth, 1, Location::Query(predicate.range.clone()))?;
-        budget.charge(1, Location::Query(predicate.range.clone()))?;
-        match &predicate.value {
-            PredicateKind::Leaf(guard) => budget.within_evaluation(
-                depth,
-                Location::Query(predicate.range.clone()),
-                |budget| host.validate_guard_leaf(guard, input, scope, budget, &predicate.range),
-            )?,
-            PredicateKind::Not(child) | PredicateKind::Group(child) => {
-                slots::<(&Predicate<H::Guard>, usize)>(1, budget, &predicate.range, false)?;
-                pending.push((child, depth + 1));
-            }
-            PredicateKind::And(children) | PredicateKind::Or(children) => {
-                if children.is_empty() {
-                    return Err(QueryError::query(
-                        predicate.range.clone(),
-                        "a Boolean combination needs at least one predicate",
-                    ));
-                }
-                slots::<(&Predicate<H::Guard>, usize)>(
-                    children.len(),
-                    budget,
-                    &predicate.range,
-                    false,
-                )?;
-                pending.extend(children.iter().rev().map(|child| (child, depth + 1)));
-            }
+    crate::eval::validate_predicate_leaves(predicate, budget, |guard, budget, range| {
+        host.validate_guard_leaf(guard, input, scope, budget, range)
+    })
+}
+
+pub(crate) fn dispose_predicate<P>(predicate: Predicate<P>) {
+    let mut pending = vec![predicate];
+    while let Some(predicate) = pending.pop() {
+        match predicate.value {
+            PredicateKind::Leaf(_) => {}
+            PredicateKind::Not(child) | PredicateKind::Group(child) => pending.push(*child),
+            PredicateKind::And(children) | PredicateKind::Or(children) => pending.extend(children),
         }
     }
-    Ok(())
 }
 
 /// Execute finite captures with one allowance, in depth-first declaration order.
@@ -390,18 +371,7 @@ pub fn dispose_match<S, O, E, P>(matching: NativeMatch<crate::Expression<S, O, E
                 crate::dispose_expression(source)
             }
             MatchClause::Where { predicate } => {
-                let mut pending = vec![predicate];
-                while let Some(predicate) = pending.pop() {
-                    match predicate.value {
-                        PredicateKind::Leaf(_) => {}
-                        PredicateKind::Not(child) | PredicateKind::Group(child) => {
-                            pending.push(*child)
-                        }
-                        PredicateKind::And(children) | PredicateKind::Or(children) => {
-                            pending.extend(children)
-                        }
-                    }
-                }
+                dispose_predicate(predicate);
             }
         }
     }
