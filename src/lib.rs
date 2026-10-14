@@ -23,7 +23,7 @@ pub use functions::{
     FunctionLimits, FunctionParameter, FunctionRequest, PatternFunctionDeclaration,
     PatternFunctionDeclarationRef, PatternParameter, PatternParameterRef, PreparedFunctionValue,
     PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
-    evaluate_functions, evaluate_pattern_functions,
+    evaluate_functions, evaluate_pattern_functions, pattern_function_value_kind,
 };
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
@@ -67,7 +67,7 @@ pub use value::{
     ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value,
     copy_pattern, copy_value_types, count_value, dispose_pattern, evaluate_query_value,
     evaluate_value, evaluate_value_with_host_validation, free_query_value_names, free_value_names,
-    query_value_types, take_one, validate_value_expression, value_expression_types,
+    pattern_names, query_value_types, take_one, validate_value_expression, value_expression_types,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.

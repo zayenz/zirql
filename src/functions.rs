@@ -593,6 +593,70 @@ struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     prepared: BTreeMap<usize, Operand<Kind<C, H>>>,
     scopes: Vec<LexicalKinds<Kind<C, H>>>,
 }
+impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
+    fn new(
+        declarations: impl IntoIterator<Item = DeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+        host: &'h H,
+        budget: &mut Budget,
+    ) -> Result<Self, QueryError> {
+        let mut retained = Vec::new();
+        for declaration in declarations {
+            crate::projection::admit_slots::<DeclarationRef<'_, Query<C, H>, Kind<C, H>>>(
+                1,
+                budget,
+                &declaration.name.range,
+            )?;
+            retained.push(declaration);
+        }
+        register(retained.iter().copied(), budget, |name| {
+            host.is_operation_name(name)
+        })?;
+        Ok(Self {
+            host,
+            declarations: retained,
+            scope: BTreeMap::new(),
+            generator_kinds: BTreeMap::new(),
+            relative: None,
+            prepared: BTreeMap::new(),
+            scopes: Vec::new(),
+        })
+    }
+}
+
+/// Discover one value's kind from borrowed pattern declarations and outer kinds.
+/// This registers and checks signatures, then uses ordinary common preflight for
+/// the value, including lexical patterns and native arguments. It does not prepare
+/// declaration bodies, so hosts can call it from a kind callback while complete
+/// function preparation is already active.
+///
+/// Before executing a request, separately call [`PreparedFunctions::prepare_patterns`]
+/// (or its borrowed-header counterpart) to check every body, including unused ones.
+/// This query alone does not establish body purity or authorize execution.
+///
+/// # Errors
+/// Invalid signatures, value scope/effects, host operations and limits are located.
+pub fn pattern_function_value_kind<'a, C, H: FunctionHost<C>>(
+    declarations: impl IntoIterator<Item = &'a PatternFunctionDeclaration<Query<C, H>, Kind<C, H>>>,
+    host: &H,
+    value: &ValueExpression<Query<C, H>>,
+    scope: &BTreeMap<String, Kind<C, H>>,
+    relative: Option<Kind<C, H>>,
+    budget: &mut Budget,
+) -> Result<Kind<C, H>, QueryError>
+where
+    Query<C, H>: 'a,
+    Kind<C, H>: 'a,
+{
+    Preflight::new(
+        declarations
+            .into_iter()
+            .map(PatternFunctionDeclaration::as_borrowed),
+        host,
+        budget,
+    )?
+    .entry_kind(value, scope, relative, budget)
+}
+
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
     fn native(
         &mut self,
@@ -1373,27 +1437,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         host: &'h H,
         budget: &mut Budget,
     ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
-        let mut retained = Vec::new();
-        for declaration in declarations {
-            crate::projection::admit_slots::<DeclarationRef<'_, Query<C, H>, Kind<C, H>>>(
-                1,
-                budget,
-                &declaration.name.range,
-            )?;
-            retained.push(declaration);
-        }
-        register(retained.iter().copied(), budget, |name| {
-            host.is_operation_name(name)
-        })?;
-        let mut preflight = Preflight {
-            host,
-            declarations: retained,
-            scope: BTreeMap::new(),
-            generator_kinds: BTreeMap::new(),
-            relative: None,
-            prepared: BTreeMap::new(),
-            scopes: Vec::new(),
-        };
+        let mut preflight = Preflight::new(declarations, host, budget)?;
         crate::projection::admit_slots::<Body<'_, Query<C, H>, Kind<C, H>>>(
             preflight.declarations.len(),
             budget,

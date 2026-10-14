@@ -2139,6 +2139,10 @@ mod projection {
         Names,
         Count,
         NativeArgument(Arc<zirql::ValueExpression<Query>>),
+        SignatureQuery {
+            declaration: Box<zirql::PatternFunctionDeclaration<Query, Kind>>,
+            value: Box<zirql::ValueExpression<Query>>,
+        },
         Argument {
             value: Box<zirql::ValueExpression<Query>>,
             selected: bool,
@@ -2270,6 +2274,7 @@ mod projection {
         ) -> Result<Value, EvaluationError<QueryError>> {
             budget.charge(1, Location::Query(range.clone()))?;
             match stage {
+                Stage::SignatureQuery { .. } => unreachable!("signature-only preparation control"),
                 Stage::Argument { .. } => unreachable!("argument stage uses scoped preparation"),
                 Stage::Saved(name) => {
                     self.copy_value(bindings.get(name, range.clone())?, context, budget, range)
@@ -2644,6 +2649,14 @@ mod projection {
             range: &Range<usize>,
         ) -> Result<Kind, QueryError> {
             match stage {
+                Stage::SignatureQuery { declaration, value } => zirql::pattern_function_value_kind(
+                    [declaration.as_ref()],
+                    self,
+                    value,
+                    scope,
+                    Some(input.clone()),
+                    budget,
+                ),
                 Stage::Saved(name) => Ok(scope[name].clone()),
                 Stage::Match(matching) => Ok(Kind::Captures(Arc::new(zirql::match_types(
                     matching, self, input, scope, budget,
@@ -2672,7 +2685,10 @@ mod projection {
             }
         }
         fn is_explicit_source(&self, stage: &Stage) -> bool {
-            matches!(stage, Stage::NativeArgument(_) | Stage::Match(_))
+            matches!(
+                stage,
+                Stage::NativeArgument(_) | Stage::Match(_) | Stage::SignatureQuery { .. }
+            )
         }
         fn is_pure(&self, stage: &Stage) -> bool {
             *stage != Stage::Edit
@@ -3461,6 +3477,49 @@ mod projection {
                 .to_string()
                 .contains("different prepared")
         );
+    }
+
+    #[test]
+    fn signature_kind_callbacks_borrow_bodies_without_preparing_them_again() {
+        use zirql::{DeclaredType as D, PatternFunctionDeclaration, PreparedFunctions};
+        let declaration = || PatternFunctionDeclaration {
+            name: super::at("header_only".into(), 1),
+            parameters: vec![],
+            result: super::at(D::Native(Kind::Subjects), 2),
+            value: function_value(K::Name("invalid_unused_body".into())),
+        };
+        let callback = function_value(K::NativeValue(Box::new(native_operand(
+            Stage::SignatureQuery {
+                declaration: Box::new(declaration()),
+                value: Box::new(function_call("header_only", vec![])),
+            },
+        ))));
+        let outer = [native_function("outer", callback)];
+        let mut budget = function_budget();
+        // This enters the host's kind callback while the outer body's complete
+        // preparation is active. The callback needs only the inner signature.
+        assert!(PreparedFunctions::prepare(&outer, &Host, &mut budget).is_ok());
+        // Signature discovery never substitutes for the complete request check.
+        assert!(PreparedFunctions::prepare_patterns([&declaration()], &Host, &mut budget).is_err());
+        let text = "{row: (label, _), \"cost\": present(amount), ..}";
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let pattern = zirql::read_pattern(&mut reader, &mut budget, 64).unwrap();
+        let names = zirql::pattern_names(&pattern, &mut budget).unwrap();
+        assert_eq!(
+            names
+                .iter()
+                .map(|name| name.value.as_str())
+                .collect::<Vec<_>>(),
+            ["label", "amount"]
+        );
+        for name in names {
+            assert_eq!(&text[name.range.clone()], name.value);
+        }
+        let mut scarce = Budget::for_program(ProgramLimits {
+            work: 1,
+            ..super::limits()
+        });
+        assert!(zirql::pattern_names(&pattern, &mut scarce).is_err());
     }
 
     #[test]

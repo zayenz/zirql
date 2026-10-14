@@ -52,6 +52,29 @@ pub(crate) fn names<'a>(
     Ok(())
 }
 
+/// Read bound names in written pattern order, borrowing their original ranges.
+/// Validation and metadata allocations share the active allowance. No value is
+/// matched and no native structure is inspected.
+///
+/// # Errors
+/// Invalid pattern literals/fields, nesting and metadata limits are located.
+/// The lexical owner still checks duplicate names and outer-scope collisions.
+pub fn pattern_names<'a>(
+    pattern: &'a Pattern,
+    budget: &mut Budget,
+) -> Result<Vec<&'a Located<String>>, QueryError> {
+    let mut names = Vec::new();
+    for (name, _) in facts(pattern, &[ValueType::Unestablished], budget)? {
+        push_metadata(
+            &mut names,
+            name,
+            budget,
+            &Location::Query(name.range.clone()),
+        )?;
+    }
+    Ok(names)
+}
+
 pub(crate) fn facts<'a>(
     pattern: &'a Pattern,
     types: &[ValueType],

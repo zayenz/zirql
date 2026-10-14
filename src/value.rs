@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 pub(crate) mod execution;
 pub(crate) mod pattern;
-pub use pattern::{Pattern, PatternKind, copy_pattern, dispose_pattern};
+pub use pattern::{Pattern, PatternKind, copy_pattern, dispose_pattern, pattern_names};
 pub(crate) mod prepared;
 use prepared::{
     Frame, Preparation, PreparedArgument, PreparedGenerator, PreparedKind, PreparedValue,

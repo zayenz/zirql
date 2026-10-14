@@ -292,6 +292,16 @@ original body. Neither step clones or reparses the body or patterns.
 including lexical native field kinds through blocks and match arms. Hosts need
 no separate block or pattern scope walk.
 
+When kind discovery runs inside a native preparation callback, use
+`pattern_function_value_kind` with borrowed pattern declarations. It checks the
+signatures and the requested value through the same preflight, without preparing
+function bodies again. Complete request preparation with
+`PreparedFunctions::prepare_patterns` still checks every body before execution;
+the signature query alone does not establish body purity. Frontend parsing can
+use `pattern_names` to borrow ordered located names under its parse allowance,
+without walking the pattern itself. The lexical owner checks those names against
+the surrounding scope.
+
 A top-level frontend can call `PreparedFunctions::prepare_binding` with the
 pattern, initializer, outer kinds and optional relative kind. Preflight checks
 the initializer's purity and all new names before execution. The returned
