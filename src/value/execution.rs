@@ -9,7 +9,8 @@ use super::{
     equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
     integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
     push_metadata, record_declaration, reduce_ref, scalar, select_field, sort_value, source_axis,
-    string_match_ref, sum, take_one, take_position, unary, underlying, value_keys, zip_exact,
+    string_match_ref, sum, take_one, take_position, tally_value, unary, underlying, unique_value,
+    value_keys, zip_exact,
 };
 use std::rc::Rc;
 
@@ -2570,6 +2571,8 @@ fn operands<'a, Q>(
         | PreparedKind::Absent(value)
         | PreparedKind::IndexSet(value)
         | PreparedKind::Entries(value)
+        | PreparedKind::Unique(value)
+        | PreparedKind::Tally(value)
         | PreparedKind::Unary { operand: value, .. }
         | PreparedKind::Field { value, .. }
         | PreparedKind::TupleAccess { value, .. }
@@ -2901,6 +2904,8 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             _ => return Err(error(&location, "index_set needs an array").into()),
         },
         PreparedKind::Entries(_) => entries(next(), budget, &location)?,
+        PreparedKind::Unique(_) => unique_value(next(), budget, &location)?,
+        PreparedKind::Tally(_) => tally_value(next(), budget, &location)?,
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
         PreparedKind::GroupBy { field, .. } => group_by(next(), field, budget, &location)?,
         PreparedKind::Sort {

@@ -187,8 +187,8 @@ impl<'a> ArgumentReader<'a> {
     }
 }
 
-/// Parse filter(predicate), head(nonnegative integer) and count, separated by
-/// pipes. Precedence is not, and, or. Parentheses group predicates. The host
+/// Parse filter(predicate), head(nonnegative integer), unique, tally and count,
+/// separated by pipes. Precedence is not, and, or. Parentheses group predicates. The host
 /// parser consumes one whole leaf and validates its arguments; it must be
 /// read-only. Boolean words and core stages are reserved in common syntax.
 pub fn parse_pipeline<L>(
@@ -223,6 +223,8 @@ pub fn parse_pipeline<L>(
                 Stage::Head(count.value)
             }
             "count" => Stage::Count,
+            "unique" => Stage::Unique,
+            "tally" => Stage::Tally,
             _ => return Err(QueryError::query(name.range, "unsupported pipeline stage")),
         };
         stages.push(Located::new(

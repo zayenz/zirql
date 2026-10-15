@@ -452,7 +452,7 @@ where
                     }
                     Stage::Tally => {
                         budget.charge_results(1, Location::Query(stage.range.clone()))?;
-                        let mut counts = BTreeMap::new();
+                        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
                         for item in items {
                             budget.charge(
                                 host.collection_item_work(),
@@ -460,7 +460,15 @@ where
                             )?;
                             let key = host.tally_key(item, &mut context, budget, &stage.range)?;
                             match counts.entry(key) {
-                                Entry::Occupied(mut entry) => *entry.get_mut() += 1,
+                                Entry::Occupied(mut entry) => {
+                                    *entry.get_mut() =
+                                        entry.get().checked_add(1).ok_or_else(|| {
+                                            QueryError::query(
+                                                stage.range.clone(),
+                                                "tally count overflow",
+                                            )
+                                        })?;
+                                }
                                 Entry::Vacant(entry) => {
                                     // One map entry and its newly produced count.
                                     budget

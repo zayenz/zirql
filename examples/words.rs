@@ -101,7 +101,7 @@ fn main() -> Result<(), QueryError> {
  for i in 1..(length(words) - 1)]"#
             .into()
     });
-    let source = "birch apple ash apple";
+    let source = "ash apple birch apple";
     let mut budget = Budget::for_program(ProgramLimits {
         work: 1_000_000,
         results: 100_000,

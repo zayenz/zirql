@@ -20,7 +20,7 @@ let selected = [w for w in words if starts_with(w, "a")];
 report {"words": selected, "count": length(selected)};
 ```
 
-With the word model, the report contains `apple`, `ash`, `apple` and a count of
+With the word model, the report contains `ash`, `apple`, `apple` and a count of
 3. `let` installs an immutable name. Later statements can use it, but earlier
 statements cannot refer forward to it. Duplicate definitions and shadowing of
 existing bindings fail before execution.
@@ -85,7 +85,7 @@ project(w, {
 })
 ```
 
-On `birch apple ash apple`, this gives rows `birch/5`, `apple/5`, `ash/3`,
+On `ash apple birch apple`, this gives rows `ash/3`, `apple/5`, `birch/5`,
 `apple/5`. Both occurrences of `apple` survive. `w` is local to the projection;
 its fields evaluate in written order against the same native subject.
 

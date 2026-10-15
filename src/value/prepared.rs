@@ -129,6 +129,8 @@ pub(crate) enum PreparedKind<'a, Q> {
         field: Option<&'a Located<String>>,
         descending: bool,
     },
+    Unique(Box<PreparedValue<'a, Q>>),
+    Tally(Box<PreparedValue<'a, Q>>),
     Extremum {
         operator: ValueExtremum,
         array: Box<PreparedValue<'a, Q>>,
@@ -446,6 +448,12 @@ impl<'a> Preparation<'a> {
                     field: field.as_ref(),
                     descending: *descending,
                 },
+                ValueExpressionKind::Unique(array) => {
+                    PreparedKind::Unique(Box::new(self.resolve(array, queries, budget)?))
+                }
+                ValueExpressionKind::Tally(array) => {
+                    PreparedKind::Tally(Box::new(self.resolve(array, queries, budget)?))
+                }
                 ValueExpressionKind::Extremum {
                     operator,
                     array,

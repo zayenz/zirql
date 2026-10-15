@@ -1,10 +1,10 @@
 # Word analysis
 
-Start with the text `birch apple ash apple`. Our application splits it at
+Start with the text `ash apple birch apple`. Our application splits it at
 whitespace and supplies a binding named `words`:
 
 ```json
-["birch", "apple", "ash", "apple"]
+["ash", "apple", "birch", "apple"]
 ```
 
 This is the whole data model for the first examples: an ordered array of
@@ -25,7 +25,7 @@ A comprehension visits the array and keeps words whose spelling begins with `a`:
 ```
 
 ```json
-["apple", "ash", "apple"]
+["ash", "apple", "apple"]
 ```
 
 `w` is local to the comprehension. The condition runs for each word, and the
@@ -36,6 +36,41 @@ into Zirql; the application only needs to supply the array.
 Use `contains(w, "p")` to select both occurrences of `apple`, or
 `ends_with(w, "sh")` to select `ash`. These operations compare exact strings;
 `starts_with("Apple", "a")` is false.
+
+## Sort and retain distinct words
+
+Pipe the completed selection through ascending sorting and stable deduplication:
+
+```zirql
+[w for w in words if starts_with(w, "a")] | sort | unique
+```
+
+```json
+["apple", "ash"]
+```
+
+`sort` orders the strings lexically. `unique` keeps each first occurrence. On
+its own, `unique` preserves input order, so the selection followed by `| unique`
+returns `["ash", "apple"]`.
+
+## Count spellings
+
+Use `tally` to count each selected spelling:
+
+```zirql
+[w for w in words if starts_with(w, "a")] | tally
+```
+
+```json
+{"apple": 2, "ash": 1}
+```
+
+The record fields follow lexical string order. Counts are checked signed
+integers. Tally ends a constructed pipeline; a later stage is refused. Empty
+input gives `[]` for sort or unique and `{}` for tally.
+
+These operations are part of Zirql's common language. The word host supplies
+the array and its type facts; it adds no collection parser or evaluator.
 
 ## Construct records
 
@@ -48,8 +83,8 @@ Change the head to build a record for each selected word:
 
 ```json
 [
-  {"word": "apple", "label": "word:apple"},
   {"word": "ash", "label": "word:ash"},
+  {"word": "apple", "label": "word:apple"},
   {"word": "apple", "label": "word:apple"}
 ]
 ```
@@ -68,7 +103,7 @@ pairs of neighbouring words, also called bigrams:
 ```
 
 ```json
-["birch apple", "apple ash", "ash apple"]
+["ash apple", "apple birch", "birch apple"]
 ```
 
 Positions are one-based, and `..` includes both endpoints. Stopping one position
@@ -89,12 +124,12 @@ group_by(
 
 ```json
 [
-  {"key": "birch", "items": [{"word": "birch", "position": 1}]},
+  {"key": "ash", "items": [{"word": "ash", "position": 1}]},
   {"key": "apple", "items": [
     {"word": "apple", "position": 2},
     {"word": "apple", "position": 4}
   ]},
-  {"key": "ash", "items": [{"word": "ash", "position": 3}]}
+  {"key": "birch", "items": [{"word": "birch", "position": 3}]}
 ]
 ```
 
@@ -118,13 +153,11 @@ sort_by(
 ```
 
 The result starts with `apple`, count `2`, positions `[2, 4]`, followed by
-`birch` and `ash`. Sorting is stable, so equal counts retain first-seen order.
+`ash` and `birch`. Sorting is stable, so equal counts retain first-seen order.
 Sort by `"word"` instead for alphabetical output.
 
-Keeping the positions is the reason to group complete records here. For a
-frequency count alone, a host that exposes native string pipelines can use
-Zirql's [tally stage](shared-concepts.md#additional-stages). That stage belongs
-to the native pipeline interface; it is not a value function in this example.
+Keeping the positions is the reason to group complete records here. Use the
+constructed `tally` stage above when only the frequency count is needed.
 
 ## Summarise a selection
 
@@ -170,8 +203,9 @@ filter(prefix("a")) | head(1) | count
 
 Here the host, the Rust application embedding Zirql, implements `prefix` on
 borrowed strings. Zirql filters the stream, takes its first matching entry and
-returns a count of 1. Stage order matters: filtering before `head(2)` gives
-`apple`, `ash`; taking the head first and then filtering leaves only `apple`.
+returns a count of 1. Stage order matters: filtering before `head(3)` gives
+`ash`, `apple`, `apple`; taking the head first and then filtering leaves
+`ash`, `apple`.
 
 The [setup guide](getting-started.md) shows how to supply the string array used
 throughout this tutorial. For richer models, the [implementation

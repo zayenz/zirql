@@ -373,6 +373,11 @@ pub enum ValueExpressionKind<Q = ()> {
         field: Option<Located<String>>,
         descending: bool,
     },
+    /// Retain each first occurrence in a homogeneous positional scalar array.
+    /// Supports Booleans, integers, finite floats, strings and one nominal type.
+    Unique(Box<ValueExpression<Q>>),
+    /// Count strings into a record whose labels are in lexical order.
+    Tally(Box<ValueExpression<Q>>),
     /// Select one original scalar or record, or absence for empty input. Ties
     /// retain the first input value. Uses the same key contract as `Sort`.
     Extremum {
@@ -3521,6 +3526,40 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 }
                 Ok(result)
             }
+            ValueExpressionKind::Unique(array) | ValueExpressionKind::Tally(array) => {
+                let tally = matches!(expression.value, ValueExpressionKind::Tally(_));
+                let mut result = Vec::new();
+                for ty in self.walk(array, budget)? {
+                    let retained = if !tally {
+                        match &ty {
+                            ValueType::Declared { declaration, .. } => {
+                                Some(copy_declaration(declaration, budget, location)?)
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let elements = scalar_pipeline_elements(ty, tally, budget, location)?;
+                    let mut ty = if tally {
+                        if elements.is_empty() {
+                            ValueType::Record(Vec::new())
+                        } else {
+                            ValueType::RecordKind
+                        }
+                    } else {
+                        ValueType::Array(ArrayType::Elements(elements))
+                    };
+                    if let Some(declaration) = retained {
+                        ty = ValueType::Declared {
+                            actual: Box::new(ty),
+                            declaration,
+                        };
+                    }
+                    push_metadata(&mut result, ty, budget, location)?;
+                }
+                Ok(result)
+            }
             ValueExpressionKind::GroupBy { rows, field } => {
                 let selector = Location::Query(field.range.clone());
                 let mut result = Vec::new();
@@ -5244,6 +5283,163 @@ fn group_by(
         items.push(row);
     }
     Ok(ConstructedValue::Array(groups))
+}
+
+// Removal loses positional facts, but retains admitted element kinds.
+fn scalar_pipeline_elements(
+    ty: ValueType,
+    tally: bool,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    let elements = match shape_type(ty, budget, location)? {
+        ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
+        | ValueType::ArrayKind(elements) => elements,
+        ValueType::Unestablished => return one_type(ValueType::Unestablished, budget, location),
+        _ => return Err(error(location, "collection stage needs a positional array")),
+    };
+    let mut element_type = None;
+    for element in &elements {
+        budget.charge(1, location.clone())?;
+        let ty = shape_type(copy_type(element, budget, location)?, budget, location)?;
+        if matches!(ty, ValueType::Unestablished) {
+            continue;
+        }
+        if tally {
+            if ty != ValueType::String {
+                return Err(error(location, "tally needs strings"));
+            }
+        } else if !matches!(
+            ty,
+            ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Float
+                | ValueType::String
+                | ValueType::Member(_)
+        ) {
+            return Err(error(location, "unique needs homogeneous scalar elements"));
+        }
+        if element_type
+            .as_ref()
+            .is_some_and(|previous| previous != &ty)
+        {
+            return Err(error(location, "unique needs homogeneous scalar elements"));
+        }
+        element_type = Some(ty);
+    }
+    Ok(elements)
+}
+
+fn unique_value(
+    mut array: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    if declaration(&array).is_some() {
+        scalar_pipeline_elements(
+            constructed_value_type(&array, budget, location.clone())?,
+            false,
+            budget,
+            location,
+        )?;
+    }
+    let mut data = &mut array;
+    while let ConstructedValue::Declared { value, .. } = data {
+        data = value;
+    }
+    let ConstructedValue::Array(rows) = data else {
+        return Err(error(location, "unique needs a positional array"));
+    };
+    let mut element_type = None;
+    let mut retained = 0;
+    for index in 0..rows.len() {
+        budget.charge(1, location.clone())?;
+        let ty = match rows[index].data() {
+            ConstructedValue::Boolean(_) => ValueType::Boolean,
+            ConstructedValue::Integer(_) => ValueType::Integer,
+            ConstructedValue::Float(value) => {
+                finite(*value, location)?;
+                ValueType::Float
+            }
+            ConstructedValue::String(_) => ValueType::String,
+            ConstructedValue::Member(member) => {
+                member_bytes(member, budget, location)?;
+                ValueType::Member(member.type_id)
+            }
+            _ => return Err(error(location, "unique needs homogeneous scalar elements")),
+        };
+        if element_type
+            .as_ref()
+            .is_some_and(|previous| previous != &ty)
+        {
+            return Err(error(location, "unique needs homogeneous scalar elements"));
+        }
+        element_type = Some(ty);
+        let mut duplicate = false;
+        for previous in &rows[..retained] {
+            if equal_values(previous, &rows[index], budget, location)? {
+                duplicate = true;
+                break;
+            }
+        }
+        if !duplicate {
+            rows.swap(retained, index);
+            retained += 1;
+        }
+    }
+    rows.truncate(retained);
+    Ok(array)
+}
+
+fn tally_value(
+    array: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    if declaration(&array).is_some() {
+        scalar_pipeline_elements(
+            constructed_value_type(&array, budget, location.clone())?,
+            true,
+            budget,
+            location,
+        )?;
+    }
+    let ConstructedValue::Array(rows) = array.data() else {
+        return Err(error(location, "tally needs a positional array"));
+    };
+    for row in rows {
+        budget.charge(1, location.clone())?;
+        if !matches!(row.data(), ConstructedValue::String(_)) {
+            return Err(error(location, "tally needs strings"));
+        }
+    }
+    // Reuse the admitted, budgeted lexical ordering before moving string labels.
+    let array = sort_value(array, None, false, budget, location)?;
+    let ConstructedValue::Array(rows) = expose(array, budget, location)? else {
+        unreachable!("ordering checked the positional array")
+    };
+    let mut fields: Vec<(String, ConstructedValue)> = metadata_vec(rows.len(), budget, location)?;
+    budget.charge(1, location.clone())?;
+    budget.charge_results(1, location.clone())?;
+    for row in rows {
+        budget.charge(1, location.clone())?;
+        let ConstructedValue::String(label) = expose(row, budget, location)? else {
+            return Err(error(location, "tally needs strings"));
+        };
+        if let Some((previous, ConstructedValue::Integer(count))) = fields.last_mut() {
+            budget.charge(previous.len().min(label.len()), location.clone())?;
+            if *previous == label {
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| error(location, "tally count overflow"))?;
+                continue;
+            }
+        }
+        budget.charge(2, location.clone())?;
+        budget.charge_results(2, location.clone())?;
+        fields.push((label, ConstructedValue::Integer(1)));
+    }
+    Ok(ConstructedValue::Record(fields))
 }
 
 // Ordering retains row facts but cannot retain their original positions.

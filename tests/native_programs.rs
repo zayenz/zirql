@@ -3615,6 +3615,8 @@ mod projection {
             fn local() -> int { let if = 3; if if == 3 { if } else { 0 } }
             fn forwarded(if: Subjects) -> int { native(if true { if } else { if }) | count }
             fn forwarded_local(xs: Subjects) -> int { let if = xs; native(if) | count }
+            fn make_words() -> sequence<string> { ["ash", "apple", "ash"] }
+            fn distinct_words() -> sequence<string> { (make_words()) | unique }
             counts(source)
         "#;
         let mut budget = function_budget();
@@ -3670,6 +3672,62 @@ mod projection {
                 value: Box::new(V::Integer(0)),
                 declaration: D::Integer
             })
+        );
+        let mut reader = zirql::ArgumentReader::new("(make_words()) | sort | unique", 0).unwrap();
+        let piped = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let typed = function_value(K::Unique(Box::new(function_value(K::Sort {
+            array: Box::new(function_call("make_words", vec![])),
+            field: None,
+            descending: false,
+        }))));
+        let prepared = functions
+            .prepare_value(&piped, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        let expected = functions
+            .prepare_value(&typed, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        let left = functions
+            .evaluate(
+                &prepared,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut budget,
+                limits,
+            )
+            .unwrap();
+        let right = functions
+            .evaluate(
+                &expected,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut budget,
+                limits,
+            )
+            .unwrap();
+        assert_eq!(left, right);
+        assert!(
+            matches!(left, Value::Constructed(ref value) if value.data() == &V::Array(vec![V::String("apple".into()), V::String("ash".into())]))
+        );
+        let mut reader = zirql::ArgumentReader::new("distinct_words()", 0).unwrap();
+        let distinct =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let distinct = functions
+            .prepare_value(&distinct, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        let result = functions
+            .evaluate(
+                &distinct,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut budget,
+                limits,
+            )
+            .unwrap();
+        assert!(
+            matches!(result, Value::Constructed(ref value) if value.data() == &V::Array(vec![V::String("ash".into()), V::String("apple".into())]))
         );
         let mut reader = zirql::ArgumentReader::new("even(200)", 0).unwrap();
         let tail = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
@@ -4842,7 +4900,7 @@ mod projection {
         type Emitter = ();
         type Predicate = Truth;
         fn is_binding(&self, name: &str) -> bool {
-            matches!(name, "f" | "one" | "project" | "if")
+            matches!(name, "f" | "one" | "project" | "if" | "words")
         }
         fn is_stage(&self, name: &str) -> bool {
             Host.is_stage(name)
@@ -5835,6 +5893,97 @@ mod projection {
     }
 
     #[test]
+    fn constructed_word_pipelines_share_the_value_runner_and_preserve_native_routes() {
+        let bindings = Bindings::new([(
+            super::at("words".into(), 0),
+            Value::Constructed(V::Array(
+                ["ash", "apple", "birch", "apple"]
+                    .into_iter()
+                    .map(|word| V::String(word.into()))
+                    .collect(),
+            )),
+        )])
+        .unwrap();
+        let selected = || {
+            V::Array(
+                ["ash", "apple", "apple"]
+                    .into_iter()
+                    .map(|s| V::String(s.into()))
+                    .collect(),
+            )
+        };
+        for (source, expected) in [
+            (r#"[w for w in words if starts_with(w, "a")]"#, selected()),
+            (
+                r#"[w for w in words if starts_with(w, "a")] | unique"#,
+                V::Array(vec![V::String("ash".into()), V::String("apple".into())]),
+            ),
+            (
+                r#"[w for w in words if starts_with(w, "a")] | sort | unique"#,
+                V::Array(vec![V::String("apple".into()), V::String("ash".into())]),
+            ),
+            (
+                r#"[w for w in words if starts_with(w, "a")] | tally"#,
+                V::Record(vec![
+                    ("apple".into(), V::Integer(2)),
+                    ("ash".into(), V::Integer(1)),
+                ]),
+            ),
+            (
+                "(words) | unique",
+                V::Array(
+                    ["ash", "apple", "birch"]
+                        .into_iter()
+                        .map(|s| V::String(s.into()))
+                        .collect(),
+                ),
+            ),
+            (
+                r#"null default ["ash", "ash"] | tally"#,
+                V::Record(vec![("ash".into(), V::Integer(2))]),
+            ),
+            (
+                r#"if true { ["ash", "ash"] } else { ["birch"] } | unique"#,
+                V::Array(vec![V::String("ash".into())]),
+            ),
+        ] {
+            let mut allowance = budget();
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let value =
+                zirql::read_value_expression(&mut reader, &mut SavedNames, &mut allowance, 32)
+                    .unwrap();
+            assert!(reader.remaining().trim().is_empty(), "{source}");
+            assert_eq!(
+                zirql::evaluate_native_value(
+                    &value,
+                    &Host,
+                    Value::Subjects(vec![]),
+                    &mut (),
+                    &bindings,
+                    &mut allowance
+                )
+                .unwrap(),
+                expected
+            );
+            zirql::dispose_native_value(value);
+        }
+        for (source, stage) in [("[] | tally | sort", "sort"), ("[] | mystery", "mystery")] {
+            let mut allowance = budget();
+            let error = zirql::read_value_expression(
+                &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+                &mut SavedNames,
+                &mut allowance,
+                32,
+            )
+            .unwrap_err();
+            let Location::Query(range) = error.location else {
+                panic!("query range")
+            };
+            assert_eq!(&source[range], stage);
+        }
+    }
+
+    #[test]
     fn native_rows_reader_preflight_and_lazy_requirement_share_the_value_runner() {
         let mut allowance = budget();
         let bindings = Bindings::new([
@@ -6617,6 +6766,7 @@ fn shared_reader_releases_native_values_on_errors() {
 
     for (source, message) in [
         (format!("{prefix} +"), "expected a value expression"),
+        (format!("[{prefix}] | unique |"), "expected an identifier"),
         (format!("{prefix} union"), "expected an identifier"),
         (format!("[{prefix}"), "expected ']'"),
         (format!("entries({prefix}"), "expected ')'"),

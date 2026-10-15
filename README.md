@@ -65,7 +65,7 @@ let pipeline = parse_pipeline(query, |reader| {
     Ok(prefix)
 }, 8)?;
 
-let source = String::from("birch apple ash apple");
+let source = String::from("ash apple birch apple");
 let mut budget = Budget::new(Limits { work: 100, items: 10, nesting: 8 });
 let input = NativeInput::collect(
     (), source.split_whitespace(), &mut budget, Location::Source(0..source.len()),
@@ -77,7 +77,7 @@ assert_eq!(result.value, NativeValue::Count(1));
 
 ## Parsing, lowering and native results
 
-`parse_pipeline` reads pipes and the three common stages. Predicate precedence
+`parse_pipeline` reads `filter`, `head`, `count`, `unique` and `tally`. Predicate precedence
 is `not`, `and`, then `or`; parentheses group predicates. The leaf callback
 consumes a whole host predicate, validates its arguments and returns a typed
 payload. `ArgumentReader` keeps original UTF-8 byte offsets and offers

@@ -3624,6 +3624,222 @@ fn ordering_refuses_later_bad_keys_and_known_incompatible_skipped_types_at_the_s
     assert_eq!(failure.location, Location::Query(2..40));
 }
 
+#[test]
+fn scalar_pipelines_keep_stable_equality_declarations_and_nonpositional_facts() {
+    let input = || e(K::Array(vec![text("ash"), text("apple"), text("apple")]));
+    let unique = e(K::Unique(Box::new(input())));
+    assert_eq!(
+        evaluate(&unique).unwrap(),
+        V::Array(vec![V::String("ash".into()), V::String("apple".into())])
+    );
+    assert_eq!(
+        evaluate(&e(K::Unique(Box::new(sorting(input(), None, false))))).unwrap(),
+        V::Array(vec![V::String("apple".into()), V::String("ash".into())])
+    );
+    let tally = e(K::Tally(Box::new(input())));
+    let value = evaluate(&tally).unwrap();
+    assert_eq!(
+        value,
+        V::Record(vec![
+            ("apple".into(), V::Integer(2)),
+            ("ash".into(), V::Integer(1))
+        ])
+    );
+    assert_eq!(
+        copy_constructed_value(&value, &mut ample(), Location::Query(0..1)).unwrap(),
+        value
+    );
+    assert_eq!(
+        evaluate(&e(K::Unique(Box::new(literal(V::Array(vec![])))))).unwrap(),
+        V::Array(vec![])
+    );
+    assert_eq!(
+        evaluate(&e(K::Tally(Box::new(literal(V::Array(vec![])))))).unwrap(),
+        V::Record(vec![])
+    );
+    let zeros = evaluate(&e(K::Unique(Box::new(literal(V::Array(vec![
+        V::Float(-0.0),
+        V::Float(0.0),
+        V::Float(2.0),
+    ]))))))
+    .unwrap();
+    assert_eq!(zeros, V::Array(vec![V::Float(-0.0), V::Float(2.0)]));
+    assert!(
+        matches!(&zeros, V::Array(values) if matches!(values[0], V::Float(value) if value.is_sign_negative()))
+    );
+    assert_eq!(
+        evaluate(&e(K::Unique(Box::new(e(K::Array(vec![
+            member_expression(20, 1),
+            member_expression(10, 0),
+            member_expression(20, 1)
+        ]))))))
+        .unwrap(),
+        V::Array(vec![V::Member(member(20, 1)), V::Member(member(10, 0))])
+    );
+    let declared_empty = || literal(declared(V::Array(vec![]), D::Sequence(Box::new(D::String))));
+    let expression = e(K::Unique(Box::new(declared_empty())));
+    assert!(
+        matches!(evaluate(&expression).unwrap(), V::Declared { declaration: D::Sequence(child), .. } if *child == D::String)
+    );
+    let facts = value_expression_types(&unique, &BTreeMap::new(), &mut ample()).unwrap();
+    assert!(
+        matches!(&facts[..], [ValueType::Array(ArrayType::Elements(elements))] if elements.iter().all(|t| *t == ValueType::String))
+    );
+    let expression = e(K::Unique(Box::new(name("words"))));
+    assert_eq!(
+        free_value_names(
+            &expression,
+            &BTreeMap::from([("words".into(), ValueType::Unestablished)]),
+            &mut ample()
+        )
+        .unwrap()[0]
+            .value,
+        "words"
+    );
+    assert!(
+        validate_value_expression(
+            &expression,
+            &BTreeMap::from([(
+                "words".into(),
+                ValueType::Array(ArrayType::Elements(vec![ValueType::String]))
+            )]),
+            &mut ample()
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
+    for bad in [
+        e(K::Array(vec![int(1), text("bad")])),
+        e(K::Array(vec![record(vec![])])),
+        literal(declared(
+            V::Array(vec![]),
+            D::Sequence(Box::new(D::Tuple(vec![D::Integer]))),
+        )),
+    ] {
+        let expression = e(K::Unique(Box::new(bad)));
+        let error = evaluate(&choose(expression)).unwrap_err();
+        assert_eq!(error.location, Location::Query(0..1));
+        assert_eq!(error.category, zirql::QueryErrorCategory::Other);
+    }
+    let contradictory = e(K::Unique(Box::new(e(K::Array(vec![
+        member_expression(20, 1),
+        member_expression(20, 2),
+    ])))));
+    assert!(
+        evaluate(&contradictory)
+            .unwrap_err()
+            .message
+            .contains("inconsistent nominal member")
+    );
+    let expression = e(K::Tally(Box::new(literal(declared(
+        V::Array(vec![]),
+        D::Sequence(Box::new(D::Integer)),
+    )))));
+    assert!(
+        evaluate(&choose(expression))
+            .unwrap_err()
+            .message
+            .contains("tally needs strings")
+    );
+
+    struct UnknownWords;
+    impl zirql::ValueQueryHost<()> for UnknownWords {
+        type Error = zirql::QueryError;
+        fn query_types(
+            &mut self,
+            _: &(),
+            _: &[(&str, Vec<ValueType>)],
+            _: &mut Budget,
+            _: &std::ops::Range<usize>,
+        ) -> Result<Vec<ValueType>, Self::Error> {
+            Ok(vec![ValueType::Unestablished])
+        }
+        fn evaluate_query(
+            &mut self,
+            _: &(),
+            _: &[(&str, V)],
+            _: &mut Budget,
+        ) -> Result<V, Self::Error> {
+            unreachable!()
+        }
+        fn read_binding(
+            &mut self,
+            _: &str,
+            _: &std::ops::Range<usize>,
+            _: &mut Budget,
+        ) -> Result<V, Self::Error> {
+            Ok(V::Array(vec![V::String("ash".into()), V::Integer(2)]))
+        }
+    }
+    let unknown = BTreeMap::from([("words".into(), vec![ValueType::Unestablished])]);
+    let expression: zirql::ValueExpression<()> = e(K::Tally(Box::new(name("words"))));
+    let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
+        .unwrap_err();
+    assert_eq!(error.message, "tally needs strings");
+    assert_eq!(error.location, Location::Query(0..1));
+
+    for (expression, result_refusal) in [
+        (
+            e(K::Unique(Box::new(e(K::Array(vec![
+                text("ash"),
+                text("ash"),
+            ]))))),
+            false,
+        ),
+        (
+            e(K::Tally(Box::new(e(K::Array(vec![
+                text("ash"),
+                text("ash"),
+            ]))))),
+            true,
+        ),
+    ] {
+        let mut allowance = ample();
+        let error = zirql::evaluate_value_with_host_validation(
+            &expression,
+            &Bindings::default(),
+            &mut allowance,
+            |value, budget, location| {
+                if matches!(value, V::Array(_)) {
+                    if result_refusal {
+                        budget.charge_results(
+                            budget.remaining_results().unwrap().saturating_sub(1),
+                            location.clone(),
+                        )?;
+                    } else {
+                        budget
+                            .charge(budget.remaining_work().saturating_sub(1), location.clone())?;
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.category,
+            if result_refusal {
+                zirql::QueryErrorCategory::ResultLimit
+            } else {
+                zirql::QueryErrorCategory::WorkLimit
+            }
+        );
+        assert_eq!(error.location, Location::Query(0..1));
+        assert!(allowance.remaining_work() < 1_000_000);
+    }
+    let nested = e(K::Unique(Box::new(e(K::Unique(Box::new(e(K::Array(
+        vec![int(1)],
+    ))))))));
+    let mut allowance = budget(100_000, 100_000, 2);
+    assert!(evaluate_value(&nested, &Bindings::default(), &mut allowance).is_err());
+    assert_eq!(
+        evaluate_value(&int(4), &Bindings::default(), &mut allowance).unwrap(),
+        V::Integer(4)
+    );
+}
+
 fn pattern(kind: zirql::PatternKind) -> zirql::Pattern {
     Located::new(kind, 70..80)
 }

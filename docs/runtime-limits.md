@@ -163,6 +163,20 @@ in place; materializing a shared input pays the ordinary full output-copy costs.
 Rows and declarations move intact. Descending equality still selects the left
 merge input. Every comparison is fallible and stops immediately on refusal.
 
+Constructed pipe sort uses this same sorting operation and accounting. Unique
+materializes a shared array through the ordinary budgeted copy path, then
+compacts owned rows in place. It scans retained values for equality and charges
+row visits, comparisons, string bytes and nominal checks. This direct scan can
+take quadratic work; the work allowance bounds it. Tally uses the same budgeted
+lexical string sort, then scans equal adjacent spellings with checked signed
+counts. It admits record storage, entries and count results before growth.
+
+These constructed stages share the active work, result and nesting allowances.
+`stream_items` remains the ceiling for native streams; it does not become a
+positional constructed-array limit. Nested native operands and host input scans
+keep their existing item checks. A refusal returns no partial constructed result
+and retains the spent allowance. Pipe errors identify the written stage.
+
 Extrema scan all keys once, retaining one winner without allocating sort scratch
 or copying the whole input. An owned winner moves; a shared winner retains its
 owner until a materialization boundary copies that selected value. Propagating a

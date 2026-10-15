@@ -2,9 +2,11 @@
 
 The [word tutorial](examples.md) works with an array that Zirql can inspect
 directly. A host can also expose an ordered stream of native items, such as
-borrowed words or document nodes. A pipeline applies stages to that stream.
+borrowed words or document nodes. A pipeline applies stages in written order.
+Constructed arrays also accept `| sort`, `| unique` and terminal `| tally`, as
+shown in the [word tutorial](examples.md#sort-and-retain-distinct-words).
 
-The examples here use the same text, `birch apple ash apple`, through the
+The examples here use the same text, `ash apple birch apple`, through the
 [borrowed-word host](../README.md#a-borrowed-source-query). That host defines
 the `prefix` predicate. Zirql supplies filtering, stage order and Boolean
 composition. These pipelines use a different adapter from the tutorial's
@@ -13,17 +15,18 @@ constructed-array executable.
 ## Filter and take a prefix
 
 ```zirql
-filter(prefix("a")) | head(2)
+filter(prefix("a")) | head(3)
 ```
 
-Filtering keeps `apple`, `ash`, `apple`; `head(2)` returns `apple`, `ash`.
+Filtering keeps `ash`, `apple`, `apple`; `head(3)` retains all three.
 Swapping the stages changes the answer:
 
 ```zirql
-head(2) | filter(prefix("a"))
+head(3) | filter(prefix("a"))
 ```
 
-The first two input words are `birch`, `apple`, so this returns only `apple`.
+The first three input words are `ash`, `apple`, `birch`, so this returns
+`ash`, `apple`.
 Neither stage sorts or deduplicates. `head` accepts a nonnegative integer;
 `head(0)` returns an empty stream.
 
@@ -56,9 +59,9 @@ See [diagnostics and limits](diagnostics-and-limits.md).
 
 ## Additional stages
 
-The native pipeline representation also supports stable unique, string tally
-and host-defined operations. Their text spellings and availability belong to
-the frontend.
+The small pipeline reader also accepts bare `unique` and `tally`. Hosts opt
+into their applicability and supply native identity and tally keys. Broader
+frontends can expose these same stages together with domain operations.
 
 Stable unique keeps the first item for each native identity key, preserving
 input order. String tally counts the keys projected by the host and returns
@@ -78,9 +81,9 @@ its document. Rendering happens at an explicit host boundary.
 
 ## The common text reader
 
-The small `parse_pipeline` API reads `filter`, `head` and terminal `count`,
-using a callback for predicate leaves. It does not parse every operation in
-the native representation. Broader frontends register domain stages through
+The small `parse_pipeline` API reads `filter`, `head`, `unique` and terminal
+`count` or `tally`, using a callback for predicate leaves. It does not parse every
+operation in the native representation. Broader frontends register domain stages through
 the common native readers or lower their own parser output. The
 [implementation reference](host-integration.md#parse-and-lower) explains the
 entry points.

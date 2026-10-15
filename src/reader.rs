@@ -1726,6 +1726,39 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             chain += 1;
             self.depth(depth + chain)?;
         }
+        if minimum == 0 {
+            let mut terminal = matches!(left.value().value, K::Tally(_));
+            while self.reader.consume('|') {
+                let stage = self.name()?;
+                if terminal {
+                    return Err(QueryError::query(
+                        stage.range,
+                        "tally must be the terminal stage",
+                    ));
+                }
+                let kind = match stage.value.as_str() {
+                    "sort" => K::Sort {
+                        array: Box::new(left.into_value()),
+                        field: None,
+                        descending: false,
+                    },
+                    "unique" => K::Unique(Box::new(left.into_value())),
+                    "tally" => {
+                        terminal = true;
+                        K::Tally(Box::new(left.into_value()))
+                    }
+                    _ => {
+                        return Err(QueryError::query(
+                            stage.range,
+                            "unsupported constructed pipeline stage",
+                        ));
+                    }
+                };
+                left = ValueGuard::new(self.node(kind, stage.range)?);
+                chain += 1;
+                self.depth(depth + chain)?;
+            }
+        }
         Ok(left.into_value())
     }
     fn atom(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
@@ -1837,7 +1870,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 && !ordering_call
                 && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
             || (word.value == "input" && !local)
-            || probe.remaining().starts_with('|')
+            || (probe.remaining().starts_with('|')
+                && !matches!(word.value, "true" | "false" | "null"))
         {
             return self.native(depth);
         }
@@ -2366,10 +2400,6 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             self.reader.expect(')')?;
             let range = start..self.reader.position();
             if !matches!(value.value().value, K::NativeQuery(_) | K::NativeValue(_)) {
-                self.reader.skip_whitespace();
-                if self.reader.remaining().starts_with('|') {
-                    return Err(self.reader.error("pipeline input requires a native query"));
-                }
                 return Ok(Located::new(value.into_value().value, range));
             }
             let (K::NativeQuery(query) | K::NativeValue(query)) = value.into_value().value else {
@@ -2792,6 +2822,8 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::Absent(child)
             | K::IndexSet(child)
             | K::Entries(child)
+            | K::Unique(child)
+            | K::Tally(child)
             | K::Unary { operand: child, .. }
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }

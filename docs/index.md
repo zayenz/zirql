@@ -12,7 +12,7 @@ queries follow their relationships.
 
 ## Analyse a list of words
 
-Input: `words = ["birch", "apple", "ash", "apple"]`. Choose an analysis below.
+Input: `words = ["ash", "apple", "birch", "apple"]`. Choose an analysis below.
 Results are shown as JSON.
 
 <!-- examples:start -->
@@ -27,7 +27,7 @@ with its neighbour:
 ```
 
 ```json
-["birch apple", "apple ash", "ash apple"]
+["ash apple", "apple birch", "birch apple"]
 ```
 
 Positions start at 1. Each pair overlaps the next, so the result retains the
@@ -42,11 +42,40 @@ Keep words beginning with `a`:
 ```
 
 ```json
-["apple", "ash", "apple"]
+["ash", "apple", "apple"]
 ```
 
 The comprehension keeps input order and duplicates. String matching is exact
 and case-sensitive.
+
+### Distinct words
+
+Sort the selection and keep each spelling once:
+
+```zirql
+[w for w in words if starts_with(w, "a")] | sort | unique
+```
+
+```json
+["apple", "ash"]
+```
+
+`unique` retains each first occurrence. Sorting first gives alphabetical output.
+
+### Count spellings
+
+Count each selected spelling with a terminal tally:
+
+```zirql
+[w for w in words if starts_with(w, "a")] | tally
+```
+
+```json
+{"apple": 2, "ash": 1}
+```
+
+Tally returns a record in lexical key order. All three stages belong to Zirql;
+the application supplies the string array.
 
 ### Build a summary
 

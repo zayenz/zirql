@@ -1,7 +1,7 @@
 # Values and comprehensions
 
 A value expression computes a scalar or builds a collection. The word model
-supplies `words = ["birch", "apple", "ash", "apple"]`; the examples on this page
+supplies `words = ["ash", "apple", "birch", "apple"]`; the examples on this page
 use that binding or literal inputs. The final sections introduce values and
 operations that need additional host support. For the Rust representations, see
 [value evaluation](value-runtime.md).
@@ -27,7 +27,7 @@ Use a field label or a one-based position to select a value:
 {"word": "ash", "count": 1}.word
 ```
 
-The result is `"ash"`. `words[1]` is `"birch"`, and `(2, 5)[2]` is `5`. Position
+The result is `"ash"`. `words[1]` is `"ash"`, and `(2, 5)[2]` is `5`. Position
 zero, a position beyond the collection and a missing field are errors. Use
 `lookup` when a missing entry is expected.
 
@@ -76,7 +76,7 @@ the selected branch:
 if length(words) > 0 { words[1] } else { "no words" }
 ```
 
-This returns `"birch"`. With empty input it returns `"no words"` without trying
+This returns `"ash"`. With empty input it returns `"no words"` without trying
 to access position 1. Every branch still receives scope and known-type checks.
 See [functions and control flow](functions-and-control-flow.md) for local
 bindings, pattern matching and recursion.
@@ -144,7 +144,7 @@ result for each selected element:
  for w in words if starts_with(w, "a")]
 ```
 
-It returns records for `apple`, `ash`, `apple`, in that order. The `++` operator
+It returns records for `ash`, `apple`, `apple`, in that order. The `++` operator
 concatenates strings. Duplicate input values produce duplicate records.
 
 Later generators can use earlier names. Each source is evaluated before its
@@ -193,7 +193,7 @@ true. Otherwise it fails with the literal message and does not evaluate `value`:
 require(length(words) > 0, words[1], "expected at least one word")
 ```
 
-The result is `"birch"`. On empty input the requirement fails before the access.
+The result is `"ash"`. On empty input the requirement fails before the access.
 Scope and known-type checks still cover the unselected value.
 
 ## Stable record groups
@@ -243,6 +243,47 @@ key or later incompatible key fails the whole operation, including an extremum
 that already has a candidate winner. Project an explicit default key before
 sorting if missing data should have an order. Keyed arrays need an explicit
 conversion such as `[cell.value for cell in entries(a)]` before ordering.
+
+## Constructed collection pipelines
+
+A positional array can pass through ascending scalar `sort`, stable `unique`
+and terminal string `tally`:
+
+```zirql
+[w for w in words if starts_with(w, "a")] | sort | unique
+```
+
+This returns `["apple", "ash"]`. Without sorting, `| unique` retains
+`["ash", "apple"]`. Unique accepts homogeneous Booleans, integers, finite
+floats, strings or members of one nominal type. Floating `-0.0` and `0.0`
+compare equal. Native handles, absence, records, tuples, nested collections,
+keyed arrays and sets are unsupported elements. Values are never converted to
+strings implicitly.
+
+```zirql
+[w for w in words if starts_with(w, "a")] | tally
+```
+
+Tally accepts only strings and returns `{"apple": 2, "ash": 1}`, with record
+fields in lexical string order and checked signed integer counts. No further
+stage may follow tally. Empty untyped arrays yield `[]` for sort/unique and
+`{}` for tally. Explicit incompatible element declarations still fail on empty
+input; unique retains valid declarations and element kinds.
+
+A pipe applies to the completed expression, after arithmetic, Boolean and
+`default` operators. A completed comprehension or conditional can pipe directly.
+Group a bare constructed binding or user function call explicitly:
+
+```zirql
+(words) | sort | unique
+(make_words()) | tally
+```
+
+The second form requires a host that registers `make_words`. Bare names and
+user calls followed by a pipe retain their established native routing. Group
+any pipeline result before using it in a larger expression, for example
+`length(([w for w in words] | unique))`. The richer `sort(a, descending=true)`
+and `sort_by` call forms keep their existing contracts.
 
 ## Nominal members and sets
 

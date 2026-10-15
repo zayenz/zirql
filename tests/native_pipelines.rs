@@ -1030,15 +1030,12 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
         }
     }
 
-    let pipeline = Pipeline::new(
-        vec![
-            Located::new(Stage::Unique, 0..6),
-            Located::new(Stage::Tally, 9..14),
-        ],
-        0..14,
-        64,
-    )
-    .unwrap();
+    let pipeline = parse_pipeline("unique | tally", |_| Ok::<(), QueryError>(()), 64).unwrap();
+    for source in ["count | unique", "tally | head(1)"] {
+        let error = parse_pipeline(source, |_| Ok::<(), QueryError>(()), 64).unwrap_err();
+        assert_eq!(error.category, QueryErrorCategory::Other);
+        assert!(matches!(error.location, Location::Query(_)));
+    }
     let input = |budget: &mut Budget| {
         NativeInput::collect(
             (),

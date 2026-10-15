@@ -28,9 +28,14 @@ documentation for that revision with `cargo doc --open`.
 
 The [word example](getting-started.md) uses the first row. Its reader recognizes
 one binding, `words`, and rejects native stages. Its value host returns a
-budgeted copy of the string array. This is enough to run the front-page examples.
-See [value evaluation](value-runtime.md) for type discovery, validation and
-owned results.
+budgeted copy of the string array. Zirql reads and evaluates the collection
+stages as well as the comprehension, so this host needs no sort, unique or tally
+hooks. This is enough to run the front-page examples.
+Typed callers nest `ValueExpressionKind::Sort`, `Unique` and `Tally` nodes and
+call `evaluate_value` without parsing text. The common reader lowers constructed
+pipes to these same nodes; existing prepared and function entry points use the
+same evaluator. See [value evaluation](value-runtime.md) for type discovery,
+validation and owned results.
 
 The [borrowed-word example](../README.md#a-borrowed-source-query) instead
 implements `Host` for string slices, retaining their source through evaluation.

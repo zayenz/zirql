@@ -25,7 +25,7 @@ if length(words) == 0 {
 }
 ```
 
-This returns `"first: birch"`. Only the selected block executes. Its names stay
+This returns `"first: ash"`. Only the selected block executes. Its names stay
 inside that block. An initializer sees the outer scope and earlier bindings;
 it cannot refer to its own new name. Duplicate names and shadowing fail.
 

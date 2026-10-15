@@ -27,11 +27,11 @@ additional type or index information. Native objects keep their host's identity.
 ```zirql
 42
 "apple"
-["birch", "apple", "ash", "apple"]
+["ash", "apple", "birch", "apple"]
 {"word": "apple", "count": 2}
 ```
 
-Arrays and tuples use one-based positions. `words[1]` is `"birch"` in the word
+Arrays and tuples use one-based positions. `words[1]` is `"ash"` in the word
 example. Record access uses a label, such as `row.word`. Ordinary access fails
 when an entry is missing; `lookup(row, "word")` returns absence for a valid
 missing key.
@@ -90,6 +90,22 @@ The [value reference](values.md) defines accepted types, empty inputs and error
 cases. For example, `length` accepts arrays, not strings, and `sum` uses checked
 integer addition. `forall` and `exists` inspect an eager Boolean array; they do
 not turn its construction into a lazy traversal.
+
+## Constructed pipelines
+
+The common reader accepts bare collection stages after a completed value:
+
+```zirql
+[w for w in words if starts_with(w, "a")] | sort | unique
+[w for w in words if starts_with(w, "a")] | tally
+```
+
+These return `["apple", "ash"]` and `{"apple": 2, "ash": 1}`. Pipes apply
+left-to-right after ordinary operators, defaults, comprehensions and
+conditionals. Tally is terminal. Group bare constructed names and user calls,
+such as `(words) | unique` or `(make_words()) | tally`, to preserve the native
+routing of an ungrouped name or call. See [collection pipelines](values.md#constructed-collection-pipelines)
+for supported scalar kinds, empty results and grouping in larger expressions.
 
 ## Pipelines and native data
 

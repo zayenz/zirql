@@ -13,21 +13,23 @@ The two small trait implementations in the example form its adapter to Zirql.
 Use Rust 1.88 or newer and a development checkout of Zirql. From its root:
 
 ```sh
-cargo run --example words
+cargo run --locked --example words
 ```
 
-The default expression finds adjacent word pairs in `birch apple ash apple`.
-It returns `["birch apple", "apple ash", "ash apple"]`, printed in Rust's `Debug`
+The default expression finds adjacent word pairs in `ash apple birch apple`.
+It returns `["ash apple", "apple birch", "birch apple"]`, printed in Rust's `Debug`
 format.
 
 Pass another expression as the first argument:
 
 ```sh
-cargo run --example words -- '[w for w in words if starts_with(w, "a")]'
-cargo run --example words -- 'length(words)'
+cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")]'
+cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")] | sort | unique'
+cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")] | tally'
 ```
 
-These return the string array `["apple", "ash", "apple"]` and the integer `4`.
+These return `["ash", "apple", "apple"]`, `["apple", "ash"]` and the record
+`{"apple": 2, "ash": 1}`, respectively.
 The [complete source](../examples/words.rs) is small enough to adapt directly.
 This is a repository example executable; the library itself does not install
 a standalone query command.
@@ -41,7 +43,8 @@ There is no normalization, punctuation removal or case folding.
 The host exposes the array under the name `words`. It also supplies type facts
 so Zirql can check the expression before running it. The reference calls this
 check preflight validation. All expressions on the [front page](index.md) work
-with this one binding; they need no word-specific language operations.
+with this one binding. The shared language reads and evaluates selection,
+sorting, stable unique and tally.
 
 ## Read and evaluate an expression
 
