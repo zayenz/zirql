@@ -112,28 +112,7 @@ pub(crate) fn facts<'a>(
                 }
             }
             PatternKind::Present(child) => {
-                let mut present = Vec::new();
-                for ty in types {
-                    let ty = match copy_type(ty, budget, &location)? {
-                        ValueType::Absent => continue,
-                        ValueType::Declared {
-                            actual,
-                            declaration: DeclaredType::Optional(child),
-                        } => ValueType::Declared {
-                            actual: if matches!(actual.as_ref(), ValueType::Absent) {
-                                Box::new(ValueType::Unestablished)
-                            } else {
-                                actual
-                            },
-                            declaration: *child,
-                        },
-                        other => other,
-                    };
-                    push_metadata(&mut present, ty, budget, &location)?;
-                }
-                if present.is_empty() {
-                    push_metadata(&mut present, ValueType::Unestablished, budget, &location)?;
-                }
+                let present = present_types(types, budget, &location)?;
                 result = facts(child, &present, budget)?;
             }
             PatternKind::Tuple(children) => {
@@ -172,6 +151,37 @@ pub(crate) fn facts<'a>(
         Ok(result)
     })
 }
+
+pub(crate) fn present_types(
+    types: &[ValueType],
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    let mut present = Vec::new();
+    for ty in types {
+        let ty = match copy_type(ty, budget, location)? {
+            ValueType::Absent => continue,
+            ValueType::Declared {
+                actual,
+                declaration: DeclaredType::Optional(child),
+            } => ValueType::Declared {
+                actual: if matches!(actual.as_ref(), ValueType::Absent) {
+                    Box::new(ValueType::Unestablished)
+                } else {
+                    actual
+                },
+                declaration: *child,
+            },
+            other => other,
+        };
+        push_metadata(&mut present, ty, budget, location)?;
+    }
+    if present.is_empty() {
+        push_metadata(&mut present, ValueType::Unestablished, budget, location)?;
+    }
+    Ok(present)
+}
+
 fn child_facts(
     types: &[ValueType],
     position: Option<usize>,

@@ -1122,10 +1122,26 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         Some(DeclaredType::Optional(child)) => Some(child.as_ref()),
                         other => other,
                     };
-                    let kind = declaration
-                        .map(|d| self.host.declaration_kind(d, budget, range))
-                        .transpose()?
-                        .or(kind);
+                    let kind = if let Some(declaration) = declaration {
+                        Some(self.host.declaration_kind(declaration, budget, range)?)
+                    } else if let Some(kind) = kind {
+                        // Native callbacks must see the same presence facts as
+                        // the lexical value walker. Opaque native kinds retain
+                        // their identity without a scalar projection.
+                        Some(match self.host.scalar_types(&kind, budget, range)? {
+                            Some(types) => {
+                                self.host
+                                    .constructed_kind(crate::value::pattern::present_types(
+                                        &types,
+                                        budget,
+                                        &Location::Query(range.clone()),
+                                    )?)
+                            }
+                            None => kind,
+                        })
+                    } else {
+                        None
+                    };
                     self.pattern_kind(PatternRef::Pattern(child), kind, declaration, budget)?;
                 }
                 crate::PatternKind::Tuple(children) => {

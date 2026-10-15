@@ -3819,6 +3819,94 @@ mod projection {
     }
 
     #[test]
+    fn present_patterns_keep_refined_callback_facts_and_opaque_native_kinds() {
+        use zirql::{
+            DeclaredType as D, PatternFunctionDeclaration, PatternKind as P, ValueMatchArm,
+        };
+        let binding = |name: &str| {
+            function_value(K::NativeValue(Box::new(super::at(
+                ExpressionKind::Binding(name.into()),
+                9,
+            ))))
+        };
+        let callback = |value| {
+            function_value(K::NativeValue(Box::new(native_operand(
+                Stage::SignatureQuery {
+                    declaration: Box::new(PatternFunctionDeclaration {
+                        name: super::at("header_only".into(), 1),
+                        parameters: vec![],
+                        result: super::at(D::Native(Kind::Subjects), 2),
+                        value: function_value(K::Name("invalid_unused_body".into())),
+                    }),
+                    value: Box::new(value),
+                },
+            ))))
+        };
+        let matching = |guard, value, fallback| {
+            function_value(K::ValueMatch {
+                subject: Box::new(binding("optional")),
+                arms: vec![
+                    ValueMatchArm {
+                        pattern: super::at(
+                            P::Present(Box::new(super::at(
+                                P::Name(super::at("cost".into(), 5)),
+                                5,
+                            ))),
+                            4,
+                        ),
+                        guard,
+                        value,
+                    },
+                    ValueMatchArm {
+                        pattern: super::at(P::Wildcard, 6),
+                        guard: None,
+                        value: fallback,
+                    },
+                ],
+            })
+        };
+        let number = |value| function_value(K::Literal(V::Integer(value)));
+        let entry = matching(
+            Some(callback(function_value(K::Binary {
+                operator: zirql::ValueBinaryOperator::Greater,
+                left: Box::new(function_value(K::Name("cost".into()))),
+                right: Box::new(number(0)),
+            }))),
+            function_value(K::Binary {
+                operator: zirql::ValueBinaryOperator::Add,
+                left: Box::new(function_value(K::Name("cost".into()))),
+                right: Box::new(number(1)),
+            }),
+            number(0),
+        );
+        let mut budget = function_budget();
+        let scope = BTreeMap::from([
+            ("xs".into(), Kind::Subjects),
+            (
+                "optional".into(),
+                Kind::Constructed(Arc::new(vec![ValueType::Integer, ValueType::Absent])),
+            ),
+        ]);
+        let Kind::Constructed(types) =
+            zirql::pattern_function_value_kind([], &Host, &entry, &scope, None, &mut budget)
+                .unwrap()
+        else {
+            panic!("constructed integer match result");
+        };
+        assert!(!types.is_empty() && types.iter().all(|ty| *ty == ValueType::Integer));
+        let native = matching(None, callback(binding("cost")), binding("optional"));
+        let scope = BTreeMap::from([
+            ("xs".into(), Kind::Subjects),
+            ("optional".into(), Kind::Subjects),
+        ]);
+        assert_eq!(
+            zirql::pattern_function_value_kind([], &Host, &native, &scope, None, &mut budget)
+                .unwrap(),
+            Kind::Subjects
+        );
+    }
+
+    #[test]
     fn parsed_pattern_functions_blocks_matches_and_borrowed_headers_share_execution() {
         use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
         let source = r#"
