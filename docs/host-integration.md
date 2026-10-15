@@ -595,9 +595,11 @@ result. The ordinary `copy_value` hook calls its budgeted `share(host, context,
 budget, location)` method, retaining roots and metadata. It must not materialize
 all stored items. No native `Clone`, `Send`, `Sync` or `'static` bound is needed.
 
-`worklist_context` returns `NativeContextId([owner, validity_stamp])`. Use an
-exact owner/snapshot identity, and change the stamp whenever native handles can
-be invalidated. A host that cannot establish this immutable-snapshot guarantee
+`worklist_context` returns an exact opaque `NativeContextId([u64; 3])` token.
+For example, Zirium stores the low and high halves of its 128-bit document owner
+followed by its 64-bit revision: `[owner_low, owner_high, revision]`. Preserve
+the full owner/snapshot identity, and change the token whenever native handles
+can be invalidated. A host that cannot establish this immutable-snapshot guarantee
 must decline the opt-in. Empty queues/sets retain this stamp too. Public
 operations and runtime admission check the current stamp before retaining an
 earlier invariant, including before the evaluator's reusable-admission path.

@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 61
-- Ready: 14
+- Ready: 13
 - Blocked: 2
-- Done: 45
+- Done: 46
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -53,7 +53,7 @@
 | [base-042](tasks/042-provide-budgeted-fifo-queues-and-native-identity-sets.md) | Provide budgeted FIFO queues and native identity sets | done | base-031, base-033 |
 | [base-043](tasks/043-expose-destructuring-value-matches-and-conditional-blocks-in.md) | Expose destructuring, value matches and conditional blocks in Zirium | done | base-039, base-034 |
 | [base-044](tasks/044-expose-destructuring-value-matches-and-conditional-blocks-in.md) | Expose destructuring, value matches and conditional blocks in Zincite | done | base-039, base-035 |
-| [base-045](tasks/045-run-explicit-loops-fold-and-scan-worklists-in-zirium.md) | Run explicit loops, fold and scan worklists in Zirium | ready | base-040, base-041, base-042, base-043 |
+| [base-045](tasks/045-run-explicit-loops-fold-and-scan-worklists-in-zirium.md) | Run explicit loops, fold and scan worklists in Zirium | done | base-040, base-041, base-042, base-043 |
 | [base-046](tasks/046-run-explicit-loops-fold-and-scan-worklists-in-zincite.md) | Run explicit loops, fold and scan worklists in Zincite | ready | base-040, base-041, base-042, base-044 |
 | [base-047](tasks/047-compose-constructed-collection-pipelines-in-the-shared-langu.md) | Compose constructed collection pipelines in the shared language | done | — |
 | [base-048](tasks/048-share-native-stream-bounds-reversal-and-cardinality-checks.md) | Share native stream bounds, reversal and cardinality checks | ready | — |

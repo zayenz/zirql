@@ -7,8 +7,10 @@ use crate::{
 
 /// The immutable native owner and its current validity stamp. Hosts must change
 /// this exact token whenever previously admitted handles can become invalid.
+/// The words are opaque to Zirql. For example, a host can retain both halves
+/// of a 128-bit document owner followed by a 64-bit revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NativeContextId(pub [u64; 2]);
+pub struct NativeContextId(pub [u64; 3]);
 
 /// An exact native identity, including owner, side and object distinctions.
 /// This is a canonical semantic token, never a printed label or hash digest.
