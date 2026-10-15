@@ -8479,3 +8479,211 @@ fn worklist_refusals_keep_locations_budget_and_retained_admission_context() {
         SourceValue::Constructed(V::Boolean(true))
     ));
 }
+
+#[test]
+fn common_reader_executes_loops_named_reducers_and_native_worklist_calls() {
+    use zirql::{ConstructedValue as V, FunctionLimits, FunctionRequest, ValueExpressionKind as K};
+    struct ReaderHost;
+    impl zirql::ValueReaderHost for ReaderHost {
+        type Stage = SourceStage;
+        type SetOperator = ();
+        type Emitter = &'static str;
+        type Predicate = Truth;
+        fn is_binding(&self, _: &str) -> bool {
+            false
+        }
+        fn is_stage(&self, _: &str) -> bool {
+            false
+        }
+        fn retains_native_values(&self) -> bool {
+            true
+        }
+        fn set_operator(&self, _: &str) -> Option<()> {
+            None
+        }
+
+        fn parse_stage(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<ExpressionStep<SourceStage, &'static str>, QueryError> {
+            Err(reader.error("no domain stages"))
+        }
+        fn parse_predicate_leaf(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<Truth, QueryError> {
+            Err(reader.error("no domain predicates"))
+        }
+        fn filter(&mut self, _: zirql::Predicate<Truth>, _: Range<usize>) -> SourceStage {
+            unreachable!("no domain predicates")
+        }
+        fn projection(
+            &mut self,
+            _: zirql::Projection<SourceExpression>,
+            _: Range<usize>,
+        ) -> SourceStage {
+            unreachable!("no domain projections")
+        }
+    }
+    let text = r#"
+fn add((count, total): tuple<int,int>, item: int) -> tuple<int,int> {
+    (count + 1, total + item)
+}
+fn append(state: queue<Word>, item: Word) -> queue<Word> {
+    push_back_all(state, [item])
+}
+{
+  "fold": fold([2,3,5], (0,0), add),
+  "scan": scan([2,3,5], (0,0), add),
+  "walk": loop (pending=queue<Word>(nodes), seen=identity_set<Word>(), count=0) {
+    match (pop_front(pending)) {
+      present((current, rest)) => {
+        if current in seen { continue (rest, seen, count); }
+        else { continue (rest, insert(seen,current), count+1); }
+      },
+      _ => break count
+    }
+  }
+}
+"#;
+    let source = String::from("A B C");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        stream_items: 100,
+        nesting: 64,
+    });
+    let bindings = Bindings::new([(
+        at("nodes".into(), 0),
+        SourceValue::Sequence {
+            values: vec![
+                word_at(&source, 0..1, 0),
+                word_at(&source, 2..3, 0),
+                word_at(&source, 0..1, 0),
+                word_at(&source, 4..5, 0),
+            ],
+            element: DeclaredType::Native(SourceKind::Words),
+        },
+    )])
+    .unwrap();
+    let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+    let mut declarations = Vec::new();
+    while let Some(declaration) = zirql::read_pattern_function_declaration(
+        &mut reader,
+        &mut ReaderHost,
+        &mut budget,
+        64,
+        |name, _| {
+            if name.value == "Word" {
+                Ok(DeclaredType::Native(SourceKind::Words))
+            } else {
+                Err(QueryError::query(name.range, "unknown native type"))
+            }
+        },
+    )
+    .unwrap()
+    {
+        declarations.push(declaration);
+    }
+    let entry =
+        zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut budget, 64).unwrap();
+    assert!(reader.remaining().is_empty());
+    let result = FunctionRequest::prepare_patterns(
+        &declarations,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    let SourceValue::Constructed(value) = result else {
+        panic!("constructed report")
+    };
+    let V::Record(fields) = value.data() else {
+        panic!("report fields")
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["fold", "scan", "walk"]
+    );
+    assert_eq!(
+        fields[0].1.data(),
+        &V::Tuple(vec![V::Integer(3), V::Integer(10)])
+    );
+    let V::Array(states) = fields[1].1.data() else {
+        panic!("scalar scan")
+    };
+    for (state, (count, total)) in states.iter().zip([(1, 2), (2, 5), (3, 10)]) {
+        assert_eq!(
+            state.data(),
+            &V::Tuple(vec![V::Integer(count), V::Integer(total)])
+        );
+    }
+    assert_eq!(states.len(), 3);
+    assert_eq!(fields[2].1.data(), &V::Integer(3));
+    zirql::dispose_native_value(entry);
+    let text = "scan(nodes, queue<Word>([]), append)";
+    let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+    let entry =
+        zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut budget, 64).unwrap();
+    let result = FunctionRequest::prepare_patterns(
+        &declarations,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    let SourceValue::Sequence { values, .. } = result else {
+        panic!("native scan snapshots")
+    };
+    assert_eq!(values.len(), 4);
+    for (value, length) in [(&values[0], 1), (&values[3], 4)] {
+        assert!(
+            matches!(value, SourceValue::Computational(value) if matches!(value.as_ref(), zirql::ComputationalValue::Queue(queue) if queue.len()==length))
+        );
+    }
+    zirql::dispose_native_value(entry);
+    for text in ["queue", "loop", "fold"] {
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let entry =
+            zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut budget, 64).unwrap();
+        assert!(matches!(&entry.value, K::Name(name) if name == text));
+        zirql::dispose_native_value(entry);
+    }
+    let mut reader = zirql::ArgumentReader::new("queue < 3", 0).unwrap();
+    let comparison =
+        zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut budget, 64).unwrap();
+    assert!(
+        matches!(&comparison.value, K::Binary { operator: zirql::ValueBinaryOperator::Less, left, .. } if matches!(&left.value, K::Name(name) if name=="queue"))
+    );
+    zirql::dispose_native_value(comparison);
+    for text in ["fold([],0,add(1))", "identity_set<Word>(1)"] {
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let error = zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut budget, 64)
+            .unwrap_err();
+        assert!(matches!(error.location, Location::Query(_)));
+    }
+    let mut reader = zirql::ArgumentReader::new("loop (n=0) { break n; }", 0).unwrap();
+    let mut small = Budget::for_program(ProgramLimits {
+        results: 1,
+        ..limits()
+    });
+    let error =
+        zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut small, 64).unwrap_err();
+    assert_eq!(error.category, QueryErrorCategory::ResultLimit);
+}

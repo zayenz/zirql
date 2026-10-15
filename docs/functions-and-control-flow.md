@@ -177,10 +177,9 @@ depth have their own limits. See [diagnostics and limits](diagnostics-and-limits
 
 ## Other control-flow forms
 
-The evaluator also supports folds, scans, state loops and worklist collections.
-The common expression reader does not parse these operations. A host must
-translate its own syntax into the Rust representation, or construct that
-representation directly.
+The common expression reader and evaluator support folds, scans, state loops
+and worklist collections. Hosts supply native type names, identity and primitive
+operations; typed builders can construct the same shared representation.
 
 | Form | Behavior |
 | --- | --- |
@@ -189,6 +188,39 @@ representation directly.
 | State loop | Repeatedly compute a complete next state or break with a result |
 | FIFO queue | Pop the front or append items while preserving existing aliases |
 | Native identity set | Insert a native identity or test membership |
+
+A loop introduces immutable state names. Initializers run in the outer scope;
+every body path ends with `break value` or `continue (next, ...)`. Transfers
+inside a block can end with a semicolon. For example, this expression returns
+`15`:
+
+```zirql
+loop (n = 5, total = 0) {
+  if n == 0 { break total; }
+  else { continue (n - 1, total + n); }
+}
+```
+
+Fold and scan take a named pure step, including destructured parameters:
+
+```zirql
+fn add((count, total): tuple<int, int>, item: int) -> tuple<int, int> {
+  (count + 1, total + item)
+}
+fold([2, 3, 5], (0, 0), add)
+```
+
+The fold returns `(3, 10)`. Replacing `fold` with `scan` returns
+`[(1, 2), (2, 5), (3, 10)]`. The step position accepts a function name;
+functions are not stored as ordinary values.
+
+`queue(items)` infers an element contract from admitted input or context;
+`queue<Operation>([])` supplies one for empty input when the host exposes
+`Operation`. `pop_front(q)` returns `absent` or `present((item, remaining))`.
+`push_back_all(q, items)` appends in order. `identity_set<Operation>()` creates
+an empty native identity set; `item in seen` tests membership, and
+`insert(seen, item)` inserts idempotently. Bare names such as `queue` and `loop`
+keep their ordinary binding meaning when they are not used in these forms.
 
 Fold and scan require a step with state and item parameters. The state contract
 is fixed; every returned state is checked. A loop likewise computes all next
