@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 71
-- Ready: 3
+- Ready: 2
 - Blocked: 7
-- Done: 61
+- Done: 62
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -71,7 +71,7 @@
 | [base-060](tasks/060-define-broader-zincite-program-and-shared-operation-alignmen.md) | Define broader Zincite program and shared-operation alignment | done | — |
 | [base-061](tasks/061-support-filter-count-expressions-over-the-current-constructe.md) | Support filter/count expressions over the current constructed input | done | base-047 |
 | [base-062](tasks/062-preserve-collection-insertion-order-and-collection-kind-when.md) | Preserve collection insertion order and collection kind when sorting | ready | — |
-| [base-063](tasks/063-use-direct-zincite-expressions-and-shared-constructed-suffix.md) | Use direct Zincite expressions and shared constructed suffixes | ready | — |
+| [base-063](tasks/063-use-direct-zincite-expressions-and-shared-constructed-suffix.md) | Use direct Zincite expressions and shared constructed suffixes | done | — |
 | [base-064](tasks/064-adopt-ordered-dictionaries-and-operand-order-sets-in-zirium.md) | Adopt ordered dictionaries and operand-order sets in Zirium | blocked | base-062 |
 | [base-065](tasks/065-read-bare-brace-sets-and-computed-dictionaries.md) | Read bare-brace sets and computed dictionaries | blocked | base-062, base-064 |
 | [base-066](tasks/066-read-indexed-arrays-with-optional-declared-index-sets.md) | Read indexed arrays with optional declared index sets | blocked | base-065 |
