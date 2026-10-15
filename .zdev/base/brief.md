@@ -1319,3 +1319,70 @@ these cases across hosts. Use temporary measurements of a retained alias/scan
 state and increasing wide/cyclic worklists to check copying and allocation.
 No timing assertions, internal call-count tests or corpus campaign. Run each
 changed repository's required checks and record separate consumer commits.
+
+### Zincite alignment: intermediate bindings and pipelines
+
+On 2026-10-15, the user requested planning for Zincite to align more closely with
+Zirium, including intermediate bindings and pipelines. Zincite base-140 owns
+the bounded frontend change that makes `let` the normal spelling for both
+input-derived and calculated values, retaining `source` for compatibility.
+The existing `source` and `let` paths lower to Zirql's immutable `Statement::Bind`.
+
+Shared immutable bindings, binding lookup, pipeline sequencing and the common
+native expression reader already exist. Zincite already uses shared execution
+and supports saved native inputs and direct native composition in several
+paths. Complete consistent access to those facilities and extract remaining
+general frontend rules where concrete programs demonstrate a gap.
+
+Plan the remaining work in these slices:
+
+- Bind and reuse supported pure native or constructed results consistently.
+  A binding evaluates its right-hand side once, retains its admitted value and
+  becomes visible to later statements. Duplicate/forward names, lexical scope,
+  parameter/function references and forbidden effects use shared rules where
+  applicable. The source operation determines original-input semantics; the
+  `source` versus `let` spelling must not invent a second binding model.
+- Continue pipelines from saved results, including a computed positional report
+  collection. Check short inline programs and file programs through the same
+  language path. Each stage consumes the preceding result; nested selectors keep
+  their defined current input and outer bindings. Reuse the common reader and
+  located expressions wherever the host grammar permits. Preserve existing
+  query-string wrappers; reducing quoting or choosing additional common syntax
+  requires concrete examples and an explicit syntax decision.
+- Compose native selection, explicit projection, constructed computation and
+  shared collection operations without a rendering round trip. Preserve native
+  handles, keyed shape, nominal identity, source locations and completeness.
+  Keep incompatible transitions and empty-input kind failures located and
+  explicit. Reuse base-047's constructed pipelines, base-048 through base-054's
+  general native operations, and the approved reader/set-keyed/template tasks;
+  create only missing consumer integration or shared functionality demonstrated
+  by the comparison.
+- Consolidate remaining general statement/expression parsing and validation
+  only where inspection finds duplicated language behavior. Zincite's MiniZinc
+  CST, identifiers, literal-source resolution and domain stages remain host
+  inputs. Prefer small existing-reader extensions or direct lowering over a
+  configurable parser framework. A keyword alias alone does not require a new
+  Zirql API.
+
+For acceptance, compare a compact program that saves a domain selection, derives
+names and a count from that same selection, binds a constructed report and then
+applies shared collection stages. Also compare saved literal data reused in a
+calculation, an invalid stage after a saved value, and a later failure after an
+output statement. Reuse focused library/inline/file controls across both Zincite
+commands and the corresponding Zirium behavior; different domain projections
+and renderings need not produce identical bytes. Parsing, validation, reuse,
+copying, nested calls and result construction share the request budget and
+retained input/fact owners. No new benchmark suite or callback-count tests.
+
+Keep Zincite's current data-program ordering (input bindings before calculated
+bindings), original-input snapshots, explicit create/replace operations,
+complete-candidate validation and atomic writes. Its terminal emitters and
+Zirium's pass-through emitters remain explicit host policies. Alignment does
+not authorize broader data-expression helpers, mutable variables, live reads
+of edited candidates, changed Unknown behavior or implicit serialization.
+Changes to those policies need a separate decision.
+
+Coordinate each consumer integration with the Zincite work chat. First reuse
+its `let` work, then compare the binding/pipeline paths above at the committed
+revision. Record concrete gaps and split only the remaining shared and consumer
+work. These planning requirements do not expand any task currently in review.

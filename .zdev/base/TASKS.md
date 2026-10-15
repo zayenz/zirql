@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 54
-- Ready: 8
+- Total: 57
+- Ready: 11
 - Blocked: 2
 - Done: 44
 
@@ -63,3 +63,6 @@
 | [base-052](tasks/052-share-explicit-map-ranking-and-ordered-map-selection.md) | Share explicit map ranking and ordered map selection | blocked | base-051, base-048 |
 | [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | ready | — |
 | [base-054](tasks/054-share-bounded-native-fixed-point-execution.md) | Share bounded native fixed-point execution | ready | — |
+| [base-055](tasks/055-expose-index-sets-and-tuple-positions-in-the-common-reader.md) | Expose index sets and tuple positions in the common reader | ready | — |
+| [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | ready | — |
+| [base-057](tasks/057-share-pure-interpolation-and-computed-object-key-constructio.md) | Share pure interpolation and computed object-key construction | ready | — |
