@@ -28,9 +28,9 @@
 /* Starlight's splash template otherwise expands prose to 67.5rem. */
 :root[data-has-hero] { --sl-content-width: 44rem; }
 .site-title img { width: 10.4rem; height: auto; }
-.hero { display: block; padding-block: 3rem 0.5rem; }
-.hero .stack { text-align: start; gap: 1.5rem; }
-.hero .copy { align-items: flex-start; gap: 1.25rem; }
+.hero { display: block; padding-block: 1rem 0; }
+.hero .stack { text-align: start; gap: 1rem; }
+.hero .copy { align-items: flex-start; gap: 0.65rem; }
 .hero h1 {
   font-family: var(--sl-font);
   font-size: clamp(2.4rem, 5vw, 3.7rem);
@@ -55,3 +55,7 @@
   .hero { padding-block: 1.5rem 0.5rem; }
   .hero h1 { font-size: clamp(2.25rem, 9vw, 3.25rem); }
 }
+
+/* Keep the first working expression visible near the language introduction. */
+:root[data-has-hero] .sl-markdown-content > h2:first-child { margin-top: 0; }
+:root[data-has-hero] .hero .tagline { font-size: 1.15rem; }

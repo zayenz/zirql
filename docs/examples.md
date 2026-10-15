@@ -1,96 +1,50 @@
-# Query examples
+# Word analysis
 
-The word host reads `birch apple ash apple` with `split_whitespace`. Its input
-is an ordered stream of borrowed string slices:
+Start with the text `birch apple ash apple`. Our application splits it at
+whitespace and supplies a binding named `words`:
 
-```text
-birch, apple, ash, apple
+```json
+["birch", "apple", "ash", "apple"]
 ```
 
-There are four entries, including two occurrences of `apple`. This host defines
-`prefix("text")` as a case-sensitive `starts_with` test. Every word has a known
-answer, so its predicates return True or False. Zirql combines those answers
-and runs the shared stages. No compiler, file-format parser or renderer is
-needed for these queries.
+This is the whole data model for the first examples: an ordered array of
+strings. The application preserves case and punctuation. It does not stem words
+or remove duplicates. Both occurrences of `apple` count towards the analysis.
 
-## Select and count borrowed words
+The array expressions in this tutorial run in the [word
+example](getting-started.md). Its Rust output uses `Debug`; this guide writes
+the same values as JSON for readability. The final section introduces a separate
+native pipeline example.
 
-```text
-filter(prefix("a")) | head(1) | count
-```
+## Select words
 
-| Step | Result |
-| --- | --- |
-| Input | `birch`, `apple`, `ash`, `apple` |
-| `filter(prefix("a"))` | `apple`, `ash`, `apple` |
-| `head(1)` | `apple` |
-| `count` | `Count(1)` |
-
-The [complete Rust host example](../README.md#a-borrowed-source-query) supplies
-this predicate and its parser callback, admits the words with a budget and
-evaluates the pipeline. It returns the native count before any rendering.
-
-## Combine predicates
-
-Keep words beginning with `a`, except those beginning with `ap`:
+A comprehension visits the array and keeps words whose spelling begins with `a`:
 
 ```text
-filter(prefix("a") and not prefix("ap"))
+[w for w in words if starts_with(w, "a")]
 ```
 
-The returned stream contains `ash`. Adding `| count` returns `Count(1)`.
-Using `or` instead gives a different selection:
+```json
+["apple", "ash", "apple"]
+```
+
+`w` is local to the comprehension. The condition runs for each word, and the
+expression before `for`, called the head, produces each selected result. Here
+the head is also `w`, so it returns the word unchanged. `starts_with` is built
+into Zirql; the application only needs to supply the array.
+
+Use `contains(w, "p")` to select both occurrences of `apple`, or
+`ends_with(w, "sh")` to select `ash`. These operations compare exact strings;
+`starts_with("Apple", "a")` is false.
+
+## Construct records
+
+Change the head to build a record for each selected word:
 
 ```text
-filter(prefix("ap") or prefix("b"))
+[{"word": w, "label": "word:" ++ w}
+ for w in words if starts_with(w, "a")]
 ```
-
-The result is `birch`, `apple`, `apple`, in input order. The host evaluates each
-prefix test. Zirql handles `and`, `or`, negation and short-circuiting. Hosts
-with incomplete facts may also return Unknown; filtering keeps only known
-true answers, and negation preserves Unknown.
-
-## Change the stage order
-
-```text
-filter(prefix("a")) | head(2)
-```
-
-This keeps `apple`, `ash`. Filtering first makes `head` take the first two
-matching words. Swapping the stages:
-
-```text
-head(2) | filter(prefix("a"))
-```
-
-The head is `birch`, `apple`, so filtering it leaves only `apple`. Neither
-query sorts the input. Duplicates survive unless an explicit stage removes them.
-
-## Count an empty selection
-
-```text
-filter(prefix("z")) | count
-```
-
-No word matches, so the result is `Count(0)`. An empty input also returns zero.
-`count` is terminal: `count | head(1)` is rejected before evaluation.
-
-## Build records from words
-
-Native streams and constructed arrays have different representations. To build
-a scalar report, the word host explicitly projects the filtered slices to
-`ConstructedValue::String` values in a positional array. That gives a constructed
-binding `words = ["apple", "ash", "apple"]`.
-
-This notation describes a comprehension over that binding:
-
-```text
-[{word: w, label: "word:" ++ w} for w in words]
-```
-
-Each candidate binds `w` to one string. The head creates a record with `word`
-first and `label` second; `++` concatenates strings. The returned data, rendered
-here as JSON for readability, is:
 
 ```json
 [
@@ -100,100 +54,127 @@ here as JSON for readability, is:
 ]
 ```
 
-The repeated word produces a repeated record. Array order follows generation
-order. The core returns constructed values, while the host decides whether
-to print JSON, return a Rust value or use another representation.
+`++` concatenates strings. Records retain their field order, and the array
+retains the order of the selected words.
 
-The comprehension is notation for `ValueExpression`, not syntax accepted by
-`parse_pipeline`. See [values and comprehensions](values.md) for the callable
-representation and [embedding in Rust](host-integration.md#constructed-value-apis)
-for its evaluation and copy boundaries.
+## Find adjacent word pairs
 
-## Filter before constructing a value
-
-The host can also project the four word lengths in UTF-8 bytes. These ASCII
-words give `sizes = [5, 5, 3, 5]`. In expression-tree notation:
+Use positions when the relation between words matters. This expression forms
+pairs of neighbouring words, also called bigrams:
 
 ```text
-[n * 2 for n in sizes if n > 3]
+[words[i] ++ " " ++ words[i + 1]
+ for i in 1..(length(words) - 1)]
 ```
-
-The result is `[10, 10, 10]`. Its positions are 1, 2 and 3, newly assigned by
-the positional constructor. They do not retain input positions 1, 2 and 4.
-Use explicitly [keyed arrays](values.md#keyed-arrays) when those positions need
-to survive as keys.
-
-All four candidates are charged before filtering, including the rejected
-size 3. The head runs only for the three survivors.
-
-## Order a constructed report
-
-For a positional constructed binding with repeated scores:
-
-```text
-rows = [{"id": "A", "score": 2}, {"id": "B", "score": 1},
-        {"id": "C", "score": 2}, {"id": "D", "score": 1}]
-```
-
-The common value reader accepts these report expressions:
-
-```text
-sort_by(rows, "score")
-→ [{"id": "B", "score": 1}, {"id": "D", "score": 1},
-   {"id": "A", "score": 2}, {"id": "C", "score": 2}]
-
-sort_by(rows, "score", descending=true)
-→ [{"id": "A", "score": 2}, {"id": "C", "score": 2},
-   {"id": "B", "score": 1}, {"id": "D", "score": 1}]
-
-min_by(rows, "score") → {"id": "B", "score": 1}
-max_by(rows, "score") → {"id": "A", "score": 2}
-min([]) default 0     → 0
-```
-
-Both directions preserve input order within ties, and extrema return the first
-tied row. Original rows keep their other fields and nominal identities. Missing
-or absent scores fail; project an explicit `lookup(row, "score") default 0` key
-first when that is the intended policy. See [sorting and optional extrema](values.md#sorting-and-optional-extrema)
-for supported key types, input conversion and the callable Rust forms.
-
-## Integrate another semantic model
-
-<span id="count-mlir-operations-by-name"></span>
-<span id="build-records-from-labels"></span>
-
-[Semantic model integrations](semantic-models.md) applies these language rules
-to Zincite and Zirium. Its operation-count and label-report examples use each
-host's own inputs and syntax.
-
-The common reader and [native projection APIs](host-integration.md#correlated-native-projection)
-support correlated rows and scalar summaries. The core admits
-[required typed parameters](native-programs.md#required-caller-parameters)
-through immutable bindings. The [design examples](language-direction.md)
-show complete word-domain candidate surfaces. Callable
-[native matching](native-programs.md#retain-native-captures) and
-[bounded paths](native-programs.md#explain-native-connections) keep handles
-native until explicit projection; each host supplies its domain adapters.
-
-## Project each native subject
-
-A host with a `names` string projection and native `count` stage can read:
-
-```text
-project(w, {"name": w | names | one, "n": w | count})
-```
-
-For native subjects `beta`, `alpha`, `beta`, `evaluate_projection` returns:
 
 ```json
-[{"name": "beta", "n": 1}, {"name": "alpha", "n": 1}, {"name": "beta", "n": 1}]
+["birch apple", "apple ash", "ash apple"]
 ```
 
-The core returns constructed records before rendering. The subject stays native
-until `names` projects strings. `one` requires exactly one projected name, and
-`count` checks the signed integer boundary when converted to constructed data.
-The repeated subject produces a repeated row.
+Positions are one-based, and `..` includes both endpoints. Stopping one position
+before the end leaves room for `words[i + 1]`. A reversed range is empty, so
+empty input and a single word both produce an empty array.
 
-A field such as `require(false, w | failing_stage | names, "stop")` is fully
-preflighted, then fails with `stop` without executing `failing_stage`. Undefined
-names, known incompatible types and effects still fail preflight.
+## Keep the occurrences in each group
+
+To find every position of a repeated word, group the occurrences by spelling.
+First build a record for each occurrence, keeping its position in the array:
+
+```text
+group_by(
+  [{"word": words[i], "position": i} for i in 1..length(words)],
+  "word"
+)
+```
+
+```json
+[
+  {"key": "birch", "items": [{"word": "birch", "position": 1}]},
+  {"key": "apple", "items": [
+    {"word": "apple", "position": 2},
+    {"word": "apple", "position": 4}
+  ]},
+  {"key": "ash", "items": [{"word": "ash", "position": 3}]}
+]
+```
+
+`group_by` collects records with the same `word` field. Each group has a `key`
+and an `items` array. Groups follow the first occurrence of each key, and their
+items keep input order. The `apple` group therefore retains positions 2 and 4.
+
+<span id="count-word-frequencies"></span>
+
+Use those groups to report a count and the positions together:
+
+```text
+sort_by(
+  [{"word": g.key, "count": length(g.items),
+    "positions": [item.position for item in g.items]}
+   for g in group_by(
+     [{"word": words[i], "position": i} for i in 1..length(words)],
+     "word")],
+  "count", descending=true
+)
+```
+
+The result starts with `apple`, count `2`, positions `[2, 4]`, followed by
+`birch` and `ash`. Sorting is stable, so equal counts retain first-seen order.
+Sort by `"word"` instead for alphabetical output.
+
+Keeping the positions is the reason to group complete records here. For a
+frequency count alone, a host that exposes native string pipelines can use
+Zirql's [tally stage](shared-concepts.md#additional-stages). That stage belongs
+to the native pipeline interface; it is not a value function in this example.
+
+## Summarise a selection
+
+Count all words, count a selection and sort the original array in one record:
+
+```text
+{
+  "count": length(words),
+  "beginning_with_a": length([w for w in words if starts_with(w, "a")]),
+  "alphabetical": sort(words)
+}
+```
+
+```json
+{
+  "count": 4,
+  "beginning_with_a": 3,
+  "alphabetical": ["apple", "apple", "ash", "birch"]
+}
+```
+
+`length` counts array entries. It does not count characters in a string. The
+selection is an eager array, so Zirql constructs it before counting it.
+
+An empty `words` array gives zero counts and an empty alphabetical list. The
+grouped report is also empty. No fallback is needed for these cases.
+
+## Add source identity when it is needed
+
+The positions above identify words in the array. They do not identify byte
+ranges in the original text, since splitting discarded the whitespace. To
+highlight a word in that text, the application must retain its source location.
+It can expose records with text and offsets, or native handles that refer back
+to the original source. A native handle identifies an application object; the
+application defines its properties and operations.
+
+The [borrowed-word pipeline](../README.md#a-borrowed-source-query) shows a small
+native interface over string slices:
+
+```text
+filter(prefix("a")) | head(1) | count
+```
+
+Here the host, the Rust application embedding Zirql, implements `prefix` on
+borrowed strings. Zirql filters the stream, takes its first matching entry and
+returns a count of 1. Stage order matters: filtering before `head(2)` gives
+`apple`, `ash`; taking the head first and then filtering leaves only `apple`.
+
+The [setup guide](getting-started.md) shows how to supply the string array used
+throughout this tutorial. For richer models, the [implementation
+reference](implementation-reference.md) explains constructed values and native
+handles. The [adapter examples](semantic-models.md) apply that choice to
+source-analysis tools.

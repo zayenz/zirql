@@ -1,248 +1,88 @@
-# Semantic model integrations
+# Adapter examples
 
-The [word examples](examples.md) need one domain predicate: a prefix test on a
-borrowed string. A larger host supplies different native items and operations,
-while using the same language evaluator. Zincite and Zirium are two such hosts.
+Zincite and Zirium apply the same language to two different data models. Zincite
+exposes MiniZinc source and model facts; Zirium exposes MLIR operations and
+their relationships. Both need to keep the objects attached to their source
+while a query selects, navigates and groups them. This page explains those
+implementation choices. Use the [Zincite site](https://zayenz.se/zincite/) and
+[Zirium site](https://zayenz.se/zirium/) for commands, accepted syntax and
+workflows.
 
-| Choice | Word host | Zincite | Zirium |
+## Choose native values
+
+| Boundary | Word example | Zincite | Zirium |
 | --- | --- | --- | --- |
-| Native items | Borrowed words | Source nodes, declarations and references | Document-owned operation handles |
-| Predicate meaning | Exact text prefix | Written kind or resolved model fact | Operation name, dialect or attribute |
-| Navigation | None in the basic example | Source structure and declaration uses | Regions, operands and dataflow users |
-| Retained owner | Source string | Source files and model context | Parsed document |
-| Output | Caller inspects the native result | Source rendering or an inspection envelope | Selected fragments, JSON or native results |
+| Input | Array of strings | Source nodes, declarations and references | Document-owned operation handles |
+| Identity | Array position identifies an occurrence; string equality groups spellings | Source/model identity, including scope and file | Operation and SSA-value identity within a document |
+| Domain operations | None for constructed word analysis | Syntax selection, declaration resolution and uses | Regions, operands and dataflow users |
+| Projection | Strings are already values | Names and model facts become report values | Names and operation properties become report values |
+| Retained owner | Constructed array | Source files and model context | Parsed document |
 
-The host parses its domain syntax and lowers shared constructs to Zirql's
-located Rust representation. Zirql executes those constructs with the active
-budget. Native operations remain host hooks: the core has no dependency on
-either consumer crate and supplies no MiniZinc or MLIR semantics.
+The two occurrences of `apple` belong to one spelling group but retain their
+separate array positions. Two source declarations with the same spelling may
+identify different objects. Two MLIR operations with the same name are also
+distinct. The host preserves that distinction until a query explicitly projects
+names and groups them.
 
-## Zincite: source and model facts
+## Supply facts and uncertainty
 
-Zincite starts with source-preserving selections. A syntax predicate can ask
-whether a selected node is a written constraint. Save this as `model.mzn`:
+Zincite resolves source declarations and references in a retained model context.
+An include or builtin context can be missing, leaving some facts unknown.
+Its adapter preserves those limitations beside the result. Negating an unknown
+predicate does not make the fact known.
 
-```text
-int: capacity = 20;
-constraint capacity > 0;
-solve satisfy;
-```
+Zirium supplies operation structure and SSA relationships. A value's identity
+includes its document and result or block-argument position. A defining
+operation alone cannot distinguish two results of that operation. Printed SSA
+names also do not establish identity across scopes.
 
-With Zincite installed, run:
+Zirql combines predicates, sequences operations and retains native values.
+Each adapter supplies the facts and knows when they are incomplete.
 
-```sh
-zincite query 'filter(kind("constraint")) | count' model.mzn
-```
+## Project and group
 
-The command prints `1`. Zincite parses the file, selects its written items and
-implements `kind`. Zirql combines predicate answers and counts the retained
-selection. The host renders the count as a decimal integer. Syntax inspection
-does not need a MiniZinc compiler, solver or standard library.
+A native query can select objects, project a name into a record and group those
+records by name. The grouping step has the same semantics as the
+[grouped-occurrence example](examples.md#keep-the-occurrences-in-each-group):
+first-seen groups, ordered members and retained duplicates.
 
-A semantic query needs more than node text. Zincite resolves declarations and
-references using a retained model context, and distinguishes the same name in
-different scopes or files. Its source results retain file identity and byte
-ranges. If an include or builtin context is missing, some facts remain unknown.
-Semantic reports keep `complete` and located `limitations`; available results
-alone do not establish completeness. Negating an unknown predicate does not
-make it known.
+For Zincite, the projection reads a declaration or source node. For Zirium, it
+reads an operation. The shared evaluator can then count group members and sort
+the report. It needs no MiniZinc or MLIR-specific grouping rules.
 
-Zincite also owns the supported MiniZinc value subset. Nominal members get
-their identities from the model. Keyed values must meet the host's axis and
-shape rules where those rules apply. A generic sparse keyed array can be valid
-in Zirql and still be refused by Zincite. Source edits have separate target,
-comment and atomic-write requirements. Legacy terminal edits retain native
-`Document` or `Reduction` candidates while their preceding filters, selection
-limits and common stages run through Zirql. Model-backed `create`/`replace`
-programs use the same shared comprehension evaluator as reports; Zincite checks
-the coherent candidate and controls preview, diff and explicit atomic writes.
+An adapter implements
+[`ProjectionHost`](host-integration.md#correlated-native-projection) to connect
+native field evaluation to constructed results. Native capture matching can
+retain several related handles before that projection.
 
-See [Zincite source queries](https://zayenz.se/zincite/guides/queries/) for syntax
-inspection and semantic context requirements.
+## Define path edges
 
-## Zirium: operations in a retained document
+A path adapter supplies ordered neighbours and native identity. Zirql supplies
+bounded traversal and selects one shortest witness for each reachable
+source/target pair within the edge bound.
 
-Zirium's native items are operation handles. A handle identifies an operation
-in its document; its printed name is a property of that operation. Save this
-as `operations.mlir`:
+Zirium's `users` edge connects an operation to a direct SSA user operation.
+Zincite's `referenced_declarations` edge connects a declaration to a proven
+declaration target referenced in its owning region. A hypothetical word host's
+`next_word` edge could connect adjacent occurrences.
 
-```text
-func.func @mix(%x: i32, %y: i32) -> i32 {
-  %a = arith.addi %x, %y : i32
-  %b = "arith.muli"(%a, %y) : (i32, i32) -> i32
-  %c = arith.addi %b, %x : i32
-  func.return %c : i32
-}
-```
+The same path evaluator works with each choice. The host defines what one edge
+means and retains source coordinates and uncertainty. A missing witness within
+a depth bound does not establish that no longer path exists. See
+[the path adapter](host-integration.md#native-path-adapter).
 
-With Zirium installed, run:
+## Keep domain policy with the application
 
-```sh
-zirium 'filter(op("arith.addi")) | count' operations.mlir
-```
+Zincite's nominal members get their identity from its retained model. Its data
+construction also enforces the model's axis and shape rules. A sparse keyed
+array can be valid in Zirql but invalid for a particular MiniZinc value.
 
-The command prints `2`. The shared filter and count behave as they do for
-words. Zirium supplies the initial operation stream and the meaning of `op`.
-Its parser works on textual MLIR without linking LLVM; name and structure
-inspection do not establish full dialect verification.
+Both applications own rendering and source-edit policy. A native result can
+be rendered as text, a report or a candidate edit, depending on the host.
+Zirql's evaluator does not establish dialect validity or make a source change
+safe to commit.
 
-Following `users` is a domain operation. Zirium resolves the SSA use edges and
-keeps the resulting operation handles attached to their document. Equal printed
-SSA names in different scopes do not establish identity. Unsupported syntax
-can leave facts incomplete; strict parsing and dialect support are host choices.
-Zirql supplies neither those edges nor the legality of a source edit.
-
-See the [Zirium query guide](https://github.com/zayenz/zirium/blob/main/docs/query-language.md)
-for navigation, recovery, registries and rendering.
-
-## Count MLIR operations by name
-
-The same document contains two additions and one multiplication. Project the
-arithmetic operations to their names before tallying:
-
-```sh
-zirium 'filter(dialect("arith")) | names | tally | json' operations.mlir
-```
-
-```json
-{"arith.addi": 2, "arith.muli": 1}
-```
-
-Zirium supplies `dialect`, the `names` projection and the JSON emitter. Zirql
-supplies the string tally. The common `parse_pipeline` reader does not accept
-these host stages; Zirium lowers its own syntax to the typed representation.
-
-Identity and projected equality answer different questions. If navigation
-returns the same operation twice, native `unique` can remove that repeated
-handle. Two distinct additions survive native `unique`, even though their
-names are equal. Projecting `names` first makes both values the string
-`arith.addi`, so a string tally counts them together. A word host that enables
-text-based unique keys would likewise treat repeated `apple` spellings as
-one key. The host must choose and implement that identity rule.
-
-## Correlate native handles before rendering
-
-The shared native matcher can retain several domain handles in one ordered
-record. Zirql owns clause scope, finite enumeration, required cardinality,
-Boolean control and native field selection. Hosts supply the primitives and
-keep ownership, source coordinates and incompleteness with their values.
-
-For an SSA adapter, operand identity includes its document and result or block
-argument position. Different results of one operation remain different values;
-a defining operation or printed SSA name cannot replace that identity. Field
-selection preserves the handle, while a later explicit projection can produce
-strings for a report. The [native match adapter](host-integration.md#native-match-adapter)
-defines the callable hooks. Both consumers implement them: Zincite captures
-declarations and their uses, while Zirium captures operations and SSA operands.
-Their guides contain complete [Zincite native reports](https://zayenz.se/zincite/guides/reference/#native-projections-and-captures)
-and [Zirium SSA captures](https://zayenz.se/zirium/guides/query-language/#native-ssa-captures).
-
-## Define native path edges
-
-The shared [path evaluator](native-programs.md#explain-native-connections)
-works with a host's ordered native edges. Both consumers use the
-adapter described in [host integration](host-integration.md#native-path-adapter).
-The core owns bounded shortest-witness traversal; each host supplies its edges
-and native identity.
-
-For Zirium, `users` means one operation to one direct SSA user operation.
-The selected connection from the multiplication above to `func.return` has
-steps `[arith.muli, arith.addi, func.return]` and uses two edges. Result positions
-and retained use-site order determine equal-length choices. The host keeps
-document ownership, stale-handle checks and diff-side boundaries. Run the
-connection query against `operations.mlir` above:
-
-```sh
-zirium 'filter(op("arith.muli")) | paths(users, to=op("func.return"), max_depth=2) | json' operations.mlir
-```
-
-For Zincite, `referenced_declarations` means one declaration to a proven target
-of a reference written in its owning region. With `int: c = 1; int: b = c;
-int: a = b; solve satisfy;`, the connection from `a` to `c` has declaration
-steps `[a, b, c]`. Reference occurrences are not extra steps. The adapter follows
-existing file, range and reference-kind order, retaining the first occurrence
-of each target and any unresolved-reference limitations. Save that model as
-`chain.mzn`. Set `MZN_STDLIB_DIR` to your installed MiniZinc standard-library
-directory before running this semantic query. For MiniZincIDE on macOS it is
-`/Applications/MiniZincIDE.app/Contents/Resources/share/minizinc`. Without
-configured builtin declarations, Zincite retains the witness with an incomplete
-status and a located limitation. With the library configured, run:
-
-```sh
-zincite query --stdlib-dir "$MZN_STDLIB_DIR" --program 'subtree | declarations | filter(name("a")) | paths(referenced_declarations, to=name("c"), max_depth=2) | json' chain.mzn
-```
-
-Both connections need a bound of at least two. A bound of one gives no witness
-for those pairs, which does not prove global disconnection. Endpoints and steps
-retain native handles and source coordinates. A final Unknown target refuses;
-the host retains incompleteness separately from that refusal.
-
-## Build records from labels
-
-Once native items have been projected to strings, both hosts can supply the
-same constructed binding `labels = ["alpha", "beta"]` to the value evaluator.
-Their accepted surface syntax differs.
-
-For Zincite, save `alpha = 1; beta = 2;` as `labels.dzn`, and this program as
-`labels.zq`:
-
-```text
-source labels = query("names");
-report [(name: n, label: "data:" ++ n) | n in labels];
-```
-
-```sh
-zincite query --program-file labels.zq labels.dzn
-```
-
-For Zirium, save this as `labels.mlir`:
-
-```text
-"alpha"() : () -> ()
-"beta"() : () -> ()
-```
-
-```sh
-zirium 'labels = names; [{"name": n, "label": "data:" ++ n} for n in labels] | json' labels.mlir
-```
-
-Both lower the generator, ordered record fields and string concatenation to
-the shared value evaluator. Before host rendering, the constructed data is:
-
-```json
-[
-  {"name": "alpha", "label": "data:alpha"},
-  {"name": "beta", "label": "data:beta"}
-]
-```
-
-Zirium prints ordinary JSON. Zincite prints a tagged array and record
-representation inside an envelope with `complete`, `limitations` and `result`.
-The data agrees before rendering; the printed bytes and inspection metadata
-serve different host APIs.
-
-For your own integration, choose native items, identity and domain hooks first.
-Then decide which text forms to accept and how to expose results. The
-[Rust embedding guide](host-integration.md) describes those boundaries.
-
-## Inspect syntax with recursive query functions
-
-Zincite accepts typed `fn` declarations in read-only query programs. Its
-[written-call example](https://zayenz.se/zincite/guides/queries/#count-written-calls-with-a-function)
-passes native roots and direct children explicitly, counts ordinary and generator
-call syntax, and includes scalar and mutual tail recursion. `Node` and
-`Declaration` are host contracts; enum signatures resolve to identities from
-the current retained model. Query functions inspect syntax and facts without
-executing a model function or solver.
-
-The adapter retains parsed bodies, resolves small request-local headers and
-prepares one shared function unit before statements run. Projection fields,
-dependent match sources, guards and path targets use that unit's active runner.
-Written match scope, lazy Boolean evaluation, native source owners and final
-Unknown refusals remain the existing shared/host boundaries. Native admission
-checks actual elements and coordinates at the first boundary; Zincite opts into
-retaining that admission only for immutable request-owned values. Fresh values
-or changed contracts are admitted again. Materialization and rendering still
-spend the request budget. See [embedding programs](embedding-programs.md#call-typed-pure-functions)
-for the shared APIs and active-depth rules. Atomic Data programs exclude query
-functions.
+When designing another adapter, make these choices explicit: what identifies an
+item, which operations expose facts, which facts may be unknown, and how results
+leave the evaluator. The [implementation reference](implementation-reference.md)
+connects those choices to the Rust interfaces.

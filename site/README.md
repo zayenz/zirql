@@ -3,14 +3,16 @@
 Authoritative reader guides live in `../docs/`. The preparation script adds
 Starlight metadata and rewrites their repository-relative links into site links.
 Generated content is ignored. Edit the Markdown guides, then rerun preparation;
-site tooling remains independent of Cargo. The sidebar separates language
-reference, worked examples and Rust embedding guides; all retain `/guides/`
-routes.
+site tooling remains independent of Cargo. The sidebar leads with word analysis
+and its Rust setup, followed by language and implementation references. Existing
+`/guides/` routes remain available.
 
-The landing page and main examples use a borrowed-word host. The semantic model
-integration guide explains Zincite and Zirium's native items, predicates,
-identity and rendering separately. Design sketches also use the word domain
-and remain labelled as unimplemented forms.
+The landing page uses an array of words to demonstrate adjacent pairs,
+selection and summaries. The preparation script turns its marked example
+sections into Starlight tabs while keeping `docs/index.md` readable in the
+repository. `examples/words.rs` runs those expressions with the common reader.
+The adapter guide uses Zincite and Zirium to explain native identity and host
+policy; commands and consumer workflows belong on their own sites.
 
 The selected Zirql logo supplies the navy, royal blue and pale steel palette.
 The header uses transparent SVGs from `../assets/logo/vector-v1/`, with pale
@@ -32,8 +34,8 @@ npm run preview -- --host 127.0.0.1
 ```
 
 Open `/zirql/` at the origin printed by Astro. The default build uses canonical
-origin `https://zayenz.se` and base `/zirql/`. This metadata reserves the eventual
-URL; building does not publish anything. Pagefind search needs the built preview.
+origin `https://zayenz.se` and base `/zirql/`. Building does not update the
+published site; publication requires a separate reviewed import. Pagefind search needs the built preview.
 
 `npm run dev` starts the editing server. Restart it after editing a guide outside
 `site/` so the preparation step runs again. No Rust build invokes npm.

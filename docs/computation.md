@@ -1,13 +1,15 @@
 # Execution and measured costs
 
-Zirql prepares written expressions and functions within one evaluation, then
-executes them through resolved slots and explicit continuations. Immutable
-admitted values can share their retained owners. Public owned results, native
-materialization and rendering still perform their required work.
+The word examples build arrays and report records. In a larger request, the cost
+depends on how often data is read, how much must be copied and which results the
+caller retains. This chapter explains that execution model and records a
+measured comparison from 2026-10-14.
 
-This boundary supports repeated reports and bounded recursion. It also adds
-metadata and continuation overhead to short expressions. The measurements below
-show both effects; they establish no general speedup or host CLI latency claim.
+Zirql prepares names and functions within one request, then evaluates them using
+resolved slots and explicit continuations. Unchanged values can share storage,
+while owned results and rendering still require work. Preparation also has
+overhead: the experiment found slower small queries alongside faster repeated
+reads of larger values.
 
 ## Runtime contracts and limits
 
@@ -32,41 +34,64 @@ It does not reuse captured handles, enum identities, shape facts or completed
 results across documents. Unchanged admitted owners can retain their checks
 within that request; fresh data and changed contracts require checks.
 
-Use an explicit `default` before arithmetic or ordering on a possibly absent
-value. False, zero and empty values are present; defaults handle absence and
-propagate type, arithmetic, host and budget errors. Written fallback branches
-receive preflight checks, while skipped fallback bodies do no runtime work.
-Comprehensions and reducers remain eager. See [absence and defaults](values.md#absence-lookup-and-defaults).
+Preparation preserves the [value rules](values.md). All written branches receive
+preflight checks, while an unselected default fallback does no runtime work.
+Comprehensions and reducers remain eager, and sorting remains stable. Sharing
+storage changes the copying cost, not those evaluation rules. The [budget
+reference](runtime-limits.md) specifies the charges.
 
-Constructed sorting is stable in both directions. Keys are present homogeneous
-integers, finite floats, strings or members of one nominal type. Empty extrema
-are absent; ties select the first input record. String comparisons and the
-`contains`, `starts_with` and `ends_with` helpers are exact and case-sensitive,
-without normalization, case folding, coercion or regex. An empty search matches.
-See [values](values.md) and [budget accounting](diagnostics-and-limits.md).
+<span id="callable-worklist-storage"></span>
+
+## Worklist storage
+
+The native function runner also executes computational queues and identity sets.
+Its loop, optional tuple patterns and ordinary conditional can implement Boolean
+reachability without another evaluator or graph service. The native fixture uses
+`A -> [B, C]`, `B -> [D]`, `C -> [B]`, `D -> [A]`, `E -> []`: `A` reaches `D`,
+does not reach `E`, and reaches itself without traversing an edge. A language-level
+expansion total shows that the unreachable search expands four distinct nodes,
+despite its cycle and duplicate routes.
+
+Queue transitions share front/rear chains; identity-set insertion shares a
+bounded hash path. Retained aliases and earlier native scan states keep their
+old values. This avoids a complete queue/set clone on the evaluator's ordinary
+immutable slot read. Root sharing is separate from an owned
+output/materialization charge. See [collection
+accounting](runtime-limits.md#computational-collection-work) and [the host
+contract](host-integration.md#native-computational-values).
+
+These storage bounds and Rust API checks are separate from the timing
+experiment. They establish no comparison with the older evaluator, which had no
+equivalent worklist feature, and no production timing or host CLI performance
+claim.
 
 ## Executable host examples
 
-The [Zirium report](https://zayenz.se/zirium/guides/query-language/#a-bounded-constructed-report)
-and [Zincite report](https://zayenz.se/zincite/guides/queries/#combine-functions-defaults-and-ordering)
+The [Zirium
+report](https://zayenz.se/zirium/guides/query-language/#a-bounded-constructed-report)
+and [Zincite
+report](https://zayenz.se/zincite/guides/queries/#combine-functions-defaults-and-ordering)
 combine a 1,000-step tail accumulator, absent-score defaults, exact string
 matching and a stable report sort. Both return total `500500` and ordered rows
-`gamma: 0`, `beta: 2`, `alpha: 2`, retaining the equal-score input order.
-Their native recursive examples inspect
-[MLIR containment](https://zayenz.se/zirium/guides/query-language/#typed-recursive-functions)
-and [written MiniZinc calls](https://zayenz.se/zincite/guides/queries/#count-written-calls-with-a-function).
+`gamma: 0`, `beta: 2`, `alpha: 2`, retaining the equal-score input order. Their
+native recursive examples inspect [MLIR
+containment](https://zayenz.se/zirium/guides/query-language/#typed-recursive-functions)
+and [written MiniZinc
+calls](https://zayenz.se/zincite/guides/queries/#count-written-calls-with-a-function).
 Native domain meaning, source coordinates and ownership remain with each host.
-The guides include complete inputs and commands. Published alpha.5 predates
-these features; use the pinned development dependencies.
+The guides include complete inputs and commands for their documented
+dependencies.
 
 ## Measurement method
 
-The 2026-10-14 experiment compares original source
+The 2026-10-14 experiment compares the original evaluator at
 `948ded4ff5157f84894129be7fdc4a4fe8cbc338` (tree
-`a0ba5ad12ca4c4c0df9490b30b07dfa74bc463ab`) with completed core
-`1d4767277d3cf7eadec4e27079aa9a570ebd9af2`. Both host guides were exercised
-against their actual core pin `a278c32cace3200d496a3c0649f4cf069996e2ad`,
-whose product source matches the completed core. Zincite source is
+`a0ba5ad12ca4c4c0df9490b30b07dfa74bc463ab`) with the prepared evaluator at
+`1d4767277d3cf7eadec4e27079aa9a570ebd9af2`. The tables call these variants
+"original" and "prepared". They describe those fixed revisions, rather than
+tracking the current branch. Both host guides were exercised against their
+actual core pin `a278c32cace3200d496a3c0649f4cf069996e2ad`, whose product source
+matches the measured prepared evaluator. Zincite source is
 `dd426038ece5825fdbad80517d11a978870ea681`; Zirium source is
 `fb3d0c516d0dc01b85d2a9d3070107debac6739f`.
 
@@ -81,27 +106,28 @@ They are not thousands of independent samples. No corpus or solver was run.
 Each compared pair uses matching System allocator observation with atomic
 allocation, live-byte and high-water counters. The sorting driver additionally
 records requested bytes. These counters add overhead in both the original and
-current variants; these are observed library timings, not clean
-production timings. The full ratio cannot be attributed to evaluator code alone.
-Additional preparation/copy/frame probes run in separate current-source variants.
-Their overhead is retained separately and is not subtracted from phase times.
+prepared variants. These are library timings with instrumentation enabled. The
+full ratio cannot be attributed to evaluator code alone. Additional
+preparation/copy/frame probes run in separate prepared-source variants. Their
+overhead is retained separately and is not subtracted from phase times.
 
-Original cases preserve the base-029 boundary: Rust parsing, full public
-preflight/evaluation, and private JSON conversion/serialization/drop have separate
-timers. Startup, fixed fixtures and later AST/output teardown are excluded.
-Binding trees are built before timing. Exact-child `wait4` peak RSS is reported
-in macOS bytes converted to MiB; it includes startup and fixtures and is not
-phase-specific live heap. The small/projection fixture includes an unused pure
-binding. RSS alone establishes neither reclamation nor absence of leaks.
+The original workload cases time parsing, public preflight and evaluation, and
+JSON conversion, serialization and cleanup separately. Startup, fixed fixtures
+and later AST/output teardown are excluded. Binding trees are built before
+timing. Exact-child `wait4` peak RSS is reported in macOS bytes converted to
+MiB; it includes startup and fixtures and is not phase-specific live heap. The
+small/projection fixture includes an unused pure binding. RSS alone establishes
+neither reclamation nor absence of leaks.
 
 ### Original workloads
 
-All seven completed pairs have identical outputs. The projection retains sixteen
-outer names and produces three integer fields per row. Bindings contain
-128-byte strings and are read eight times. Allowances remain 1,000,000 work,
-100,000 results, 100,000 stream items and nesting 64.
+The original workloads exercise small reports, projection and repeated reads of
+a saved binding. All seven completed pairs have identical outputs. The
+projection retains sixteen outer names and produces three integer fields per
+row. Bindings contain 128-byte strings and are read eight times. Allowances
+remain 1,000,000 work, 100,000 results, 100,000 stream items and nesting 64.
 
-| Case | Original evaluation, µs | Current evaluation, µs | Current/original median |
+| Case | Original evaluation, µs | Prepared evaluation, µs | Prepared/original median |
 | --- | ---: | ---: | ---: |
 | small, 1 | 1.825 (1.817–1.841) | 4.631 (4.587–4.664) | 2.538 |
 | projection, 10 | 79.043 (78.869–80.790) | 49.567 (48.938–49.845) | 0.627 |
@@ -111,22 +137,14 @@ outer names and produces three integer fields per row. Bindings contain
 | binding, 64 | 35.375 (34.985–35.871) | 11.152 (11.064–11.330) | 0.315 |
 | binding, 256 | 131.221 (130.600–132.433) | 17.927 (17.799–18.107) | 0.137 |
 
-The small report regresses by 2.538 times in this observed boundary; the tiny
-binding case regresses by 1.180 times. Larger cases improve here, but do not
-cancel those regressions. A focused follow-up should reduce function-free
-small-report/tiny-binding preparation and continuation costs while preserving
-runtime contracts, branch demand, owned results, source locations, existing
-allowances and the shared evaluator. No budget was raised to hide these costs.
+The prepared evaluator takes 2.538 times as long for the small report and 1.180
+times as long for the smallest binding case. Larger inputs benefit from sharing,
+but those gains do not remove the small-query overhead. The measured small
+report is `{"answer": 7 * 6, "count": length([1, 2, 3])}`; the smallest binding
+case reads eight 128-byte strings eight times. All paired cases keep the same
+allowances.
 
-Validate a future change with the same small report
-`{"answer": 7 * 6, "count": length([1, 2, 3])}` and the eight-read
-comprehension over eight 128-byte strings. Rebuild both revisions with matching
-allocator observation and limits, check exact outputs/statuses, then compare
-paired phase medians/spreads and peak memory. Include the larger projection and
-binding controls to detect a shifted cost. Preserve existing public contract
-checks; do not add timing assertions or a second evaluator.
-
-| Case | Original parse / JSON median, µs | Current parse / JSON median, µs | Original peak RSS, MiB | Current peak RSS, MiB |
+| Case | Original parse / JSON median, µs | Prepared parse / JSON median, µs | Original peak RSS, MiB | Prepared peak RSS, MiB |
 | --- | ---: | ---: | ---: | ---: |
 | small, 1 | 2.239 / 0.584 | 2.300 / 0.582 | 2.297 (2.297–2.359) | 2.719 (2.703–2.734) |
 | projection, 10 | 2.847 / 6.212 | 2.834 / 6.132 | 2.578 (2.562–2.609) | 2.953 (2.938–2.969) |
@@ -136,12 +154,12 @@ checks; do not add timing assertions or a second evaluator.
 | binding, 64 | n/a / 0.690 | n/a / 0.564 | 2.188 (2.172–2.188) | 2.484 (2.453–2.516) |
 | binding, 256 | n/a / 0.857 | n/a / 0.588 | 2.281 (2.266–2.312) | 2.547 (2.531–2.562) |
 
-Raw records retain every phase spread. The companion 8,192-string binding
-request refuses on the original work allowance and completes on the current
-runtime with value `[8192,8192,8192,8192,8192,8192,8192,8192]`, spending 49,556
-work units. Sharing changes cumulative spending near old thresholds. This
-status difference is excluded from successful paired ratios; a refusal duration
-is not successful throughput.
+The raw records retain the spread for every phase. The companion 8,192-string
+binding request refuses on the original work allowance and completes on the
+prepared runtime with value `[8192,8192,8192,8192,8192,8192,8192,8192]`,
+spending 49,556 work units. Sharing changes cumulative spending near old
+thresholds. This status difference is excluded from successful paired ratios; a
+refusal duration is not successful throughput.
 
 ### Recursion and repeated arguments
 
@@ -153,7 +171,7 @@ or rendering. Function cases retain base-033 allowances: 100,000,000 work,
 4, and non-tail active depth is 64. Branching/infinite controls instead retain
 their 20,000-work refusal allowance.
 
-| Case | Current observed evaluation, µs | Peak child RSS, MiB |
+| Case | Prepared evaluation, µs | Peak child RSS, MiB |
 | --- | ---: | ---: |
 | tail, 100 | 297.029 (292.010–299.017) | 2.266 (2.266–2.281) |
 | tail, 1000 | 2869.033 (2853.142–2883.892) | 2.172 (2.156–2.172) |
@@ -196,15 +214,16 @@ still succeeds. Branching and infinite tail recursion separately refuse with
 `WorkLimit`; a wrong result type refuses with `expected integer`. None are
 included in the successful recursion table.
 
-The native fixture retains the base-033 copied public controls: nine requests,
-twelve body preparations and sixty-four prepared nodes, independent of tail
-length. It exercises native projection, typed native arguments, two contract
-refusals, native failure, bounded host reentry and borrowed-source identity.
-The native timer includes the complete fixture and assertions. Its fixed
-40,104-byte heap high-water and zero post-fixture live allocated bytes hold at
-100, 1,000 and 10,000 steps. Six copied string bytes belong to the two intentional
-wrong-default literals. Live-state peaks are dominated by bounded reentry and
-all gauges return to zero. This gives direct release evidence beyond RSS.
+The native fixture retains the same public API checks used in the earlier
+function experiment: nine requests, twelve body preparations and sixty-four
+prepared nodes, independent of tail length. It exercises native projection,
+typed native arguments, two contract refusals, native failure, bounded host
+reentry and borrowed-source identity. The native timer includes the complete
+fixture and assertions. Its fixed 40,104-byte heap high-water and zero
+post-fixture live allocated bytes hold at 100, 1,000 and 10,000 steps. Six
+copied string bytes belong to the two intentional wrong-default literals.
+Live-state peaks are dominated by bounded reentry and all gauges return to zero.
+This gives direct release evidence beyond RSS.
 
 ### Wide reports and stable sorting
 
@@ -218,7 +237,7 @@ remain those of base-036: 20,000,000,000 work, 10,000,000 results, nesting 64 an
 100,000 stream items. These larger fixed allowances describe a separate wide
 workload; they are not substituted into the original baseline comparisons.
 
-| Case | Current observed evaluation, µs | Peak child RSS, MiB |
+| Case | Prepared evaluation, µs | Peak child RSS, MiB |
 | --- | ---: | ---: |
 | narrow_sort, 128 | 154.875 (148.167–167.167) | 2.188 (2.172–2.188) |
 | narrow_sort, 1024 | 936.042 (891.959–983.542) | 3.266 (3.266–3.391) |
@@ -233,28 +252,30 @@ workload; they are not substituted into the original baseline comparisons.
 
 At 1,024 wide rows, requested heap high-water above the fixture is 8,013,748
 bytes for the input-copy control, 8,055,476 for sorting and 3,111,936 for either
-extremum. Sorting's required owned output remains a substantial cost. Current
-key probes record exactly one extraction per row. The temporary comparison
-probe was attached to a different comparator and yielded no usable count;
-zero in that raw field does not mean zero sorting comparisons. Current copy-node
-fields in the adapted sorting driver are unavailable placeholders. No claim
-uses either field.
+extremum. Sorting's required owned output remains a substantial cost. The
+prepared evaluator's key probes record exactly one extraction per row. The
+temporary comparison probe was attached to a different comparator and yielded no
+usable count; zero in that raw field does not mean zero sorting comparisons. The
+prepared driver's copy-node fields in the adapted sorting driver are unavailable
+placeholders. No claim uses either field.
 
 The historical base-036 run remains separately attributed to its saved source:
-90 samples at 128, 1,024 and 8,192 rows. At 8,192 rows it observed 97,768 ascending
-or 97,744 descending comparisons and 8,191 extrema comparisons. Reconciliation
-retained those ordering algorithms unchanged. Those old observations are not
-relabeled as current samples or combined into current statistics.
+90 samples at 128, 1,024 and 8,192 rows. At 8,192 rows it observed 97,768
+ascending or 97,744 descending comparisons and 8,191 extrema comparisons. The
+prepared evaluator retains those ordering algorithms unchanged. Those old
+observations are not relabeled as samples from the prepared evaluator or
+combined with its statistics.
 
-## Reproduce and interpret
+<span id="reproduce-and-interpret"></span>
 
-The private evidence bundle is `/private/tmp/zirql038-author/`. It retains source
-snapshots, driver sources, locked release build logs, source/binary SHA-256s,
-exact configuration and shuffled schedule, raw stdout/stderr and each sample.
-`README.md` gives build, run/resume and saved-analysis commands. `bench.py` is
-an adaptation of the named base-029 CLI, with one writer per run. A changed
-source/binary/configuration requires a fresh name. Historical base-029, base-032,
-base-033 and base-036 artifacts remain untouched.
+## Evidence and limitations
+
+The source snapshots, benchmark drivers, build logs and raw samples are kept in
+a private development bundle. It also records source and binary hashes, the
+exact configuration and the shuffled schedule. That bundle is not included in
+this repository, so this page alone is not a complete reproduction package. The
+source revisions and measurement boundaries above identify what was compared.
+Earlier experiments remain separate records.
 
 The original collector expected a `DepthLimit` category for the n=128 control;
 the API reports `Other` with its explicit depth message. All twelve raw captures
@@ -266,30 +287,9 @@ corrected analyzer versions are both retained.
 
 Five batches on one machine provide a bounded local comparison, not a workload
 survey or portable latency prediction. The allocator observer, different fixture
-shapes, selected allowances and omitted host setup/rendering limit extrapolation.
-The experiment has no per-phase live-memory measure and no clean-allocator
-production timing. Temporary instrumentation is absent from product source.
-The small-query regressions remain unresolved; the bounded tail/ownership
-observations do not establish that every program is efficient.
-
-
-## Callable worklist storage
-
-The native function runner also executes computational queues and identity sets.
-Its loop, optional tuple patterns and ordinary conditional can implement Boolean
-reachability without another evaluator or graph service. The native fixture uses
-`A -> [B, C]`, `B -> [D]`, `C -> [B]`, `D -> [A]`, `E -> []`: `A` reaches `D`,
-does not reach `E`, and reaches itself without traversing an edge. A language-level
-expansion total shows that the unreachable search expands four distinct nodes,
-despite its cycle and duplicate routes.
-
-Queue transitions share front/rear chains; identity-set insertion shares a bounded
-hash path. Retained aliases and earlier native scan states keep their old values.
-This avoids a complete queue/set clone on the evaluator's ordinary immutable
-slot read. Root sharing is separate from an owned output/materialization charge.
-See [the collection accounting](diagnostics-and-limits.md#computational-collection-work)
-and [the host contract](host-integration.md#native-computational-values).
-
-These are algorithmic storage bounds and callable controls. They establish no
-comparison with the older evaluator, which had no equivalent worklist feature,
-and no production timing or host CLI performance claim.
+shapes, selected allowances and omitted host setup/rendering limit
+extrapolation. The experiment has no per-phase live-memory measure and no
+clean-allocator production timing. Temporary instrumentation is absent from
+product source. The comparison records small-query regressions at the measured
+revisions. Its bounded tail-call storage and ownership results do not establish
+that every program is efficient.

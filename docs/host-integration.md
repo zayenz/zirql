@@ -1,34 +1,44 @@
 # Embedding in Rust
 
-To integrate a domain tool, choose its native item type and retain the context
-that owns those items. The adapter supplies predicates or navigation; Zirql
-runs the shared language constructs. Rendering is a separate call.
+An application supplies data, exposes the operations its users need and handles
+the result. Start with constructed bindings when arrays and records describe the
+input. Add native items when queries need source identity, navigation or access
+to an existing model. The adapter is the Rust code connecting that model to
+Zirql's traits. A frontend reads query text and builds the expressions that the
+evaluator runs.
 
 ## Dependency and toolchain
 
-Add Zirql to a Rust crate with Cargo. The current crate uses edition 2024 and
-requires Rust 1.88 or newer. Development integrations pin a Git revision;
-[getting started](getting-started.md#add-a-pinned-dependency) supplies one with
-a runnable scalar expression. Check API documentation for that revision with
-`cargo doc --open`.
+Add Zirql to a Rust crate with Cargo. The crate uses edition 2024 and requires
+Rust 1.88 or newer. Development integrations pin a reviewed Git revision;
+[set up the word model](getting-started.md#use-zirql-in-another-rust-project)
+shows the dependency command and a complete executable. Generate API
+documentation for that revision with `cargo doc --open`.
 
-A scalar expression needs a located expression tree, immutable bindings and a
-budget. A query over your own data also needs a native item type, an owning
-context and a host implementation. There is no standalone Zirql executable
-that supplies these domain choices.
+Zirql is a library. The application supplies the data model and chooses how
+users submit expressions and receive their results.
 
 ## Evaluation entry points
 
 | Need | Shared API | Host supplies |
 | --- | --- | --- |
-| Ordered query stages | `Host` and `evaluate` | Native input, predicates, identity and typed stages |
-| Bindings and reports | `ProgramHost` and `evaluate_program` | Native values, stage/set payloads, copying and emitters |
-| Scalar or collection expressions | `evaluate_value` | Located expressions and immutable constructed bindings |
+| Text expressions over bindings | `ValueReaderHost`, `read_value_expression`, `ValueQueryHost`, `evaluate_query_value` | Binding names, type facts and budgeted value reads |
+| Constructed expression trees | `evaluate_value` | Located expressions and immutable constructed bindings |
+| Ordered native stages | `Host` and `evaluate` | Native input, predicates, identity and typed stages |
+| Native bindings and reports | `ProgramHost` and `evaluate_program` | Native values, stage/set payloads, copying and emitters |
+| Correlated report fields | `ProjectionHost` and `evaluate_projection` | Native subjects and pure projection operations |
+| Named pure functions | `FunctionHost`, `FunctionRequest`, `PreparedFunctions` | Type resolution and pure native operations |
 
-Use the entry point that fits the values your tool returns. The
-[borrowed-word example](../README.md#a-borrowed-source-query) implements `Host`
-for string slices and keeps them borrowed during evaluation.
-For program construction, see [construct programs in Rust](embedding-programs.md).
+The [word example](getting-started.md) uses the first row. Its reader recognizes
+one binding, `words`, and rejects native stages. Its value host returns a
+budgeted copy of the string array. This is enough to run the front-page examples.
+See [value evaluation](value-runtime.md) for type discovery, validation and
+owned results.
+
+The [borrowed-word example](../README.md#a-borrowed-source-query) instead
+implements `Host` for string slices, retaining their source through evaluation.
+The remaining sections explain how to add native data and operations. [Construct
+programs in Rust](embedding-programs.md) covers the program builders.
 
 ## Retain native items and their owner
 
@@ -98,11 +108,11 @@ A new nested input does not receive a fresh allowance.
 Host hooks charge scans and materialization that the core cannot see. Check known
 sizes and admit result units before allocation. Choose limits for the actual
 host request; Zirql supplies no defaults. The
-[limits reference](diagnostics-and-limits.md) explains the accounting units.
+[budget reference](runtime-limits.md) explains the accounting units.
 
 ## Constructed-value APIs
 
-The callable entry points have different jobs:
+The value APIs have different jobs:
 
 | API | Purpose |
 | --- | --- |
@@ -119,21 +129,26 @@ or emission snapshots.
 
 ## Declared runtime contracts
 
+Preflight checks what the expression says: its names, scope and known types.
+Admission checks an actual value against its declared type before an operation
+uses it. The two checks meet at the host boundary.
+
 A trusted Rust operation can require a homogeneous sequence even though ordinary
 Zirql arrays may contain different types. `DeclaredType<K>` expresses that
 interface requirement. `ValueType` describes discovered or deferred facts,
 including individual array positions; it is not an interface declaration.
 `ValueType::Unestablished` means deferred knowledge, not a runtime absence value.
 
-The callable development API supports Boolean, integer, finite float, string,
-nominal member, sequence, tuple, record, set, keyed and native contracts.
-Sequences and keyed cells check every present element. Tuples have fixed
-positions. Records require exactly the declared labels, without changing the
-value's stored field order; duplicate declaration labels fail. Sets retain the
-existing supported scalar element types, including typed empty sets. Keyed rank,
-axis identity, sparse coverage and entry order remain actual runtime facts.
-Nominal declarations use `NominalTypeId`, so equal names do not make distinct
-types compatible. Integers do not implicitly satisfy float contracts.
+The runtime type API supports Boolean, integer, finite float, string, nominal
+member, sequence, tuple, record, set, keyed and native contracts. Sequences and
+keyed cells check every present element. Tuples have fixed positions. Records
+require every nonoptional label and reject extra labels; optional fields may be
+omitted. Checking a record preserves its stored field order. Duplicate
+declaration labels fail. Sets retain their supported scalar element types,
+including typed empty sets. Keyed rank, axis identity, sparse coverage and entry
+order remain actual runtime facts. Nominal declarations use `NominalTypeId`, so
+equal names do not make distinct types compatible. Integers do not implicitly
+satisfy float contracts.
 
 Use `admit_constructed` for borrowed constructed data:
 
@@ -159,7 +174,7 @@ This subset cannot contain `Native(())`; native declarations remain with the
 host. `ValueType::Declared` keeps this constraint beside the observed facts,
 including `Unestablished` when only declaration metadata is available.
 
-For an optional record, the declaration can contain a missing field:
+For a record with an optional field, the stored value can omit that field:
 
 ```rust
 use zirql::{Budget, ConstructedValue, DeclaredType, Location, ProgramLimits,
@@ -241,7 +256,7 @@ also accepted; the operation receives that slice instead. Borrowing or moving
 does not create another result representation. An operation producing new data
 must charge work and admit result units before allocating it. Host failures keep
 their concrete error type and source locations through `EvaluationError::Host`.
-This boundary leaves purity, effects and rendering with their existing owners.
+The host still checks operation purity and defines effects and rendering.
 
 Structural admission remains valid for that exact immutable value and unchanged
 declaration. New external values and operation results require admission.
@@ -250,39 +265,41 @@ resolution, actual key/field access and consumer shape policy still need their
 runtime checks. The API stores no admission cache.
 Each call performs its checks under the active work and nesting limits.
 
-These declarations and calls are Rust library APIs in the development revision.
-The existing readers and CLIs retain their syntax; the named function API below
-accepts lowered declarations. External `param` transport remains `int`, `string`
-and `bool`. Optional report values use the contracts below. Invocation-local
-preparation is available through the report APIs described below.
+These declarations and calls are Rust library APIs. The common declaration
+readers can also lower typed functions for a prepared request, as described
+below. External `param` transport accepts `int`, `string` and `bool`. Report
+preparation retains type facts and shared values for one invocation.
 
 ## Domain policy
 
 The host defines its predicates, native identity, navigation and permitted
-values. In the [word model](examples.md), `prefix` is an exact string test and
-the input remains borrowed text. A document host can instead retain handles
-and resolve their properties from its owning context. The
+values. The [word model](examples.md) uses constructed strings and the shared
+`starts_with` helper. A native word host can expose a `prefix` predicate over
+borrowed text. A document host can retain handles and resolve their properties
+from its owning context. The
 [Zincite and Zirium integrations](semantic-models.md) show how those choices
 affect queries, completeness and rendering.
 
 The core can represent generic sparse keyed values. A consumer may support a
-narrower subset. Validate that subset at the boundaries required by the consumer;
-a final rendering check alone is insufficient when intermediate values also
-must obey host shape rules. The development API
-`evaluate_value_with_host_validation` lets a trusted host check each successful
-runtime value before its parent uses it, with the same budget and location.
-It is absent from the published alpha.5 release; use a development revision that
-contains it when this check is required.
+narrower subset. Validate that subset at the boundaries required by the
+consumer; a final rendering check alone is insufficient when intermediate values
+also must obey host shape rules. `evaluate_value_with_host_validation` lets a
+trusted host check each successful runtime value before its parent uses it, with
+the same budget and location. The [setup
+guide](getting-started.md#use-zirql-in-another-rust-project) explains which
+source version these APIs describe.
 
-Model execution and source writes are separate host operations with their existing safety requirements.
+Model execution and source writes are separate host operations. The host checks
+that each is valid for its current model and source.
 
 ## Library results and rendering
 
-Return `NativeResult` or the host's value type to library callers. An emitter can
-observe the value at a written position, but its buffering and transaction rules
-are explicit host policy. A pure scalar expression must not emit or edit.
-The frontend must also reject emitters or edits hidden inside opaque payloads in pure bindings and nested
-constructor operands. Core validation cannot inspect those payloads.
+Return `NativeResult` or the host's value type to library callers. An emitter
+can observe the value at a written position, but its buffering and transaction
+rules are explicit host policy. A pure scalar expression must not emit or edit.
+The frontend must also reject emitters or edits hidden inside opaque payloads in
+pure bindings and nested constructor operands. Core validation cannot inspect
+those payloads.
 
 Specify whether written emission is terminal or pass-through, whether output is
 buffered and what happens if a later operation fails. A CLI promising complete
@@ -290,26 +307,29 @@ output must buffer until the request succeeds. Library live edits and emitters
 receive no automatic rollback from Zirql. Source-edit safety and transaction
 rules belong to the host.
 
-For signatures and budget charging helpers, use
-[the Rust API reference](https://docs.rs/zirql) for your published version or
-`cargo doc --open` for the pinned revision. The [diagnostics guide](diagnostics-and-limits.md)
-explains how core and native errors remain distinct.
+For signatures and budget charging helpers, use [the Rust API
+reference](https://docs.rs/zirql) for your published version or `cargo doc
+--open` for the pinned revision. The [budget and diagnostic
+reference](runtime-limits.md) explains how to translate errors and account for
+host work.
 
 ## Correlated native projection
 
-`Projection<Q>` contains a located subject name and ordered fields of
-`ValueExpression<Q>`. For native reports, `Q` is a normalized `Expression` tree.
-Each subject is a singleton native selection. `evaluate_projection` preflights
-every field before obtaining subjects, then evaluates the fields in written
-order and returns an `Array` of `Record` values. Input duplicates remain separate
-rows. Empty inputs still receive complete scope, type and purity checks.
+The word-model extension uses `project(w, {...})` to make report rows from
+native occurrences. In Rust, `Projection<Q>` contains a located subject name and
+ordered fields of `ValueExpression<Q>`. For native reports, `Q` is a normalized
+`Expression` tree. Each subject is a singleton native selection.
+`evaluate_projection` preflights every field before obtaining subjects, then
+evaluates the fields in written order and returns an `Array` of `Record` values.
+Input duplicates remain separate rows. Empty inputs still receive complete
+scope, type and purity checks.
 
 `ProjectionHost` extends `ProgramHost` with native kinds, stage applicability
 and effect facts, visible nested selector operands, subject extraction and
-scalar conversion. `native_expression_kind` walks bindings, grouping, sequences
-sets and native capture fields and refuses effects and emitters. Domain hooks validate primitive
-arguments and retain native source failures. Handles require an explicit domain
-projection before becoming scalar report data.
+scalar conversion. `native_expression_kind` walks bindings, grouping, sequences,
+sets and native capture fields and refuses effects and emitters. Domain hooks
+validate primitive arguments and retain native source failures. Handles require
+an explicit domain projection before becoming scalar report data.
 
 `projection_types` and `native_value_types` retain inferred record alternatives,
 including schemas of empty row arrays. Keep these facts with saved constructed
@@ -332,13 +352,13 @@ purity and supported types. `evaluate_guard_leaf` returns the existing `Truth`
 with the active context, immutable bindings and budget. The core owns all
 Boolean wrappers and short-circuit evaluation; the leaf owns native identity.
 
-The callable pair is `match_types(&matching, host, &input_kind, &scope, budget)`
-and `evaluate_match(&matching, host, input, context, bindings, budget)`.
-Type discovery returns ordered `NativeCapture<Kind>` fields. Execution returns
-`Vec<Value>` rows built through `ProgramHost::construct_record`. Keep the
-schema in the native collection wrapper, including when the row vector is
-empty. Wrapping already-admitted rows moves them; admit any new host container
-before allocation.
+The entry points are `match_types(&matching, host, &input_kind, &scope, budget)`
+and `evaluate_match(&matching, host, input, context, bindings, budget)`. Type
+discovery returns ordered `NativeCapture<Kind>` fields. Execution returns
+`Vec<Value>` rows built through `ProgramHost::construct_record`. Keep the schema
+in the native collection wrapper, including when the row vector is empty.
+Wrapping already-admitted rows moves them; admit any new host container before
+allocation.
 
 `ProjectionHost::subject_kind` declares the singleton kind yielded by
 `subjects` and rejects unsupported enumeration even on empty input. Its default
@@ -397,12 +417,12 @@ limitations and existing stale-handle or owner refusals. `same_path_identity`
 compares real native identities after the core charges a comparison;
 printed names and debug text cannot replace that identity.
 
-The callable pair is `path_types(&paths, host, &input_kind, &scope, budget)`
-and `evaluate_paths(&paths, host, input, context, bindings, budget)`.
-Type discovery returns the ordered `NativeCapture<Kind>` schema for `source`,
-`sink` and `steps`. Execution returns rows through `construct_record`, using
-`subjects`, `subject_kind` and charged `copy_value` calls. Retain the schema
-when wrapping an empty result, as for matching.
+The entry points are `path_types(&paths, host, &input_kind, &scope, budget)` and
+`evaluate_paths(&paths, host, input, context, bindings, budget)`. Type discovery
+returns the ordered `NativeCapture<Kind>` schema for `source`, `sink` and
+`steps`. Execution returns rows through `construct_record`, using `subjects`,
+`subject_kind` and charged `copy_value` calls. Retain the schema when wrapping
+an empty result, as for matching.
 
 `path_steps` moves admitted singleton values into one ordered native selection.
 Its declared kind agrees with `subject_kind`, and its sequence shape survives
@@ -447,8 +467,9 @@ hooks do not memoize domain operations.
 
 The evaluator releases completed local frames and intermediate owners. Public
 results, explicit snapshots, emissions and rendering retain their ownership and
-copy-admission boundaries. See [request accounting](diagnostics-and-limits.md#prepared-execution-and-sharing)
-for the compatibility impact near limits.
+copy-admission boundaries. See [request
+accounting](runtime-limits.md#prepared-execution-and-sharing) for preparation,
+sharing and copying charges.
 
 ### Embedded primitive arguments
 
@@ -480,7 +501,6 @@ invocation; current argument frames, scope references, slot reads, runtime
 admission and native work are charged when used. Current frames release their
 owners when that native invocation ends. The lower-level `ValueQueryHost` bridge
 hooks support this same path; ordinary value hosts keep their defaults.
-
 
 ## Prepare a function request
 
@@ -535,12 +555,12 @@ Normal return and failure release live slots and continuations. Use
 `dispose_functions` for iterative cleanup of lowered native function trees,
 including rejected declarations; hosts still own disposal inside opaque stages.
 
-`ValueExpressionKind` has two new development API variants, `Call` and
-`NativeValue`. A frontend with an exhaustive match must handle them in traversal,
-lowering and disposal. `dispose_native_value` already traverses them. The common
-reader accepts declarations, complete signature types, calls and conditional
-expressions; see [function embedding](embedding-programs.md#call-typed-pure-functions).
-The published alpha.5 predates this API.
+`ValueExpressionKind::Call` invokes a named pure function; `NativeValue` retains
+a pure native result. A frontend with an exhaustive match must handle both
+variants in traversal, lowering and disposal. `dispose_native_value` already
+traverses them. The common reader accepts declarations, complete signature
+types, calls and conditional expressions; see [function
+embedding](embedding-programs.md#call-typed-pure-functions).
 
 A frontend that retains native expression results opts into
 `ValueReaderHost::retains_native_values`. Its `value_source` hook lowers an
@@ -557,7 +577,6 @@ retains its native owner; the eager shared continuation runner supplies candidat
 order, filters, reducers and finite allowances. The host charges its enumeration
 before allocation and checks current ownership. The core charges retained item
 owners and grouped candidate expansion.
-
 
 ## Native computational values
 
@@ -606,5 +625,5 @@ converting other native fields or the remaining queue.
 Keep computational wrappers out of scalar projection, JSON/data conversion and
 emitters. Refuse them at their original query location, including nested
 containers. Library results may retain them and continue with the public
-budgeted operations in the same valid context. This introduces neither a graph
-adapter nor host textual worklist syntax.
+budgeted operations in the same valid context. The host supplies any text syntax
+for these operations.

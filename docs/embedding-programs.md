@@ -1,8 +1,13 @@
 # Construct programs in Rust
 
-A frontend lowers its program syntax to `Program`. A caller can construct the
-same located representation directly, then execute it through `ProgramHost`.
+The word executable reads a single expression. A host that supports several
+statements translates them into a `Program` and executes it through
+`ProgramHost`. A caller can also build the same representation directly in Rust.
 Use this path when your tool already has a parser or a typed query builder.
+
+The examples below are adapter fragments. They assume the host types and context
+described in [embedding in Rust](host-integration.md); they are not queries for
+the word executable.
 
 ## A native binding in Rust
 
@@ -35,9 +40,10 @@ same context and budget.
 
 ## Supply typed caller inputs
 
-Admit the entire input set before reading domain data. This example installs
-one integer parameter through the existing immutable binding path. The snippet
-belongs inside a function returning `Result<_, zirql::QueryError>`:
+Check all caller parameters before reading domain data. `admit_parameters`
+validates the supplied values and returns bindings ready for the program. This
+example installs one integer parameter. The snippet belongs inside a function
+returning `Result<_, zirql::QueryError>`:
 
 ```rust
 use zirql::{
@@ -76,14 +82,15 @@ declaration scope; admitting all inputs does not make a later declaration visibl
 to earlier statements. When adapting a typed root builder, retain its declarations
 through erasure, appended stages and composition. Validate that metadata on every request.
 
-Real hosts lift admitted `ConstructedValue` scalars into their existing native
-result wrapper. The example above uses initial bindings, as typed root builders do.
-For a text program, retain the admitted values and lower each declaration to an
-ordinary `Statement::Bind` at its written position. A host stage returns that
-already-admitted scalar; the shared runner introduces its name into scope.
-This lets an earlier local binder use a name declared as a parameter later.
-Execute and render with the same `Budget`; repeated reads and copies spend the
-remaining allowance.
+Native hosts lift admitted `ConstructedValue` scalars into their result wrapper.
+The example above uses initial bindings, as typed root builders do. For a text
+program, retain the admitted values and lower each declaration to an ordinary
+`Statement::Bind` at its written position. A host stage returns that
+already-admitted scalar; the shared runner introduces its name into scope. An
+earlier local scope can therefore use the same spelling as a parameter that is
+not yet visible. The later declaration must still satisfy the program's
+no-shadowing rule. Execute and render with the same `Budget`; repeated reads and
+copies spend the remaining allowance.
 
 ## Supply program operations
 
@@ -96,7 +103,6 @@ The [host integration guide](host-integration.md) describes validation and
 ownership requirements. The [program reference](native-programs.md) explains
 scope, statement order and emission behavior.
 
-
 ## Call typed pure functions
 
 A `FunctionDeclaration` contains a located name, typed named parameters, a result
@@ -106,11 +112,12 @@ position. Declarations register together before bodies are prepared, so direct
 and mutual recursion use the same path.
 
 For constructed values, `evaluate_functions` takes declarations, an entry
-expression, explicit bindings, the active budget and `FunctionLimits`.
-The [compiled accumulator example in the API source](https://github.com/zayenz/zirql/blob/main/src/functions.rs)
-shows the full declaration construction. It counts down from 100 with an active
-function depth of one. These APIs are available through development Git; the
-published alpha.5 does not include named functions.
+expression, explicit bindings, the active budget and `FunctionLimits`. The
+[compiled accumulator example in the API
+source](https://github.com/zayenz/zirql/blob/main/src/functions.rs) shows the
+full declaration construction. It counts down from 100 with an active function
+depth of one. For the syntax it represents, see [function
+declarations](functions-and-control-flow.md#declare-a-function).
 
 For a native host, implement `FunctionHost` alongside `ProjectionHost` and
 `RuntimeTypeHost`. A submitted program prepares its declarations once, then
@@ -126,15 +133,16 @@ let result = functions.evaluate(
 )?;
 ```
 
-`entry.kind()` supplies the host kind for subsequent program preflight.
-The unit borrows the immutable source trees and host. Keep it within this
+`entry.kind()` supplies the host kind for subsequent program preflight. This
+prepared unit borrows the immutable source trees and host. Keep it within this
 submitted request, using the current host context and the same cumulative
 budget. Prepared entries carry their unit identity; another unit refuses them.
 Each execution releases its results and frames normally. A host can execute a
-prepared projection field for each subject without preparing the function
-bodies again. `Bindings::with_local` shares the outer map when introducing its
-subject; native argument callbacks retain that sharing. Declaration inputs can
-be borrowed iterators over separately shared typed-root function trees. `FunctionRequest` retains the one-entry convenience API.
+prepared projection field for each subject without preparing the function bodies
+again. `Bindings::with_local` shares the outer map when introducing its subject;
+native argument callbacks retain that sharing. Declaration inputs can be
+borrowed iterators over separately shared typed-root function trees.
+`FunctionRequest` retains the one-entry convenience API.
 
 `result` is the host's `Value`. `NativeValue(query)` retains a pure native result;
 `NativeQuery(query)` keeps its existing scalar-projection meaning. Native queries
@@ -154,10 +162,11 @@ the independent guards and failure context.
 The common reader accepts contextual declarations through
 `read_function_declaration`. Its resolver handles registered native and nominal
 names; Zirql reads `int`, `float`, `bool`, `string`, `opt T`, `sequence<T>`,
-`tuple<T, ...>`, `record {field: T, ...}`, `set<T>` and `keyed<T>`. Sets keep their
-supported Boolean, integer, float and nominal element types. A bare saved name
-`fn` remains a name. The reader consumes a declaration only after recognizing
-`fn name(`. Collect every declaration before preparing the submitted program.
+`tuple<T, ...>`, `record {field: T, ...}`, `set<T>`, `keyed<T>`, `queue<T>` and
+`identity_set<T>`. Sets keep their supported Boolean, integer, float and nominal
+element types. A bare saved name `fn` remains a name. The reader consumes a
+declaration only after recognizing `fn name(`. Collect every declaration before
+preparing the submitted program.
 
 Bodies contain ordered `let name = expression;` bindings and a final expression.
 Ordinary calls accept zero or more positional arguments. Conditionals use
@@ -179,15 +188,15 @@ For each request, call `resolve_signature` with the current model's native and
 nominal resolver. Keep the resulting small headers alive, pair each with its
 parsed body using `with_signature`, then call
 `PreparedFunctions::prepare_borrowed`. The resolved declarations borrow the
-original bindings and final expression. They do not copy or reparse bodies.
-Existing owned declarations and `read_function_declaration` remain usable.
-Use `dispose_unresolved_functions` when releasing parsed native body trees.
+original bindings and final expression. They do not copy or reparse bodies. Use
+owned declarations and `read_function_declaration` when parsing and type
+resolution happen together. Use `dispose_unresolved_functions` when releasing
+parsed native body trees.
 
 Signature syntax, resolved headers and borrowed declaration slots spend the
 active metadata allowance before growth. The common reader also pays for this
-metadata when resolving an owned declaration immediately. Requests near an
-earlier work/result threshold may therefore fail earlier during preparation;
-defaults and execution charges are unchanged.
+metadata when resolving an owned declaration immediately. Include that cost when
+choosing the request's work and result allowances.
 
 An immutable native host can opt into `FunctionHost::retains_native_admission`.
 After the first whole-value check, an unchanged value passed under an equivalent
@@ -212,7 +221,6 @@ checks all written clauses, spends work on candidate/guard inspection, skips
 later sources after a false guard and refuses a final Unknown. Captures share
 their original outer binding map. Scoped preparation and the small clause-local
 binding metadata spend the continuing request allowance before growth.
-
 
 ## Destructure values and select match arms
 
@@ -325,15 +333,15 @@ When releasing parsed native trees, use `dispose_native_value`,
 typed wrappers can call `copy_pattern` to copy only located pattern metadata
 under the active budget, without parsing generated text or copying matched data.
 
-
 ## Fold and scan named functions
 
-Callable programs use `ValueExpressionKind::Fold { items, initial, step }` or
-`Scan` with the same fields. `step` is a located function name in this closed
-position. The [compiled fold example in the API source](https://github.com/zayenz/zirql/blob/main/src/value.rs)
-adds `[2, 3]` to initial state `0` with one active function frame. Replacing
-`Fold` with `Scan` returns `[2, 5]`. Consumer text syntax is separate integration
-work; the common reader does not accept these forms yet.
+Rust callers use `ValueExpressionKind::Fold { items, initial, step }` or `Scan`
+with the same fields. `step` is a located function name in this closed position.
+The [compiled fold example in the API
+source](https://github.com/zayenz/zirql/blob/main/src/value.rs) adds `[2, 3]` to
+initial state `0` with one active function frame. Replacing `Fold` with `Scan`
+returns `[2, 5]`. The common reader does not parse fold or scan expressions. A
+host must supply their syntax or construct these nodes directly.
 
 The request resolves the step and checks its two-parameter signature and purity
 before execution, including empty input. Its result declaration must be
@@ -357,13 +365,13 @@ hooks preserve identity, source coordinates and aliases, and charge their scans
 and allocations to the active budget. Existing hosts can leave these hooks
 unsupported. Constructed states use ordinary constructed arrays.
 
-
 ## Repeat with explicit state
 
-Callable frontends construct `ValueExpressionKind::Loop { states, body }`,
+Rust frontends construct `ValueExpressionKind::Loop { states, body }`,
 `Break(value)` and `Continue(values)`. These nodes use the same preparation and
-runner as values and functions. Consumer text syntax comes in later integration
-work; the current common reader does not parse these forms.
+runner as values and functions. The common reader does not parse loop or
+transfer expressions; a host supplies their syntax or constructs these nodes
+directly.
 
 Each state pairs a located fresh name with an initializer. All initializers
 run left-to-right in the outer scope, before any state name becomes visible.
@@ -374,10 +382,11 @@ loop, whose transfers belong to that inner loop. Transfers never cross a
 function boundary. Even unused branches and function bodies receive these
 checks during preparation.
 
-The [compiled callable accumulator](https://github.com/zayenz/zirql/blob/main/src/value.rs)
-adds 1 through 10,000 with an active function depth of one. `Continue` reads
-every operand against the complete old state, checks every fixed state contract,
-then installs the whole tuple. For example, a two-slot swap uses:
+The [compiled
+accumulator](https://github.com/zayenz/zirql/blob/main/src/value.rs) adds 1
+through 10,000 with an active function depth of one. `Continue` reads every
+operand against the complete old state, checks every fixed state contract, then
+installs the whole tuple. For example, a two-slot swap uses:
 
 ```rust
 K::Continue(vec![name("right"), name("left")])
@@ -402,8 +411,9 @@ let nested = node(K::Loop {
 });
 ```
 
-An inner `Continue` similarly advances only its own state. The callable controls
-in [`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/main/tests/value_expressions.rs)
+An inner `Continue` similarly advances only its own state. The Rust API checks
+in
+[`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/main/tests/value_expressions.rs)
 combine inner continues with outer block/match transfers, simultaneous swaps,
 contract failures and ordinary work-limit refusal. A body containing only
 `Continue` is valid; it eventually exhausts work rather than returning an

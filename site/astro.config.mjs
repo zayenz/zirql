@@ -15,7 +15,7 @@ export default defineConfig({
   site, base, trailingSlash: 'always',
   integrations: [starlight({
     title: 'Zirql',
-    description: 'Shared query language machinery for native Rust hosts.',
+    description: 'An embeddable language for data transformation and analysis.',
     favicon: '/favicon.png',
     logo: {
       light: './public/zirql-logo-light.svg',
@@ -26,9 +26,9 @@ export default defineConfig({
     customCss: ['./src/styles/custom.css'],
     social: [{ icon: 'github', label: 'Source on GitHub', href: 'https://github.com/zayenz/zirql' }],
     sidebar: [
-      { label: 'Language reference', items: ['guides/shared-concepts', 'guides/native-programs', 'guides/values', 'guides/diagnostics-and-limits', 'guides/computation'] },
-      { label: 'Examples', items: ['guides/examples', 'guides/language-direction'] },
-      { label: 'Embedding in Rust', items: ['guides/getting-started', 'guides/host-integration', 'guides/embedding-programs', 'guides/semantic-models'] },
+      { label: 'Start here', items: ['guides/examples', 'guides/getting-started'] },
+      { label: 'Language reference', items: ['guides/language-reference', 'guides/values', 'guides/functions-and-control-flow', 'guides/shared-concepts', 'guides/native-programs', 'guides/diagnostics-and-limits'] },
+      { label: 'Implementation reference', items: ['guides/implementation-reference', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql' },
       { label: 'Zincite guides', link: 'https://zayenz.se/zincite/' },
       { label: 'Zirium guides', link: 'https://zayenz.se/zirium/' },

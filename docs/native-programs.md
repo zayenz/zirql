@@ -1,259 +1,194 @@
-# Native programs
+# Programs and native data
 
-Use a program when several statements need the same native input or saved
-results. Statements execute in written order. Bindings can save document
-handles or borrowed selections for later use.
+A single expression is enough for each analysis in the [word
+tutorial](examples.md). A program lets several analyses share named intermediate
+results. Its bindings can hold constructed values, native selections or records
+of related native objects, and its statements execute in written order.
+
+The host supplies statement and output handling. Zirql's common readers
+recognize statement prefixes and expressions; a host can also translate its own
+syntax into the same program representation. The [word
+executable](getting-started.md) accepts one expression; it does not parse the
+complete programs or native extensions shown here.
 
 ## Statements and scope
 
-A binding statement evaluates an expression and installs an immutable name.
-An evaluation statement evaluates an expression and can request implicit output.
-Initial bindings are reserved for the whole program. Duplicate definitions and
-forward references to unavailable names fail during preflight.
+For a frontend using the common statement prefixes, a small report can read:
 
-A host frontend chooses the statement spelling and lowers it to this
-representation. `parse_pipeline` reads only pipelines. The common
-`read_statement_prefix` recognizes `let name =`, `report` and
-`param name: type` prefixes without reserving those words as bare binding names.
-The host consumes the statement terminator after a parameter's type.
-The [language direction examples](language-direction.md) show proposed surfaces.
+```text
+let selected = [w for w in words if starts_with(w, "a")];
+report {"words": selected, "count": length(selected)};
+```
 
-Program expressions cover input, binding lookup, grouping, stage sequences,
-ordered set operands, native capture field access and records. A record evaluates its fields in written order.
-Set combination evaluates the left operand before the right; the host supplies
-its domain identity and combination behavior.
+With the word model, the report contains `apple`, `ash`, `apple` and a count of
+3. `let` installs an immutable name. Later statements can use it, but earlier
+statements cannot refer forward to it. Duplicate definitions and shadowing of
+existing bindings fail before execution.
+
+Each statement starts with the original top-level native input. A previous
+statement does not silently replace that input. Bind its result and refer to
+the binding explicitly when a later statement should use it.
+
+The host defines what `report` does with the result, including formatting and
+whether it produces output at all for a library call. Single expressions need
+no file or named entry point in the shared language representation.
 
 ## Required caller parameters
 
-`ParameterDeclaration` records a located name and one of `ParameterType::Int`,
-`String` or `Bool`. Declarations are metadata beside the host program. A text
-frontend adds each name and its scalar type when it reaches that declaration;
-an earlier statement cannot use a later parameter. Parameters follow the same
-immutable, no-shadowing rules as saved values and local generator/projection names.
-Defaults and undeclared caller inputs are unsupported.
+Required parameters let a caller supply typed data without constructing query
+text:
 
-Before domain execution, call `admit_parameters` with all declarations and either
-`ParameterInputs::Typed` or `ParameterInputs::Cli`. It refuses duplicate
-declarations, ambient-name collisions, duplicate supplied names, missing values,
-extra names and incompatible types. It returns declaration-located scalar values
-in declaration order. Lift those values into the host's native wrapper.
-A text frontend lowers each parameter declaration to an ordinary `Statement::Bind`
-at its written position; a host stage supplies the already-admitted value.
-Admission checks all inputs up front, while ordered binding preserves scope during
-execution. Typed root builders have no declaration statements: install their
-parameters with admitted ambient values through `Bindings::new`.
+```text
+param prefix: string;
+let selected = [w for w in words if starts_with(w, prefix)];
+report {"words": selected, "count": length(selected)};
+```
 
-The shared CLI decoder splits each `name=value` at the first `=`:
+Parameter types are `int`, `string` and `bool`. Missing, duplicate, extra or
+incompatible supplied values fail before domain execution. Defaults are not
+supported. A parameter becomes available at its written declaration and follows
+the same no-shadowing rule as other bindings.
 
-- `string` preserves the complete value, including empty text, quotes,
-  backslashes, whitespace and further `=` characters.
-- `int` accepts an optional `+` or `-`, then ASCII decimal digits fitting `i64`.
-  Whitespace, prefixes such as `0x`, separators, decimals and overflow fail.
-- `bool` accepts exactly `true` or `false`.
+Library callers can pass typed values. A host CLI using the shared `name=value`
+decoder accepts these forms:
 
-Neither input form substitutes text into the program. A host CLI can transport
-repeated `--param name=value` arguments through the same decoder for inline and
-file programs. Literal-only requests use empty declarations and inputs.
-See [typed admission in Rust](embedding-programs.md#supply-typed-caller-inputs).
+| Type | Decoding |
+| --- | --- |
+| `string` | Preserve all text after the first `=`, including spaces, quotes and additional `=` characters |
+| `int` | Optional sign followed by decimal digits fitting a signed 64-bit integer |
+| `bool` | Exactly `true` or `false` |
+
+Values are not substituted into the program's source. The host documents how
+to pass them through its command-line interface.
 
 ## Saved native values
 
-A binding retains the host's value type. It can hold a borrowed selection,
-a document handle or a constructed native record. Saving a value does not
-render it. Nested selectors evaluate relative input in the same scope and
-request budget.
+Saving a native selection retains its objects and their source context. A word
+occurrence can remain attached to the source text, and a document handle can
+remain attached to its owning document. Saving or reading the binding does not
+render it.
 
-The [Rust program construction guide](embedding-programs.md) shows how to
-build and execute this representation without text syntax.
-
-## Copying saved values
-
-Reading a saved binding uses the host's `copy_value` hook. Earlier statements
-also receive a charged copy of retained top-level input; the last receives the
-original. A copy might duplicate a vector of handles without duplicating the
-document. The host must admit produced entries and copied bytes before allocation.
-The core admits record field containers and slots; moving already-admitted
-children into them needs no second charge.
-
-## Written and implicit output
-
-A written emitter records either `EmissionPolicy::PassThrough` or
-`EmissionPolicy::Terminal`. Pass-through allows later stages; terminal ends that
-expression. An implicit emitter is requested only when the expression does not
-end in a written emitter.
-
-`ProgramHost::emit` receives the native value and the active budget. The host
-owns rendering, snapshots, buffering and effects. Library emission does not
-provide automatic rollback after a later error. A CLI that promises complete
-output must buffer it until execution succeeds.
-
-Pure bindings and nested constructor operands must be checked by the host
-frontend before execution. The core cannot discover an emitter or edit hidden
-inside an opaque domain payload. Read [host integration](host-integration.md)
-for these validation obligations.
+A record can retain several related native values. Field selection preserves
+the selected field's native kind. A later projection decides which properties
+become scalar report data.
 
 ## Construct ordered report rows
 
-A native stage can dispatch `project(subject, {fields})` to `evaluate_projection`.
-The subject is visible only inside the fields and cannot shadow an outer name.
-Native query fields use the existing expression representation; explicit scalar
-projections produce constructed strings, integers or arrays. The result is a
-positional array, so equal projected names require no unique key.
-
-The core validates field scope, known types and effects before evaluating a row.
-Nested selectors and value generators retain the same request budget. The host
-keeps declared constructed schemas with saved bindings and renders at its
-established emitter boundary. See
-[embedding native projection](host-integration.md#correlated-native-projection)
-for the callable adapter.
-
-## Retain native captures
-
-Use `NativeMatch<Q, P>` when a query needs correlated native handles before
-constructing a scalar report. Its ordered, located clauses have three forms:
-
-- `from name in query` enumerates finite subjects in their native order.
-- `bind name = query` requires exactly one native subject for the candidate.
-- `where predicate` keeps a candidate only when its final truth is known true.
-
-Later clauses see earlier names. A name is absent in its own source; duplicate
-names, ambient-name shadowing and the reserved input name fail preflight.
-The rightmost `from` varies fastest. Capture names stay local to the match.
-An unavailable required binding or an Unknown final guard gives a located error,
-including when the guard is negated.
-
-The common readers accept this surface for a host that supplies the native
-primitives and match stage wrapper:
+The remaining examples assume a richer word model with native occurrences.
+Suppose its host supplies `text` and `byte_length`, each producing one scalar
+per occurrence. A projection can build a row for each word:
 
 ```text
-match {
-  from add in (input | filter(op("arith.addi")));
-  bind lhs = operand(add, 0);
-  bind rhs = operand(add, 1);
-  where same_value(lhs, rhs);
-}
-```
-
-`read_match` returns the clause tree. `read_native_expression` also reads a
-match composed with later stages, such as a host's explicit `| json` emitter.
-The word `match` is contextual before `{`, so a bare saved binding named
-`match` remains readable. Inline and file frontends can use the same readers;
-the core requires no file or entry-point declaration.
-
-Each successful row is a host-wrapped `NativeCapture<Value>` with fields in
-written order. Selecting `m.add` retains its native operation kind and uses a
-charged native copy. A later `project(m, {"name": m.add | names | one})`
-explicitly constructs a scalar report. Plain constructed-record field access
-continues to use the scalar value evaluator.
-
-`match_types` checks every clause, operand, Boolean branch, type and effect
-before `evaluate_match` obtains subjects. Empty inputs and false guards do not
-hide invalid clauses. Returned field kinds describe empty capture collections
-too; the host retains that schema beside its collection wrapper. Matching
-requires a program budget with aggregate result limits and charges candidates
-before filtering. See [the adapter contract](host-integration.md#native-match-adapter).
-These callable matching APIs require a development revision that contains them;
-they are absent from the published alpha.5 release.
-
-## Explain native connections
-
-`NativePaths<S, P>` retains one typed edge, an ordinary target predicate and a
-required nonnegative `max_depth` measured in edges. Supporting frontends use
-`read_paths` for the common form:
-
-```text
-paths(edge, to=predicate, max_depth=2)
-```
-
-The edge is one registered identifier. It cannot be a pipeline. The target
-uses the shared `not`, `and`, `or` and grouping rules. Typed callers build the
-same representation with located edge, target and bound values.
-
-`evaluate_paths` returns one shortest witness for each reachable source/sink
-pair within the bound. Distinct sources keep their incoming identity order.
-For each source, sinks follow breadth-first discovery order, and the host's
-neighbor order chooses between equal-length witnesses. Repeated source handles
-and cycles do not duplicate a pair. Searching continues through matching sinks.
-
-Each row is a native capture with ordered `source`, `sink` and `steps` fields.
-Endpoints remain singleton native selections. Steps retain an ordered native
-selection containing both endpoints, so a matching source yields `[source]`
-at depth zero. Field access and `project` use the existing native capture path;
-no handle becomes a scalar or JSON value during traversal.
-
-The evaluator preflights the edge and every target branch before obtaining
-subjects, including empty input and unchosen Boolean branches. A final Unknown
-target refuses at its query range; host failures retain their responsible
-source locations. Separate host limitations remain attached to the request.
-No witness within the bound does not establish global disconnection.
-
-Paths require aggregate program limits and share the active budget through
-scans, identity comparisons, traversal slots, witness copies and rendering.
-See [the native path adapter](host-integration.md#native-path-adapter).
-These callable APIs require a development revision; they are absent from
-published alpha.5. Consumer adoption is separate: a host must supply its edge
-adapter and stage wrapper before its CLI or library accepts paths.
-
-## Optional projected fields
-
-A native subject remains native while its scalar fields use the optional-value
-runner. A host supplying a `names` projection can construct a report like this:
-
-```text
-project(subject, {
-  "name": one(subject | names),
-  "caption": (lookup({"caption": null}, "caption") default "untitled"),
-  "stored": has_key({"caption": null}, "caption"),
-  "omitted": has_key({}, "caption")
+project(w, {
+  "word": one(w | text),
+  "bytes": one(w | byte_length)
 })
 ```
 
-The name uses the ordinary native projection. The other fields report
-`"untitled"`, true and false. A present left default operand skips the native
-fallback entirely; a selected native failure retains its host error and source
-coordinates. Every native query in either branch still passes scope, kind and
-purity preflight. See [optional values](values.md#absence-lookup-and-defaults)
-for the shared nodes and the distinction between absence and missing membership.
-These forms require a development revision containing optional values.
+On `birch apple ash apple`, this gives rows `birch/5`, `apple/5`, `ash/3`,
+`apple/5`. Both occurrences of `apple` survive. `w` is local to the projection;
+its fields evaluate in written order against the same native subject.
 
-## Repeated projection
+`one` requires exactly one projected value. Empty or multiple results fail. A
+missing domain operation or incompatible field type fails preflight even when
+the input selection is empty. These operations are an [illustrative extension of
+the word model](language-direction.md); they are not implemented by the tutorial
+executable.
 
-A projection prepares its fields once before native subject enumeration. Each
-row installs its current subject in resolved slots and keeps written field order,
-correlation and duplicates. Empty selections and skipped branches still receive
-scope, type and purity preflight. Runtime access and selected native operations
-retain their checks and original source locations.
+## Optional projected fields
 
-The value-plus-types entry points let a host return its prepared report schema
-with the owned result. Immutable outer bindings and scalar argument owners can
-be shared during execution; completed row temporaries are released. This changes
-some repeated preparation/copy charges near limits, as described in
-[the accounting contract](diagnostics-and-limits.md#prepared-execution-and-sharing).
+Value expressions inside a projection use the same optional-data rules as other
+expressions. If the host supplies `metadata` as a single record for one word:
 
+```text
+project(w, {
+  "word": one(w | text),
+  "label": lookup(one(w | metadata), "label") default "unlabelled"
+})
+```
 
-## Named pure functions
+A missing `label` gets the fallback. An error obtaining `metadata` still fails;
+`default` handles absence, not operation failures. All branches retain scope,
+kind and purity checks before any native field executes.
 
-The development Rust API accepts located pure function declarations beside an
-entry value expression. Functions have explicit parameter and result contracts,
-ordered immutable local lets and one final expression. Names register before
-bodies, allowing direct and mutual recursion. Locals cannot shadow parameters or
-earlier locals, and functions receive outer program data through explicit
-arguments. External `param` transport remains `int`, `string` and `bool`.
+## Retain native captures
 
-Compatible final calls reuse an activation, including selected conditional,
-requirement and untyped default branches. Pending arithmetic or return checks
-consume active function depth. Every call spends work, so an infinite tail call
-still ends in a located allowance error. Native results retain their host handles
-and coordinates, and functions cannot edit or emit.
+Native matching enumerates related objects and keeps them together in a record.
+An occurrence host could supply `has_next`, `next_word` and `same_text`:
 
-See [constructing functions in Rust](embedding-programs.md#call-typed-pure-functions)
-for the callable path. Both consumer frontends expose typed declarations and
-conditionals with their own native type names and expression syntax. These APIs
-and frontend forms are absent from published alpha.5. Function values,
-closures, imports and user overloads are outside this interface.
+```text
+match {
+  from word in (input | filter(has_next));
+  bind following = next_word(word);
+  where same_text(word, following);
+}
+```
 
-## Execution costs
+For `ash apple apple birch`, this finds the adjacent `apple` occurrences. The
+capture has separate `word` and `following` fields with distinct source positions.
+The adapter defines those operations; the core defines the clause behavior:
 
-[Execution and measured costs](computation.md) connects runtime contracts,
-preparation reuse, tail-call limits and owned results to the bounded measurement
-cases. It also links complete programs for both host syntaxes.
+| Clause | Meaning |
+| --- | --- |
+| `from name in query` | Enumerate candidates in native order |
+| `bind name = query` | Require exactly one native subject for each candidate |
+| `where predicate` | Continue only when the final predicate answer is known true |
+
+Later clauses see earlier names. A name is absent in its own source, and the
+rightmost `from` varies fastest. Captures stay local to the match. Duplicate
+names, shadowing and a binding named `input` fail.
+
+A false guard rejects a candidate. An unknown final guard or a failed required
+binding is an error. Empty input does not bypass preflight. Captured handles
+retain their owner until an explicit projection creates scalar data.
+
+Value matching, written `match (value) { ... }`, instead selects one result.
+See [functions and control flow](functions-and-control-flow.md).
+
+## Explain native connections
+
+A host can expose a named edge for bounded path queries:
+
+```text
+paths(next_word, to=prefix("birch"), max_depth=2)
+```
+
+With a native source occurrence `ash` in `ash apple birch`, this returns one
+witness with steps `[ash, apple, birch]`. The host supplies the `next_word` edge,
+the prefix predicate and occurrence identity. `max_depth` is a required
+nonnegative integer measured in edges. An edge is one registered identifier,
+not a pipeline.
+
+The result has `source`, `sink` and `steps` fields. Steps include both endpoints;
+a source that already matches the target has a zero-edge witness `[source]`.
+For each source/sink pair, Zirql chooses one shortest witness within the bound.
+Sources retain incoming identity order, sinks follow breadth-first discovery,
+and native neighbour order breaks ties between equally short witnesses.
+Repeated handles and cycles do not duplicate a pair. Searching continues through
+matching sinks.
+
+A bound of one finds no witness from `ash` to `birch` here. That does not prove
+global disconnection. An unknown final target predicate fails, and separate
+host limitations remain attached to the request. Exhaustion is an error rather
+than a truncated set of witnesses.
+
+## Written and implicit output
+
+A host can define terminal output, which ends an expression, or pass-through
+output, after which stages can continue. It can also choose implicit output for
+a final expression without a written emitter. The host's guide specifies that
+policy and its syntax.
+
+Pure bindings, constructed operands and functions cannot emit or edit. Explicit
+host effects have the host's transaction rules; a later failure does not
+necessarily undo output already emitted. See [diagnostics and limits](diagnostics-and-limits.md#effects-and-output).
+
+<span id="copying-saved-values"></span>
+<span id="repeated-projection"></span>
+<span id="named-pure-functions"></span>
+<span id="execution-costs"></span>
+
+Named declarations, recursion and patterns have their own
+[language chapter](functions-and-control-flow.md). Rust copying, preparation
+and output contracts are covered by [host integration](host-integration.md),
+[program construction](embedding-programs.md) and [execution costs](computation.md).

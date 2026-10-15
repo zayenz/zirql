@@ -1,61 +1,93 @@
 # Pipelines
 
-A pipeline filters or transforms an ordered stream of native items. The host
-provides those items and implements domain predicates. Zirql runs the stage
-sequence and combines predicate results.
+The [word tutorial](examples.md) works with an array that Zirql can inspect
+directly. A host can also expose an ordered stream of native items, such as
+borrowed words or document nodes. A pipeline applies stages to that stream.
 
-## The common text reader
+The examples here use the same text, `birch apple ash apple`, through the
+[borrowed-word host](../README.md#a-borrowed-source-query). That host defines
+the `prefix` predicate. Zirql supplies filtering, stage order and Boolean
+composition. These pipelines use a different adapter from the tutorial's
+constructed-array executable.
 
-`parse_pipeline` accepts these shared stages:
+## Filter and take a prefix
 
 ```text
-filter(prefix("a")) | head(1) | count
+filter(prefix("a")) | head(2)
 ```
 
-The host defines the meaning of `prefix`.
-`filter`, `head` and `count` are the common reader's stage vocabulary. `head`
-accepts a nonnegative integer; `count` ends the pipeline.
+Filtering keeps `apple`, `ash`, `apple`; `head(2)` returns `apple`, `ash`.
+Swapping the stages changes the answer:
+
+```text
+head(2) | filter(prefix("a"))
+```
+
+The first two input words are `birch`, `apple`, so this returns only `apple`.
+Neither stage sorts or deduplicates. `head` accepts a nonnegative integer;
+`head(0)` returns an empty stream.
+
+## Count results
+
+```text
+filter(prefix("a")) | count
+```
+
+This returns 3. An empty stream counts as zero. `count` is terminal: a later
+stage is invalid and fails before evaluation. For instance, `count | head(1)`
+cannot take the head of a count.
+
+`head(1)` means "take the first". The value helper `one(a)` instead requires
+exactly one element and fails on empty or multiple results.
+
+## Combine predicates
 
 Predicates support `not`, `and`, `or` and parentheses. Precedence is `not`, then
-`and`, then `or`. Evaluation short-circuits. An Unknown predicate does not become
-true when negated; hosts that have only Boolean answers can return only
-`Truth::True` and `Truth::False`.
+`and`, then `or`:
+
+```text
+filter(prefix("a") and not prefix("ap"))
+```
+
+The result is `ash`. `and` stops when false is decisive, and `or` stops when
+true is decisive. A host can also return unknown when it lacks a fact.
+Negation preserves unknown, and filtering keeps only known true results.
+See [diagnostics and limits](diagnostics-and-limits.md).
 
 ## Additional stages
 
-The typed pipeline representation also supports stable unique, string tally
-and host operations. Host frontends supply their syntax; the common text reader
-accepts only filter, head and count.
+The native pipeline representation also supports stable unique, string tally
+and host-defined operations. Their text spellings and availability belong to
+the frontend.
 
-`Unique` keeps the first item for each host identity key, preserving input order.
-`Tally` counts host-projected string keys and returns counts in sorted key order.
-Both count and tally are terminal. A stage after either is rejected while
-lowering, before evaluation.
+Stable unique keeps the first item for each native identity key, preserving
+input order. String tally counts the keys projected by the host and returns
+counts in sorted key order. For word spellings it can directly produce `apple:
+2`, `ash: 1`, `birch: 1`. When a host exposes tally, a frequency count needs no
+manual grouping. Tally, like count, is terminal.
 
-`head(1)` deliberately takes the first item. The proposed `one` operation has a
-different purpose: it would require exactly one item. See the
-[language direction](language-direction.md).
+Identity is a host choice. Two occurrences of the same spelling can be distinct
+native objects. Projecting their spellings before comparing them answers a
+different question from comparing their source identities.
 
 ## Results retain their input context
 
-A pipeline returns a stream, a count or a string tally, together with the
-retained input context. Evaluation keeps the host's native items intact.
+A pipeline returns a native stream, count or tally with its retained context.
+A word can still borrow the source text; an operation handle can still refer to
+its document. Rendering happens at an explicit host boundary.
 
-For a source query, an item can borrow its text. For an operation query, an item
-can be a handle owned by the retained document. The host decides what identifies
-an item, how long the handle remains valid and how to render it. Equal printed
-names need not mean equal domain objects.
+## The common text reader
+
+The small `parse_pipeline` API reads `filter`, `head` and terminal `count`,
+using a callback for predicate leaves. It does not parse every operation in
+the native representation. Broader frontends register domain stages through
+the common native readers or lower their own parser output. The
+[implementation reference](host-integration.md#parse-and-lower) explains the
+entry points.
 
 ## Programs and constructed data
 
-[Native programs](native-programs.md) add bindings, records and ordered
-statements. [Constructed values](values.md) add scalar arithmetic and
-comprehensions. These callable APIs take located Rust representations. A host
-frontend must supply program and value syntax.
-
-All nested calls use the same active [budget](diagnostics-and-limits.md).
-A nested query does not gain a new allowance merely because it has a new input.
-
-The [worked examples](examples.md) trace concrete inputs and results. For the
-parser callback, typed builders and Rust entry points, see
-[embedding in Rust](host-integration.md).
+[Programs](native-programs.md) save intermediate values and combine native
+selections. Explicit projections construct scalar reports, which can use the
+same [value expressions and comprehensions](values.md) as the word tutorial.
+All nested calls share the active request budget.

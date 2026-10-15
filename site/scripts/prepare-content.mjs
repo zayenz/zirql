@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,7 +7,8 @@ const root = resolve(site, '..');
 const guides = [
   'getting-started', 'shared-concepts', 'native-programs', 'values',
   'host-integration', 'embedding-programs', 'diagnostics-and-limits', 'examples', 'language-direction',
-  'semantic-models', 'computation',
+  'semantic-models', 'computation', 'language-reference', 'implementation-reference',
+  'functions-and-control-flow', 'value-runtime', 'runtime-limits',
 ];
 const output = resolve(site, 'src/content/docs');
 await mkdir(resolve(output, 'guides'), { recursive: true });
@@ -17,7 +18,7 @@ for (const name of ['index', ...guides]) {
   const markdown = await readFile(source, 'utf8');
   const title = markdown.match(/^# (.+)\r?\n/);
   if (!title) throw new Error(`Missing page title in ${source}`);
-  const body = markdown.slice(title[0].length).replace(/\]\(([^\s)]+)\)/g, (link, target) => {
+  let body = markdown.slice(title[0].length).replace(/\]\(([^\s)]+)\)/g, (link, target) => {
     if (/^(?:[a-z]+:|#|\/)/i.test(target)) return link;
     const [path, anchor = ''] = target.split('#');
     const resolved = relative(root, resolve(root, 'docs', path));
@@ -32,18 +33,29 @@ for (const name of ['index', ...guides]) {
   const landing = name === 'index' ? `template: splash
 hero:
   title: Zirql
-  tagline: A Rust library for pipelines, programs and comprehensions over native data.
+  tagline: A language for data transformation and analysis, embedded in your application.
   actions:
-    - text: Examples
-      link: ./guides/examples/
-      icon: right-arrow
     - text: Language reference
-      link: ./guides/shared-concepts/
+      link: ./guides/language-reference/
       variant: minimal
-    - text: Embedding in Rust
-      link: ./guides/host-integration/
+    - text: Implementation reference
+      link: ./guides/implementation-reference/
       variant: minimal
 ` : '';
-  await writeFile(resolve(output, name === 'index' ? 'index.md' : `guides/${name}.md`),
+  if (name === 'index') {
+    // Keep the repository Markdown readable; use Starlight's accessible tabs on the site.
+    body = body.replace(/<!-- examples:start -->([\s\S]*?)<!-- examples:end -->/, (_, examples) => {
+      const sections = examples.trim().split(/^### /m).filter(Boolean);
+      const tabs = sections.map((section) => {
+        const newline = section.indexOf('\n');
+        const label = section.slice(0, newline).trim();
+        return `<TabItem label=${JSON.stringify(label)}>\n${section.slice(newline)}\n</TabItem>`;
+      });
+      return `<Tabs>\n${tabs.join('\n')}\n</Tabs>`;
+    });
+    body = `import { Tabs, TabItem } from '@astrojs/starlight/components';\n\n${body}`;
+    await rm(resolve(output, 'index.md'), { force: true });
+  }
+  await writeFile(resolve(output, name === 'index' ? 'index.mdx' : `guides/${name}.md`),
     `---\ntitle: ${JSON.stringify(title[1])}\neditUrl: https://github.com/zayenz/zirql/edit/main/docs/${name}.md\n${landing}---\n${body}`);
 }

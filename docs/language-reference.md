@@ -1,0 +1,174 @@
+# Language reference
+
+A Zirql expression transforms data into a result. That data may be a string
+array, a record, or a selection of native objects supplied by an application.
+The [word tutorial](examples.md) starts with an array and follows it through
+selection, adjacent pairs and grouped occurrences. This reference gives the
+rules behind those examples.
+
+The application embedding Zirql is its host. Strings, arrays and records are
+constructed values, which Zirql can inspect directly. Native values identify
+objects kept by the host, such as words in a source document or nodes in a
+syntax tree. A projection reads properties of those objects into constructed
+values.
+
+The common reader is Zirql's reusable parser for the syntax shown here. A host
+chooses which entry points and domain operations it exposes, and supplies
+statement and output handling for complete programs. These docs describe the
+development checkout; see [setup and version
+requirements](getting-started.md#use-zirql-in-another-rust-project).
+
+## Values and expressions
+
+Values include Booleans, signed integers, finite floats, strings, absence,
+arrays, tuples and records. Nominal members, typed sets and keyed arrays retain
+additional type or index information. Native objects keep their host's identity.
+
+```text
+42
+"apple"
+["birch", "apple", "ash", "apple"]
+{"word": "apple", "count": 2}
+```
+
+Arrays and tuples use one-based positions. `words[1]` is `"birch"` in the word
+example. Record access uses a label, such as `row.word`. Ordinary access fails
+when an entry is missing; `lookup(row, "word")` returns absence for a valid
+missing key.
+
+Arithmetic is checked. Integer overflow and division by zero fail, and strings
+are not coerced to numbers. `++` concatenates strings. Boolean `and` and `or`
+short-circuit. A conditional evaluates only the chosen branch:
+
+```text
+if length(words) > 0 { words[1] } else { "no words" }
+```
+
+All branches still receive scope and known-type checks. See
+[values and comprehensions](values.md) for exact arithmetic, collection,
+absence and access rules.
+
+## Comprehensions
+
+A comprehension constructs a collection from a source and an optional filter:
+
+```text
+[{"word": w} for w in words if starts_with(w, "a")]
+```
+
+The head constructs each result. The generator binds `w`, and the condition
+selects which words reach the head. Arrays preserve generation order and
+repeated values. Multiple `for` clauses form a nested traversal; later sources
+can use earlier binders.
+
+Comprehensions are eager. A reducer such as `length` or `sum` receives the
+completed array, and rejected candidates still cost work. See
+[positional comprehensions](values.md#positional-comprehensions) and
+[keyed arrays](values.md#keyed-arrays) for construction and index rules.
+
+## Built-in operations
+
+These operations work on constructed values. Native stages can have similar
+names but operate on a host's native selections.
+
+| Operation | Meaning |
+| --- | --- |
+| `contains(s, part)`, `starts_with(s, prefix)`, `ends_with(s, suffix)` | Exact, case-sensitive string matching |
+| `length(a)`, `sum(a)` | Count present array entries or sum integer entries |
+| `forall(a)`, `exists(a)` | Reduce an array of known Booleans |
+| `sort(a)`, `sort_by(rows, "field")` | Stable ordering, optionally `descending=true` |
+| `min(a)`, `max(a)`, `min_by(rows, "field")`, `max_by(rows, "field")` | Select an extremum, or absence on empty input |
+| `group_by(rows, "field")` | First-seen groups, each with `key` and `items` |
+| `lookup(a, key)`, `has_key(a, key)` | Optional access and membership |
+| `occurs(v)`, `absent(v)` | Test presence or absence |
+| `v default fallback` | Evaluate the fallback only when `v` is absent |
+| `one(a)` | Require exactly one element |
+| `require(condition, value, "message")` | Return the value on true; otherwise fail with the message |
+| `entries(a)`, `zip_exact(a, b)` | Inspect keyed cells or pair arrays with identical axes and present keys |
+
+The [value reference](values.md) defines accepted types, empty inputs and error
+cases. For example, `length` accepts arrays, not strings, and `sum` uses checked
+integer addition. `forall` and `exists` inspect an eager Boolean array; they do
+not turn its construction into a lazy traversal.
+
+## Pipelines and native data
+
+For native data, a pipeline applies stages in written order. A host exposing
+borrowed words can support:
+
+```text
+filter(prefix("a")) | head(1) | count
+```
+
+Here `prefix` is a host predicate that tests a word's spelling. It is separate
+from the built-in `starts_with` function used with constructed strings. Other
+hosts can define predicates over syntax nodes or document handles. Zirql
+supplies the shared sequencing and Boolean composition.
+
+[Pipeline semantics](shared-concepts.md) cover filtering, ordering, identity,
+terminal results and the small `parse_pipeline` reader. The broader native
+representation also supports host stages and set operations. A host can reuse
+the common readers or lower an existing parser to that representation.
+
+Use `project(subject, {fields})` to turn native subjects into report records.
+Explicit projections produce constructed values; native captures and paths can
+retain the original objects. See [native programs](native-programs.md) for
+projection, `match { from ...; bind ...; where ...; }` and bounded paths.
+
+## Bindings, parameters and functions
+
+Programs execute statements in order and save values in immutable bindings. A
+name must be available before use. Required external parameters have `int`,
+`string` or `bool` types and are checked before domain execution.
+
+The common reader recognizes `let name =`, `param name: type` and `report`
+prefixes. A host connects them to its program and emission policy. Single
+expressions, including every front-page example, need no declarations.
+
+Named pure functions have typed parameters and a result type:
+
+```text
+fn twice(n: int) -> int { n * 2 }
+```
+
+A host that supports functions prepares declarations together, so recursive and
+mutually recursive calls can resolve. Functions can inspect native data through
+registered pure operations. They cannot emit or edit. Direct tail calls reuse
+the active function frame, while all calls spend the request's work budget. See
+[function declarations](functions-and-control-flow.md#declare-a-function).
+
+## Patterns and control flow
+
+Value matching selects the first matching arm and requires a final unguarded
+wildcard:
+
+```text
+match (length(words)) {
+  0 => "empty",
+  1 => "one word",
+  _ => "several words"
+}
+```
+
+Patterns can destructure tuples and records, bind names and test optional
+presence. A native capture match enumerates correlated domain objects; a value
+match selects one result. Their forms and results are different.
+
+The [functions and control flow chapter](functions-and-control-flow.md)
+describes matching, guarded arms and local bindings. Explicit state loops,
+named-function folds and scans, FIFO queues and native identity sets also have
+Rust representations that an application can construct directly. Their text
+syntax depends on the host; see [program construction](embedding-programs.md)
+and [computational
+collections](value-runtime.md#native-computational-collections).
+
+## Errors and limits
+
+A missing field, incompatible type, failed requirement or exhausted allowance
+is an error with a location. An absent value is ordinary data. An unknown native
+predicate is a third truth state, used when the host lacks a fact; negation
+preserves that uncertainty.
+
+The application chooses finite limits for parsing and execution. Nested queries,
+comprehensions and host callbacks share the active budget. See
+[diagnostics and limits](diagnostics-and-limits.md) for the contract.
