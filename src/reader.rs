@@ -1192,6 +1192,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             };
             let value =
                 ValueGuard::new(self.function_value_at(depth + usize::from(!bindings.is_empty()))?);
+            if matches!(value.value().value, K::Break(_) | K::Continue(_)) {
+                self.reader.consume(';');
+            }
             self.reader.expect('}')?;
             if bindings.is_empty() {
                 return Ok(value.into_value());
@@ -1210,6 +1213,204 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.locals.truncate(locals);
         result
     }
+    fn loop_value(
+        &mut self,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        let start = self.reader.position();
+        self.reader.keyword("loop");
+        self.reader.expect('(')?;
+        let mut guard = ValueGuard::new(Located::new(
+            K::Loop {
+                states: Vec::new(),
+                body: Box::new(Located::new(K::Literal(V::Absent), start..start)),
+            },
+            start..start,
+        ));
+        if !self.reader.consume(')') {
+            loop {
+                let name = self.name()?;
+                self.reader.expect('=')?;
+                let value = ValueGuard::new(self.function_value_at(depth + 1)?);
+                self.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(1)?;
+                let K::Loop { states, .. } = &mut guard.value_mut().value else {
+                    unreachable!()
+                };
+                states.push((name, value.into_value()));
+                if !self.reader.consume(',') {
+                    self.reader.expect(')')?;
+                    break;
+                }
+            }
+        }
+        let locals = self.locals.len();
+        let result = (|| {
+            let K::Loop { states, .. } = &guard.value().value else {
+                unreachable!()
+            };
+            for (name, _) in states {
+                self.slots::<&str>(1)?;
+                self.locals.push(&self.reader.source()[name.range.clone()]);
+            }
+            self.block(depth + 1)
+        })();
+        self.locals.truncate(locals);
+        let body = ValueGuard::new(result?);
+        let K::Loop { body: target, .. } = &mut guard.value_mut().value else {
+            unreachable!()
+        };
+        **target = body.into_value();
+        guard.value_mut().range = start..self.reader.position();
+        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+        Ok(guard.into_value())
+    }
+
+    fn continue_value(
+        &mut self,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let start = self.reader.position();
+        self.reader.keyword("continue");
+        self.reader.expect('(')?;
+        let mut guard = ValueGuard::new(Located::new(K::Continue(Vec::new()), start..start));
+        if !self.reader.consume(')') {
+            loop {
+                let value = ValueGuard::new(self.function_value_at(depth + 1)?);
+                self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                let K::Continue(values) = &mut guard.value_mut().value else {
+                    unreachable!()
+                };
+                values.push(value.into_value());
+                if !self.reader.consume(',') {
+                    self.reader.expect(')')?;
+                    break;
+                }
+            }
+        }
+        guard.value_mut().range = start..self.reader.position();
+        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+        Ok(guard.into_value())
+    }
+
+    // A saved `queue < bound` remains a comparison. Only a complete type
+    // argument followed by `(` selects an explicitly typed constructor.
+    fn typed_worklist_call(&mut self) -> Result<bool, QueryError> {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        probe.word()?;
+        if !probe.consume('<') {
+            return Ok(false);
+        }
+        let mut depth = 1usize;
+        let (mut quoted, mut escaped, mut comment) = (false, false, false);
+        while let Some(ch) = probe.remaining().chars().next() {
+            self.budget.charge(
+                1,
+                Location::Query(probe.position()..probe.position() + ch.len_utf8()),
+            )?;
+            probe.advance(ch.len_utf8())?;
+            if comment {
+                comment = ch != '\n';
+            } else if quoted {
+                if ch == '"' && !escaped {
+                    quoted = false;
+                }
+                escaped = ch == '\\' && !escaped;
+            } else {
+                match ch {
+                    '#' => comment = true,
+                    '"' => quoted = true,
+                    '(' | ')' | '[' | ']' | ';' | '|' => return Ok(false),
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Ok(probe.consume('('));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn worklist_call(
+        &mut self,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let start = self.reader.position();
+        let name = self.name()?;
+        let element = if self.reader.consume('<') {
+            let element = self.signature(depth + 1)?;
+            self.reader.expect('>')?;
+            Some(element)
+        } else {
+            None
+        };
+        self.reader.expect('(')?;
+        if name.value == "identity_set" {
+            let element = element.ok_or_else(|| {
+                self.reader
+                    .error("identity_set needs an explicit native element type")
+            })?;
+            self.reader.expect(')')?;
+            return self.node(K::IdentitySet { element }, start..self.reader.position());
+        }
+        let left = ValueGuard::new(self.function_value_at(depth + 1)?);
+        let kind = match name.value.as_str() {
+            "queue" => {
+                self.reader.expect(')')?;
+                K::Queue {
+                    items: Box::new(left.into_value()),
+                    element,
+                }
+            }
+            "pop_front" => {
+                self.reader.expect(')')?;
+                K::PopFront(Box::new(left.into_value()))
+            }
+            "push_back_all" | "insert" => {
+                self.reader.expect(',')?;
+                let right = ValueGuard::new(self.function_value_at(depth + 1)?);
+                self.reader.expect(')')?;
+                if name.value == "insert" {
+                    K::Insert {
+                        set: Box::new(left.into_value()),
+                        item: Box::new(right.into_value()),
+                    }
+                } else {
+                    K::PushBackAll {
+                        queue: Box::new(left.into_value()),
+                        items: Box::new(right.into_value()),
+                    }
+                }
+            }
+            "fold" | "scan" => {
+                self.reader.expect(',')?;
+                let initial = ValueGuard::new(self.function_value_at(depth + 1)?);
+                self.reader.expect(',')?;
+                let step = self.name()?;
+                self.reader.expect(')')?;
+                if name.value == "fold" {
+                    K::Fold {
+                        items: Box::new(left.into_value()),
+                        initial: Box::new(initial.into_value()),
+                        step,
+                    }
+                } else {
+                    K::Scan {
+                        items: Box::new(left.into_value()),
+                        initial: Box::new(initial.into_value()),
+                        step,
+                    }
+                }
+            }
+            _ => unreachable!("recognized shared worklist call"),
+        };
+        self.node(kind, start..self.reader.position())
+    }
+
     fn arm_value(
         &mut self,
         depth: usize,
@@ -1682,6 +1883,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     ("!=", 3, Some(B::NotEqual)),
                     ("<=", 4, Some(B::LessEqual)),
                     (">=", 4, Some(B::GreaterEqual)),
+                    ("in", 4, Some(B::In)),
                     ("<", 4, Some(B::Less)),
                     (">", 4, Some(B::Greater)),
                     ("=", 3, Some(B::Equal)),
@@ -1843,6 +2045,35 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let word = probe.word()?;
         probe.skip_whitespace();
         let local = self.is_local(word.value, &word.range)?;
+        if word.value == "loop" && probe.remaining().starts_with('(') {
+            return self.loop_value(depth);
+        }
+        if word.value == "continue" && probe.remaining().starts_with('(') {
+            return self.continue_value(depth);
+        }
+        if word.value == "break"
+            && !probe
+                .remaining()
+                .starts_with(['}', ')', ']', ',', ';', '|'])
+            && !probe.remaining().is_empty()
+        {
+            self.reader.keyword("break");
+            let value = ValueGuard::new(self.function_value_at(depth + 1)?);
+            return self.node(
+                K::Break(Box::new(value.into_value())),
+                start..self.reader.position(),
+            );
+        }
+        if matches!(word.value, "queue" | "identity_set")
+            && (probe.remaining().starts_with('(')
+                || probe.remaining().starts_with('<') && self.typed_worklist_call()?)
+            || matches!(
+                word.value,
+                "pop_front" | "push_back_all" | "insert" | "fold" | "scan"
+            ) && probe.remaining().starts_with('(')
+        {
+            return self.worklist_call(depth);
+        }
         if word.value == "if" {
             // A saved name keeps its postfixes/operators. An adjacent expression
             // starts the conditional form even when that name is also in scope.
