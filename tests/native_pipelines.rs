@@ -1096,3 +1096,48 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
         )
     );
 }
+
+#[test]
+fn native_bounds_and_checks_preserve_borrowed_rows_and_failure_locations() {
+    let source = "beta alpha beta";
+    let mut budget = Budget::new(limits());
+    let result = source_run(
+        "tail(9) | reverse | tail(2) | check(2, \"two rows\")",
+        source,
+        &mut budget,
+    )
+    .unwrap();
+    let NativeValue::Stream(rows) = result.value else {
+        panic!("expected rows")
+    };
+    assert_eq!(
+        rows.iter().map(|row| row.text).collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    assert_eq!(rows[1].range, 0..4);
+    assert_eq!(
+        source_run(
+            "tail(0) | check(0) | count",
+            source,
+            &mut Budget::new(limits())
+        )
+        .unwrap()
+        .value,
+        NativeValue::Count(0),
+    );
+    let query = "tail(0) | check(\"need rows\")";
+    assert_eq!(
+        source_run(query, source, &mut Budget::new(limits())).unwrap_err(),
+        EvaluationError::Core(QueryError::query(
+            10..query.len(),
+            "check failed: expected at least one item, got 0: need rows"
+        )),
+    );
+    assert_eq!(
+        source_run("check(2)", source, &mut Budget::new(limits())).unwrap_err(),
+        EvaluationError::Core(QueryError::query(
+            0..8,
+            "check failed: expected 2 items, got 3"
+        )),
+    );
+}

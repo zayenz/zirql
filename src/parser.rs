@@ -216,11 +216,36 @@ pub fn parse_pipeline<L>(
                 parser.reader.expect(')')?;
                 Stage::Filter(predicate)
             }
-            "head" => {
+            "head" | "tail" => {
                 parser.reader.expect('(')?;
                 let count = parser.reader.unsigned_integer()?;
                 parser.reader.expect(')')?;
-                Stage::Head(count.value)
+                if name.value == "head" {
+                    Stage::Head(count.value)
+                } else {
+                    Stage::Tail(count.value)
+                }
+            }
+            "reverse" => Stage::Reverse,
+            "check" => {
+                parser.reader.skip_whitespace();
+                let (mut expected, mut message) = (None, None);
+                if parser.reader.remaining().starts_with('(') {
+                    parser.reader.expect('(')?;
+                    parser.reader.skip_whitespace();
+                    if !parser.reader.remaining().starts_with('"') {
+                        expected = Some(parser.reader.unsigned_integer()?.value);
+                        parser.reader.skip_whitespace();
+                        if parser.reader.remaining().starts_with(',') {
+                            parser.reader.expect(',')?;
+                            message = Some(parser.reader.quoted_string()?.value);
+                        }
+                    } else {
+                        message = Some(parser.reader.quoted_string()?.value);
+                    }
+                    parser.reader.expect(')')?;
+                }
+                Stage::Check { expected, message }
             }
             "count" => Stage::Count,
             "unique" => Stage::Unique,
