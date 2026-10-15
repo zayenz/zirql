@@ -318,6 +318,7 @@ type SourceExpression = Expression<SourceStage, (), &'static str>;
 #[derive(Debug, PartialEq, Eq)]
 enum SourceStage {
     Order(Box<zirql::NativeOrdering<SourceExpression>>),
+    FixedPoint(Box<SourceExpression>),
     Neighbors,
     Same,
     Invalidate,
@@ -508,6 +509,30 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                 )?;
                 Ok(SourceValue::Words(words))
             }
+            SourceStage::FixedPoint(body) => zirql::evaluate_native_fixed_point(
+                value,
+                context,
+                budget,
+                Location::Query(range.clone()),
+                |current, context, budget| {
+                    let input = self.copy_value(current, context, budget, range)?;
+                    evaluate_expression(body, self, input, context, bindings, budget)
+                },
+                |current, context, budget| self.copy_value(current, context, budget, range),
+                |left, right, _, budget| {
+                    let (SourceValue::Words(left), SourceValue::Words(right)) = (left, right)
+                    else {
+                        return Err(QueryError::query(range.clone(), "expected words").into());
+                    };
+                    zirql::ordered_native_equal(
+                        left,
+                        right,
+                        budget,
+                        Location::Query(range.clone()),
+                        |left, right, _| Ok(left == right),
+                    )
+                },
+            ),
             SourceStage::Invalidate => {
                 context.source = &context.source[1..];
                 Ok(SourceValue::Constructed(zirql::ConstructedValue::Boolean(
@@ -7060,6 +7085,17 @@ fn shared_reader_releases_native_values_on_errors() {
     };
     let prefix = format!("input{}", " union input".repeat(100_000));
     let mut host = ReaderHost::default();
+    for source in [format!("fixpoint({prefix})"), format!("fixpoint({prefix}")] {
+        let error = zirql::read_native_expression(
+            &mut zirql::ArgumentReader::new(&source, 0).unwrap(),
+            &mut host,
+            &mut Budget::for_program(generous),
+            64,
+        )
+        .unwrap_err();
+        assert!(matches!(error.location, Location::Query(_)));
+        assert!(host.0.borrow().upgrade().is_none());
+    }
     let source = "paths(edge, to=not leaf or leaf, max_depth=0)";
     let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
     let paths = zirql::read_paths(
@@ -9147,6 +9183,13 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         ) -> Result<SourceStage, QueryError> {
             Ok(SourceStage::Order(Box::new(ordering)))
         }
+        fn fixed_point(
+            &mut self,
+            body: SourceExpression,
+            _: Range<usize>,
+        ) -> Result<SourceStage, QueryError> {
+            Ok(SourceStage::FixedPoint(Box::new(body)))
+        }
         fn set_operator(&self, _: &str) -> Option<()> {
             None
         }
@@ -9177,6 +9220,9 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         emissions: vec![],
     };
     for (query, expected) in [
+        ("fixpoint(input)", vec![(0, 5), (6, 11), (12, 17)]),
+        ("input | fixpoint(input)", vec![(0, 5), (6, 11), (12, 17)]),
+        ("fixpoint(fixpoint(input))", vec![(0, 5), (6, 11), (12, 17)]),
         ("sort", vec![(6, 11), (12, 17), (0, 5)]),
         ("sort_by(input)", vec![(6, 11), (12, 17), (0, 5)]),
         ("min", vec![(6, 11)]),
@@ -9218,6 +9264,17 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
             assert_eq!(word.side, 7);
             assert_eq!(word.text.as_ptr(), source[word.range.clone()].as_ptr());
         }
+    }
+    for query in ["fixpoint(", "fixpoint(input", "fixpoint()"] {
+        assert!(
+            zirql::read_native_expression(
+                &mut zirql::ArgumentReader::new(query, 0).unwrap(),
+                &mut Reader,
+                &mut Budget::for_program(limits()),
+                16,
+            )
+            .is_err()
+        );
     }
     let typed = SourceStage::Order(Box::new(zirql::NativeOrdering {
         order: zirql::NativeOrder::MinAll,
@@ -9291,4 +9348,158 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
     )
     .unwrap();
     assert_eq!(ordered, ["count", "tie", "text"]);
+}
+
+#[test]
+fn native_fixed_points_replace_ordered_integer_selections_with_bounded_checkpoints() {
+    fn copy(
+        value: &[u8],
+        _: &mut (),
+        budget: &mut Budget,
+    ) -> Result<Vec<u8>, EvaluationError<QueryError>> {
+        let location = Location::Query(20..30);
+        budget.check_items(value.len(), location.clone())?;
+        budget.charge(value.len() + 1, location.clone())?;
+        budget.charge_results(value.len() + 1, location)?;
+        Ok(value.to_vec())
+    }
+    fn same(
+        left: &[u8],
+        right: &[u8],
+        _: &mut (),
+        budget: &mut Budget,
+    ) -> Result<bool, EvaluationError<QueryError>> {
+        zirql::ordered_native_equal(left, right, budget, Location::Query(20..30), |a, b, _| {
+            Ok(a == b)
+        })
+    }
+    fn run(
+        values: Vec<u8>,
+        budget: &mut Budget,
+        mut next: impl FnMut(
+            &[u8],
+            &mut (),
+            &mut Budget,
+        ) -> Result<Vec<u8>, EvaluationError<QueryError>>,
+    ) -> Result<Vec<u8>, EvaluationError<QueryError>> {
+        zirql::evaluate_native_fixed_point(
+            values,
+            &mut (),
+            budget,
+            Location::Query(20..30),
+            |value, context, budget| next(value, context, budget),
+            |value, context, budget| copy(value, context, budget),
+            |left, right, context, budget| same(left, right, context, budget),
+        )
+    }
+    let unchanged = run(vec![2, 1, 1], &mut Budget::for_program(limits()), copy).unwrap();
+    assert_eq!(unchanged, [2, 1, 1]);
+    let empty = run(
+        vec![2, 1, 1],
+        &mut Budget::for_program(limits()),
+        |current, _, budget| {
+            budget.charge(1, Location::Query(20..30))?;
+            Ok(current.get(1..).unwrap_or_default().to_vec())
+        },
+    )
+    .unwrap();
+    assert!(empty.is_empty());
+    let cycle = run(
+        vec![2, 1, 1],
+        &mut Budget::for_program(limits()),
+        |current, context, budget| {
+            let mut result = copy(current, context, budget)?;
+            result.reverse();
+            Ok(result)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(cycle, EvaluationError::Core(QueryError { location: Location::Query(range), message, .. }) if range == (20..30) && message.contains("cycles"))
+    );
+    assert!(!same(&[1, 1], &[1], &mut (), &mut Budget::for_program(limits())).unwrap());
+    assert!(
+        !same(
+            &[1, 2],
+            &[2, 1],
+            &mut (),
+            &mut Budget::for_program(limits())
+        )
+        .unwrap()
+    );
+    for (mut budget, category) in [
+        (
+            Budget::new(zirql::Limits {
+                work: 1,
+                items: 8,
+                nesting: 16,
+            }),
+            QueryErrorCategory::WorkLimit,
+        ),
+        (
+            Budget::for_program(ProgramLimits {
+                results: 1,
+                ..limits()
+            }),
+            QueryErrorCategory::ResultLimit,
+        ),
+        (
+            Budget::for_program(ProgramLimits {
+                stream_items: 1,
+                ..limits()
+            }),
+            QueryErrorCategory::ItemLimit,
+        ),
+    ] {
+        let error = run(vec![1, 2], &mut budget, copy).unwrap_err();
+        assert!(
+            matches!(error, EvaluationError::Core(QueryError { location: Location::Query(range), category: actual, .. }) if range == (20..30) && actual == category)
+        );
+    }
+    let mut budget = Budget::new(zirql::Limits {
+        work: 0,
+        items: 8,
+        nesting: 16,
+    });
+    let error = zirql::ordered_native_equal::<u8, QueryError>(
+        &[],
+        &[],
+        &mut budget,
+        Location::Query(20..30),
+        |a, b, _| Ok(a == b),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        EvaluationError::Core(QueryError {
+            category: QueryErrorCategory::WorkLimit,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn shared_fixed_point_spelling_is_reserved_for_functions() {
+    let value = || {
+        at(
+            zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Integer(0)),
+            4,
+        )
+    };
+    let declaration = zirql::FunctionDeclaration {
+        name: at("fixpoint".into(), 1),
+        parameters: vec![],
+        result: at(DeclaredType::Integer, 2),
+        bindings: vec![],
+        value: value(),
+    };
+    let error = zirql::evaluate_functions(
+        &[declaration],
+        &value(),
+        &Bindings::default(),
+        &mut Budget::for_program(limits()),
+        zirql::FunctionLimits { active_depth: 1 },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("reserved operation"));
 }

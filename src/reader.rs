@@ -116,6 +116,22 @@ pub trait ValueReaderHost {
             "native mapping is unsupported by this host",
         ))
     }
+    /// Retain a common fixed-point body. Hosts supply native admission and body
+    /// execution, delegating replacement and cycle handling to the shared runner.
+    fn fixed_point(
+        &mut self,
+        query: ReadExpression<Self>,
+        range: Range<usize>,
+    ) -> Result<Self::Stage, QueryError>
+    where
+        Self: Sized,
+    {
+        crate::dispose_expression(query);
+        Err(QueryError::query(
+            range,
+            "native fixed points are unsupported by this host",
+        ))
+    }
     /// Map one located edge identifier to an existing typed native primitive.
     /// The shared reader consumes the identifier; this hook consumes no syntax.
     fn parse_path_edge(
@@ -1805,6 +1821,11 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             .is_ok_and(|word| word.value == "project" && self.host.is_stage(word.value))
             && probe.consume('(')
     }
+    fn fixed_point_call(&self) -> bool {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+            .expect("reader byte boundary");
+        probe.word().is_ok_and(|word| word.value == "fixpoint") && probe.consume('(')
+    }
     fn ordering_call(&mut self) -> Result<bool, QueryError> {
         let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
         let Ok(name) = probe.word() else {
@@ -2238,7 +2259,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             }
         }
         let ordering_call = self.ordering_call()?;
-        if self.match_call()
+        if (word.value == "fixpoint" && probe.remaining().starts_with('('))
+            || self.match_call()
             || self.field_pipeline()
             || ((self.host.is_stage(word.value)
                 || native_order(word.value).is_some()
@@ -2794,12 +2816,14 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             let first = probe.word()?;
             probe.skip_whitespace();
             let projection_call = self.projection_call();
+            let fixed_point_call = first.value == "fixpoint" && probe.remaining().starts_with('(');
             let binding =
                 self.is_local(first.value, &first.range)? || self.host.is_binding(first.value);
             if first.value == "input" && !binding {
                 self.reader.advance(probe.position() - start)?;
                 Located::new(ExpressionKind::Input, first.range)
             } else if !projection_call
+                && !fixed_point_call
                 && (binding
                     || (!self.host.is_stage(first.value)
                         && native_order(first.value).is_none()
@@ -2875,6 +2899,15 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     self.host
                         .filter(predicate, stage_start..self.reader.position()),
                 )
+            } else if self.fixed_point_call() {
+                self.name()?;
+                self.reader.expect('(')?;
+                let mut body = NativeGuard(Some(self.native_expression(depth + 1)?));
+                self.reader.expect(')')?;
+                ExpressionStep::Stage(self.host.fixed_point(
+                    body.0.take().expect("fixed-point body"),
+                    stage_start..self.reader.position(),
+                )?)
             } else if self.projection_call() {
                 let projection = self.projection(depth + 1)?;
                 ExpressionStep::Stage(

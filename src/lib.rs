@@ -2,6 +2,7 @@
 
 mod eval;
 mod existence;
+mod fixed_point;
 mod functions;
 mod mapping;
 mod matching;
@@ -24,6 +25,7 @@ pub use eval::{
     Truth, evaluate,
 };
 pub use existence::filter_native_exists;
+pub use fixed_point::{evaluate_native_fixed_point, ordered_native_equal};
 pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
     FunctionLimits, FunctionParameter, FunctionRequest, PatternFunctionDeclaration,

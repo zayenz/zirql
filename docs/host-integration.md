@@ -665,3 +665,14 @@ refusal. Its value adapter returns the native value to store. Both adapters use
 the same singleton and existing saved/prepared-call scope. The core owns the
 ordered loop and lexical map storage. The host owns singleton copies, domain
 admission and any explicit legacy per-entry conversion before insertion.
+
+## Native fixed-point execution
+
+Implement `ValueReaderHost::fixed_point` to retain the common reader's body; the
+default disposes it and returns an unsupported error. Delegate replacement and
+cycle handling to `evaluate_native_fixed_point`, passing one mutable context and
+the active budget through body execution, checkpoint copying and comparison.
+Use `ordered_native_equal` after checking kind and owner, including empty input.
+Keep the body stable in prepared native arguments so functions retain their
+parameters, locals and saved bindings on every iteration. Host callbacks retain
+native admission, nested execution guards and approved effect policy.
