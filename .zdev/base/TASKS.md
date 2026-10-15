@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 69
-- Ready: 2
-- Blocked: 6
+- Total: 71
+- Ready: 3
+- Blocked: 7
 - Done: 61
 
 | ID | Task | State | Blocked by |
@@ -78,3 +78,5 @@
 | [base-067](tasks/067-adopt-typed-native-ordering-and-stable-sets-in-zincite.md) | Adopt typed native ordering and stable sets in Zincite | blocked | base-062 |
 | [base-068](tasks/068-expose-retained-sortable-dictionaries-in-zincite.md) | Expose retained sortable dictionaries in Zincite | blocked | base-067 |
 | [base-069](tasks/069-read-correlated-existence-and-adopt-zincite-fixed-points.md) | Read correlated existence and adopt Zincite fixed points | blocked | base-067, base-064 |
+| [base-070](tasks/070-run-shared-zirql-queries-over-implicit-and-named-csv-inputs.md) | Run shared Zirql queries over implicit and named CSV inputs | ready | — |
+| [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | blocked | base-070 |
