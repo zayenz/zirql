@@ -169,6 +169,36 @@ outside that exact contract remain attended.
 
 ## Architectural direction
 
+### Language coherence, documentation and a CSV host
+
+Zirql owns the domain-independent language used by Zirium and Zincite. Someone
+who knows Zirql should recognize bindings, expressions, collections, functions,
+pipelines and their evaluation rules in both tools. Host syntax differences need
+a concrete domain or notation reason. Domain operations, facts, native identity,
+source coordinates and effects remain in the adapters. Inspect real query paths
+and move remaining general language behavior into Zirql when it demonstrates a
+gap; do not duplicate the evaluator or add a general plugin/grammar framework.
+
+The authorized work includes all three documentation sites. Write for a reader
+using the current tools: explain available behavior through runnable examples,
+then provide the reference details needed to adapt those examples. Keep planning,
+task identifiers, approval history and unimplemented designs in zdev records.
+Public guides and code comments describe the current contract and its reason.
+Apply the unslop and Zayenz writing-style guidance throughout, with plain words,
+concrete examples and no promotional or process narration.
+
+Add a small runnable CSV adaptation in this repository and a worked guide on the
+Zirql site. Support one implicitly selected CSV input and multiple named inputs.
+Use ordinary CSV decoding, explicit header/column access and the shared language
+for querying, binding, filtering, comprehensions, ordering and reporting. Keep
+CSV loading and table selection in the example host. Prefer existing constructed
+rows and strings over a new document model or type-guessing layer. The example
+must demonstrate actual shared execution as a third host, including reuse across
+named data sources, meaningful diagnostics and bounded inputs. General language
+gaps it exposes belong in small shared fixes with concrete acceptance, rather
+than CSV-specific copies. No separate published crate or query evaluator is
+needed for the example.
+
 Start with one reusable Rust library crate. A framework executable, parser
 generator, dynamic plugin loader, query optimizer and persistent cache have no
 current consumer requirement. Use the consumers' MIT OR Apache-2.0 license
