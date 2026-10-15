@@ -416,7 +416,10 @@ aggregate result allowance; collection, descriptor writes, comparisons and
 payload moves consume work even with legacy `Budget::new` allowances.
 Text comparisons charge each inspected byte. A host moving an admitted owned
 text key pays no second copy charge; a host copying a borrowed text key charges
-its bytes and new result before allocation.
+its bytes and new result before allocation. Typed keys share constructed scalar
+checks and byte accounting. Nominal admission checks every member pair for
+contradictory host metadata, so this validation can use quadratic work in the
+number of nominal keys; scalar admission is linear.
 
 Stable sorting uses an iterative merge of indices with O(n log n) comparisons
 and O(n) temporary slots. Extrema use a linear scan after key collection and

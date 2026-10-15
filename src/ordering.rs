@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, mem::size_of};
 
-use crate::{Budget, EvaluationError, Location, QueryError, QueryErrorCategory};
+use crate::value::{check_member_pair, compare_ordering_keys, ordering_key};
+use crate::{Budget, ConstructedValue, EvaluationError, Location, QueryError, QueryErrorCategory};
 
 /// Native ordering leaves kind, empty-input and selector policies with the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,12 +20,15 @@ pub struct NativeOrdering<Q> {
     pub selector: Option<Q>,
 }
 
-/// Native counts retain their full unsigned range. Counts sort before text;
-/// text uses UTF-8 lexical order, including when a stream mixes both key kinds.
-#[derive(Debug, PartialEq, Eq)]
+/// Native counts retain their full unsigned range and sort before native text.
+/// Typed values use the constructed ordering contract: present homogeneous signed
+/// integers, finite floats, strings or members of one coherent nominal type.
+/// Typed values cannot mix with native count/text descriptors.
+#[derive(Debug, PartialEq)]
 pub enum NativeOrderKey {
     Count(usize),
     Text(String),
+    Value(ConstructedValue),
 }
 
 /// Order admitted native payloads without copying them or replacing their owner.
@@ -57,7 +61,9 @@ pub fn order_native_by<T, E>(
     let mut keys = Vec::with_capacity(count);
     for item in &items {
         budget.charge(1, location.clone())?;
-        keys.push(key(item, budget)?);
+        let next = key(item, budget)?;
+        admit_key(&next, &keys, budget, &location)?;
+        keys.push(next);
     }
     if order == NativeOrder::Sort {
         let destinations = sort_indices(count, budget, &location, |left, right, budget| {
@@ -103,6 +109,53 @@ pub fn order_native_by<T, E>(
         keep
     });
     Ok(items)
+}
+
+fn admit_key(
+    key: &NativeOrderKey,
+    previous: &[NativeOrderKey],
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    let NativeOrderKey::Value(value) = key else {
+        if matches!(previous.first(), Some(NativeOrderKey::Value(_))) {
+            return Err(QueryError {
+                location: location.clone(),
+                message: "ordering needs homogeneous key types".into(),
+                category: QueryErrorCategory::Other,
+            });
+        }
+        return Ok(());
+    };
+    let (value, ty) = ordering_key(value, None, budget, location)?;
+    if let Some(first) = previous.first() {
+        let NativeOrderKey::Value(first) = first else {
+            return Err(QueryError {
+                location: location.clone(),
+                message: "ordering needs homogeneous key types".into(),
+                category: QueryErrorCategory::Other,
+            });
+        };
+        let (_, first_ty) = ordering_key(first, None, budget, location)?;
+        if first_ty != ty {
+            return Err(QueryError {
+                location: location.clone(),
+                message: "ordering needs homogeneous key types".into(),
+                category: QueryErrorCategory::Other,
+            });
+        }
+    }
+    if let ConstructedValue::Member(member) = value {
+        // Every member participates in admission, including nonwinning extrema.
+        for previous in previous {
+            if let NativeOrderKey::Value(previous) = previous
+                && let ConstructedValue::Member(previous) = previous.data()
+            {
+                check_member_pair(previous, member, budget, location)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn admit_slots<T>(
@@ -219,6 +272,16 @@ fn compare(
         (NativeOrderKey::Text(_), NativeOrderKey::Count(_)) => Ordering::Greater,
         (NativeOrderKey::Text(left), NativeOrderKey::Text(right)) => {
             compare_text(left, right, budget, location)?
+        }
+        (NativeOrderKey::Value(left), NativeOrderKey::Value(right)) => {
+            compare_ordering_keys(left.data(), right.data(), budget, location)?
+        }
+        _ => {
+            return Err(QueryError {
+                location: location.clone(),
+                message: "ordering needs homogeneous key types".into(),
+                category: QueryErrorCategory::Other,
+            });
         }
     })
 }

@@ -9348,6 +9348,96 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
     )
     .unwrap();
     assert_eq!(ordered, ["count", "tie", "text"]);
+
+    for (order, expected) in [
+        (zirql::NativeOrder::Sort, vec![1, 2, 0]),
+        (zirql::NativeOrder::Min, vec![1]),
+        (zirql::NativeOrder::Max, vec![0]),
+        (zirql::NativeOrder::MinAll, vec![1, 2]),
+        (zirql::NativeOrder::MaxAll, vec![0]),
+    ] {
+        let ordered = zirql::order_native_by(
+            vec![0, 1, 2],
+            order,
+            &mut Budget::for_program(limits()),
+            Location::Query(21..28),
+            |index, _| {
+                Ok::<_, EvaluationError<SourceFailure>>(zirql::NativeOrderKey::Value(
+                    zirql::ConstructedValue::Integer([7, 2, 2][*index]),
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(ordered, expected);
+    }
+    let member = |id, order, name: &str| {
+        zirql::ConstructedValue::Member(zirql::NominalMember {
+            type_id: zirql::NominalTypeId(9),
+            member_id: zirql::NominalMemberId(id),
+            declaration_order: order,
+            type_name: "Size".into(),
+            member_name: name.into(),
+        })
+    };
+    for keys in [
+        vec![
+            zirql::ConstructedValue::Integer(1),
+            zirql::ConstructedValue::Float(2.0),
+        ],
+        vec![
+            zirql::ConstructedValue::Integer(1),
+            zirql::ConstructedValue::Absent,
+        ],
+        vec![zirql::ConstructedValue::Boolean(true)],
+        vec![zirql::ConstructedValue::Float(f64::INFINITY)],
+        // Both contradictory members lose to the first key.
+        vec![
+            member(1, 0, "small"),
+            member(2, 1, "large"),
+            member(2, 2, "other"),
+        ],
+    ] {
+        let error = zirql::order_native_by(
+            keys,
+            zirql::NativeOrder::Min,
+            &mut Budget::for_program(limits()),
+            Location::Query(21..28),
+            |key, budget| {
+                Ok::<_, EvaluationError<SourceFailure>>(zirql::NativeOrderKey::Value(
+                    zirql::copy_constructed_value(key, budget, Location::Query(21..28))?,
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EvaluationError::Core(QueryError { location: Location::Query(range), .. }) if range == (21..28))
+        );
+    }
+    for keys in [
+        vec![
+            zirql::ConstructedValue::Float(2.5),
+            zirql::ConstructedValue::Float(-1.0),
+        ],
+        vec![
+            zirql::ConstructedValue::String("z".into()),
+            zirql::ConstructedValue::String("a".into()),
+        ],
+        vec![member(2, 1, "a"), member(1, 0, "z")],
+    ] {
+        let ordered = zirql::order_native_by(
+            vec![0, 1],
+            zirql::NativeOrder::Sort,
+            &mut Budget::for_program(limits()),
+            Location::Query(21..28),
+            |index, budget| {
+                Ok::<_, EvaluationError<SourceFailure>>(zirql::NativeOrderKey::Value(
+                    zirql::copy_constructed_value(&keys[*index], budget, Location::Query(21..28))?,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(ordered, [1, 0]);
+    }
 }
 
 #[test]

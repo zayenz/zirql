@@ -204,12 +204,14 @@ orders native payloads without rendering them or replacing their owner.
 Sorting is stable. Single extrema keep the first equal-key item; all-ties
 extrema keep every equal-key item in input order. Selectors run once per item in
 input order before comparisons begin, including for extrema. The existing
-`NativeOrderKey` API supports counts and text: counts retain `usize` range and
-sort before text. Hosts currently decide their admitted kinds and empty policy;
-the shared algorithm itself returns an empty selection on empty input.
-
-The accepted Zincite alignment below adds its constructed typed-key contract
-to native ordering. It does not claim that these new adapter paths already run.
+`NativeOrderKey::Value` shares constructed scalar admission and comparison:
+present homogeneous signed integers, finite floats, exact strings or members
+of one nominal type. Every key is admitted before comparison; inconsistent
+nominal names, member metadata or declaration order fail even in a losing key.
+Native `Count` and `Text` descriptors keep their separate domain: counts retain
+`usize` range and sort before text. They cannot mix with typed `Value` keys.
+Hosts decide their admitted kinds and empty policy; the shared algorithm itself
+returns an empty selection on empty input.
 
 ## Correlated native dictionaries
 

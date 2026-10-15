@@ -727,3 +727,9 @@ recursion can use `budget.within_evaluation(1, location, operation)` for each
 array instead. Do not guard a shared object constructor twice. The guard
 restores active depth on success or error and does not refund spent allowance.
 Fragment expansion uses a zero-depth guard to bound resolver reentry.
+
+Native ordering adapters can return `NativeOrderKey::Value` with an admitted
+constructed scalar. Convert native counts to signed integers with checked
+conversion when using this typed domain. Native handles need an explicit scalar
+projection. The shared operation validates all keys before selecting results;
+the adapter retains its input kind and owner when rebuilding an empty extremum.
