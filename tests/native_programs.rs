@@ -195,6 +195,7 @@ type SourceExpression = Expression<SourceStage, (), &'static str>;
 
 #[derive(Debug, PartialEq, Eq)]
 enum SourceStage {
+    Order(Box<zirql::NativeOrdering<SourceExpression>>),
     Neighbors,
     Same,
     Invalidate,
@@ -336,6 +337,55 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         match stage {
+            SourceStage::Order(ordering) => {
+                let SourceValue::Words(words) = value else {
+                    return Err(
+                        QueryError::query(range.clone(), "expected source selections").into(),
+                    );
+                };
+                let words = zirql::order_native_by(
+                    words,
+                    ordering.order,
+                    budget,
+                    Location::Query(range.clone()),
+                    |word, budget| {
+                        let output = if let Some(selector) = &ordering.selector {
+                            let input = self.copy_value(
+                                &SourceValue::Words(vec![Word {
+                                    side: word.side,
+                                    text: word.text,
+                                    range: word.range.clone(),
+                                }]),
+                                context,
+                                budget,
+                                range,
+                            )?;
+                            evaluate_expression(selector, self, input, context, bindings, budget)?
+                        } else {
+                            SourceValue::Words(vec![Word {
+                                side: word.side,
+                                text: word.text,
+                                range: word.range.clone(),
+                            }])
+                        };
+                        match output {
+                            SourceValue::Count(count) => Ok(zirql::NativeOrderKey::Count(count)),
+                            SourceValue::Words(words) if words.len() == 1 => {
+                                budget
+                                    .charge(words[0].text.len(), Location::Query(range.clone()))?;
+                                budget.charge_results(1, Location::Query(range.clone()))?;
+                                Ok(zirql::NativeOrderKey::Text(words[0].text.to_owned()))
+                            }
+                            _ => Err(QueryError::query(
+                                range.clone(),
+                                "expected one word or count",
+                            )
+                            .into()),
+                        }
+                    },
+                )?;
+                Ok(SourceValue::Words(words))
+            }
             SourceStage::Invalidate => {
                 context.source = &context.source[1..];
                 Ok(SourceValue::Constructed(zirql::ConstructedValue::Boolean(
@@ -4910,6 +4960,16 @@ mod projection {
                     "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
                 )
         }
+        fn ordering(
+            &mut self,
+            ordering: zirql::NativeOrdering<Query>,
+            _: Range<usize>,
+        ) -> Result<Stage, QueryError> {
+            if let Some(selector) = ordering.selector {
+                zirql::dispose_expression(selector);
+            }
+            Ok(Stage::Saved("one".into()))
+        }
         fn parse_stage(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
@@ -8891,4 +8951,203 @@ fn append(state: queue<Word>, item: Word) -> queue<Word> {
     let error =
         zirql::read_value_expression(&mut reader, &mut ReaderHost, &mut small, 64).unwrap_err();
     assert_eq!(error.category, QueryErrorCategory::ResultLimit);
+}
+
+#[test]
+fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
+    struct Reader;
+    impl zirql::ValueReaderHost for Reader {
+        type Stage = SourceStage;
+        type SetOperator = ();
+        type Emitter = &'static str;
+        type Predicate = ();
+        fn is_binding(&self, _: &str) -> bool {
+            false
+        }
+        fn is_stage(&self, name: &str) -> bool {
+            name == "count"
+        }
+        fn parse_stage(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<ExpressionStep<SourceStage, &'static str>, QueryError> {
+            let word = reader.word()?;
+            if word.value != "count" {
+                return Err(QueryError::query(word.range, "unsupported stage"));
+            }
+            Ok(ExpressionStep::Stage(SourceStage::Pipeline(Pipeline::new(
+                vec![Located::new(Stage::Count, word.range.clone())],
+                word.range,
+                16,
+            )?)))
+        }
+        fn parse_predicate_leaf(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &mut Budget,
+        ) -> Result<(), QueryError> {
+            Err(reader.error("unsupported predicate"))
+        }
+        fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) -> SourceStage {
+            unreachable!()
+        }
+        fn projection(
+            &mut self,
+            _: zirql::Projection<SourceExpression>,
+            _: Range<usize>,
+        ) -> SourceStage {
+            unreachable!()
+        }
+        fn ordering(
+            &mut self,
+            ordering: zirql::NativeOrdering<SourceExpression>,
+            _: Range<usize>,
+        ) -> Result<SourceStage, QueryError> {
+            Ok(SourceStage::Order(Box::new(ordering)))
+        }
+        fn set_operator(&self, _: &str) -> Option<()> {
+            None
+        }
+    }
+    let source = "βeta alpha alpha";
+    let input = || {
+        SourceValue::Words(vec![
+            Word {
+                side: 7,
+                text: &source[0..5],
+                range: 0..5,
+            },
+            Word {
+                side: 7,
+                text: &source[6..11],
+                range: 6..11,
+            },
+            Word {
+                side: 7,
+                text: &source[12..17],
+                range: 12..17,
+            },
+        ])
+    };
+    let mut context = SourceContext {
+        source,
+        prefix: "",
+        emissions: vec![],
+    };
+    for (query, expected) in [
+        ("sort", vec![(6, 11), (12, 17), (0, 5)]),
+        ("sort_by(input)", vec![(6, 11), (12, 17), (0, 5)]),
+        ("min", vec![(6, 11)]),
+        ("max", vec![(0, 5)]),
+        ("min_all", vec![(6, 11), (12, 17)]),
+        ("max_all", vec![(0, 5)]),
+        ("min_by(count)", vec![(0, 5)]),
+        ("max_by(count)", vec![(0, 5)]),
+        ("min_all_by(count)", vec![(0, 5), (6, 11), (12, 17)]),
+        ("max_all_by(count)", vec![(0, 5), (6, 11), (12, 17)]),
+    ] {
+        let mut budget = Budget::for_program(limits());
+        let expression = zirql::read_native_expression(
+            &mut zirql::ArgumentReader::new(query, 0).unwrap(),
+            &mut Reader,
+            &mut budget,
+            16,
+        )
+        .unwrap();
+        let SourceValue::Words(words) = evaluate_expression(
+            &expression,
+            &SourceHost,
+            input(),
+            &mut context,
+            &Bindings::default(),
+            &mut budget,
+        )
+        .unwrap() else {
+            panic!("words")
+        };
+        assert_eq!(
+            words
+                .iter()
+                .map(|word| (word.range.start, word.range.end))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for word in words {
+            assert_eq!(word.side, 7);
+            assert_eq!(word.text.as_ptr(), source[word.range.clone()].as_ptr());
+        }
+    }
+    let typed = SourceStage::Order(Box::new(zirql::NativeOrdering {
+        order: zirql::NativeOrder::MinAll,
+        selector: None,
+    }));
+    let mut budget = Budget::for_program(limits());
+    let SourceValue::Words(words) = ProgramHost::evaluate_stage(
+        &SourceHost,
+        &typed,
+        input(),
+        &mut context,
+        &Bindings::default(),
+        &mut budget,
+        &(21..28),
+    )
+    .unwrap() else {
+        panic!("words")
+    };
+    assert_eq!(
+        words
+            .iter()
+            .map(|word| (word.range.start, word.range.end))
+            .collect::<Vec<_>>(),
+        [(6, 11), (12, 17)]
+    );
+    for (budget, category) in [
+        (
+            Budget::new(zirql::Limits {
+                work: 2,
+                items: 8,
+                nesting: 16,
+            }),
+            QueryErrorCategory::WorkLimit,
+        ),
+        (
+            Budget::for_program(ProgramLimits {
+                results: 1,
+                ..limits()
+            }),
+            QueryErrorCategory::ResultLimit,
+        ),
+    ] {
+        let mut budget = budget;
+        let error = ProgramHost::evaluate_stage(
+            &SourceHost,
+            &typed,
+            input(),
+            &mut context,
+            &Bindings::default(),
+            &mut budget,
+            &(21..28),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EvaluationError::Core(QueryError { location: Location::Query(range), category: actual, .. }) if range == (21..28) && actual == category)
+        );
+    }
+    let mut budget = Budget::for_program(limits());
+    let ordered = zirql::order_native_by(
+        vec!["text", "count", "tie"],
+        zirql::NativeOrder::Sort,
+        &mut budget,
+        Location::Query(0..1),
+        |item, _| {
+            Ok::<_, EvaluationError<SourceFailure>>(if *item == "text" {
+                zirql::NativeOrderKey::Text(String::new())
+            } else {
+                zirql::NativeOrderKey::Count(usize::MAX)
+            })
+        },
+    )
+    .unwrap();
+    assert_eq!(ordered, ["count", "tie", "text"]);
 }
