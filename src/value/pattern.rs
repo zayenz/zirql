@@ -569,10 +569,8 @@ pub fn dispose_pattern(pattern: Pattern) {
                 pending.extend(fields.into_iter().map(|(_, p)| p))
             }
             PatternKind::Present(child) => pending.push(*child),
-            PatternKind::Name(_)
-            | PatternKind::Wildcard
-            | PatternKind::Literal(_)
-            | PatternKind::Absent => {}
+            PatternKind::Literal(value) => dispose_constructed_value(value),
+            PatternKind::Name(_) | PatternKind::Wildcard | PatternKind::Absent => {}
         }
     }
 }

@@ -2786,7 +2786,11 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         let clauses = match value.value {
-            K::Literal(_) | K::Name(_) => continue,
+            K::Literal(value) => {
+                crate::value::dispose_constructed_value(value);
+                continue;
+            }
+            K::Name(_) => continue,
             K::IdentitySet { element } => {
                 dispose_signature(element.value);
                 continue;
