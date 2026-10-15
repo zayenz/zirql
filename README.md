@@ -5,10 +5,11 @@ embedding Zirql in a Rust project.
 
 Zirql is a Rust library for bounded query pipelines, native programs and
 constructed scalar, nominal and keyed comprehension values.
-Zirql sequences filtering, head, count, stable unique, string tally and typed
+Zirql sequences filtering, head, tail, reverse, cardinality checks, count, stable unique, string tally and typed
 host stages. Hosts parse their syntax, evaluate predicate leaves and execute
 native navigation and projections. The common text reader supports
-`filter(predicate)`, `head(nonnegative integer)` and terminal `count`.
+`filter(predicate)`, `head(nonnegative integer)`, `tail(nonnegative integer)`,
+`reverse`, `check` and terminal `count`.
 
 The intended consumers are [Zirium](https://github.com/zayenz/zirium), for MLIR,
 and [Zincite](https://github.com/zayenz/zincite), for MiniZinc. The native
@@ -77,7 +78,8 @@ assert_eq!(result.value, NativeValue::Count(1));
 
 ## Parsing, lowering and native results
 
-`parse_pipeline` reads `filter`, `head`, `count`, `unique` and `tally`. Predicate precedence
+`parse_pipeline` reads `filter`, `head`, `tail`, `reverse`, `check`, `count`,
+`unique` and `tally`. Predicate precedence
 is `not`, `and`, then `or`; parentheses group predicates. The leaf callback
 consumes a whole host predicate, validates its arguments and returns a typed
 payload. `ArgumentReader` keeps original UTF-8 byte offsets and offers
@@ -113,7 +115,8 @@ context and active budget; work-cost hooks declare core charges:
   return zero when its stage or admission charge already covers row visits.
 - `prepare_stage` checks stream-kind applicability before every stage, even on
   an empty stream. It may update metadata such as document selection. Its
-  default accepts filter, head and count; hosts explicitly enable new stages.
+  default accepts filter, head, tail, reverse, check and count; hosts explicitly
+  enable unique, tally and host stages.
 - `evaluate_stage` receives the typed host payload and moves the input rows
   into its output stream. Hosts check known sizes and charge scans before
   allocating, and admit newly produced results in program mode; the core checks
@@ -172,6 +175,19 @@ Hosts pass explicit nested input and the same active budget to `evaluate`.
 Nested calls retain active logical depth and remaining work. Evaluation
 restores active depth and call state on success or error. Hosts choose parsing
 and execution allowances suitable for their request.
+
+Tail retains the last `n` rows in input order; zero removes all rows and an
+oversized bound retains all rows. Reverse keeps duplicates and native identities.
+`check` requires at least one row; `check(n)` requires exactly `n`, including
+zero. `check("message")` and `check(n, "message")` append a diagnostic message.
+Successful checks pass rows through unchanged. Failures identify the stage and
+include the expected and actual cardinalities. Hosts retain applicability checks
+for their native stream kinds, including empty streams.
+
+The callable `tail`, `reverse` and `check_cardinality` operations let hosts apply
+the same behavior to native containers outside a stream pipeline. Hosts supply
+the count and source range for a check. Moving already admitted rows adds no
+result admission; the evaluator charges the host's stage work as usual.
 
 ## Native programs
 

@@ -309,7 +309,12 @@ pub trait Host<I, C, L, S = ()> {
         _budget: &mut Budget,
     ) -> Result<(), EvaluationError<Self::Error>> {
         match stage.value {
-            Stage::Filter(_) | Stage::Head(_) | Stage::Count => Ok(()),
+            Stage::Filter(_)
+            | Stage::Head(_)
+            | Stage::Tail(_)
+            | Stage::Reverse
+            | Stage::Check { .. }
+            | Stage::Count => Ok(()),
             _ => Err(QueryError::query(stage.range.clone(), "unsupported pipeline stage").into()),
         }
     }
@@ -424,6 +429,14 @@ where
                         items = retained;
                     }
                     Stage::Head(count) => items.truncate(*count),
+                    Stage::Tail(count) => crate::tail(&mut items, *count),
+                    Stage::Reverse => crate::reverse(&mut items),
+                    Stage::Check { expected, message } => crate::check_cardinality(
+                        items.len(),
+                        *expected,
+                        message.as_deref(),
+                        stage.range.clone(),
+                    )?,
                     Stage::Count => {
                         budget.charge_results(1, Location::Query(stage.range.clone()))?;
                         return Ok(NativeResult {

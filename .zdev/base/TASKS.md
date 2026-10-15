@@ -4,8 +4,8 @@
 
 - Total: 61
 - Ready: 11
-- Blocked: 2
-- Done: 48
+- Blocked: 1
+- Done: 49
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@
 | [base-045](tasks/045-run-explicit-loops-fold-and-scan-worklists-in-zirium.md) | Run explicit loops, fold and scan worklists in Zirium | done | base-040, base-041, base-042, base-043 |
 | [base-046](tasks/046-run-explicit-loops-fold-and-scan-worklists-in-zincite.md) | Run explicit loops, fold and scan worklists in Zincite | done | base-040, base-041, base-042, base-044 |
 | [base-047](tasks/047-compose-constructed-collection-pipelines-in-the-shared-langu.md) | Compose constructed collection pipelines in the shared language | done | — |
-| [base-048](tasks/048-share-native-stream-bounds-reversal-and-cardinality-checks.md) | Share native stream bounds, reversal and cardinality checks | ready | — |
+| [base-048](tasks/048-share-native-stream-bounds-reversal-and-cardinality-checks.md) | Share native stream bounds, reversal and cardinality checks | done | — |
 | [base-049](tasks/049-share-native-selector-ordering-and-all-ties-extrema.md) | Share native selector ordering and all-ties extrema | ready | — |
 | [base-050](tasks/050-share-native-union-intersection-and-difference-algorithms.md) | Share native union, intersection and difference algorithms | ready | — |
 | [base-051](tasks/051-share-correlated-native-map-construction.md) | Share correlated native map construction | ready | — |
@@ -67,6 +67,6 @@
 | [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | ready | — |
 | [base-057](tasks/057-share-pure-interpolation-and-computed-object-key-constructio.md) | Share pure interpolation and computed object-key construction | ready | — |
 | [base-058](tasks/058-compose-saved-native-and-constructed-results-consistently-in.md) | Compose saved native and constructed results consistently in Zincite | ready | base-047 |
-| [base-059](tasks/059-adopt-shared-stream-bounds-reversal-and-cardinality-checks-i.md) | Adopt shared stream bounds, reversal and cardinality checks in Zincite | blocked | base-048 |
+| [base-059](tasks/059-adopt-shared-stream-bounds-reversal-and-cardinality-checks-i.md) | Adopt shared stream bounds, reversal and cardinality checks in Zincite | ready | base-048 |
 | [base-060](tasks/060-define-broader-zincite-program-and-shared-operation-alignmen.md) | Define broader Zincite program and shared-operation alignment | ready | — |
 | [base-061](tasks/061-support-filter-count-expressions-over-the-current-constructe.md) | Support filter/count expressions over the current constructed input | ready | base-047 |

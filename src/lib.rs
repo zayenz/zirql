@@ -195,6 +195,12 @@ pub enum PredicateKind<L> {
 pub enum Stage<L, S = ()> {
     Filter(Predicate<L>),
     Head(usize),
+    Tail(usize),
+    Reverse,
+    Check {
+        expected: Option<usize>,
+        message: Option<String>,
+    },
     Count,
     Unique,
     Tally,
@@ -272,7 +278,12 @@ impl<L, S> Pipeline<L, S> {
             }
             match &stage.value {
                 Stage::Filter(predicate) => validate_predicate(predicate, nesting, nesting_limit)?,
-                Stage::Head(_) | Stage::Unique | Stage::Host(_) => {}
+                Stage::Head(_)
+                | Stage::Tail(_)
+                | Stage::Reverse
+                | Stage::Check { .. }
+                | Stage::Unique
+                | Stage::Host(_) => {}
                 Stage::Count => terminal = Some("count"),
                 Stage::Tally => terminal = Some("tally"),
             }
@@ -326,4 +337,39 @@ fn validate_predicate<L>(
         }
     }
     Ok(())
+}
+
+/// Keep the last `count` admitted rows in their original order.
+/// This moves existing rows without allocating or admitting results.
+pub fn tail<T>(items: &mut Vec<T>, count: usize) {
+    let discard = items.len().saturating_sub(count);
+    items.drain(..discard);
+}
+
+/// Reverse admitted rows without changing their identity or admission.
+pub fn reverse<T>(items: &mut [T]) {
+    items.reverse();
+}
+
+/// Check an exact count, or require a nonempty value when no count is supplied.
+/// Hosts determine which values are countable. Success leaves the value untouched.
+///
+/// # Errors
+/// Returns a located failure with expected/actual counts and the optional message.
+pub fn check_cardinality(
+    actual: usize,
+    expected: Option<usize>,
+    message: Option<&str>,
+    range: Range<usize>,
+) -> Result<(), QueryError> {
+    let failure = match expected {
+        Some(expected) if actual != expected => format!("expected {expected} items, got {actual}"),
+        None if actual == 0 => format!("expected at least one item, got {actual}"),
+        _ => return Ok(()),
+    };
+    let message = match message {
+        Some(message) => format!("{failure}: {message}"),
+        None => failure,
+    };
+    Err(QueryError::query(range, format!("check failed: {message}")))
 }
