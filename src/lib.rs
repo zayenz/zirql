@@ -3,6 +3,7 @@
 mod eval;
 mod existence;
 mod functions;
+mod mapping;
 mod matching;
 mod ordering;
 mod parser;
@@ -30,6 +31,7 @@ pub use functions::{
     PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
     evaluate_functions, evaluate_pattern_functions, pattern_function_value_kind,
 };
+pub use mapping::{NativeMap, map_native_by};
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
     evaluate_match_with_arguments, match_types,

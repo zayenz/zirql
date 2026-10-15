@@ -436,6 +436,7 @@ fn builtin(name: &str) -> bool {
             | "project"
             | "match"
             | "paths"
+            | "map_by"
             | "default"
             | "if"
     )

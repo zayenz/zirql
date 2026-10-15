@@ -435,3 +435,17 @@ empty or discarded operands. Canonical candidates supply result order; their
 scan does not apply the stream-item ceiling to a whole document. Selected output
 keeps that ceiling. Membership and temporary work can refuse formerly
 undercharged near-limit requests; host allowances do not increase to compensate.
+
+## Native maps
+
+`map_native_by` shares the active budget with both selectors. It admits one map
+container and one slot per stored entry, checks entry-size arithmetic and the
+stream ceiling, and moves already-admitted key strings and native values. Hosts
+charge selector work, singleton copies and their existing content limits. An
+additional host output container is admitted before materialization.
+
+With program budgets, iteration, storage and key inspection consume work. Key
+inspection uses the incoming key length times the entry count as an upper bound
+for a single tree descent. Diagnostic bytes are admitted before allocation.
+Legacy budgets retain their existing work accounting, with these new program
+bookkeeping charges inactive. No nested evaluation resets the allowance.

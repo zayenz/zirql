@@ -3208,6 +3208,7 @@ fn function_limits_types_and_preflight_restore_the_active_budget() {
             select_branch(literal(V::Boolean(false)), call("missing", vec![]), int(0)),
         ),
         function("sum", vec![], D::Integer, int(0)),
+        function("map_by", vec![], D::Integer, int(0)),
         function(
             "duplicate",
             vec![("x", D::Integer), ("x", D::Integer)],

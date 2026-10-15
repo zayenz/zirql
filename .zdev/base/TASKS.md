@@ -4,8 +4,8 @@
 
 - Total: 61
 - Ready: 5
-- Blocked: 1
-- Done: 55
+- Blocked: 0
+- Done: 56
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -59,8 +59,8 @@
 | [base-048](tasks/048-share-native-stream-bounds-reversal-and-cardinality-checks.md) | Share native stream bounds, reversal and cardinality checks | done | — |
 | [base-049](tasks/049-share-native-selector-ordering-and-all-ties-extrema.md) | Share native selector ordering and all-ties extrema | done | — |
 | [base-050](tasks/050-share-native-union-intersection-and-difference-algorithms.md) | Share native union, intersection and difference algorithms | done | — |
-| [base-051](tasks/051-share-correlated-native-map-construction.md) | Share correlated native map construction | ready | — |
-| [base-052](tasks/052-share-explicit-map-ranking-and-ordered-map-selection.md) | Share explicit map ranking and ordered map selection | blocked | base-051, base-048 |
+| [base-051](tasks/051-share-correlated-native-map-construction.md) | Share correlated native map construction | done | — |
+| [base-052](tasks/052-share-explicit-map-ranking-and-ordered-map-selection.md) | Share explicit map ranking and ordered map selection | ready | base-051, base-048 |
 | [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | done | — |
 | [base-054](tasks/054-share-bounded-native-fixed-point-execution.md) | Share bounded native fixed-point execution | ready | — |
 | [base-055](tasks/055-expose-index-sets-and-tuple-positions-in-the-common-reader.md) | Expose index sets and tuple positions in the common reader | done | — |

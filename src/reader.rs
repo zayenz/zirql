@@ -2,10 +2,10 @@ use std::ops::Range;
 
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
-    Located, Location, MatchClause, NativeMatch, NativeOrder, NativeOrdering, NativePaths,
-    ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection, QueryError,
-    ValueBinaryOperator as B, ValueConstructor, ValueExpression, ValueExpressionKind as K,
-    ValueExtremum, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
+    Located, Location, MatchClause, NativeMap, NativeMatch, NativeOrder, NativeOrdering,
+    NativePaths, ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection,
+    QueryError, ValueBinaryOperator as B, ValueConstructor, ValueExpression,
+    ValueExpressionKind as K, ValueExtremum, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
 };
 
 pub type ReadExpression<H> = Expression<
@@ -97,6 +97,23 @@ pub trait ValueReaderHost {
         Err(QueryError::query(
             range,
             "native ordering is unsupported by this host",
+        ))
+    }
+    /// Retain independent singleton-relative map selectors. Hosts preflight
+    /// their native kinds and effect policy before calling the map constructor.
+    fn mapping(
+        &mut self,
+        mapping: NativeMap<ReadExpression<Self>>,
+        range: Range<usize>,
+    ) -> Result<Self::Stage, QueryError>
+    where
+        Self: Sized,
+    {
+        crate::dispose_expression(mapping.key);
+        crate::dispose_expression(mapping.value);
+        Err(QueryError::query(
+            range,
+            "native mapping is unsupported by this host",
         ))
     }
     /// Map one located edge identifier to an existing typed native primitive.
@@ -2223,7 +2240,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let ordering_call = self.ordering_call()?;
         if self.match_call()
             || self.field_pipeline()
-            || ((self.host.is_stage(word.value) || native_order(word.value).is_some())
+            || ((self.host.is_stage(word.value)
+                || native_order(word.value).is_some()
+                || word.value == "map_by")
                 && !ordering_call
                 && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
             || (word.value == "input" && !local)
@@ -2782,7 +2801,9 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 Located::new(ExpressionKind::Input, first.range)
             } else if !projection_call
                 && (binding
-                    || (!self.host.is_stage(first.value) && native_order(first.value).is_none()))
+                    || (!self.host.is_stage(first.value)
+                        && native_order(first.value).is_none()
+                        && first.value != "map_by"))
             {
                 self.reader.advance(probe.position() - start)?;
                 self.budget
@@ -2860,6 +2881,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     self.host
                         .projection(projection, stage_start..self.reader.position()),
                 )
+            } else if self.word_is("map_by") {
+                let mapping = self.mapping(depth + 1)?;
+                ExpressionStep::Stage(
+                    self.host
+                        .mapping(mapping, stage_start..self.reader.position())?,
+                )
             } else if let Some((order, keyed)) = {
                 let mut probe = ArgumentReader::new(self.reader.source(), stage_start)?;
                 probe.word().ok().and_then(|word| native_order(word.value))
@@ -2921,6 +2948,21 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 Err(QueryError::query(range, "expected a native expression"))
             }
         }
+    }
+    fn mapping(&mut self, depth: usize) -> Result<NativeMap<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        if !self.reader.keyword("map_by") {
+            return Err(self.reader.error("expected `map_by`"));
+        }
+        self.reader.expect('(')?;
+        let mut key = NativeGuard(Some(self.native_expression(depth + 1)?));
+        self.reader.expect(',')?;
+        let mut value = NativeGuard(Some(self.native_expression(depth + 1)?));
+        self.reader.expect(')')?;
+        Ok(NativeMap {
+            key: key.0.take().expect("map key selector"),
+            value: value.0.take().expect("map value selector"),
+        })
     }
     fn matching(
         &mut self,
