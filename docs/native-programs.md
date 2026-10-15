@@ -208,3 +208,14 @@ input order before comparisons begin, including for extrema. Counts retain
 `usize` range and sort before text; text uses lexical order. Hosts still decide
 which native kinds and keys they accept and whether empty extrema are errors.
 The shared operation returns an empty selection for empty input.
+
+## Correlated native maps
+
+`map_by(key_query, value_query)` evaluates two independent queries against each
+native input item. The key must produce exactly one string. Inputs run in their
+original order, key before value; a duplicate key fails before its value runs.
+Empty input gives an empty map, and map keys have lexical order.
+
+Values retain their native kind and owner, including nested maps and counts.
+The host checks supported kinds and read-only selector policy before execution,
+even for empty input. Rendering remains an explicit host operation.

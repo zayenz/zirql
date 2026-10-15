@@ -650,3 +650,18 @@ emitters. Refuse them at their original query location, including nested
 containers. Library results may retain them and continue with the public
 budgeted operations in the same valid context. The host supplies any text syntax
 for these operations.
+
+## Correlated map construction
+
+The common reader recognizes `map_by(key_query, value_query)` and calls
+`ValueReaderHost::mapping` with a `NativeMap` of located native expressions.
+A host can retain the expressions or lower its own syntax to the same
+representation.
+
+After preflighting both selectors, call `map_native_by` with admitted items, the
+active runner/context and budget. Its key adapter returns `Some(strings)` or
+`None` for another shape; the core enforces the single-string rule and duplicate
+refusal. Its value adapter returns the native value to store. Both adapters use
+the same singleton and existing saved/prepared-call scope. The core owns the
+ordered loop and lexical map storage. The host owns singleton copies, domain
+admission and any explicit legacy per-entry conversion before insertion.
