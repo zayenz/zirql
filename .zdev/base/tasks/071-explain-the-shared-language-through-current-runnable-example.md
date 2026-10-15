@@ -16,7 +16,7 @@ Zirql, Zirium and Zincite guides teach their common language with runnable curre
 
 ## Context
 
-The user requests reader-focused documentation across all three repositories and explicitly invokes unslop and Zayenz writing style for docs/comments. The brief owns common semantics. Current Zirql docs/values.md and native-programs.md contain selected-design/process sections from056/060; their accepted design belongs in zdev, while public guides must describe delivered behavior. Read current admitted core/host code, actual Git pins, each site content preparation/navigation and user-facing language/query guides. The CSV example supplies a third concrete walkthrough. Existing foreign homepage, site-preparation, Zincite reference/formatter and private planning edits must be preserved; coordinator owns serial attribution/integration.
+The user requests reader-focused documentation across all three repositories and explicitly invokes unslop and Zayenz writing style for docs/comments. The brief owns common semantics. The accepted collection/native design is retained in background/collection-language-contract.md. Check docs/values.md and native-programs.md for any remaining selected-design/process prose; public guides must describe delivered behavior. Read current admitted core/host code, actual Git pins, each site content preparation/navigation and user-facing language/query guides. The CSV example supplies a third concrete walkthrough. Existing foreign homepage, site-preparation, Zincite reference/formatter and private planning edits must be preserved; coordinator owns serial attribution/integration.
 
 ## Boundaries
 

@@ -73,7 +73,7 @@
 | [base-062](tasks/062-preserve-collection-insertion-order-and-collection-kind-when.md) | Preserve collection insertion order and collection kind when sorting | ready | — |
 | [base-063](tasks/063-use-direct-zincite-expressions-and-shared-constructed-suffix.md) | Use direct Zincite expressions and shared constructed suffixes | done | — |
 | [base-064](tasks/064-adopt-ordered-dictionaries-and-operand-order-sets-in-zirium.md) | Adopt ordered dictionaries and operand-order sets in Zirium | blocked | base-062 |
-| [base-065](tasks/065-read-bare-brace-sets-and-computed-dictionaries.md) | Read bare-brace sets and computed dictionaries | blocked | base-062, base-064 |
+| [base-065](tasks/065-read-bare-brace-sets-and-computed-dictionaries.md) | Read bare-brace sets and computed dictionaries | blocked | base-062, base-064, base-068 |
 | [base-066](tasks/066-read-indexed-arrays-with-optional-declared-index-sets.md) | Read indexed arrays with optional declared index sets | blocked | base-065 |
 | [base-067](tasks/067-adopt-typed-native-ordering-and-stable-sets-in-zincite.md) | Adopt typed native ordering and stable sets in Zincite | blocked | base-062 |
 | [base-068](tasks/068-expose-retained-sortable-dictionaries-in-zincite.md) | Expose retained sortable dictionaries in Zincite | blocked | base-067 |

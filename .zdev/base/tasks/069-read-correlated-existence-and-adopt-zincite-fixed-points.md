@@ -16,7 +16,7 @@ Common where_exists text queries and existing fixed-point execution compose with
 
 ## Context
 
-Read docs/native-programs.md accepted existence/fixed-point contract. Core src/existence.rs already implements filter_native_exists, but src/reader.rs lacks a retained nested-query hook for it. Zirium typed where_exists already works and its shared text adapter can lower the same operation. Core fixed_point.rs and reader already implement replacement iteration and bounded cycle refusal; Zincite composition lacks adoption. Reuse complete-or-error host adjacency/nonemptiness primitives and native identities rather than implementing reachability or a second iteration engine. The accumulating Zincite acceptance example depends on the newly adopted native set algebra.
+Read background/collection-language-contract.md native existence contract and the brief fixed-point contract. Core src/existence.rs already implements filter_native_exists, but src/reader.rs lacks a retained nested-query hook for it. Zirium typed where_exists already works and its shared text adapter can lower the same operation. Core fixed_point.rs and reader already implement replacement iteration and bounded cycle refusal; Zincite composition lacks adoption. Reuse complete-or-error host adjacency/nonemptiness primitives and native identities rather than implementing reachability or a second iteration engine. The accumulating Zincite acceptance example depends on the newly adopted native set algebra.
 
 ## Boundaries
 

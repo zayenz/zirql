@@ -6,7 +6,7 @@ area = "base"
 status = "open"
 complexity = "advanced"
 afk = true
-blocked_by = ["base-062", "base-064"]
+blocked_by = ["base-062", "base-064", "base-068"]
 +++
 # Read bare-brace sets and computed dictionaries
 
@@ -16,7 +16,7 @@ The common expression reader lowers short bare-brace set/dictionary literals and
 
 ## Context
 
-Read docs/values.md selected collection grammar and brief comprehension rules after the shared ordered collection slice. Existing reader record fields are static labels; Set and Set comprehensions already have runtime nodes, and Record already represents string dictionaries. Read src/reader.rs, src/value.rs and src/value/execution.rs and their preparation/name/type/disposal paths. Colon at the brace body level chooses string dictionary entries, otherwise a nonempty brace is a set; {} is an empty dictionary. Explicit control/function braces continue to delimit blocks. Consumer integration must inspect Zirium crates/zirium/src/query/parser.rs::shared_value dispatch/admission and Zincite program/composition.rs::lower_composed_value -> functions.rs::lower_function_value/CST lowering; neither route automatically exposes every new shared form after a dependency change.
+Read background/collection-language-contract.md collection grammar and brief comprehension rules after the shared ordered collection slice. Existing reader record fields are static labels; Set and Set comprehensions already have runtime nodes, and Record already represents string dictionaries. Read src/reader.rs, src/value.rs and src/value/execution.rs and their preparation/name/type/disposal paths. Colon at the brace body level chooses string dictionary entries, otherwise a nonempty brace is a set; {} is an empty dictionary. Explicit control/function braces continue to delimit blocks. Consumer integration must inspect Zirium crates/zirium/src/query/parser.rs::shared_value dispatch/admission and Zincite program/composition.rs::lower_composed_value -> functions.rs::lower_function_value/CST lowering; neither route automatically exposes every new shared form after a dependency change.
 
 ## Boundaries
 

@@ -16,7 +16,7 @@ Zincite native dictionary construction, value sorting and bounds preserve insert
 
 ## Context
 
-Read docs/native-programs.md accepted dictionary contract and completed core order/typed native comparison tasks. Zincite program.rs Stage/Kind/ReportValue currently lack native map/dictionary stages; report_json assembles default serde_json maps. Reuse core map_native_by, typed value comparison and bounds, current singleton native adapters and existing Record representation where value/shape contracts fit. map_by requires exactly one string key per item and retains arbitrary already-admitted pure native/constructed payloads.
+Read background/collection-language-contract.md native dictionary contract and completed core order/typed native comparison tasks. Zincite program.rs Stage/Kind/ReportValue currently lack native map/dictionary stages; report_json assembles default serde_json maps. Reuse core map_native_by, typed value comparison and bounds, current singleton native adapters and existing Record representation where value/shape contracts fit. map_by requires exactly one string key per item and retains arbitrary already-admitted pure native/constructed payloads.
 
 ## Boundaries
 

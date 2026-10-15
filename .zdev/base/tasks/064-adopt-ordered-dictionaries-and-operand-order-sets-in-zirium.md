@@ -16,7 +16,7 @@ Zirium ordinary, diff and library query results use one insertion-ordered sortab
 
 ## Context
 
-Read docs/native-programs.md accepted alignment and the completed shared ordered-collections task. In ../zirium/crates/zirium/src/query.rs and query/{program,diff_program,render,report,literal,comprehension}.rs inspect Map/RankedMap, computed key construction, tally and native set candidates; also inspect Python adapters and host dependency manifests. Ordinary/diff set adapters currently rescan canonical document order; map storage/rendering uses lexical or separate ranked paths. Adopt the accepted shared runtime through a real Git pin. Default domain selection/edge order remains host-owned.
+Read background/collection-language-contract.md native alignment and the completed shared ordered-collections task. In ../zirium/crates/zirium/src/query.rs and query/{program,diff_program,render,report,literal,comprehension}.rs inspect Map/RankedMap, computed key construction, tally and native set candidates; also inspect Python adapters and host dependency manifests. Ordinary/diff set adapters currently rescan canonical document order; map storage/rendering uses lexical or separate ranked paths. Adopt the accepted shared runtime through a real Git pin. Default domain selection/edge order remains host-owned.
 
 ## Boundaries
 

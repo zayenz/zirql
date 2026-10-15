@@ -16,7 +16,7 @@ Zincite exposes shared native ordering/extrema and operand-order set algebra wit
 
 ## Context
 
-Read docs/native-programs.md accepted alignment after shared collection order. In ../zincite/crates/zincite-query/src/program.rs, program/composition.rs, pipeline.rs and program/{functions,worklists}.rs inspect singleton projections and native identity. SetOperator is currently () and native ordering hooks are missing. Core src/ordering.rs only projects Count/Text, whereas value.rs already compares homogeneous typed int/finite float/string/one-nominal keys. Extend/reuse that shared comparison with this concrete native consumer; do not add parallel algorithms or preserve obsolete APIs solely for compatibility.
+Read background/collection-language-contract.md native alignment after shared collection order. In ../zincite/crates/zincite-query/src/program.rs, program/composition.rs, pipeline.rs and program/{functions,worklists}.rs inspect singleton projections and native identity. SetOperator is currently () and native ordering hooks are missing. Adopting the ordered core also changes native tally storage from BTreeMap to ordered pairs and changes constructed Sort selectors; migrate their existing host callers, copies and rendering while retaining dictionary output and first-seen tally order. Broader retained map stages remain the following task. Core src/ordering.rs only projects Count/Text, whereas value.rs already compares homogeneous typed int/finite float/string/one-nominal keys. Extend/reuse that shared comparison with this concrete native consumer; do not add parallel algorithms or preserve obsolete APIs solely for compatibility.
 
 ## Boundaries
 

@@ -57,8 +57,9 @@ existing string-field values and structural schemas. Integer/nominal indexed
 data stays array-shaped, using `[key: value]` and optional `axes(...)` sources;
 explicit dimensions retain their full index sets, order and missing cells.
 The selected grammar, lowering gaps and bounded implementation scope are in
-[the collection guide](../../docs/values.md#selected-collection-syntax-and-ordering).
-They are accepted design awaiting implementation, not current reader support.
+[the collection language contract](background/collection-language-contract.md#collection-forms).
+Read it when implementing collection readers or adapting their host syntax. The
+public collection guide describes the callable and textual forms available now.
 
 The language has no compatibility requirement solely for existing users.
 Remove obsolete aliases or wrappers when they complicate the chosen design;
@@ -1509,18 +1510,18 @@ including duplicates and bounded cycle refusal. Accumulation requires explicit
 union. Incomplete adjacency cannot prove convergence. Native ownership, locations,
 one request budget and existing effect rules remain intact.
 
-The [native guide](../../docs/native-programs.md#accepted-collection-and-native-alignment)
-records the selected behavior and examples, explicitly separated from current
-support. Complete-program comparisons established which existing shared paths to
-reuse; base-044/046/047/055/057/058/059/061 are not replacement tasks.
+The [native operation contract](background/collection-language-contract.md#native-operation-alignment)
+retains the selected behavior and examples. Read it when migrating a native host;
+the public native guide describes the callable APIs available now. Complete-program
+comparisons established which existing shared paths to reuse; base-044/046/047/055/057/058/059/061 are not replacement tasks.
 The bounded implementation split is:
 
 1. Shared insertion-ordered set/dictionary construction, same-kind sorting,
    membership/association equality and first-seen tally.
 2. Zincite direct saved-expression routing and existing constructed suffixes.
 3. Zirium dictionary/JSON migration and operand-order native sets after step 1.
-4. Common bare-brace set/dictionary reading after steps 1 and 3, so real Zirium
-   pin adoption includes the ordered dictionary API migration.
+4. Common bare-brace set/dictionary reading after steps 1, 3 and 7, so both
+   consumer pin updates include their ordered dictionary and JSON migrations.
 5. Common indexed array syntax and always-retained declared index sources after
    step 4, reusing existing keyed shape and host nominal values.
 6. Zincite native ordering/sets with the concrete shared typed-key extension
