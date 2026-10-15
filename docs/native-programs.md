@@ -220,6 +220,19 @@ Values retain their native kind and owner, including nested maps and counts.
 The host checks supported kinds and read-only selector policy before execution,
 even for empty input. Rendering remains an explicit host operation.
 
+A supporting host can explicitly rank scalar map values with `sort_by(value)`.
+Null, Boolean, numeric and string values are separate homogeneous categories;
+signed integers, unsigned integers and finite floats share the numeric category
+and compare exactly. Nested values and incompatible categories fail. Equal
+values use lexical key order, even when reranking a previously reversed map.
+This admission rule is separate from constructed collection sorting.
+
+An explicitly ranked map keeps its entry order through saved bindings, copies,
+`reverse`, `head(n)` and `tail(n)`. Reversal includes tied keys; head and tail
+preserve the selected entries' relative order. Zero keeps no entries and an
+oversized bound keeps all entries. Hosts preserve this order at their rendering
+boundary. Ordinary maps retain lexical key order.
+
 ## Native fixed points
 
 A supporting native host can read `fixpoint(query)` through the common reader.

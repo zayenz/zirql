@@ -450,6 +450,17 @@ for a single tree descent. Diagnostic bytes are admitted before allocation.
 Legacy budgets retain their existing work accounting, with these new program
 bookkeeping charges inactive. No nested evaluation resets the allowance.
 
+`rank_map_by_value` admits descriptor and index slots before allocation and
+shares the request allowance with the host's scalar projection. Visits,
+comparisons, inspected scalar/key bytes and payload moves consume work under
+both legacy and aggregate budgets. Text descriptor copies and a caller's
+map-to-vector conversion must be admitted before allocation. Ranking moves
+already-admitted keys and payloads rather than copying or rendering them.
+
+`select_ranked_map` charges entry moves or drops before changing the vector.
+It allocates no new result storage. Saved-result copies still charge their
+entries, keys and payload content through the host's ordinary copy hook.
+
 ## Native fixed points
 
 The shared runner charges each completed iteration. Ordered equality checks

@@ -33,7 +33,9 @@ pub use functions::{
     PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
     evaluate_functions, evaluate_pattern_functions, pattern_function_value_kind,
 };
-pub use mapping::{NativeMap, map_native_by};
+pub use mapping::{
+    MapSelection, NativeMap, ScalarMapKey, map_native_by, rank_map_by_value, select_ranked_map,
+};
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
     evaluate_match_with_arguments, match_types,

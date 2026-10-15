@@ -60,55 +60,10 @@ pub fn order_native_by<T, E>(
         keys.push(key(item, budget)?);
     }
     if order == NativeOrder::Sort {
-        admit_slots::<usize>(count, budget, &location)?;
-        let mut indices: Vec<usize> = (0..count).collect();
-        admit_slots::<usize>(count, budget, &location)?;
-        let mut scratch = vec![0; count];
-        let mut width = 1usize;
-        while width < count {
-            let mut start = 0;
-            while start < count {
-                let middle = start.saturating_add(width).min(count);
-                let end = middle.saturating_add(width).min(count);
-                let (mut left, mut right) = (start, middle);
-                for slot in &mut scratch[start..end] {
-                    let take_left = right == end
-                        || left < middle
-                            && compare(
-                                &keys[indices[left]],
-                                &keys[indices[right]],
-                                budget,
-                                &location,
-                            )? != Ordering::Greater;
-                    budget.charge(1, location.clone())?;
-                    *slot = if take_left {
-                        let index = indices[left];
-                        left += 1;
-                        index
-                    } else {
-                        let index = indices[right];
-                        right += 1;
-                        index
-                    };
-                }
-                start = end;
-            }
-            std::mem::swap(&mut indices, &mut scratch);
-            width = width.saturating_mul(2);
-        }
-        // Invert destination -> source before moving payloads in place.
-        budget.charge(count, location.clone())?;
-        for (destination, source) in indices.into_iter().enumerate() {
-            scratch[source] = destination;
-        }
-        for index in 0..count {
-            while scratch[index] != index {
-                budget.charge(1, location.clone())?;
-                let destination = scratch[index];
-                items.swap(index, destination);
-                scratch.swap(index, destination);
-            }
-        }
+        let destinations = sort_indices(count, budget, &location, |left, right, budget| {
+            compare(&keys[left], &keys[right], budget, &location)
+        })?;
+        apply_order(&mut items, destinations, budget, &location)?;
         return Ok(items);
     }
     let all = matches!(order, NativeOrder::MinAll | NativeOrder::MaxAll);
@@ -150,7 +105,7 @@ pub fn order_native_by<T, E>(
     Ok(items)
 }
 
-fn admit_slots<T>(
+pub(crate) fn admit_slots<T>(
     count: usize,
     budget: &mut Budget,
     location: &Location,
@@ -171,6 +126,86 @@ fn admit_slots<T>(
     budget.charge_results(units, location.clone())
 }
 
+/// Return the destination of each source slot. Both native ordering and map
+/// ranking use this fallible stable merge, admitting its storage before work.
+pub(crate) fn sort_indices(
+    count: usize,
+    budget: &mut Budget,
+    location: &Location,
+    mut compare: impl FnMut(usize, usize, &mut Budget) -> Result<Ordering, QueryError>,
+) -> Result<Vec<usize>, QueryError> {
+    admit_slots::<usize>(count, budget, location)?;
+    let mut indices: Vec<usize> = (0..count).collect();
+    admit_slots::<usize>(count, budget, location)?;
+    let mut scratch = vec![0; count];
+    let mut width = 1usize;
+    while width < count {
+        let mut start = 0;
+        while start < count {
+            let middle = start.saturating_add(width).min(count);
+            let end = middle.saturating_add(width).min(count);
+            let (mut left, mut right) = (start, middle);
+            for slot in &mut scratch[start..end] {
+                let take_left = right == end
+                    || left < middle
+                        && compare(indices[left], indices[right], budget)? != Ordering::Greater;
+                budget.charge(1, location.clone())?;
+                *slot = if take_left {
+                    let index = indices[left];
+                    left += 1;
+                    index
+                } else {
+                    let index = indices[right];
+                    right += 1;
+                    index
+                };
+            }
+            start = end;
+        }
+        std::mem::swap(&mut indices, &mut scratch);
+        width = width.saturating_mul(2);
+    }
+    // Invert destination -> source before moving payloads in place.
+    budget.charge(count, location.clone())?;
+    for (destination, source) in indices.into_iter().enumerate() {
+        scratch[source] = destination;
+    }
+    Ok(scratch)
+}
+
+pub(crate) fn apply_order<T>(
+    items: &mut [T],
+    mut destinations: Vec<usize>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    for index in 0..items.len() {
+        while destinations[index] != index {
+            budget.charge(1, location.clone())?;
+            let destination = destinations[index];
+            items.swap(index, destination);
+            destinations.swap(index, destination);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn compare_text(
+    left: &str,
+    right: &str,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Ordering, QueryError> {
+    for index in 0..left.len().min(right.len()) {
+        budget.charge(1, location.clone())?;
+        let comparison = left.as_bytes()[index].cmp(&right.as_bytes()[index]);
+        if comparison != Ordering::Equal {
+            return Ok(comparison);
+        }
+    }
+    Ok(left.len().cmp(&right.len()))
+}
+
 fn compare(
     left: &NativeOrderKey,
     right: &NativeOrderKey,
@@ -183,14 +218,7 @@ fn compare(
         (NativeOrderKey::Count(_), NativeOrderKey::Text(_)) => Ordering::Less,
         (NativeOrderKey::Text(_), NativeOrderKey::Count(_)) => Ordering::Greater,
         (NativeOrderKey::Text(left), NativeOrderKey::Text(right)) => {
-            for (left, right) in left.bytes().zip(right.bytes()) {
-                budget.charge(1, location.clone())?;
-                let comparison = left.cmp(&right);
-                if comparison != Ordering::Equal {
-                    return Ok(comparison);
-                }
-            }
-            left.len().cmp(&right.len())
+            compare_text(left, right, budget, location)?
         }
     })
 }
