@@ -906,6 +906,7 @@ impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
         Ok(zirql::NativeContextId([
             context.source.as_ptr() as usize as u64,
             context.source.len() as u64,
+            0,
         ]))
     }
     fn native_identity(
