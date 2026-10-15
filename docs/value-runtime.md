@@ -109,9 +109,9 @@ can obtain them from integer/member arrays or typed sets, evaluated outside the
 comprehension's local binders. Nonempty output does not evaluate those fallbacks.
 Rank-one index-set extraction returns the typed axis as an ordered set.
 
-The common value reader accepts `entries(a)` and `zip_exact(a, b)` for supplied
-keyed bindings. Keyed literal construction and index-set spelling need host
-lowering. Pairing compares ordered axes and full keys at runtime, including
+The common value reader accepts `index_set(a)`, `entries(a)` and
+`zip_exact(a, b)` for supplied keyed bindings, and `tuple.1` for one-based tuple
+access. Keyed literal construction needs host lowering. Pairing compares ordered axes and full keys at runtime, including
 nominal metadata. Each executed operand still receives the host value-policy
 check. Neither helper bypasses domain shape restrictions.
 

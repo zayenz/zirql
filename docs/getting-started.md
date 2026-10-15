@@ -28,7 +28,17 @@ cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")]
 cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")] | tally'
 ```
 
-These return `["ash", "apple", "apple"]`, `["apple", "ash"]` and the record
+Array keys and tuple positions are also available through the common reader:
+
+```sh
+cargo run --locked --example words -- '[{"position": i, "word": (words[i], i).1} for i in index_set(words)]'
+```
+
+This returns one record per word, with positions `1` through `4`. The default
+adjacent-pair expression also uses `index_set(words)`, keeping only keys with
+a following word.
+
+The first three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and the record
 `{"apple": 2, "ash": 1}`, respectively.
 The [complete source](../examples/words.rs) is small enough to adapt directly.
 This is a repository example executable; the library itself does not install
