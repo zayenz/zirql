@@ -11,6 +11,10 @@ Both tools use shared programs, bindings and comprehensions. Zirql owns their
 common language execution; the adapters retain domain operations, native values
 and surface forms that fit their users.
 
+Zirql should provide all domain-independent query capabilities available in
+either Zirium or Zincite, including their composition. The domain model and
+operations that depend on its meaning remain with the host.
+
 Observable success:
 
 - Both tools use Zirql through callable library APIs and their existing CLIs.
@@ -140,6 +144,27 @@ composition, if selected, belong in the base. A concrete consumer use can
 justify a shared construct before both consumers need it; duplicate host
 implementations are not a prerequisite. Prefer direct shared implementation
 over an extensibility system built solely to keep the core small.
+
+On 2026-10-15, the user confirmed that this boundary applies to the full query
+language in either consumer. Sorting, stable deduplication (`unique`), frequency
+aggregation (`tally`) and pipelines are examples, not an exhaustive list.
+General query capabilities belong in Zirql's callable library, shared
+validation and evaluation, and common reader where applicable. Hosts may retain
+natural surface syntax by lowering it to shared constructs. Providing separate
+operations without a shared way to compose them does not satisfy this boundary.
+
+For each existing or new consumer query feature, separate reusable language
+behavior from the domain facts and primitive operations it needs. For example,
+the host supplies a name, comparison key or native identity; Zirql owns the
+sorting, deduplication or tally algorithm and its ordering, failure and budget
+rules. General language behavior still implemented only in a host is migration
+work, rather than a permanent host responsibility. A feature need not be used by
+both consumers to belong in Zirql.
+
+This is the target architecture, not a claim that every capability has already
+been migrated. Base-047 covers the agreed constructed-collection pipeline
+increment. Further gaps need separately scoped work; this clarification does
+not expand current implementation tasks or change existing host behavior.
 
 Hosts supply domain types, primitive operations and predicates, native identity,
 source coordinates, rendering and effect policy. For example, Zirql would own
