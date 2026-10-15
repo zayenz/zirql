@@ -67,6 +67,16 @@ Comprehension-local names take precedence over native stage names in value
 expressions. The head sees every binder; each source sees earlier binders, and
 each filter also sees its current binder.
 
+A host with its own value grammar can lower a completed prefix, then call
+`read_value_suffix` with the cursor at the first outer pipe. The shared reader
+wraps that value in the existing `Sort`, `Unique` and `Tally` nodes, keeping
+stage locations and rejecting any stage after `tally`. Pass the active parsing
+budget and the nesting allowance remaining for suffix wrappers. Zincite uses
+this path after lowering a MiniZinc array or comprehension; the generator pipe
+inside brackets remains part of its MiniZinc prefix. Saved constructed values
+and function calls can use explicit grouping, such as `(rows) | sort | unique`.
+Native name and call pipelines retain their host stage routing.
+
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
 quoted-string helpers that skip whitespace and `#` line comments. Quoted strings
 retain literal `#` characters. `remaining` and `advance` let a predicate callback read

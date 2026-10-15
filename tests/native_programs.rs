@@ -5967,6 +5967,35 @@ mod projection {
                 expected
             );
             zirql::dispose_native_value(value);
+            if let Some(pipe) = source.find(" |") {
+                let prefix = zirql::read_value_expression(
+                    &mut zirql::ArgumentReader::new(&source[..pipe], 0).unwrap(),
+                    &mut SavedNames,
+                    &mut allowance,
+                    32,
+                )
+                .unwrap();
+                let value = zirql::read_value_suffix(
+                    &mut zirql::ArgumentReader::new(source, pipe).unwrap(),
+                    prefix,
+                    &mut allowance,
+                    32,
+                )
+                .unwrap();
+                assert_eq!(
+                    zirql::evaluate_native_value(
+                        &value,
+                        &Host,
+                        Value::Subjects(vec![]),
+                        &mut (),
+                        &bindings,
+                        &mut allowance,
+                    )
+                    .unwrap(),
+                    expected
+                );
+                zirql::dispose_native_value(value);
+            }
         }
         for (source, stage) in [("[] | tally | sort", "sort"), ("[] | mystery", "mystery")] {
             let mut allowance = budget();
@@ -5977,6 +6006,21 @@ mod projection {
                 32,
             )
             .unwrap_err();
+            let prefix = zirql::read_value_expression(
+                &mut zirql::ArgumentReader::new("[]", 0).unwrap(),
+                &mut SavedNames,
+                &mut allowance,
+                32,
+            )
+            .unwrap();
+            let suffix_error = zirql::read_value_suffix(
+                &mut zirql::ArgumentReader::new(source, 2).unwrap(),
+                prefix,
+                &mut allowance,
+                32,
+            )
+            .unwrap_err();
+            assert_eq!(error, suffix_error);
             let Location::Query(range) = error.location else {
                 panic!("query range")
             };
