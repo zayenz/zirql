@@ -84,11 +84,12 @@ preflight still covers those branches.
 
 | Language form | `ValueExpressionKind` representation |
 | --- | --- |
-| Scalar and collection construction | `Literal`, `Array`, `Tuple`, `Record`, `Set` |
+| Scalar and collection construction | `Literal`, `Array`, `Tuple`, `Record`, `Dictionary`, `Set` |
 | Scalar operations and exact string helpers | `Unary`, `Binary` with the corresponding operator |
-| Field/position access and optional lookup | `Field`, `Access`, `Lookup`, `HasKey` |
+| Field/position access and optional lookup | `Field`, `ArrayAccess`, `TupleAccess`, `Lookup`, `HasKey` |
 | Absence checks and fallback | `Occurs`, `Absent`, `Default` |
 | Conditional selection | `Conditional` |
+| Computed string dictionary | `Dictionary` entry pairs or `DictionaryComprehension { clauses, key, head }` |
 | Array or set comprehension | `Comprehension` with `ValueConstructor` and `ValueGenerator` clauses |
 | Prefix selection | `FilterStartsWith { array, prefix }` |
 | Summaries | `Reduce` with `ValueReducer::{Length, Sum, Forall, Exists}` |
@@ -107,6 +108,17 @@ projections retain their declared row facts; an empty literal invents no schema.
 `One` moves the only child of a positional array. `take_one` supplies the same
 cardinality check for native extraction. `count_value` converts a native
 `usize` count to an admitted signed integer only when it fits `i64`.
+
+`Record` retains static quoted field schemas. `Dictionary` and
+`DictionaryComprehension` evaluate string-key expressions and produce the same
+`ConstructedValue::Record` data. Their prepared continuations check each key
+and collision before running its value, including across generator candidates.
+Zero emitted entries produce an empty record. Dynamic labels have `RecordKind`
+facts until actual values or a declaration establish their fields.
+
+`ArrayAccess` also accepts a record and string key. It is strict: a missing
+stored field fails, while a stored absence succeeds. `Lookup` remains optional.
+Both preserve declared child contracts when a record carries a schema.
 
 ## Keyed construction
 

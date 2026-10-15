@@ -2142,8 +2142,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             return self.array(depth);
         }
         if first == '{' {
-            let fields = self.fields(depth)?;
-            return self.node(K::Record(fields), start..self.reader.position());
+            return self.collection(depth, true);
         }
         if first == '"' {
             let string = self.string()?;
@@ -2206,6 +2205,35 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let mut probe = ArgumentReader::new(self.reader.source(), start)?;
         let word = probe.word()?;
         probe.skip_whitespace();
+        if word.value == "set"
+            && probe.remaining().starts_with('<')
+            && self.typed_worklist_call()?
+        {
+            self.reader.keyword("set");
+            self.reader.expect('<')?;
+            let element = self.name()?;
+            let element_type = match element.value.as_str() {
+                "int" => crate::SetElementType::Integer,
+                "bool" => crate::SetElementType::Boolean,
+                "float" => crate::SetElementType::Float,
+                _ => {
+                    return Err(QueryError::query(
+                        element.range,
+                        "empty sets support int, bool or float",
+                    ));
+                }
+            };
+            self.reader.expect('>')?;
+            self.reader.expect('(')?;
+            self.reader.expect(')')?;
+            return self.node(
+                K::Literal(V::Set {
+                    element_type: Some(element_type),
+                    elements: Vec::new(),
+                }),
+                start..self.reader.position(),
+            );
+        }
         let local = self.is_local(word.value, &word.range)?;
         if word.value == "loop" && probe.remaining().starts_with('(') {
             return self.loop_value(depth);
@@ -2565,24 +2593,59 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         Ok(fields)
     }
     fn array(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.collection(depth, false)
+    }
+    fn collection(
+        &mut self,
+        depth: usize,
+        braces: bool,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let start = self.reader.position();
-        self.reader.expect('[')?;
-        if self.reader.consume(']') {
-            return self.node(K::Array(Vec::new()), start..self.reader.position());
+        let close = if braces { '}' } else { ']' };
+        self.reader.expect(if braces { '{' } else { '[' })?;
+        if self.reader.consume(close) {
+            return self.node(
+                if braces {
+                    K::Record(Vec::new())
+                } else {
+                    K::Array(Vec::new())
+                },
+                start..self.reader.position(),
+            );
         }
         let scope = self.locals.len();
-        let binders = self.array_binders()?;
+        let binders = self.collection_binders(close)?;
         self.slots::<&str>(binders.len())?;
         self.locals.extend(binders);
-        let head = self.expression(0, depth + 1);
+        let parsed = (|| {
+            let first = ValueGuard::new(self.expression(0, depth + 1)?);
+            if braces && self.reader.consume(':') {
+                let head = ValueGuard::new(self.expression(0, depth + 1)?);
+                Ok((Some(first), head))
+            } else {
+                Ok((None, first))
+            }
+        })();
         self.locals.truncate(scope);
-        let head = ValueGuard::new(head?);
+        let (key, head) = parsed?;
         if self.word_is("for") {
             let mut comprehension = ValueGuard::new(Located::new(
-                K::Comprehension {
-                    constructor: ValueConstructor::Array,
-                    clauses: Vec::new(),
-                    head: Box::new(head.into_value()),
+                if let Some(key) = key {
+                    K::DictionaryComprehension {
+                        clauses: Vec::new(),
+                        key: Box::new(key.into_value()),
+                        head: Box::new(head.into_value()),
+                    }
+                } else {
+                    K::Comprehension {
+                        constructor: if braces {
+                            ValueConstructor::Set
+                        } else {
+                            ValueConstructor::Array
+                        },
+                        clauses: Vec::new(),
+                        head: Box::new(head.into_value()),
+                    }
                 },
                 start..start,
             ));
@@ -2610,9 +2673,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         .map_or(source.value().range.end, |value| value.value().range.end);
                     self.slots::<Located<ValueGenerator<ReadExpression<H>>>>(1)?;
                     self.slots::<Located<Option<String>>>(1)?;
-                    let K::Comprehension { clauses, .. } = &mut comprehension.value_mut().value
-                    else {
-                        unreachable!("retained comprehension")
+                    let clauses = match &mut comprehension.value_mut().value {
+                        K::Comprehension { clauses, .. }
+                        | K::DictionaryComprehension { clauses, .. } => clauses,
+                        _ => unreachable!("retained comprehension"),
                     };
                     clauses.push(Located::new(
                         ValueGenerator::In {
@@ -2627,7 +2691,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     ));
                     self.depth(depth + clauses.len())?;
                 }
-                self.reader.expect(']')?;
+                self.reader.expect(close)?;
                 self.node(
                     comprehension.into_value().value,
                     start..self.reader.position(),
@@ -2636,25 +2700,66 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             self.locals.truncate(scope);
             return result;
         }
-        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-        let mut array = ValueGuard::new(Located::new(
-            K::Array(vec![head.into_value()]),
+        self.slots::<ValueExpression<ReadExpression<H>>>(if key.is_some() { 2 } else { 1 })?;
+        let mut collection = ValueGuard::new(Located::new(
+            if let Some(key) = key {
+                K::Dictionary(vec![(key.into_value(), head.into_value())])
+            } else if braces {
+                K::Set(vec![head.into_value()])
+            } else {
+                K::Array(vec![head.into_value()])
+            },
             start..start,
         ));
         while self.reader.consume(',') {
-            let value = ValueGuard::new(self.expression(0, depth + 1)?);
-            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-            let K::Array(values) = &mut array.value_mut().value else {
-                unreachable!("retained array values")
-            };
-            values.push(value.into_value());
+            let first = ValueGuard::new(self.expression(0, depth + 1)?);
+            match &mut collection.value_mut().value {
+                K::Dictionary(entries) => {
+                    self.reader.expect(':')?;
+                    let value = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.slots::<(
+                        ValueExpression<ReadExpression<H>>,
+                        ValueExpression<ReadExpression<H>>,
+                    )>(1)?;
+                    entries.push((first.into_value(), value.into_value()));
+                }
+                K::Array(values) | K::Set(values) => {
+                    self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                    values.push(first.into_value());
+                }
+                _ => unreachable!("retained collection"),
+            }
         }
-        self.reader.expect(']')?;
-        self.node(array.into_value().value, start..self.reader.position())
+        self.reader.expect(close)?;
+        if let K::Dictionary(entries) = &collection.value().value
+            && entries
+                .iter()
+                .all(|(key, _)| matches!(key.value, K::Literal(V::String(_))))
+        {
+            self.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(entries.len())?;
+        }
+        let kind = match collection.into_value().value {
+            K::Dictionary(entries)
+                if entries
+                    .iter()
+                    .all(|(key, _)| matches!(key.value, K::Literal(V::String(_)))) =>
+            {
+                let mut fields = Vec::new();
+                for (key, value) in entries {
+                    let K::Literal(V::String(label)) = key.value else {
+                        unreachable!("static string key")
+                    };
+                    fields.push((Located::new(label, key.range), value));
+                }
+                K::Record(fields)
+            }
+            kind => kind,
+        };
+        self.node(kind, start..self.reader.position())
     }
-    // The head precedes its declarations. Inspect only this array's own level;
+    // The head precedes its declarations. Inspect only this collection's own level;
     // the normal parser still owns grammar and diagnostics.
-    fn array_binders(&mut self) -> Result<Vec<&'s str>, QueryError> {
+    fn collection_binders(&mut self, close: char) -> Result<Vec<&'s str>, QueryError> {
         let source = self.reader.source();
         let mut probe = ArgumentReader::new(source, self.reader.position())?;
         let mut names = Vec::new();
@@ -2680,7 +2785,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     '"' => quoted = true,
                     '#' => comment = true,
                     '(' | '[' | '{' => nested += 1,
-                    ']' if nested == 0 => break,
+                    character if character == close && nested == 0 => break,
                     ')' | ']' | '}' => nested = nested.saturating_sub(1),
                     character
                         if nested == 0 && (character.is_ascii_alphabetic() || character == '_') =>
@@ -3452,7 +3557,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 pending.extend(fields.into_iter().map(|(_, value)| value));
                 continue;
             }
-            K::KeyedArray { entries, .. } => {
+            K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
                 for (key, value) in entries {
                     pending.push(key);
                     pending.push(value);
@@ -3493,6 +3598,11 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::Comprehension { clauses, head, .. } => {
+                pending.push(*head);
+                clauses
+            }
+            K::DictionaryComprehension { clauses, key, head } => {
+                pending.push(*key);
                 pending.push(*head);
                 clauses
             }

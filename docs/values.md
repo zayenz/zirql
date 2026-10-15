@@ -19,7 +19,8 @@ operations that need additional host support. For the Rust representations, see
 | Absence | `null`, `<>` | One absent value with two accepted spellings |
 | Array | `["ash", "apple"]` | Ordered; duplicates and different element types are allowed |
 | Tuple | `("ash", 3)` | Fixed positions; distinct from an array |
-| Record | `{"word": "ash", "count": 1}` | Unique labels in written order |
+| Dictionary | `{"word": "ash", "count": 1}` | String keys in insertion order |
+| Set | `{3, 1, 3}` | Homogeneous values; first occurrence wins |
 
 Use a field label or a one-based position to select a value:
 
@@ -28,7 +29,8 @@ Use a field label or a one-based position to select a value:
 ```
 
 The result is `"ash"`. `words[1]` is `"ash"`, and `(2, 5).2` is `5`.
-Tuple positions use a dot; array positions use brackets. Accesses compose from
+Tuple positions use a dot; array positions and computed dictionary keys use brackets.
+`{"word": "ash"}["word"]` is `"ash"`. Accesses compose from
 left to right: `({"rows": [(2, 5)]}, 0).1.rows[1].2` is `5`. Position zero,
 a position beyond the collection and a missing field are errors. Use `lookup`
 when a missing entry is expected.
@@ -319,8 +321,11 @@ including the sign of the first floating zero. Supported scalar set elements
 are Booleans, integers, finite floats and nominal members. Strings are not set
 elements. Set equality compares membership independently of stored order.
 `sort` orders a set explicitly by its supported type order and returns a set.
-The callable `ValueExpressionKind::Set` and set comprehensions construct sets;
-the common reader does not yet accept brace-set text.
+Bare braces construct sets: `{3, 1, 3}` iterates as `3, 1`, and
+`{n mod 3 for n in 1..5}` iterates as `1, 2, 0`. Empty braces mean a dictionary;
+use `set<int>()`, `set<bool>()` or `set<float>()` for an empty scalar set.
+A host can supply a typed empty nominal set through the Rust API. The common
+reader does not resolve nominal type names.
 
 ## Keyed arrays
 
@@ -400,18 +405,36 @@ in [functions and control flow](functions-and-control-flow.md). Rust ownership,
 prepared reads and native worklist values are described in
 [value evaluation](value-runtime.md).
 
-## Selected collection syntax and ordering
+<span id="selected-collection-syntax-and-ordering"></span>
 
-The common reader accepts static string dictionaries such as
-`{"z": 2, "a": 2, "m": 1}`. They use `ConstructedValue::Record` and its
-structural schemas. `.field` selects a static label; bracket access and `lookup`
+## Dictionaries and collection order
+
+An outer colon distinguishes a dictionary from a set. Each key is an expression:
+`{"z": 2, "a": 2, "m": 1}` uses quoted strings, while `{w: 1 for w in words}`
+reads each `w` as its key. Dictionaries use `ConstructedValue::Record`;
+wholly static quoted fields retain their structural schemas. `.field` selects a static label; bracket access and `lookup`
 accept computed string keys. Empty `{}` is an empty dictionary.
 
-Dictionaries preserve entry insertion order. Duplicate labels fail before
-that entry's value runs. The callable `construct_string_entries` operation
+Dictionaries preserve entry insertion order. Each entry evaluates its key,
+requires a present string, checks for a duplicate, then evaluates its value.
+A duplicate fails before that value runs. The callable `construct_string_entries` operation
 also supports computed keys, evaluates each key before its value and returns
 `Vec<(String, V)>` in insertion order. Keys must be strings; there is no
 implicit conversion from integer, member or native-handle text.
+
+Repeated `for` clauses and filters use the same scope and traversal rules as
+array comprehensions:
+
+```zirql
+{k: {n mod 3 for n in 1..5}
+ for w in ["pear", "apple"]
+ for k in [w, w ++ "!"] if ends_with(k, "!")}
+```
+
+The dictionary iterates as `pear!`, then `apple!`; each value is the set
+`1, 2, 0`. A final collection inside an explicit control or function block
+keeps its own braces: `if true { {3, 1, 3} } else { set<int>() }` returns
+`3, 1` as a set.
 
 ```zirql
 sort({"z": 2, "a": 2, "m": 1})

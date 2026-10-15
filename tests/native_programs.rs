@@ -8539,6 +8539,21 @@ fn native_constructed_children_remain_shared_until_owned_output() {
         evaluate(&partial).unwrap(),
         SourceValue::Constructed(V::Integer(42))
     ));
+    let field = |value, label: &str| {
+        worklist_value(K::ArrayAccess {
+            array: Box::new(value),
+            index: Box::new(worklist_value(K::Literal(V::String(label.into())))),
+        })
+    };
+    let computed = worklist_value(K::Binary {
+        operator: zirql::ValueBinaryOperator::Add,
+        left: Box::new(field(field(selected("partial"), "payload"), "small")),
+        right: Box::new(worklist_value(K::Literal(V::Integer(2)))),
+    });
+    assert!(matches!(
+        evaluate(&computed).unwrap(),
+        SourceValue::Constructed(V::Integer(42))
+    ));
     // Returning an owned large selected value still spends its copy allowance.
     let error = evaluate(&selected("ignored")).unwrap_err();
     assert!(

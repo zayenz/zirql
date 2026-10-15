@@ -8,10 +8,11 @@ use super::{
     constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
     equal_keys, error, expose, extremum_position, filter_starts_with, finish_keyed, group_by,
     insert_set, integer, integer_range, key_positions, key_set_type, key_value, metadata_vec,
-    optional_access, push_metadata, record_declaration, reduce_ref, scalar, select_field,
-    sort_value, source_axis, string_match_ref, sum, take_one, take_position, tally_value, unary,
-    underlying, unique_value, value_keys, zip_exact,
+    optional_access, push_metadata, record_declaration, reduce_ref, scalar, sort_value,
+    source_axis, string_match_ref, sum, take_one, take_position, tally_value, unary, underlying,
+    unique_value, value_keys, zip_exact,
 };
+use crate::construction::EntryAccounting;
 use std::rc::Rc;
 
 pub(crate) struct Body<'a, Q, K> {
@@ -557,6 +558,19 @@ enum Pending<'a, Q, N, K> {
         Vec<ConstructedValue>,
         Option<SetElementType>,
     ),
+    DictionaryKey(
+        &'a PreparedValue<'a, Q>,
+        usize,
+        usize,
+        Vec<(String, ConstructedValue)>,
+    ),
+    DictionaryValue(
+        &'a PreparedValue<'a, Q>,
+        usize,
+        usize,
+        Vec<(String, ConstructedValue)>,
+        String,
+    ),
     KeyedKey(
         &'a PreparedValue<'a, Q>,
         usize,
@@ -588,6 +602,7 @@ enum Pending<'a, Q, N, K> {
     Restore(usize),
     Head(Rc<Comprehension<'a, Q>>),
     KeyHead(Rc<Comprehension<'a, Q>>, Vec<ValueKey>),
+    DictionaryHead(Rc<Comprehension<'a, Q>>, String),
     FinishComprehension(Rc<Comprehension<'a, Q>>),
     EmptyAxes(Rc<Comprehension<'a, Q>>, usize, Vec<KeyAxis>),
 }
@@ -656,6 +671,7 @@ enum Output {
     Array(Vec<ConstructedValue>),
     Set(Vec<ConstructedValue>, Option<SetElementType>),
     Keyed(Vec<Located<KeyedEntry>>),
+    Dictionary(Vec<(String, ConstructedValue)>),
 }
 
 pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
@@ -705,6 +721,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::AccumulatorStep(e, ..)
                     | Pending::Invoke { expression: e, .. }
                     | Pending::Set(e, ..)
+                    | Pending::DictionaryKey(e, ..)
+                    | Pending::DictionaryValue(e, ..)
                     | Pending::KeyedKey(e, ..)
                     | Pending::KeyedValue(e, ..) => Location::Query(e.range.clone()),
                     Pending::Loop(state) => Location::Query(state.expression.range.clone()),
@@ -729,13 +747,17 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::AccumulatorInitial(_, depth, ..)
                     | Pending::AccumulatorStep(_, depth, ..)
                     | Pending::Set(_, depth, ..)
+                    | Pending::DictionaryKey(_, depth, ..)
+                    | Pending::DictionaryValue(_, depth, ..)
                     | Pending::KeyedKey(_, depth, ..)
                     | Pending::KeyedValue(_, depth, ..) => *depth,
                     Pending::Clauses(c, index, _)
                     | Pending::Source(c, index, _)
                     | Pending::Candidate(c, index, ..)
                     | Pending::Filter(c, index, _) => c.depth + index + 1,
-                    Pending::Head(c) | Pending::KeyHead(c, _) => c.depth + c.clauses.len(),
+                    Pending::Head(c) | Pending::KeyHead(c, _) | Pending::DictionaryHead(c, _) => {
+                        c.depth + c.clauses.len()
+                    }
                     Pending::FinishComprehension(c) | Pending::EmptyAxes(c, ..) => c.depth,
                     Pending::Loop(state) => state.depth,
                     Pending::Let(..)
@@ -871,6 +893,17 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             });
                                         }
                                     }
+                                    PreparedKind::Dictionary(_)
+                                    | PreparedKind::DictionaryComprehension { .. } => {
+                                        start_dictionary(
+                                            expression,
+                                            depth,
+                                            frame.locals.len(),
+                                            &mut pending,
+                                            &mut result,
+                                            budget,
+                                        )?;
+                                    }
                                     PreparedKind::KeyedArray { axes, entries } => {
                                         let axes = axes
                                             .map(|axes| copy_axes(axes, budget, &location))
@@ -976,6 +1009,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                                 ..
                                             }
                                             | PreparedKind::Field { .. }
+                                            | PreparedKind::ArrayAccess { .. }
                                             | PreparedKind::Occurs(_)
                                             | PreparedKind::Absent(_)
                                             | PreparedKind::Reduce { .. }
@@ -996,17 +1030,6 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                                 &location,
                                             )?),
                                         ))
-                                    } else if values.is_empty()
-                                        && matches!(
-                                            expression.value,
-                                            PreparedKind::ArrayAccess { .. }
-                                        )
-                                    {
-                                        Value::constructed(RuntimeValue::Owned(expose(
-                                            value.materialize_with(host, budget, &location)?,
-                                            budget,
-                                            &location,
-                                        )?))
                                     } else {
                                         value
                                     };
@@ -1505,6 +1528,9 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     });
                                 }
                             }
+                            next @ (Pending::DictionaryKey(..) | Pending::DictionaryValue(..)) => {
+                                dictionary_step(next, &mut pending, &mut result, host, budget)?;
+                            }
                             Pending::KeyedKey(expression, depth, index, axes, values) => {
                                 let PreparedKind::KeyedArray { entries, .. } = &expression.value
                                 else {
@@ -1820,6 +1846,19 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     .expect("head or key")
                                     .materialize_with(host, budget, &location)?;
                                 if let Some(key) = c.key {
+                                    if let Output::Dictionary(entries) = &*c.output.borrow() {
+                                        let location = Location::Query(key.range.clone());
+                                        budget.charge(1, location.clone())?;
+                                        let key =
+                                            dictionary_key(value, entries, budget, &location)?;
+                                        push!(Pending::DictionaryHead(Rc::clone(&c), key));
+                                        push!(Pending::Eval(
+                                            c.head,
+                                            c.depth + c.clauses.len() + 1,
+                                            false
+                                        ));
+                                        return Ok(());
+                                    }
                                     let keys = value_keys(
                                         value,
                                         budget,
@@ -1842,6 +1881,23 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     .materialize_with(host, budget, &location)?;
                                 append(&c, value, Some(key), budget)?;
                             }
+                            Pending::DictionaryHead(c, key) => {
+                                let value = result
+                                    .take()
+                                    .expect("dictionary head")
+                                    .materialize_with(host, budget, &location)?;
+                                let Output::Dictionary(entries) = &mut *c.output.borrow_mut()
+                                else {
+                                    unreachable!("dictionary output")
+                                };
+                                EntryAccounting::Computed.append(
+                                    entries,
+                                    key,
+                                    value,
+                                    budget,
+                                    &Location::Query(c.expression.range.clone()),
+                                )?;
+                            }
                             Pending::FinishComprehension(c) => {
                                 let output = std::mem::replace(
                                     &mut *c.output.borrow_mut(),
@@ -1849,6 +1905,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 );
                                 result = owned!(match output {
                                     Output::Array(values) => ConstructedValue::Array(values),
+                                    Output::Dictionary(entries) =>
+                                        ConstructedValue::Record(entries),
                                     Output::Set(elements, element_type) => ConstructedValue::Set {
                                         elements,
                                         element_type
@@ -2497,6 +2555,132 @@ fn admit<'a, Q, H: Host<'a, Q>>(
     value.contract = Some(expected);
     Ok(())
 }
+fn start_dictionary<'a, Q, N, K>(
+    expression: &'a PreparedValue<'a, Q>,
+    depth: usize,
+    saved: usize,
+    pending: &mut Vec<Pending<'a, Q, N, K>>,
+    result: &mut Option<Value<'a, N, K>>,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let location = Location::Query(expression.range.clone());
+    macro_rules! push {
+        ($v:expr) => {
+            push_metadata(pending, $v, budget, &location)?
+        };
+    }
+    match &expression.value {
+        PreparedKind::Dictionary(entries) => {
+            let values = EntryAccounting::Computed.entries(budget, &location)?;
+            if let Some((key, _)) = entries.first() {
+                budget.charge(1, Location::Query(key.range.clone()))?;
+                push!(Pending::DictionaryKey(expression, depth, 0, values));
+                push!(Pending::Eval(key, depth + 1, false));
+            } else {
+                *result = Some(Value::constructed(RuntimeValue::Owned(
+                    ConstructedValue::Record(values),
+                )));
+            }
+        }
+        PreparedKind::DictionaryComprehension { clauses, key, head } => {
+            let c = Rc::new(Comprehension {
+                expression,
+                clauses,
+                key: Some(key),
+                head,
+                empty: None,
+                depth,
+                output: std::cell::RefCell::new(Output::Dictionary(
+                    EntryAccounting::Computed.entries(budget, &location)?,
+                )),
+            });
+            push!(Pending::FinishComprehension(Rc::clone(&c)));
+            push!(Pending::Clauses(c, 0, saved));
+        }
+        _ => unreachable!("dictionary construction"),
+    }
+    Ok(())
+}
+
+fn dictionary_step<'a, Q, H: Host<'a, Q>>(
+    next: Pending<'a, Q, H::Native, H::Kind>,
+    pending: &mut Vec<Pending<'a, Q, H::Native, H::Kind>>,
+    result: &mut Option<ResultValue<'a, H, Q>>,
+    host: &H,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let location = match &next {
+        Pending::DictionaryKey(expression, ..) | Pending::DictionaryValue(expression, ..) => {
+            Location::Query(expression.range.clone())
+        }
+        _ => unreachable!("dictionary continuation"),
+    };
+    macro_rules! push {
+        ($v:expr) => {
+            push_metadata(pending, $v, budget, &location)?
+        };
+    }
+    match next {
+        Pending::DictionaryKey(expression, depth, index, values) => {
+            let PreparedKind::Dictionary(entries) = &expression.value else {
+                unreachable!("dictionary entries")
+            };
+            let key_location = Location::Query(entries[index].0.range.clone());
+            let key = dictionary_key(
+                result.take().expect("dictionary key").materialize_with(
+                    host,
+                    budget,
+                    &key_location,
+                )?,
+                &values,
+                budget,
+                &key_location,
+            )?;
+            push!(Pending::DictionaryValue(
+                expression, depth, index, values, key
+            ));
+            push!(Pending::Eval(&entries[index].1, depth + 1, false));
+        }
+        Pending::DictionaryValue(expression, depth, index, mut values, key) => {
+            let PreparedKind::Dictionary(entries) = &expression.value else {
+                unreachable!("dictionary entries")
+            };
+            let value = result
+                .take()
+                .expect("dictionary value")
+                .materialize_with(host, budget, &location)?;
+            EntryAccounting::Computed.append(&mut values, key, value, budget, &location)?;
+            if let Some((key, _)) = entries.get(index + 1) {
+                budget.charge(1, Location::Query(key.range.clone()))?;
+                push!(Pending::DictionaryKey(expression, depth, index + 1, values));
+                push!(Pending::Eval(key, depth + 1, false));
+            } else {
+                *result = Some(Value::constructed(RuntimeValue::Owned(
+                    ConstructedValue::Record(values),
+                )));
+            }
+        }
+        _ => unreachable!("dictionary continuation"),
+    }
+    Ok(())
+}
+
+fn dictionary_key(
+    value: ConstructedValue,
+    entries: &[(String, ConstructedValue)],
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<String, QueryError> {
+    let ConstructedValue::String(key) = expose(value, budget, location)? else {
+        return Err(error(location, "dictionary key needs a present string"));
+    };
+    if EntryAccounting::Computed.contains(entries, &key, budget, location)? {
+        admit_diagnostic("duplicate dictionary key: ", &key, budget, location)?;
+        return Err(error(location, format!("duplicate dictionary key: {key}")));
+    }
+    Ok(key)
+}
+
 fn append<Q>(
     c: &Comprehension<'_, Q>,
     value: ConstructedValue,
@@ -2511,6 +2695,7 @@ fn append<Q>(
             values.push(value);
         }
         Output::Set(elements, ty) => insert_set(elements, ty, value, true, budget, &location)?,
+        Output::Dictionary(_) => unreachable!("dictionary head has a string key"),
         Output::Keyed(entries) => {
             let expression = c.key.expect("key expression");
             let location = Location::Query(expression.range.clone());
@@ -2597,6 +2782,52 @@ fn operands<'a, Q>(
     Ok(result)
 }
 
+fn select_record_field<'a, Q, H: Host<'a, Q> + ?Sized>(
+    value: &mut ResultValue<'a, H, Q>,
+    label: &str,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let data = host.constructed(value, budget, location)?.ok_or_else(|| {
+        error(
+            location,
+            "native handles require an explicit scalar projection",
+        )
+    })?;
+    let ConstructedValue::Record(fields) = data.value.data() else {
+        return Err(error(location, "field access needs a record").into());
+    };
+    if let Some(DeclaredType::Record(fields)) = data.declaration.map(underlying) {
+        record_declaration(fields, label, budget, location)?;
+    }
+    if let Some(mut contract) = value.contract {
+        while let DeclaredType::Optional(child) = contract {
+            contract = child;
+        }
+        if let DeclaredType::Record(fields) = contract {
+            record_declaration(fields, label, budget, location)?;
+        }
+    }
+    for (index, (candidate, _)) in fields.iter().enumerate() {
+        budget.charge(
+            sum(1, candidate.len().min(label.len()), location)?,
+            location.clone(),
+        )?;
+        if candidate == label {
+            return super::pattern::select(
+                value,
+                NativeStep::Record(index),
+                host,
+                budget,
+                location,
+            );
+        }
+    }
+    admit_diagnostic("missing record field: ", label, budget, location)?;
+    Err(error(location, format!("missing record field: {label}")).into())
+}
+
 pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
     expression: &'a PreparedValue<'a, Q>,
     mut values: Vec<ResultValue<'a, H, Q>>,
@@ -2605,57 +2836,30 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
 ) -> Result<ResultValue<'a, H, Q>, H::Error> {
     let location = Location::Query(expression.range.clone());
     if let PreparedKind::Field { field, .. } = &expression.value {
-        let value = values.pop().expect("field operand");
-        if let Data::Constructed(data) = value.data {
-            if !matches!(data.as_ref(), ConstructedValue::Declared { .. }) {
-                let ConstructedValue::Record(fields) = data.as_ref() else {
-                    return Err(error(&location, "field access needs a record").into());
-                };
-                let mut selected = None;
-                for (index, (label, _)) in fields.iter().enumerate() {
-                    budget.charge(
-                        sum(1, label.len().min(field.value.len()), &location)?,
-                        location.clone(),
-                    )?;
-                    if label == &field.value {
-                        selected = Some(index);
-                        break;
-                    }
-                }
-                let Some(index) = selected else {
-                    admit_diagnostic("missing record field: ", &field.value, budget, &location)?;
-                    return Err(
-                        error(&location, format!("missing record field: {}", field.value)).into(),
-                    );
-                };
-                let contract = if let Some(contract) = value.contract {
-                    let mut c = contract;
-                    while let DeclaredType::Optional(child) = c {
-                        c = child;
-                    }
-                    if let DeclaredType::Record(fields) = c {
-                        Some(record_declaration(fields, &field.value, budget, &location)?)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                return Ok(Value {
-                    data: Data::Constructed(data.child(index, budget, &location)?),
-                    contract,
-                });
-            }
-            let value = expose(data.materialize(budget, &location)?, budget, &location)?;
-            return Ok(Value::constructed(RuntimeValue::Owned(select_field(
-                value, field, budget, &location,
-            )?)));
-        }
-        return Err(error(
+        return select_record_field(
+            &mut values.pop().expect("field operand"),
+            &field.value,
+            host,
+            budget,
             &location,
-            "native handles require an explicit scalar projection",
-        )
-        .into());
+        );
+    }
+    if matches!(expression.value, PreparedKind::ArrayAccess { .. })
+        && host
+            .constructed(&values[0], budget, &location)?
+            .is_some_and(|data| matches!(data.value.data(), ConstructedValue::Record(_)))
+    {
+        let key = host.materialize(values.pop().expect("record key"), budget, &location)?;
+        let ConstructedValue::String(key) = expose(key, budget, &location)? else {
+            return Err(error(&location, "record access needs a string label").into());
+        };
+        return select_record_field(
+            &mut values.pop().expect("record operand"),
+            &key,
+            host,
+            budget,
+            &location,
+        );
     }
     if let PreparedKind::Occurs(_) | PreparedKind::Absent(_) = &expression.value {
         let present = host.occurs(&values[0], budget, &location)?;
