@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import zirql from '../assets/syntax/zirql.tmLanguage.json' with { type: 'json' };
 
 const base = process.env.SITE_BASE || '/zirql/';
 const site = process.env.SITE_URL || 'https://zayenz.se';
@@ -24,6 +25,7 @@ export default defineConfig({
       alt: 'Zirql',
     },
     customCss: ['./src/styles/custom.css'],
+    expressiveCode: { shiki: { langs: [zirql] } },
     social: [{ icon: 'github', label: 'Source on GitHub', href: 'https://github.com/zayenz/zirql' }],
     sidebar: [
       { label: 'Start here', items: ['guides/examples', 'guides/getting-started'] },

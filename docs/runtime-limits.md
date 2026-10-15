@@ -284,7 +284,7 @@ charges. Releasing dead locals or returning from a call refunds nothing.
 
 The same runner handles expressions without functions. Its continuation and
 operand metadata also spend work, which can be a substantial part of a small
-query's cost. See [measured costs](computation.md#original-workloads).
+query's cost. See [measured costs](execution-measurements.md#original-workloads).
 
 `FunctionError` keeps the original core or native error in `error`. Its `calls`
 contains at most sixteen active locations, innermost first, with function names

@@ -1,9 +1,9 @@
 # Implementation reference
 
-The [word tutorial](examples.md) assumes that a binding named `words` exists.
-Embedding Zirql is the work that makes that assumption true: the application
-loads data, supplies the binding and handles the evaluated result. The [complete
-Rust example](getting-started.md) implements that path.
+To run the [word tutorial](examples.md) in an application, load an array of
+strings, expose it as `words` and pass the user's expression to Zirql. The
+application then handles the result. The [complete Rust
+example](getting-started.md) shows this integration.
 
 An application can also expose its own objects and operations. This reference
 explains the Rust adapter interfaces, then follows the word model into native
@@ -91,8 +91,8 @@ publishing it. See [library results and rendering](host-integration.md#library-r
 
 ## Understand the implementation
 
-The [execution and cost guide](computation.md) explains preparation, immutable
-sharing, materialization and measured workloads. Read it when deciding where to
-reuse preparation or interpret a resource limit. It records where preparation
-and copying spend time, including cases where their overhead dominates a small
-query.
+The [execution and cost guide](computation.md) explains what happens within a
+request, where values share storage and when results need copying. Read it when
+sizing a request budget or investigating an expensive query. A separate
+[measurement report](execution-measurements.md) records a comparison of two
+evaluator revisions, including their small-query overhead.

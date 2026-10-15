@@ -23,7 +23,7 @@ operations that need additional host support. For the Rust representations, see
 
 Use a field label or a one-based position to select a value:
 
-```text
+```zirql
 {"word": "ash", "count": 1}.word
 ```
 
@@ -72,7 +72,7 @@ result that underflows to zero fails.
 `and` and `or` short-circuit. A conditional evaluates its condition, then only
 the selected branch:
 
-```text
+```zirql
 if length(words) > 0 { words[1] } else { "no words" }
 ```
 
@@ -121,7 +121,7 @@ fail. For a record with a declared schema, a label outside that schema also fail
 `has_key` distinguishes a missing entry from a stored absence. `occurs` tests
 whether a value is present, and `absent` returns the opposite answer.
 
-```text
+```zirql
 lookup({"word": "ash"}, "label") default "unlabelled"
 ```
 
@@ -139,7 +139,7 @@ compatible merely because both happen to be absent.
 A comprehension evaluates a source, introduces a local name and constructs a
 result for each selected element:
 
-```text
+```zirql
 [{"word": w, "label": "word:" ++ w}
  for w in words if starts_with(w, "a")]
 ```
@@ -151,7 +151,7 @@ Later generators can use earlier names. Each source is evaluated before its
 own binder becomes available; its filter can use that binder. The rightmost
 generator varies fastest:
 
-```text
+```zirql
 [{"word": w, "copy": n} for w in ["ash", "apple"] for n in 1..2]
 ```
 
@@ -177,7 +177,7 @@ cells in stored order; they do not fill missing cells. `sum` requires integers,
 and `forall` and `exists` require known Booleans. None accepts a string, tuple or
 set as its array operand.
 
-```text
+```zirql
 length([w for w in words if contains(w, "p")])
 ```
 
@@ -189,7 +189,7 @@ or errors.
 `require(condition, value, "message")` returns `value` when the condition is
 true. Otherwise it fails with the literal message and does not evaluate `value`:
 
-```text
+```zirql
 require(length(words) > 0, words[1], "expected at least one word")
 ```
 
@@ -202,7 +202,7 @@ Scope and known-type checks still cover the unselected value.
 Each result has a `key` and an `items` array. Groups follow the first occurrence
 of each key, and members keep their order and duplicates.
 
-```text
+```zirql
 group_by([{"word": "ash"}, {"word": "apple"}, {"word": "ash"}], "word")
 ```
 
@@ -220,7 +220,7 @@ for a report that retains the positions of repeated words.
 records by a literal field label. Both are ascending and stable.
 `descending=true` reverses key order while preserving input order within ties.
 
-```text
+```zirql
 sort(words)
 ```
 
@@ -230,7 +230,7 @@ lexicographic order without normalization or locale-specific collation.
 `min` and `max` select an original scalar; `min_by` and `max_by` select an
 original record. Ties select the first input value. Empty input yields absence:
 
-```text
+```zirql
 min([]) default "no minimum"
 ```
 
@@ -288,7 +288,7 @@ Suppose the host supplies two rank-one keyed arrays, both with keys `2` and `5`.
 The binding `before` has values `3` and `7`; `after` has values `4` and `9`.
 Pair their cells with:
 
-```text
+```zirql
 entries(zip_exact(before, after))
 ```
 
@@ -302,7 +302,7 @@ A native query can appear inside a value expression when the host supplies a
 projection. For example, suppose `word` holds one native word occurrence and the
 host supplies a `text` stage that returns its spelling:
 
-```text
+```zirql
 one(word | text)
 ```
 

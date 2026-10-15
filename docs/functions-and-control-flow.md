@@ -1,9 +1,9 @@
 # Functions and control flow
 
-Use conditions and patterns to choose a result. Use a named function when the
-same calculation needs a parameter, or when a computation is recursive.
-Bindings are immutable, and functions receive outer data through explicit
-arguments.
+A word analysis might need to handle empty input, distinguish a missing label
+from a present one, or reuse a calculation for several groups. Conditions,
+patterns and functions express those choices. Bindings are immutable, and
+functions receive outer data through explicit arguments.
 
 Conditions and value matches below run in the [word
 example](getting-started.md). Function declarations need a host that registers
@@ -16,7 +16,7 @@ install functions.
 A conditional has a required final `else`. Each branch is a block with optional
 local bindings and a final value:
 
-```text
+```zirql
 if length(words) == 0 {
   "no words"
 } else {
@@ -37,7 +37,7 @@ unselected branch, such as a missing array position, remain unexecuted.
 
 A value match evaluates its subject once, then tries arms in written order:
 
-```text
+```zirql
 match (length(words)) {
   0 => "empty",
   1 => "one word",
@@ -58,7 +58,7 @@ receive preflight checks, and only the selected result executes.
 
 Patterns can select fields, rename them and ignore unused data:
 
-```text
+```zirql
 match ({"word": "apple", "count": 2}) {
   {word: spelling, count: n} if n > 1 => spelling,
   _ => "no repeated word"
@@ -77,7 +77,7 @@ float with the same numeric magnitude.
 
 Local `let` bindings can use these patterns too:
 
-```text
+```zirql
 if true {
   let {word: spelling, ..} = {"word": "ash", "count": 1};
   spelling
@@ -94,7 +94,7 @@ match.
 
 Use `absent` and `present(pattern)` to inspect an optional value:
 
-```text
+```zirql
 match (lookup({"word": "ash"}, "label")) {
   absent => "unlabelled",
   present(label) => label,
@@ -114,7 +114,7 @@ field as optional data, use `lookup` before matching it.
 
 A function names its parameters and result type:
 
-```text
+```zirql
 fn selected_count(xs: sequence<string>, prefix: string) -> int {
   length([w for w in xs if starts_with(w, prefix)])
 }
@@ -144,7 +144,7 @@ the host's ownership and identity checks.
 
 A host using the pattern declaration reader can destructure a typed parameter:
 
-```text
+```zirql
 fn repeated({word: spelling, count: n}: record {word: string, count: int}) -> string {
   if n > 1 { spelling } else { "" }
 }
@@ -160,7 +160,7 @@ set of types; see [program parameters](native-programs.md#required-caller-parame
 
 A function can call itself or another function in the same prepared request:
 
-```text
+```zirql
 fn count_down(n: int, total: int) -> int {
   if n <= 0 { total } else { count_down(n - 1, total + 1) }
 }

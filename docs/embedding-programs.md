@@ -270,7 +270,7 @@ original signatures and representation. Names such as `if`, `match`, `let`,
 `present` in a let or parameter position is a name; `present(pattern)` is an
 explicit presence pattern, and nested/match `absent` is an absence pattern.
 
-```text
+```zirql
 fn add_cost((label, {cost: (_, cost), ..}):
     tuple<string, record {cost: tuple<string, int>, ignored: int}>) -> int {
     if cost >= 0 { let answer = cost + 1; answer }

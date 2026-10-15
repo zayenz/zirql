@@ -12,14 +12,14 @@ constructed-array executable.
 
 ## Filter and take a prefix
 
-```text
+```zirql
 filter(prefix("a")) | head(2)
 ```
 
 Filtering keeps `apple`, `ash`, `apple`; `head(2)` returns `apple`, `ash`.
 Swapping the stages changes the answer:
 
-```text
+```zirql
 head(2) | filter(prefix("a"))
 ```
 
@@ -29,7 +29,7 @@ Neither stage sorts or deduplicates. `head` accepts a nonnegative integer;
 
 ## Count results
 
-```text
+```zirql
 filter(prefix("a")) | count
 ```
 
@@ -45,7 +45,7 @@ exactly one element and fails on empty or multiple results.
 Predicates support `not`, `and`, `or` and parentheses. Precedence is `not`, then
 `and`, then `or`:
 
-```text
+```zirql
 filter(prefix("a") and not prefix("ap"))
 ```
 

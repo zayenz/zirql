@@ -1,8 +1,9 @@
 # Zirql
 
-Zirql lets users write their own analyses over the data an application exposes.
-Inspired by awk and jq, it uses expressions and small programs to select data
-and build reports.
+Zirql lets users write analyses that an application's built-in reports do not
+cover. A query can select the items of interest, combine related values and
+calculate a result. Inspired by awk and jq, Zirql uses expressions and small
+programs to describe that work.
 
 For a list of words, you might want to find neighbouring pairs or retain every
 position of a repeated word. The examples below start with this small model. An
@@ -20,7 +21,7 @@ Results are shown as JSON.
 Which words occur next to each other? Walk the positions and join each word
 with its neighbour:
 
-```text
+```zirql
 [words[i] ++ " " ++ words[i + 1]
  for i in 1..(length(words) - 1)]
 ```
@@ -36,7 +37,7 @@ order of the text. An input with fewer than two words produces no pairs.
 
 Keep words beginning with `a`:
 
-```text
+```zirql
 [w for w in words if starts_with(w, "a")]
 ```
 
@@ -51,7 +52,7 @@ and case-sensitive.
 
 Construct a record with counts and an alphabetical list:
 
-```text
+```zirql
 {
   "count": length(words),
   "beginning_with_a": length([w for w in words if starts_with(w, "a")]),
@@ -80,16 +81,19 @@ The [language reference](language-reference.md) covers expressions, data types,
 comprehensions, pipelines and programs. Start with values and collections. The
 later chapters explain how queries work with objects supplied by an application.
 
-Zirql has immutable bindings and typed named functions. Evaluation has explicit
-work and result limits chosen by the application. Errors carry locations, so the
-application can show which expression failed.
+An analysis can start as a single expression. When calculations need to be
+reused, immutable bindings and typed functions give them names. The same
+collection operations apply to literal data and values supplied by an
+application.
 
 ## Embed Zirql
 
 For this word model, the application splits text and supplies a string array
 named `words`. Zirql parses and evaluates the analysis. An application working
 with source code can instead supply native nodes, projections and navigation.
-Those nodes keep their identity and connection to the source.
+Those nodes keep their identity and connection to the source. The application
+chooses which operations queries may use and sets limits on their work and
+results.
 
 The [implementation reference](implementation-reference.md) explains how to
 supply data and connect domain operations to the language. It starts with the

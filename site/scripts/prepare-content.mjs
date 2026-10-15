@@ -7,7 +7,7 @@ const root = resolve(site, '..');
 const guides = [
   'getting-started', 'shared-concepts', 'native-programs', 'values',
   'host-integration', 'embedding-programs', 'diagnostics-and-limits', 'examples', 'language-direction',
-  'semantic-models', 'computation', 'language-reference', 'implementation-reference',
+  'semantic-models', 'computation', 'execution-measurements', 'language-reference', 'implementation-reference',
   'functions-and-control-flow', 'value-runtime', 'runtime-limits',
 ];
 const output = resolve(site, 'src/content/docs');

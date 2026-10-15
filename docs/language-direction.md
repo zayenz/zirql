@@ -22,7 +22,7 @@ projection gives the query author control over that choice.
 A native word host can supply `text` and `byte_length` projections. The shared
 projection construct can then build a record for each subject:
 
-```text
+```zirql
 project(w, {"word": one(w | text), "bytes": one(w | byte_length)})
 ```
 

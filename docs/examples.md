@@ -20,7 +20,7 @@ native pipeline example.
 
 A comprehension visits the array and keeps words whose spelling begins with `a`:
 
-```text
+```zirql
 [w for w in words if starts_with(w, "a")]
 ```
 
@@ -41,7 +41,7 @@ Use `contains(w, "p")` to select both occurrences of `apple`, or
 
 Change the head to build a record for each selected word:
 
-```text
+```zirql
 [{"word": w, "label": "word:" ++ w}
  for w in words if starts_with(w, "a")]
 ```
@@ -62,7 +62,7 @@ retains the order of the selected words.
 Use positions when the relation between words matters. This expression forms
 pairs of neighbouring words, also called bigrams:
 
-```text
+```zirql
 [words[i] ++ " " ++ words[i + 1]
  for i in 1..(length(words) - 1)]
 ```
@@ -80,7 +80,7 @@ empty input and a single word both produce an empty array.
 To find every position of a repeated word, group the occurrences by spelling.
 First build a record for each occurrence, keeping its position in the array:
 
-```text
+```zirql
 group_by(
   [{"word": words[i], "position": i} for i in 1..length(words)],
   "word"
@@ -106,7 +106,7 @@ items keep input order. The `apple` group therefore retains positions 2 and 4.
 
 Use those groups to report a count and the positions together:
 
-```text
+```zirql
 sort_by(
   [{"word": g.key, "count": length(g.items),
     "positions": [item.position for item in g.items]}
@@ -130,7 +130,7 @@ to the native pipeline interface; it is not a value function in this example.
 
 Count all words, count a selection and sort the original array in one record:
 
-```text
+```zirql
 {
   "count": length(words),
   "beginning_with_a": length([w for w in words if starts_with(w, "a")]),
@@ -164,7 +164,7 @@ application defines its properties and operations.
 The [borrowed-word pipeline](../README.md#a-borrowed-source-query) shows a small
 native interface over string slices:
 
-```text
+```zirql
 filter(prefix("a")) | head(1) | count
 ```
 

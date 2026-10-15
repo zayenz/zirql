@@ -21,6 +21,18 @@ the blue accent. The asset directory includes all five layouts in both themes
 as SVG and PNG. Colors and typography live in `src/styles/custom.css`.
 Starlight supplies theme switching, search and mobile navigation.
 
+## Syntax highlighting
+
+Use `zirql` on fenced query examples; keep output blocks labelled with their
+output format. `../assets/syntax/zirql.tmLanguage.json` supplies the TextMate
+grammar registered with Starlight's Shiki highlighter. Other documentation sites
+can register the same JSON grammar to render Zirql snippets consistently.
+
+The grammar highlights language keywords, operators, types, literals, comments
+and calls. Domain operation names are highlighted as calls without a separate
+list for each host. Highlighting is lexical; parsing and host validation decide
+whether a query is accepted.
+
 ## Build and preview
 
 Use Node.js 22.12 or later and npm. From the repository root:

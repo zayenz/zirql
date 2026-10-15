@@ -12,11 +12,11 @@ objects kept by the host, such as words in a source document or nodes in a
 syntax tree. A projection reads properties of those objects into constructed
 values.
 
-The common reader is Zirql's reusable parser for the syntax shown here. A host
-chooses which entry points and domain operations it exposes, and supplies
-statement and output handling for complete programs. These docs describe the
-development checkout; see [setup and version
-requirements](getting-started.md#use-zirql-in-another-rust-project).
+The available data and domain operations depend on the application. The word
+example accepts a single expression; applications can also support complete
+programs with parameters and named functions. Each chapter identifies where
+host support is needed. For the version used by these examples, see the
+[setup guide](getting-started.md#use-zirql-in-another-rust-project).
 
 ## Values and expressions
 
@@ -24,7 +24,7 @@ Values include Booleans, signed integers, finite floats, strings, absence,
 arrays, tuples and records. Nominal members, typed sets and keyed arrays retain
 additional type or index information. Native objects keep their host's identity.
 
-```text
+```zirql
 42
 "apple"
 ["birch", "apple", "ash", "apple"]
@@ -40,7 +40,7 @@ Arithmetic is checked. Integer overflow and division by zero fail, and strings
 are not coerced to numbers. `++` concatenates strings. Boolean `and` and `or`
 short-circuit. A conditional evaluates only the chosen branch:
 
-```text
+```zirql
 if length(words) > 0 { words[1] } else { "no words" }
 ```
 
@@ -52,7 +52,7 @@ absence and access rules.
 
 A comprehension constructs a collection from a source and an optional filter:
 
-```text
+```zirql
 [{"word": w} for w in words if starts_with(w, "a")]
 ```
 
@@ -96,7 +96,7 @@ not turn its construction into a lazy traversal.
 For native data, a pipeline applies stages in written order. A host exposing
 borrowed words can support:
 
-```text
+```zirql
 filter(prefix("a")) | head(1) | count
 ```
 
@@ -127,22 +127,21 @@ expressions, including every front-page example, need no declarations.
 
 Named pure functions have typed parameters and a result type:
 
-```text
+```zirql
 fn twice(n: int) -> int { n * 2 }
 ```
 
-A host that supports functions prepares declarations together, so recursive and
-mutually recursive calls can resolve. Functions can inspect native data through
-registered pure operations. They cannot emit or edit. Direct tail calls reuse
-the active function frame, while all calls spend the request's work budget. See
-[function declarations](functions-and-control-flow.md#declare-a-function).
+Functions can call themselves or each other recursively. They can inspect
+native data through registered pure operations, but cannot emit output or edit
+the source. See [function declarations](functions-and-control-flow.md#declare-a-function)
+for parameter types, scope and recursion limits.
 
 ## Patterns and control flow
 
 Value matching selects the first matching arm and requires a final unguarded
 wildcard:
 
-```text
+```zirql
 match (length(words)) {
   0 => "empty",
   1 => "one word",
@@ -155,12 +154,9 @@ presence. A native capture match enumerates correlated domain objects; a value
 match selects one result. Their forms and results are different.
 
 The [functions and control flow chapter](functions-and-control-flow.md)
-describes matching, guarded arms and local bindings. Explicit state loops,
-named-function folds and scans, FIFO queues and native identity sets also have
-Rust representations that an application can construct directly. Their text
-syntax depends on the host; see [program construction](embedding-programs.md)
-and [computational
-collections](value-runtime.md#native-computational-collections).
+describes matching, guarded arms and local bindings. It also distinguishes the
+syntax accepted by the common parser from control-flow forms available through
+the Rust API.
 
 ## Errors and limits
 

@@ -15,9 +15,6 @@ Rust 1.88 or newer. Development integrations pin a reviewed Git revision;
 shows the dependency command and a complete executable. Generate API
 documentation for that revision with `cargo doc --open`.
 
-Zirql is a library. The application supplies the data model and chooses how
-users submit expressions and receive their results.
-
 ## Evaluation entry points
 
 | Need | Shared API | Host supplies |

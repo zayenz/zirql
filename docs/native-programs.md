@@ -15,7 +15,7 @@ complete programs or native extensions shown here.
 
 For a frontend using the common statement prefixes, a small report can read:
 
-```text
+```zirql
 let selected = [w for w in words if starts_with(w, "a")];
 report {"words": selected, "count": length(selected)};
 ```
@@ -38,7 +38,7 @@ no file or named entry point in the shared language representation.
 Required parameters let a caller supply typed data without constructing query
 text:
 
-```text
+```zirql
 param prefix: string;
 let selected = [w for w in words if starts_with(w, prefix)];
 report {"words": selected, "count": length(selected)};
@@ -78,7 +78,7 @@ The remaining examples assume a richer word model with native occurrences.
 Suppose its host supplies `text` and `byte_length`, each producing one scalar
 per occurrence. A projection can build a row for each word:
 
-```text
+```zirql
 project(w, {
   "word": one(w | text),
   "bytes": one(w | byte_length)
@@ -100,7 +100,7 @@ executable.
 Value expressions inside a projection use the same optional-data rules as other
 expressions. If the host supplies `metadata` as a single record for one word:
 
-```text
+```zirql
 project(w, {
   "word": one(w | text),
   "label": lookup(one(w | metadata), "label") default "unlabelled"
@@ -116,7 +116,7 @@ kind and purity checks before any native field executes.
 Native matching enumerates related objects and keeps them together in a record.
 An occurrence host could supply `has_next`, `next_word` and `same_text`:
 
-```text
+```zirql
 match {
   from word in (input | filter(has_next));
   bind following = next_word(word);
@@ -149,7 +149,7 @@ See [functions and control flow](functions-and-control-flow.md).
 
 A host can expose a named edge for bounded path queries:
 
-```text
+```zirql
 paths(next_word, to=prefix("birch"), max_depth=2)
 ```
 
