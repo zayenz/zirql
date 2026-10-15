@@ -680,6 +680,16 @@ and finite numbers, compares numbers without integer-to-float precision loss,
 and keeps current-order ties. It reorders the owned entry vector; native owners
 and coordinates stay intact.
 
+Hosts using the constructed typed-key contract can instead move the same entry
+vector through `order_native_by` with `NativeOrder::Sort`. Project each payload
+to `NativeOrderKey::Value`: a present signed integer, finite float, exact string
+or member of one coherent nominal type. This domain rejects Boolean and absent
+keys and does not mix integer and float keys. Convert native counts with checked
+signed conversion. The shared stable permutation retains entry payloads and
+current-order ties without a separate dictionary result kind. `ScalarMapKey`
+remains available for hosts whose scalar domain includes null, Boolean or mixed
+numeric keys.
+
 Both construction APIs return `Vec<(String, V)>`. Retain it as one dictionary
 kind through bindings, copies and rendering. Call
 `select_map(&mut entries, selection, budget, location)` with

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-068"
 key = "zincite-native-dictionaries"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 blocked_by = ["base-067"]
@@ -24,14 +24,23 @@ Read background/collection-language-contract.md native dictionary contract and c
 
 ## Done when
 
-- [ ] map_by(key_query,value_query) evaluates each key then its value against the same singleton in input order, rejects duplicates before their values and retains native payload owners/limitations. Empty input is an empty dictionary.
-- [ ] Dictionary sort_by(value) uses the accepted typed scalar/nominal contract, is stable in current order and returns the same dictionary kind. reverse/head/tail, saved bindings, copies and nesting preserve that kind and order, including empty/zero/oversized bounds.
-- [ ] JSON object order agrees with native/library iteration, including nested and constructed dictionaries, within the existing complete/limitations/result envelope. Use an existing order-preserving JSON option or explicit serializer at the rendering boundary; never implicitly output key/value record lists.
-- [ ] Native tally and the already shared constructed tally expose first-seen dictionary keys without recreating counts. Known unsupported kinds/effects fail preparation even when empty, and a later failure leaves CLI stdout empty.
-- [ ] Focused direct/inline/file/library controls cover declaration-name/use-count dictionary sorting, reverse then stable reranking of ties, numeric/nominal payload keys, duplicate-before-value refusal, nested JSON and empty dictionaries. Use a real pinned shared Git dependency and separate consumer/core commits where needed.
+- [x] map_by(key_query,value_query) evaluates each key then its value against the same singleton in input order, rejects duplicates before their values and retains native payload owners/limitations. Empty input is an empty dictionary.
+- [x] Dictionary sort_by(value) uses the accepted typed scalar/nominal contract, is stable in current order and returns the same dictionary kind. reverse/head/tail, saved bindings, copies and nesting preserve that kind and order, including empty/zero/oversized bounds.
+- [x] JSON object order agrees with native/library iteration, including nested and constructed dictionaries, within the existing complete/limitations/result envelope. Use an existing order-preserving JSON option or explicit serializer at the rendering boundary; never implicitly output key/value record lists.
+- [x] Native tally and the already shared constructed tally expose first-seen dictionary keys without recreating counts. Known unsupported kinds/effects fail preparation even when empty, and a later failure leaves CLI stdout empty.
+- [x] Focused direct/inline/file/library controls cover declaration-name/use-count dictionary sorting, reverse then stable reranking of ties, numeric/nominal payload keys, duplicate-before-value refusal, nested JSON and empty dictionaries. Use a real pinned shared Git dependency and separate consumer/core commits where needed.
 
 ## Validation
 
 - Run git diff --check and zdev check base --format json in the authoritative Zirql checkout; run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace for changed Rust repositories.
 - Run each affected consumer required checks and focused inline/file/library behavior, including its established later-error output buffering. Use actual pinned Git dependencies and separate framework/consumer commits; no registry publication.
 - Update changed guides to distinguish actual support from remaining selected design, and run their established documentation/site checks. Add only compact public-behavior coverage justified by the named change; no callback-count tests, syntax matrices or timing assertions.
+
+## Result
+
+Retain native Zincite dictionaries through shared construction, stable value sorting and bounds, with ordered JSON objects and executable guides.
+
+Validation:
+
+- Independent whole review plus one bounded correction and focused recheck passed; canonical workspace tests, fmt and default/1.99 Clippy passed.
+- Actual pinned Git dependency, both CLI buffering and typed/native payload controls passed; both sites check/build,162 core/275 host links and1280/390 rendered guides passed.
