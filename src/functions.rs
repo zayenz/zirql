@@ -419,6 +419,7 @@ fn builtin(name: &str) -> bool {
             | "zip_exact"
             | "contains"
             | "filter"
+            | "fixpoint"
             | "starts_with"
             | "ends_with"
             | "length"

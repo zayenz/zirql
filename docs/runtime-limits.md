@@ -449,3 +449,16 @@ inspection uses the incoming key length times the entry count as an upper bound
 for a single tree descent. Diagnostic bytes are admitted before allocation.
 Legacy budgets retain their existing work accounting, with these new program
 bookkeeping charges inactive. No nested evaluation resets the allowance.
+
+## Native fixed points
+
+The shared runner charges each completed iteration. Ordered equality checks
+stream ceilings and charges the length check and each visited position; hosts
+charge variable-size primitive comparisons before inspection. These work charges
+also apply to legacy budgets.
+
+The runner retains one Brent checkpoint. Hosts check allocation sizes, charge
+copy traversal and payload work, and admit checkpoint and body-input storage
+before allocating it. All callbacks share the active budget and nested body
+guards; iterations do not accumulate call depth. Metered comparisons and copies
+can exhaust an existing allowance earlier. Host defaults are unchanged.

@@ -219,3 +219,14 @@ Empty input gives an empty map, and map keys have lexical order.
 Values retain their native kind and owner, including nested maps and counts.
 The host checks supported kinds and read-only selector policy before execution,
 even for empty input. Rendering remains an explicit host operation.
+
+## Native fixed points
+
+A supporting native host can read `fixpoint(query)` through the common reader.
+Each iteration replaces the current selection with the body's result. Equality
+is positional and includes duplicates; intermediate selections do not accumulate.
+The body runs once more to establish an unchanged result, including any
+host-approved emissions. Repeating a non-fixed selection fails.
+
+Hosts retain native kinds, identity, side and domain operations. Domain closure
+and specialized closure worklists remain host operations.
