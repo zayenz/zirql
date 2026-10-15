@@ -223,6 +223,25 @@ pub type ValueExpression<Q = ()> = Located<ValueExpressionKind<Q>>;
 #[derive(Debug, PartialEq)]
 pub enum ValueExpressionKind<Q = ()> {
     Literal(ConstructedValue),
+    /// Computational FIFO. An explicit type supports empty native input.
+    Queue {
+        items: Box<ValueExpression<Q>>,
+        element: Option<Located<crate::SignatureType>>,
+    },
+    /// Optional native tuple `(item, remaining_queue)`; an empty queue is absent.
+    PopFront(Box<ValueExpression<Q>>),
+    PushBackAll {
+        queue: Box<ValueExpression<Q>>,
+        items: Box<ValueExpression<Q>>,
+    },
+    /// Empty computational set of one explicitly named native kind.
+    IdentitySet {
+        element: Located<crate::SignatureType>,
+    },
+    Insert {
+        set: Box<ValueExpression<Q>>,
+        item: Box<ValueExpression<Q>>,
+    },
     /// A normalized native operand; it runs only when this node is selected.
     NativeQuery(Box<Q>),
     /// A pure native result, retained without scalar projection. Available in a
@@ -540,6 +559,39 @@ pub trait ValueArguments<Q, E: From<QueryError>> {
 /// Generator locals are visible to the native operand under the same budget.
 pub trait ValueQueryHost<Q> {
     type Error: From<QueryError>;
+
+    /// Prepare contextual contracts before visiting an expression's operands.
+    /// Ordinary value hosts need no native computation metadata.
+    fn prepare_computation(
+        &mut self,
+        _expression: &ValueExpression<Q>,
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
+    /// Retain one resolved constructor contract in its prepared owner.
+    fn worklist_id(
+        &mut self,
+        expression: &ValueExpression<Q>,
+        _budget: &mut Budget,
+    ) -> Result<usize, QueryError> {
+        Err(QueryError::query(
+            expression.range.clone(),
+            "computational values require a native function host",
+        ))
+    }
+    /// Resolve selected computational constructors after their operands have
+    /// been checked. Constructed-only runners reject them during preflight.
+    fn worklist_types(
+        &mut self,
+        expression: &ValueExpression<Q>,
+        _budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        Err(QueryError::query(
+            expression.range.clone(),
+            "computational values require a native function host",
+        ))
+    }
 
     /// Function requests resolve names to stable entries. Ordinary value hosts
     /// retain their existing behavior and reject calls.
@@ -1212,7 +1264,7 @@ fn declared_facts(
                 }
                 ValueType::Record(fields)
             }
-            DeclaredType::Native(()) => {
+            DeclaredType::Native(()) | DeclaredType::Queue(_) | DeclaredType::IdentitySet(()) => {
                 return Err(error(location, "native declaration requires a host"));
             }
         })
@@ -2829,7 +2881,29 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         location: &Location,
         transfer: Option<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
+        self.queries.prepare_computation(expression, budget)?;
         match &expression.value {
+            ValueExpressionKind::Queue { items, .. } => {
+                self.walk(items, budget)?;
+                self.queries.worklist_types(expression, budget)
+            }
+            ValueExpressionKind::IdentitySet { .. } => {
+                self.queries.worklist_types(expression, budget)
+            }
+            ValueExpressionKind::PopFront(queue) => {
+                self.walk(queue, budget)?;
+                self.queries.worklist_types(expression, budget)
+            }
+            ValueExpressionKind::PushBackAll { queue, items } => {
+                self.walk(queue, budget)?;
+                self.walk(items, budget)?;
+                self.queries.worklist_types(expression, budget)
+            }
+            ValueExpressionKind::Insert { set, item } => {
+                self.walk(set, budget)?;
+                self.walk(item, budget)?;
+                self.queries.worklist_types(expression, budget)
+            }
             ValueExpressionKind::Call {
                 function,
                 arguments,
@@ -3597,6 +3671,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             location,
                         )?;
                     }
+                    self.queries.prepare_computation(expression, budget)?;
                     self.walk_control(body, budget, Some(states.len()))
                 })();
                 self.locals.truncate(saved);

@@ -10,6 +10,7 @@ mod projection;
 mod reader;
 mod runtime_types;
 mod value;
+mod worklists;
 
 use std::fmt;
 use std::ops::Range;
@@ -68,6 +69,10 @@ pub use value::{
     copy_pattern, copy_value_types, count_value, dispose_pattern, evaluate_query_value,
     evaluate_value, evaluate_value_with_host_validation, free_query_value_names, free_value_names,
     pattern_names, query_value_types, take_one, validate_value_expression, value_expression_types,
+};
+pub use worklists::{
+    ComputationalValue, NativeContextId, NativeIdentity, NativeIdentitySet, NativeQueue,
+    admit_computational,
 };
 
 /// The maximum logical nesting allowance and active nested evaluation calls.

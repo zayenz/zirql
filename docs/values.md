@@ -456,3 +456,47 @@ enclosing function's result check.
 
 These are callable representations. The [embedding guide](embedding-programs.md#repeat-with-explicit-state)
 contains examples and explains the later textual integration boundary.
+
+
+## Native computational collections
+
+The callable Rust function API adds `DeclaredType::Queue(Box<DeclaredType<K>>)`
+and `DeclaredType::IdentitySet(K)`. A queue carries its whole element contract;
+an identity set accepts one native kind. Existing sorted scalar and nominal
+sets retain their ordering and operations.
+
+| Value expression | Result |
+| --- | --- |
+| `Queue { items, element }` | A FIFO in positional input order |
+| `PopFront(queue)` | `opt tuple<T, queue<T>>`; empty is absent |
+| `PushBackAll { queue, items }` | Existing queue followed by every input item |
+| `IdentitySet { element }` | Empty set of the explicit native type |
+| `Insert { set, item }` | Set containing that identity; duplicates are unchanged |
+| `Binary { operator: In, left: item, right: set }` | Boolean native identity membership |
+
+Constructor type arguments use located `SignatureType` trees. An explicit
+`element` supports empty queues. Function argument/result contracts and established
+loop/accumulator state also supply queue element context. Nonempty input can
+establish a homogeneous element declaration. An empty input without either an
+explicit or contextual declaration fails. Identity-set elements must resolve to
+native types; scalar and nominal set declarations are separate types.
+
+Native handles retain their owner, side and source coordinates. Every fresh
+queue element, appended item and identity-set operand receives whole admission.
+A host context stamp identifies the immutable snapshot in which that admission
+remains valid. Reusing an unchanged queue or set checks this stamp and its small
+type metadata, without scanning stored elements. A stale or foreign context
+fails at the active expression. Printed names do not establish identity.
+
+A successful pop is an ordinary native tuple. Existing tuple patterns and
+optional matching extract its fields; there is no new presence state. Empty
+pop uses the existing absent value. Native/mixed `Array` and `Tuple` expressions
+use explicit host container hooks, preserving the same native values.
+
+`NativeQueue`, `NativeIdentitySet` and `ComputationalValue` are public native
+library values. Their budgeted operations preserve retained aliases, and returned
+wrappers remain usable after the function frame ends. Neither collection is a
+data value: direct scalar projection, rendering and serialization must fail
+with a located error. Identity-set iteration and general set algebra are absent.
+These operations currently have callable representations only; no common
+worklist expression grammar or consumer frontend is supplied by this increment.

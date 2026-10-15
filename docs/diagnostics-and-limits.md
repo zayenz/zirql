@@ -354,3 +354,32 @@ reentry retain their separate limits. An endless `Continue` receives an ordinary
 located work-limit error. Operand, contract and budget failures release staged
 state and restore active evaluation state; a later operation may use any
 remaining allowance.
+
+
+## Computational collection work
+
+Queue/set construction, type/context checks, fresh element admission, native
+identity, hashing, collision equality and storage growth use the active budget.
+Queue links, retained element owners, tuple slots and trie child slots charge
+before allocation. Pop and append preserve the existing per-collection item
+ceiling; work and produced storage are cumulative and releases refund nothing.
+
+A queue shares concrete front/rear chains. Append adds rear links; pop takes a
+front link. When the front is empty, rotation charges each inspected/shared/moved
+rear entry and each new front link. A single advancing queue rotates each batch
+once, giving amortized constant work per entry. Retaining a branch can repeat a
+rotation when that branch is advanced separately; each repetition is charged.
+Long queue chains release iteratively, including after resource failure.
+
+An identity set uses a randomized 64-bit hash and at most sixteen nibble steps.
+Insertion copies the bounded path under aliases and charges copied child slots;
+full-hash collision leaves retain exact tokens and charge each equality check.
+Duplicate insertion retains the existing roots. It does not rebuild the set.
+There is no promise of constant work for a deliberately colliding bucket.
+
+Unchanged queue/set admission checks the current owner stamp and whole element
+metadata. It does not copy or rescan the remaining collection. Selected pop
+fields retain their native owner through explicit tuple views. Native container
+inspection keeps the ordinary nesting guard. A stale context, element mismatch,
+unsupported serialization or exhausted allowance remains an error, distinct from
+an empty pop or a false membership result.

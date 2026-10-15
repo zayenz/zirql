@@ -557,3 +557,54 @@ retains its native owner; the eager shared continuation runner supplies candidat
 order, filters, reducers and finite allowances. The host charges its enumeration
 before allocation and checks current ownership. The core charges retained item
 owners and grouped candidate expansion.
+
+
+## Native computational values
+
+A `FunctionHost` opts in with `prepare_computational`, which checks constructor
+support in every written branch. It receives an explicit/contextual declaration,
+or `None` when a queue must infer its element from selected actual input. The
+default refuses computational constructors. Existing `declaration_kind` still
+supplies ordinary host kinds when a whole declaration is known. Resolve named
+constructor types with `resolve_type_name`.
+
+Store `ComputationalValue<Self::Value, Self::Kind>` inside the adapter's value
+wrapper. `computational_value` borrows it; `lift_computational` wraps an owned
+result. The ordinary `copy_value` hook calls its budgeted `share(host, context,
+budget, location)` method, retaining roots and metadata. It must not materialize
+all stored items. No native `Clone`, `Send`, `Sync` or `'static` bound is needed.
+
+`worklist_context` returns `NativeContextId([owner, validity_stamp])`. Use an
+exact owner/snapshot identity, and change the stamp whenever native handles can
+be invalidated. A host that cannot establish this immutable-snapshot guarantee
+must decline the opt-in. Empty queues/sets retain this stamp too. Public
+operations and runtime admission check the current stamp before retaining an
+earlier invariant, including before the evaluator's reusable-admission path.
+
+`native_identity` returns an exact `NativeIdentity([u64; 4])`. Its canonical token
+must distinguish every semantically different owner, diff side and native object,
+and agree with the host's same-operation/declaration comparison. Do not use a
+printed name, address of a temporary wrapper, or raw hash as identity. The core
+randomizes its hash and compares full tokens in collision leaves. Stored entries
+also retain their native value, so identity does not discard handle ownership.
+
+Call `admit_computational(value, expected, host, context, budget, location)` first
+in `RuntimeTypeHost::admit_native`. A true result completes admission; false
+leaves ordinary native admission with the adapter. The function runner uses this
+same helper. It handles optional values and explicit tuple/record/sequence
+containers, validates current context and established contracts, and delegates
+fresh native leaves to the host. It never admits a stored queue by its tag alone.
+
+Expose pop pairs through `construct_tuple` and `ProgramHost::tuple_view`, with
+matching `tuple_view_kind` metadata. Native positional literals and scan snapshots
+use `construct_sequence` and `sequence_items`; preserve their complete element
+contract even when empty. Native sequence enumeration and `subject_kind` must
+agree on their singleton element kind. Existing constructed literals retain
+their constructed path. Explicit views can expose a constructed child without
+converting other native fields or the remaining queue.
+
+Keep computational wrappers out of scalar projection, JSON/data conversion and
+emitters. Refuse them at their original query location, including nested
+containers. Library results may retain them and continue with the public
+budgeted operations in the same valid context. This introduces neither a graph
+adapter nor host textual worklist syntax.

@@ -271,3 +271,25 @@ The experiment has no per-phase live-memory measure and no clean-allocator
 production timing. Temporary instrumentation is absent from product source.
 The small-query regressions remain unresolved; the bounded tail/ownership
 observations do not establish that every program is efficient.
+
+
+## Callable worklist storage
+
+The native function runner also executes computational queues and identity sets.
+Its loop, optional tuple patterns and ordinary conditional can implement Boolean
+reachability without another evaluator or graph service. The native fixture uses
+`A -> [B, C]`, `B -> [D]`, `C -> [B]`, `D -> [A]`, `E -> []`: `A` reaches `D`,
+does not reach `E`, and reaches itself without traversing an edge. A language-level
+expansion total shows that the unreachable search expands four distinct nodes,
+despite its cycle and duplicate routes.
+
+Queue transitions share front/rear chains; identity-set insertion shares a bounded
+hash path. Retained aliases and earlier native scan states keep their old values.
+This avoids a complete queue/set clone on the evaluator's ordinary immutable
+slot read. Root sharing is separate from an owned output/materialization charge.
+See [the collection accounting](diagnostics-and-limits.md#computational-collection-work)
+and [the host contract](host-integration.md#native-computational-values).
+
+These are algorithmic storage bounds and callable controls. They establish no
+comparison with the older evaluator, which had no equivalent worklist feature,
+and no production timing or host CLI performance claim.

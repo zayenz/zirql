@@ -17,6 +17,22 @@ pub(crate) struct PreparedArgument<'a, Q> {
 
 pub(crate) enum PreparedKind<'a, Q> {
     Literal(&'a ConstructedValue),
+    Queue {
+        source: usize,
+        items: Box<PreparedValue<'a, Q>>,
+    },
+    PopFront(Box<PreparedValue<'a, Q>>),
+    PushBackAll {
+        queue: Box<PreparedValue<'a, Q>>,
+        items: Box<PreparedValue<'a, Q>>,
+    },
+    IdentitySet {
+        source: usize,
+    },
+    Insert {
+        set: Box<PreparedValue<'a, Q>>,
+        item: Box<PreparedValue<'a, Q>>,
+    },
     Call {
         function: usize,
         arguments: Vec<PreparedValue<'a, Q>>,
@@ -220,6 +236,24 @@ impl<'a> Preparation<'a> {
             check_loop_terminal(&expression.value, transfer, &location)?;
             let kind = match &expression.value {
                 ValueExpressionKind::Literal(value) => PreparedKind::Literal(value),
+                ValueExpressionKind::Queue { items, .. } => PreparedKind::Queue {
+                    source: queries.worklist_id(expression, budget)?,
+                    items: Box::new(self.resolve(items, queries, budget)?),
+                },
+                ValueExpressionKind::IdentitySet { .. } => PreparedKind::IdentitySet {
+                    source: queries.worklist_id(expression, budget)?,
+                },
+                ValueExpressionKind::PopFront(q) => {
+                    PreparedKind::PopFront(Box::new(self.resolve(q, queries, budget)?))
+                }
+                ValueExpressionKind::PushBackAll { queue, items } => PreparedKind::PushBackAll {
+                    queue: Box::new(self.resolve(queue, queries, budget)?),
+                    items: Box::new(self.resolve(items, queries, budget)?),
+                },
+                ValueExpressionKind::Insert { set, item } => PreparedKind::Insert {
+                    set: Box::new(self.resolve(set, queries, budget)?),
+                    item: Box::new(self.resolve(item, queries, budget)?),
+                },
                 ValueExpressionKind::Call {
                     function,
                     arguments,

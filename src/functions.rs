@@ -3,7 +3,9 @@
 use crate::Pattern;
 use crate::value::execution::{self, Body, Data, NativeStep, NativeView, Value};
 use crate::value::pattern::PatternRef;
-use crate::value::prepared::{Preparation, PreparedArgument, RuntimeValue};
+use crate::value::prepared::{
+    Preparation, PreparedArgument, PreparedKind, PreparedValue, RuntimeValue,
+};
 use crate::{
     Bindings, Budget, ConstructedRead, ConstructedValue, DeclaredType, EvaluationError, Expression,
     ExpressionKind, Located, Location, NativeArguments, NativeExpression, ProgramHost,
@@ -400,7 +402,12 @@ fn register<'a, Q: 'a, K: 'a>(
 fn builtin(name: &str) -> bool {
     matches!(
         name,
-        "fold"
+        "queue"
+            | "pop_front"
+            | "push_back_all"
+            | "identity_set"
+            | "insert"
+            | "fold"
             | "scan"
             | "one"
             | "occurs"
@@ -560,6 +567,81 @@ pub trait FunctionHost<C>:
         Err(QueryError::query(range.clone(), "native scan construction is unsupported").into())
     }
 
+    /// Opt into computational constructors during all-branch preparation.
+    /// `None` defers element inference to selected actual input. A known
+    /// declaration is checked before execution or public factory allocation.
+    fn prepare_computational(
+        &self,
+        _declaration: Option<&DeclaredType<<Self as ProjectionHost<C>>::Kind>>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "computational values are unsupported",
+        ))
+    }
+    /// Borrow an opt-in computational wrapper without exposing storage.
+    fn computational_value<'v>(
+        &self,
+        _value: &'v Self::Value,
+    ) -> Option<&'v crate::ComputationalValue<Self::Value, <Self as ProjectionHost<C>>::Kind>> {
+        None
+    }
+    /// Wrap a computational result. Copying this wrapper must share roots.
+    fn lift_computational(
+        &self,
+        _value: crate::ComputationalValue<Self::Value, <Self as ProjectionHost<C>>::Kind>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "computational values are unsupported").into())
+    }
+    /// Construct an explicit native/mixed positional tuple, preserving owners.
+    fn construct_tuple(
+        &self,
+        _values: Vec<Self::Value>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native tuple construction is unsupported").into())
+    }
+    /// Resolve a named constructor type in the current immutable request owner.
+    fn resolve_type_name(
+        &self,
+        name: Located<&str>,
+        _budget: &mut Budget,
+    ) -> Result<DeclaredType<<Self as ProjectionHost<C>>::Kind>, QueryError> {
+        Err(QueryError::query(
+            name.range,
+            "native type resolution is unsupported",
+        ))
+    }
+    /// Identify the immutable owner/snapshot, including its validity stamp.
+    /// Change this token whenever earlier native admission can become invalid.
+    fn worklist_context(
+        &self,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<crate::NativeContextId, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "computational values are unsupported").into())
+    }
+    /// Return an exact canonical identity agreeing with native semantic equality.
+    /// Include owner, diff side and object; never substitute a hash or label.
+    fn native_identity(
+        &self,
+        _value: &Self::Value,
+        _expected: &<Self as ProjectionHost<C>>::Kind,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<crate::NativeIdentity, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native identity is unsupported").into())
+    }
+
     /// Successful native admission remains valid for an unchanged immutable
     /// value and equivalent contract throughout this request. Opt in only when
     /// ownership, coordinates, element contents and handle validity cannot
@@ -578,6 +660,7 @@ type PatternDeclaration<C, H> = PatternFunctionDeclaration<Query<C, H>, Kind<C, 
 struct LexicalKinds<K> {
     scope: BTreeMap<String, K>,
     generators: BTreeMap<String, K>,
+    contracts: BTreeMap<String, DeclaredType<K>>,
 }
 struct Operand<K> {
     native: crate::projection::prepared::PreparedNative,
@@ -592,6 +675,9 @@ struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     relative: Option<Kind<C, H>>,
     prepared: BTreeMap<usize, Operand<Kind<C, H>>>,
     scopes: Vec<LexicalKinds<Kind<C, H>>>,
+    contracts: BTreeMap<String, DeclaredType<Kind<C, H>>>,
+    worklists: BTreeMap<usize, Option<DeclaredType<Kind<C, H>>>>,
+    worklist_contracts: Vec<Option<DeclaredType<Kind<C, H>>>>,
 }
 impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
     fn new(
@@ -619,6 +705,9 @@ impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
             relative: None,
             prepared: BTreeMap::new(),
             scopes: Vec::new(),
+            contracts: BTreeMap::new(),
+            worklists: BTreeMap::new(),
+            worklist_contracts: Vec::new(),
         })
     }
 }
@@ -766,6 +855,8 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         self.scope = crate::projection::copy_scope::<C, H>(scope, budget, &entry.range)?;
         self.relative = relative;
         self.generator_kinds.clear();
+        self.contracts.clear();
+        self.worklists.clear();
         let mut facts = BTreeMap::new();
         for (name, kind) in scope {
             budget_name(name, budget, &entry.range)?;
@@ -780,6 +871,200 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         Ok(match self.local_kind(entry, budget)? {
             Some(kind) => kind,
             None => self.host.constructed_kind(types),
+        })
+    }
+
+    fn expect(
+        &mut self,
+        value: &ValueExpression<Query<C, H>>,
+        expected: &DeclaredType<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let location = Location::Query(value.range.clone());
+        budget.within_evaluation(1, location.clone(), |budget| {
+            budget.charge(1, location.clone())?;
+            let mut d = expected;
+            while let DeclaredType::Optional(c) = d {
+                d = c;
+            }
+            match &value.value {
+                ValueExpressionKind::Queue { .. } if matches!(d, DeclaredType::Queue(_)) => {
+                    let id = value as *const _ as usize;
+                    if let Some(Some(old)) = self.worklists.get(&id) {
+                        if !crate::runtime_types::same_declaration(old, d, budget, &location)? {
+                            return Err(QueryError::query(
+                                value.range.clone(),
+                                "incompatible queue contexts",
+                            ));
+                        }
+                    } else {
+                        self.worklists.insert(
+                            id,
+                            Some(crate::runtime_types::copy_declaration(
+                                d, budget, &location,
+                            )?),
+                        );
+                    }
+                }
+                ValueExpressionKind::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    for (_, v) in branches {
+                        self.expect(v, expected, budget)?;
+                    }
+                    self.expect(otherwise, expected, budget)?;
+                }
+                ValueExpressionKind::Block { value, .. }
+                | ValueExpressionKind::Require { value, .. }
+                | ValueExpressionKind::Break(value) => self.expect(value, expected, budget)?,
+                ValueExpressionKind::ValueMatch { arms, .. } => {
+                    for arm in arms {
+                        self.expect(&arm.value, expected, budget)?;
+                    }
+                }
+                ValueExpressionKind::Default { value, fallback } => {
+                    self.expect(value, expected, budget)?;
+                    self.expect(fallback, expected, budget)?;
+                }
+                ValueExpressionKind::Tuple(values) => {
+                    if let DeclaredType::Tuple(types) = d {
+                        for (v, d) in values.iter().zip(types) {
+                            self.expect(v, d, budget)?;
+                        }
+                    }
+                }
+                ValueExpressionKind::Array(values) => {
+                    if let DeclaredType::Array(d) | DeclaredType::Sequence(d) = d {
+                        for v in values {
+                            self.expect(v, d, budget)?;
+                        }
+                    }
+                }
+                ValueExpressionKind::Loop { body, .. } => self.expect(body, expected, budget)?,
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+    fn expect_next(
+        &mut self,
+        value: &ValueExpression<Query<C, H>>,
+        states: &[Option<DeclaredType<Kind<C, H>>>],
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        budget.within_evaluation(1, Location::Query(value.range.clone()), |budget| {
+            budget.charge(1, Location::Query(value.range.clone()))?;
+            match &value.value {
+                ValueExpressionKind::Continue(values) => {
+                    for (v, d) in values.iter().zip(states) {
+                        if let Some(d) = d {
+                            self.expect(v, d, budget)?;
+                        }
+                    }
+                }
+                ValueExpressionKind::Block { value, .. } => {
+                    self.expect_next(value, states, budget)?
+                }
+                ValueExpressionKind::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    for (_, v) in branches {
+                        self.expect_next(v, states, budget)?;
+                    }
+                    self.expect_next(otherwise, states, budget)?;
+                }
+                ValueExpressionKind::ValueMatch { arms, .. } => {
+                    for arm in arms {
+                        self.expect_next(&arm.value, states, budget)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+    fn value_declaration(
+        &mut self,
+        value: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Option<DeclaredType<Kind<C, H>>>, QueryError> {
+        let location = Location::Query(value.range.clone());
+        budget.within_evaluation(1, location.clone(), |budget| {
+            budget.charge(1, location.clone())?;
+            Ok(match &value.value {
+                ValueExpressionKind::Queue { .. } | ValueExpressionKind::IdentitySet { .. } => self
+                    .worklists
+                    .get(&(value as *const _ as usize))
+                    .and_then(Option::as_ref)
+                    .map(|d| crate::runtime_types::copy_declaration(d, budget, &location))
+                    .transpose()?,
+                ValueExpressionKind::PushBackAll { queue, .. } => {
+                    self.value_declaration(queue, budget)?
+                }
+                ValueExpressionKind::Insert { set, .. } => self.value_declaration(set, budget)?,
+                ValueExpressionKind::PopFront(queue) => match self
+                    .value_declaration(queue, budget)?
+                {
+                    Some(DeclaredType::Queue(element)) => {
+                        let queue = DeclaredType::Queue(Box::new(
+                            crate::runtime_types::copy_declaration(&element, budget, &location)?,
+                        ));
+                        Some(DeclaredType::Optional(Box::new(DeclaredType::Tuple(vec![
+                            *element, queue,
+                        ]))))
+                    }
+                    _ => None,
+                },
+                ValueExpressionKind::Call { function, .. } => {
+                    let (id, _) = self.function(function, budget)?;
+                    Some(crate::runtime_types::copy_declaration(
+                        &self.declarations[id].result.value,
+                        budget,
+                        &location,
+                    )?)
+                }
+                ValueExpressionKind::Name(name) => match self.contracts.get(name) {
+                    Some(d) => Some(crate::runtime_types::copy_declaration(
+                        d, budget, &location,
+                    )?),
+                    None => self
+                        .scope
+                        .get(name)
+                        .or_else(|| self.generator_kinds.get(name))
+                        .cloned()
+                        .map(DeclaredType::Native),
+                },
+                ValueExpressionKind::NativeValue(q) => self
+                    .prepared
+                    .get(&(q.as_ref() as *const _ as usize))
+                    .map(|p| DeclaredType::Native(p.kind.clone())),
+                ValueExpressionKind::Literal(v) => crate::worklists::scalar_contract(v),
+                ValueExpressionKind::Array(values) => match values.first() {
+                    Some(v) => self
+                        .value_declaration(v, budget)?
+                        .map(|d| DeclaredType::Sequence(Box::new(d))),
+                    None => None,
+                },
+                ValueExpressionKind::Tuple(values) => {
+                    let mut types = Vec::new();
+                    for v in values {
+                        if let Some(d) = self.value_declaration(v, budget)? {
+                            crate::projection::admit_slots::<DeclaredType<Kind<C, H>>>(
+                                1,
+                                budget,
+                                &value.range,
+                            )?;
+                            types.push(d);
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    Some(DeclaredType::Tuple(types))
+                }
+                _ => self.local_kind(value, budget)?.map(DeclaredType::Native),
+            })
         })
     }
 
@@ -800,6 +1085,16 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     if let Some(kind) = kind {
                         budget_name(&name.value, budget, &name.range)?;
                         self.scope.insert(name.value.clone(), kind);
+                        if let Some(d) = declaration {
+                            self.contracts.insert(
+                                name.value.clone(),
+                                crate::runtime_types::copy_declaration(
+                                    d,
+                                    budget,
+                                    &Location::Query(range.clone()),
+                                )?,
+                            );
+                        }
                     }
                     return Ok(());
                 }
@@ -810,6 +1105,16 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     if let Some(kind) = kind {
                         budget_name(&name.value, budget, &name.range)?;
                         self.scope.insert(name.value.clone(), kind);
+                        if let Some(d) = declaration {
+                            self.contracts.insert(
+                                name.value.clone(),
+                                crate::runtime_types::copy_declaration(
+                                    d,
+                                    budget,
+                                    &Location::Query(range.clone()),
+                                )?,
+                            );
+                        }
                     }
                 }
                 crate::PatternKind::Present(child) => {
@@ -978,6 +1283,24 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         budget.within_evaluation(1, Location::Query(value.range.clone()), |budget| {
             budget.charge(1, Location::Query(value.range.clone()))?;
             Ok(match &value.value {
+                ValueExpressionKind::Queue { .. }
+                | ValueExpressionKind::IdentitySet { .. }
+                | ValueExpressionKind::PopFront(_)
+                | ValueExpressionKind::PushBackAll { .. }
+                | ValueExpressionKind::Insert { .. }
+                | ValueExpressionKind::Array(_)
+                | ValueExpressionKind::Tuple(_) => match self.value_declaration(value, budget)? {
+                    Some(d)
+                        if crate::runtime_types::contains_native(
+                            &d,
+                            budget,
+                            &Location::Query(value.range.clone()),
+                        )? =>
+                    {
+                        Some(self.host.declaration_kind(&d, budget, &value.range)?)
+                    }
+                    _ => None,
+                },
                 ValueExpressionKind::Call { function, .. } => {
                     let (id, _) = self.function(function, budget)?;
                     Some(self.host.declaration_kind(
@@ -1156,6 +1479,161 @@ fn no_ambient_input<C, H: ProjectionHost<C>>(
 }
 impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C, H> {
     type Error = EvaluationError<H::Error>;
+    fn prepare_computation(
+        &mut self,
+        expression: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        match &expression.value {
+            ValueExpressionKind::Call {
+                function,
+                arguments,
+            } => {
+                let (id, _) = self.function(function, budget)?;
+                for (v, p) in arguments
+                    .iter()
+                    .zip(self.declarations[id].parameters.iter())
+                {
+                    self.expect(v, p.declaration, budget)?;
+                }
+            }
+            ValueExpressionKind::Fold { initial, step, .. }
+            | ValueExpressionKind::Scan { initial, step, .. } => {
+                let (id, _) = self.function(step, budget)?;
+                let d = accumulator_state(&self.declarations[id], step, budget)?;
+                self.expect(initial, d, budget)?;
+            }
+            ValueExpressionKind::Loop { states, body } => {
+                let mut types = Vec::new();
+                for (_, v) in states {
+                    crate::projection::admit_slots::<Option<DeclaredType<Kind<C, H>>>>(
+                        1,
+                        budget,
+                        &expression.range,
+                    )?;
+                    types.push(self.value_declaration(v, budget)?);
+                }
+                self.expect_next(body, &types, budget)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    fn worklist_id(
+        &mut self,
+        expression: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<usize, QueryError> {
+        let d = self
+            .worklists
+            .get(&(expression as *const _ as usize))
+            .expect("resolved worklist constructor");
+        let d = d
+            .as_ref()
+            .map(|d| {
+                crate::runtime_types::copy_declaration(
+                    d,
+                    budget,
+                    &Location::Query(expression.range.clone()),
+                )
+            })
+            .transpose()?;
+        crate::projection::admit_slots::<Option<DeclaredType<Kind<C, H>>>>(
+            1,
+            budget,
+            &expression.range,
+        )?;
+        let id = self.worklist_contracts.len();
+        self.worklist_contracts.push(d);
+        Ok(id)
+    }
+    fn worklist_types(
+        &mut self,
+        expression: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let id = expression as *const _ as usize;
+        let location = Location::Query(expression.range.clone());
+        let declaration = match &expression.value {
+            ValueExpressionKind::Queue { items, element } => {
+                let explicit = element
+                    .as_ref()
+                    .map(|t| {
+                        t.value.resolve(budget, &t.range, &mut |name, b| {
+                            self.host.resolve_type_name(name, b)
+                        })
+                    })
+                    .transpose()?;
+                let contextual = match self.worklists.get(&id) {
+                    Some(Some(DeclaredType::Queue(d))) => Some(
+                        crate::runtime_types::copy_declaration(d, budget, &location)?,
+                    ),
+                    _ => None,
+                };
+                if let (Some(a), Some(b)) = (&explicit, &contextual)
+                    && !crate::runtime_types::same_declaration(a, b, budget, &location)?
+                {
+                    return Err(QueryError::query(
+                        expression.range.clone(),
+                        "incompatible queue element declaration",
+                    ));
+                }
+                let element = match explicit.or(contextual) {
+                    Some(d) => Some(d),
+                    None => match self.value_declaration(items, budget)? {
+                        Some(DeclaredType::Sequence(d) | DeclaredType::Array(d)) => Some(*d),
+                        Some(DeclaredType::Native(k))
+                            if self.host.scalar_types(&k, budget, &items.range)?.is_none() =>
+                        {
+                            Some(DeclaredType::Native(self.host.subject_kind(
+                                &k,
+                                budget,
+                                &items.range,
+                            )?))
+                        }
+                        _ => None,
+                    },
+                };
+                if element.is_none()
+                    && matches!(&items.value, ValueExpressionKind::Array(v) if v.is_empty())
+                {
+                    return Err(QueryError::query(
+                        expression.range.clone(),
+                        "empty queue needs an explicit or contextual element contract",
+                    ));
+                }
+                element.map(|d| DeclaredType::Queue(Box::new(d)))
+            }
+            ValueExpressionKind::IdentitySet { element } => Some(
+                match element
+                    .value
+                    .resolve(budget, &element.range, &mut |name, b| {
+                        self.host.resolve_type_name(name, b)
+                    })? {
+                    DeclaredType::Native(k) => DeclaredType::IdentitySet(k),
+                    _ => {
+                        return Err(QueryError::query(
+                            element.range.clone(),
+                            "identity_set requires a native element type",
+                        ));
+                    }
+                },
+            ),
+            _ => return Ok(vec![ValueType::Unestablished]),
+        };
+        if let Some(d) = &declaration {
+            crate::runtime_types::validate_declaration(d, budget, &location)?;
+        }
+        self.host
+            .prepare_computational(declaration.as_ref(), budget, &expression.range)?;
+        crate::projection::admit_slots::<Option<DeclaredType<Kind<C, H>>>>(
+            1,
+            budget,
+            &expression.range,
+        )?;
+        self.worklists.insert(id, declaration);
+        Ok(vec![ValueType::Unestablished])
+    }
     fn function(
         &mut self,
         name: &Located<String>,
@@ -1222,13 +1700,26 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         let generators =
             crate::projection::copy_scope::<C, H>(&self.generator_kinds, budget, range)?;
         crate::projection::admit_slots::<LexicalKinds<Kind<C, H>>>(1, budget, range)?;
-        self.scopes.push(LexicalKinds { scope, generators });
+        let mut contracts = BTreeMap::new();
+        for (name, d) in &self.contracts {
+            budget_name(name, budget, range)?;
+            contracts.insert(
+                name.clone(),
+                crate::runtime_types::copy_declaration(d, budget, &Location::Query(range.clone()))?,
+            );
+        }
+        self.scopes.push(LexicalKinds {
+            scope,
+            generators,
+            contracts,
+        });
         Ok(())
     }
     fn leave_scope(&mut self) {
         let saved = self.scopes.pop().expect("entered lexical scope");
         self.scope = saved.scope;
         self.generator_kinds = saved.generators;
+        self.contracts = saved.contracts;
     }
     fn prepare_pattern(
         &mut self,
@@ -1246,6 +1737,9 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         types: &[ValueType],
         budget: &mut Budget,
     ) -> Result<(), QueryError> {
+        if let Some(d) = self.value_declaration(value, budget)? {
+            self.contracts.insert(name.value.clone(), d);
+        }
         let kind = match self.local_kind(value, budget)? {
             Some(kind) => kind,
             None => self.host.constructed_kind(copy_value_types(
@@ -1454,10 +1948,13 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             let declaration = preflight.declarations[index];
             preflight.scope.clear();
             preflight.generator_kinds.clear();
+            preflight.contracts.clear();
+            preflight.worklists.clear();
             for p in declaration.parameters.iter() {
                 let kind = host.declaration_kind(p.declaration, budget, p.range)?;
                 preflight.pattern_kind(p.pattern, Some(kind), Some(p.declaration), budget)?;
             }
+            preflight.expect(declaration.value, &declaration.result.value, budget)?;
             bodies.push(crate::value::prepare_function_body(
                 declaration,
                 &mut preflight,
@@ -1466,6 +1963,8 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             body_prepared.push(std::mem::take(&mut preflight.prepared));
         }
         preflight.scope.clear();
+        preflight.contracts.clear();
+        preflight.worklists.clear();
         budget.charge_results(1, Location::Query(0..0))?;
         Ok(Self {
             bodies,
@@ -1496,6 +1995,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         FunctionError<EvaluationError<H::Error>>,
     > {
         let saved = std::mem::take(&mut self.preflight.prepared);
+        let saved_worklists = std::mem::take(&mut self.preflight.worklists);
         let result = (|| {
             let kind = self.preflight.entry_kind(entry, scope, relative, budget)?;
             let mut preparation = Preparation::new();
@@ -1510,6 +2010,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             })
         })();
         self.preflight.prepared = saved;
+        self.preflight.worklists = saved_worklists;
         result
     }
 
@@ -1527,8 +2028,10 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         budget: &mut Budget,
     ) -> Result<Kind<C, H>, FunctionError<EvaluationError<H::Error>>> {
         let saved = std::mem::take(&mut self.preflight.prepared);
+        let saved_worklists = std::mem::take(&mut self.preflight.worklists);
         let result = self.preflight.entry_kind(entry, scope, relative, budget);
         self.preflight.prepared = saved;
+        self.preflight.worklists = saved_worklists;
         Ok(result?)
     }
 
@@ -1628,6 +2131,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             contracts: &BTreeMap::new(),
             prepared: &value.prepared,
             body_prepared: &self.body_prepared,
+            worklists: &self.preflight.worklist_contracts,
             source_function: None,
             relative,
             limit: limits.active_depth,
@@ -1726,6 +2230,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             contracts: &BTreeMap::new(),
             prepared: &entry.prepared,
             body_prepared: &self.body_prepared,
+            worklists: &self.preflight.worklist_contracts,
             source_function: None,
             relative,
             limit: limits.active_depth,
@@ -1839,18 +2344,455 @@ struct Runtime<'r, 'a, C, H: FunctionHost<C>> {
     contracts: &'r BTreeMap<&'a str, &'a DeclaredType<Kind<C, H>>>,
     prepared: &'r BTreeMap<usize, Operand<Kind<C, H>>>,
     body_prepared: &'r [BTreeMap<usize, Operand<Kind<C, H>>>],
+    worklists: &'r [Option<DeclaredType<Kind<C, H>>>],
     source_function: Option<usize>,
     relative: Option<&'r H::Value>,
     limit: usize,
     calls: &'r mut CallTrace,
 }
-impl<C, H: FunctionHost<C>> Runtime<'_, '_, C, H> {
+impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
+    fn value_contract(
+        &mut self,
+        value: &H::Value,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<DeclaredType<Kind<C, H>>, EvaluationError<H::Error>> {
+        budget.within_evaluation(1, location.clone(), |budget| {
+            budget.charge(1, location.clone())?;
+            if let Some(c) = self.host.computational_value(value) {
+                return Ok(c.declaration(budget, location)?);
+            }
+            if let Some(c) = self.host.constructed_value(value)
+                && let Some(d) = crate::worklists::scalar_contract(c)
+            {
+                return Ok(d);
+            }
+            if let Some(values) = self.host.tuple_view(value) {
+                let mut types = Vec::new();
+                for v in values {
+                    crate::projection::admit_slots::<DeclaredType<Kind<C, H>>>(
+                        1,
+                        budget,
+                        match location {
+                            Location::Query(r) | Location::Source(r) => r,
+                        },
+                    )?;
+                    types.push(self.value_contract(v, budget, location)?);
+                }
+                return Ok(DeclaredType::Tuple(types));
+            }
+            let range = match location {
+                Location::Query(r) | Location::Source(r) => r,
+            };
+            Ok(DeclaredType::Native(self.host.kind(value, budget, range)?))
+        })
+    }
+    fn infer_queue_element(
+        &mut self,
+        value: &HostValue<'_, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<DeclaredType<Kind<C, H>>, EvaluationError<H::Error>> {
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
+            let mut actual = constructed_value_type(data.value, budget, location.clone())?;
+            if let Some(d) = data.declaration {
+                budget.charge_results(1, location.clone())?;
+                actual = ValueType::Declared {
+                    actual: Box::new(actual),
+                    declaration: crate::runtime_types::copy_declaration(d, budget, location)?,
+                };
+            }
+            return match crate::worklists::fact_contract(&actual, budget, location)? {
+                Some(DeclaredType::Array(d) | DeclaredType::Sequence(d)) => Ok(*d),
+                _ => Err(QueryError::query(
+                    range.clone(),
+                    "empty queue needs an explicit or contextual element contract",
+                )
+                .into()),
+            };
+        }
+        match &value.data {
+            Data::Constructed(_) => unreachable!("constructed view handled above"),
+            Data::Native(view) => {
+                budget.charge(view.path.len(), location.clone())?;
+                let kind = self
+                    .host
+                    .kind(native_view::<C, H>(view, self.host), budget, range)?;
+                let element = self.host.subject_kind(&kind, budget, range)?;
+                if let Some(types) = self.host.scalar_types(&element, budget, range)? {
+                    if let [fact] = types.as_slice()
+                        && let Some(d) = crate::worklists::fact_contract(fact, budget, location)?
+                    {
+                        return Ok(d);
+                    }
+                    return Err(QueryError::query(
+                        range.clone(),
+                        "queue input needs an established element contract",
+                    )
+                    .into());
+                }
+                Ok(DeclaredType::Native(element))
+            }
+        }
+    }
+    fn queue_items(
+        &mut self,
+        value: HostValue<'_, C, H>,
+        element: &DeclaredType<Kind<C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
+        let value = execution::Host::normalize(self, value, budget, location)?;
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        match value.data {
+            Data::Native(view) => {
+                budget.charge(view.path.len(), location.clone())?;
+                self.host.sequence_items(
+                    native_view::<C, H>(&view, self.host),
+                    element,
+                    self.context,
+                    budget,
+                    range,
+                )
+            }
+            Data::Constructed(data) => {
+                let data = data.materialize(budget, location)?;
+                let ConstructedValue::Array(values) = data.data() else {
+                    return Err(QueryError::query(
+                        range.clone(),
+                        "queue input needs a positional sequence",
+                    )
+                    .into());
+                };
+                crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+                let mut output = Vec::with_capacity(values.len());
+                for v in values {
+                    let v = copy_constructed_value(v, budget, location.clone())?;
+                    let facts = vec![constructed_value_type(&v, budget, location.clone())?];
+                    output.push(self.host.lift_constructed(
+                        v,
+                        facts,
+                        self.context,
+                        budget,
+                        range,
+                    )?);
+                }
+                Ok(output)
+            }
+        }
+    }
+    fn computational(
+        &mut self,
+        value: crate::ComputationalValue<H::Value, Kind<C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        crate::projection::admit_slots::<H::Value>(1, budget, range)?;
+        self.host
+            .lift_computational(value, self.context, budget, range)
+    }
+    fn compute(
+        &mut self,
+        expression: &'a PreparedValue<'a, Query<C, H>>,
+        mut values: Vec<HostValue<'a, C, H>>,
+        budget: &mut Budget,
+    ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
+        use crate::ComputationalValue as W;
+        let location = Location::Query(expression.range.clone());
+        let range = &expression.range;
+        let output = match &expression.value {
+            PreparedKind::TupleAccess { position, .. }
+                if matches!(values[0].data, Data::Native(_)) =>
+            {
+                let mut value = values.pop().expect("native tuple");
+                let len = match execution::Host::constructed(self, &value, budget, &location)? {
+                    Some(data) => match data.value.data() {
+                        ConstructedValue::Tuple(v) => Some(v.len()),
+                        _ => None,
+                    },
+                    None => {
+                        let Data::Native(view) = &value.data else {
+                            unreachable!()
+                        };
+                        self.host
+                            .tuple_view(native_view::<C, H>(view, self.host))
+                            .map(<[_]>::len)
+                    }
+                }
+                .ok_or_else(|| QueryError::query(range.clone(), "tuple access needs a tuple"))?;
+                let index = position
+                    .value
+                    .checked_sub(1)
+                    .filter(|&i| i < len)
+                    .ok_or_else(|| {
+                        QueryError::query(position.range.clone(), "missing tuple position")
+                    })?;
+                return crate::value::pattern::select(
+                    &mut value,
+                    NativeStep::Tuple(index),
+                    self,
+                    budget,
+                    &location,
+                );
+            }
+            PreparedKind::Field { field, .. }
+                if matches!(values[0].data, Data::Native(_))
+                    && execution::Host::constructed(self, &values[0], budget, &location)?
+                        .is_some() =>
+            {
+                let mut value = values.pop().expect("constructed record view");
+                let data = execution::Host::constructed(self, &value, budget, &location)?
+                    .expect("constructed view");
+                let ConstructedValue::Record(fields) = data.value.data() else {
+                    return Err(
+                        QueryError::query(range.clone(), "field access needs a record").into(),
+                    );
+                };
+                let mut selected = None;
+                for (index, (label, _)) in fields.iter().enumerate() {
+                    budget.charge(1 + label.len().min(field.value.len()), location.clone())?;
+                    if label == &field.value {
+                        selected = Some(index);
+                        break;
+                    }
+                }
+                let index = selected.ok_or_else(|| {
+                    QueryError::query(field.range.clone(), "missing record field")
+                })?;
+                return crate::value::pattern::select(
+                    &mut value,
+                    NativeStep::Record(index),
+                    self,
+                    budget,
+                    &location,
+                );
+            }
+            PreparedKind::Queue { source, .. } => {
+                let value = values.pop().expect("queue input");
+                let element = match self
+                    .worklists
+                    .get(*source)
+                    .expect("prepared queue contract")
+                {
+                    Some(DeclaredType::Queue(element)) => {
+                        crate::runtime_types::copy_declaration(element, budget, &location)?
+                    }
+                    None => self.infer_queue_element(&value, budget, &location)?,
+                    _ => unreachable!("queue constructor contract"),
+                };
+                let items = self.queue_items(value, &element, budget, &location)?;
+                let q = crate::NativeQueue::new(
+                    items,
+                    element,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?;
+                self.computational(W::Queue(q), budget, &location)?
+            }
+            PreparedKind::IdentitySet { source } => {
+                let Some(DeclaredType::IdentitySet(kind)) = self
+                    .worklists
+                    .get(*source)
+                    .expect("prepared identity-set contract")
+                else {
+                    unreachable!()
+                };
+                let s = crate::NativeIdentitySet::new(
+                    kind.clone(),
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?;
+                self.computational(W::IdentitySet(s), budget, &location)?
+            }
+            PreparedKind::PopFront(_) => {
+                let value = self.finish_value(values.pop().expect("queue"), budget, &location)?;
+                let Some(W::Queue(queue)) = self.host.computational_value(&value) else {
+                    return Err(QueryError::query(range.clone(), "pop_front needs a queue").into());
+                };
+                let element =
+                    crate::runtime_types::copy_declaration(queue.element(), budget, &location)?;
+                let queue = queue.share(self.host, self.context, budget, location.clone())?;
+                match queue.pop_front(self.host, self.context, budget, location.clone())? {
+                    None => {
+                        return Ok(Value::constructed(RuntimeValue::Owned(
+                            ConstructedValue::Absent,
+                        )));
+                    }
+                    Some((item, remaining)) => {
+                        let item = match std::sync::Arc::try_unwrap(item) {
+                            Ok(v) => v,
+                            Err(v) => self.host.copy_value(&v, self.context, budget, range)?,
+                        };
+                        let remaining =
+                            self.computational(W::Queue(remaining), budget, &location)?;
+                        crate::projection::admit_slots::<H::Value>(2, budget, range)?;
+                        let pair = self.host.construct_tuple(
+                            vec![item, remaining],
+                            self.context,
+                            budget,
+                            range,
+                        )?;
+                        let expected = DeclaredType::Optional(Box::new(DeclaredType::Tuple(vec![
+                            crate::runtime_types::copy_declaration(&element, budget, &location)?,
+                            DeclaredType::Queue(Box::new(element)),
+                        ])));
+                        crate::admit_computational(
+                            &pair,
+                            &expected,
+                            self.host,
+                            self.context,
+                            budget,
+                            location.clone(),
+                        )?;
+                        pair
+                    }
+                }
+            }
+            PreparedKind::PushBackAll { .. } => {
+                let items = values.pop().expect("appended items");
+                let value = self.finish_value(values.pop().expect("queue"), budget, &location)?;
+                let Some(W::Queue(queue)) = self.host.computational_value(&value) else {
+                    return Err(
+                        QueryError::query(range.clone(), "push_back_all needs a queue").into(),
+                    );
+                };
+                let queue = queue.share(self.host, self.context, budget, location.clone())?;
+                let items = self.queue_items(items, queue.element(), budget, &location)?;
+                let queue = queue.push_back_all(
+                    items,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?;
+                self.computational(W::Queue(queue), budget, &location)?
+            }
+            PreparedKind::Insert { .. } => {
+                let item =
+                    self.finish_value(values.pop().expect("inserted item"), budget, &location)?;
+                let value = self.finish_value(values.pop().expect("set"), budget, &location)?;
+                let Some(W::IdentitySet(set)) = self.host.computational_value(&value) else {
+                    return Err(QueryError::query(
+                        range.clone(),
+                        "insert needs a native identity set",
+                    )
+                    .into());
+                };
+                let set = set
+                    .share(self.host, self.context, budget, location.clone())?
+                    .insert(item, self.host, self.context, budget, location.clone())?;
+                self.computational(W::IdentitySet(set), budget, &location)?
+            }
+            PreparedKind::Binary {
+                operator: crate::ValueBinaryOperator::In,
+                ..
+            } if matches!(values[1].data, Data::Native(_))
+                && execution::Host::constructed(self, &values[1], budget, &location)?.is_none() =>
+            {
+                let set = self.finish_value(values.pop().expect("set"), budget, &location)?;
+                let item = self.finish_value(values.pop().expect("member"), budget, &location)?;
+                let Some(W::IdentitySet(set)) = self.host.computational_value(&set) else {
+                    return Err(QueryError::query(
+                        range.clone(),
+                        "native membership needs an identity set",
+                    )
+                    .into());
+                };
+                return Ok(Value::constructed(RuntimeValue::Owned({
+                    let found =
+                        set.contains(&item, self.host, self.context, budget, location.clone())?;
+                    budget.charge(1, location.clone())?;
+                    budget.charge_results(1, location.clone())?;
+                    ConstructedValue::Boolean(found)
+                })));
+            }
+            PreparedKind::Array(_) | PreparedKind::Tuple(_)
+                if values.iter().any(|v| matches!(v.data, Data::Native(_))) =>
+            {
+                let mut native = false;
+                for value in &values {
+                    native |= matches!(value.data, Data::Native(_))
+                        && execution::Host::constructed(self, value, budget, &location)?.is_none();
+                }
+                if !native {
+                    return execution::apply(expression, values, self, budget);
+                }
+                crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+                let mut output = Vec::with_capacity(values.len());
+                for v in values {
+                    output.push(self.finish_value(v, budget, &location)?);
+                }
+                if matches!(expression.value, PreparedKind::Tuple(_)) {
+                    self.host
+                        .construct_tuple(output, self.context, budget, range)?
+                } else {
+                    let first = output.first().expect("native array is nonempty");
+                    let element = self.value_contract(first, budget, &location)?;
+                    for v in &output {
+                        if !crate::admit_computational(
+                            v,
+                            &element,
+                            self.host,
+                            self.context,
+                            budget,
+                            location.clone(),
+                        )? {
+                            admit_value(
+                                v,
+                                &element,
+                                self.host,
+                                self.context,
+                                budget,
+                                location.clone(),
+                            )?;
+                        }
+                    }
+                    self.host
+                        .construct_sequence(output, &element, self.context, budget, range)?
+                }
+            }
+            _ => return execution::apply(expression, values, self, budget),
+        };
+        self.retained(std::sync::Arc::new(output), budget, range)
+    }
     fn owned_native(
         &mut self,
         value: NativeView<H::Value>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<std::sync::Arc<H::Value>, EvaluationError<H::Error>> {
+        let at = Location::Query(range.clone());
+        let wrapped = Value {
+            data: Data::Native(value),
+            contract: None,
+        };
+        if execution::Host::constructed(self, &wrapped, budget, &at)?.is_some() {
+            let value = execution::Host::materialize(self, wrapped, budget, &at)?;
+            let types = vec![constructed_value_type(&value, budget, at)?];
+            crate::projection::admit_slots::<H::Value>(1, budget, range)?;
+            return Ok(std::sync::Arc::new(self.host.lift_constructed(
+                value,
+                types,
+                self.context,
+                budget,
+                range,
+            )?));
+        }
+        let Data::Native(value) = wrapped.data else {
+            unreachable!()
+        };
         if value.path.is_empty() {
             Ok(value.owner)
         } else {
@@ -1864,12 +2806,12 @@ impl<C, H: FunctionHost<C>> Runtime<'_, '_, C, H> {
             )?))
         }
     }
-    fn retained<'a>(
+    fn retained<'v>(
         &mut self,
         value: std::sync::Arc<H::Value>,
         budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
+    ) -> Result<HostValue<'v, C, H>, EvaluationError<H::Error>> {
         if let Some(constructed) = self.host.constructed_value(&value) {
             let value = match self
                 .host
@@ -1893,13 +2835,22 @@ impl<C, H: FunctionHost<C>> Runtime<'_, '_, C, H> {
     }
     fn finish_value(
         &mut self,
-        value: Value<'_, H::Value, Kind<C, H>>,
+        value: Value<'a, H::Value, Kind<C, H>>,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<H::Value, EvaluationError<H::Error>> {
         let range = match location {
             Location::Query(r) | Location::Source(r) => r,
         };
+        if matches!(value.data, Data::Native(_))
+            && execution::Host::constructed(self, &value, budget, location)?.is_some()
+        {
+            let value = execution::Host::materialize(self, value, budget, location)?;
+            let types = vec![constructed_value_type(&value, budget, location.clone())?];
+            return self
+                .host
+                .lift_constructed(value, types, self.context, budget, range);
+        }
         match value.data {
             Data::Native(value) => {
                 let value = self.owned_native(value, budget, range)?;
@@ -1931,18 +2882,22 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<(), Self::Error> {
+        if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
+            constructed_value_type(data.value, budget, location.clone())?;
+            if let Some(d) = data.declaration {
+                crate::admit_constructed(data.value, d, budget, location.clone())?;
+            }
+            return Ok(());
+        }
         if value.contract.is_none()
             && let Data::Native(view) = &value.data
         {
-            let range = match location {
-                Location::Query(r) | Location::Source(r) => r,
-            };
             budget.charge(view.path.len(), location.clone())?;
             let value = native_view::<C, H>(view, self.host);
-            let kind = self.host.kind(value, budget, range)?;
+            let declaration = self.value_contract(value, budget, location)?;
             admit_value(
                 value,
-                &DeclaredType::Native(kind),
+                &declaration,
                 self.host,
                 self.context,
                 budget,
@@ -1951,11 +2906,31 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         }
         Ok(())
     }
+    fn native_constructed<'v>(&self, value: &'v H::Value) -> Option<&'v ConstructedValue> {
+        self.host.constructed_value(value)
+    }
     fn native_record<'v>(&self, value: &'v H::Value) -> Option<&'v crate::NativeCapture<H::Value>> {
         self.host.capture_record(value)
     }
     fn native_tuple<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
         self.host.tuple_view(value)
+    }
+    fn check_native_context(
+        &mut self,
+        value: &H::Value,
+        expected: &DeclaredType<Kind<C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), Self::Error> {
+        crate::worklists::check_context(value, expected, self.host, self.context, budget, location)
+    }
+    fn apply(
+        &mut self,
+        expression: &'a PreparedValue<'a, Query<C, H>>,
+        values: Vec<HostValue<'a, C, H>>,
+        budget: &mut Budget,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        self.compute(expression, values, budget)
     }
     fn retains_native_admission(&self) -> bool {
         self.host.retains_native_admission()
@@ -2061,6 +3036,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         let host = self.host;
         let prepared = self.prepared;
         let body_prepared = self.body_prepared;
+        let worklists = self.worklists;
         let limit = self.limit;
         let calls = &mut *self.calls;
         let value = operand.native.execute(
@@ -2080,6 +3056,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
                     contracts: &contracts,
                     prepared,
                     body_prepared,
+                    worklists,
                     source_function,
                     bodies,
                     arguments,
@@ -2110,6 +3087,16 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         budget: &mut Budget,
         location: Location,
     ) -> Result<(), Self::Error> {
+        if crate::admit_computational(
+            value,
+            expected,
+            self.host,
+            self.context,
+            budget,
+            location.clone(),
+        )? {
+            return Ok(());
+        }
         admit_value(value, expected, self.host, self.context, budget, location)
     }
     fn sequence_items(
@@ -2146,7 +3133,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     ) -> Result<HostValue<'a, C, H>, Self::Error> {
         if !crate::runtime_types::contains_native(element, budget, location)? {
             return Ok(execution::constructed_sequence(
-                values, element, budget, location,
+                values, element, self, budget, location,
             )?);
         }
         let range = match location {
@@ -2179,10 +3166,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<DeclaredType<Kind<C, H>>, Self::Error> {
-        let range = match location {
-            Location::Query(r) | Location::Source(r) => r,
-        };
-        Ok(DeclaredType::Native(self.host.kind(value, budget, range)?))
+        self.value_contract(value, budget, location)
     }
     fn subjects(
         &mut self,
@@ -2216,22 +3200,7 @@ fn native_view<'v, C, H: ProgramHost<C>>(
     value: &'v NativeView<H::Value>,
     host: &H,
 ) -> &'v H::Value {
-    let mut data = value.owner.as_ref();
-    for step in &value.path {
-        data = match step {
-            NativeStep::Record(index) => {
-                &host
-                    .capture_record(data)
-                    .expect("retained record view")
-                    .fields[*index]
-                    .1
-            }
-            NativeStep::Tuple(index) => {
-                &host.tuple_view(data).expect("retained tuple view")[*index]
-            }
-        };
-    }
-    data
+    value.native(|v| host.capture_record(v), |v| host.tuple_view(v))
 }
 
 struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
@@ -2241,6 +3210,7 @@ struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
     contracts: &'r BTreeMap<&'a str, &'a DeclaredType<Kind<C, H>>>,
     prepared: &'r BTreeMap<usize, Operand<Kind<C, H>>>,
     body_prepared: &'r [BTreeMap<usize, Operand<Kind<C, H>>>],
+    worklists: &'r [Option<DeclaredType<Kind<C, H>>>],
     source_function: Option<usize>,
     bodies: &'a Bodies<'a, C, H>,
     arguments: &'a [PreparedArgument<'a, Query<C, H>>],
@@ -2286,6 +3256,7 @@ impl<'a, C, H: FunctionHost<C>> Arguments<'_, 'a, C, H> {
             contracts: self.contracts,
             prepared: self.prepared,
             body_prepared: self.body_prepared,
+            worklists: self.worklists,
             source_function: self.source_function,
             relative: Some(input),
             limit: self.limit,
@@ -2330,12 +3301,22 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
         };
         let value = match value.data {
             Data::Constructed(value) => value,
-            Data::Native(_) => {
-                return Err(QueryError::query(
-                    expression.range.clone(),
-                    "native argument requires an explicit scalar projection",
-                )
-                .into());
+            Data::Native(view) => {
+                let data = view
+                    .constructed(
+                        |v| self.host.constructed_value(v),
+                        |v| self.host.capture_record(v),
+                        |v| self.host.tuple_view(v),
+                        budget,
+                        &location,
+                    )?
+                    .ok_or_else(|| {
+                        QueryError::query(
+                            expression.range.clone(),
+                            "native argument requires an explicit scalar projection",
+                        )
+                    })?;
+                RuntimeValue::Owned(data.materialize(budget, &location)?)
             }
         };
         Ok(ConstructedRead::from_runtime(value, location, declaration))
@@ -2378,7 +3359,24 @@ impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {
             .transpose()?;
         let value = match value.data {
             Data::Native(owner) => {
-                if owner.path.is_empty() {
+                if let Some(data) = owner.constructed(
+                    |v| self.host.constructed_value(v),
+                    |v| self.host.capture_record(v),
+                    |v| self.host.tuple_view(v),
+                    budget,
+                    &location,
+                )? {
+                    let value = data.materialize(budget, &location)?;
+                    let types = vec![constructed_value_type(&value, budget, location.clone())?];
+                    crate::projection::admit_slots::<H::Value>(1, budget, range)?;
+                    std::sync::Arc::new(self.host.lift_constructed(
+                        value,
+                        types,
+                        self.context,
+                        budget,
+                        range,
+                    )?)
+                } else if owner.path.is_empty() {
                     owner.owner
                 } else {
                     budget.charge(owner.path.len(), location.clone())?;
@@ -2446,7 +3444,8 @@ fn dispose_declaration<K>(declaration: DeclaredType<K>) {
             DeclaredType::Optional(child)
             | DeclaredType::Array(child)
             | DeclaredType::Sequence(child)
-            | DeclaredType::Keyed(child) => pending.push(*child),
+            | DeclaredType::Keyed(child)
+            | DeclaredType::Queue(child) => pending.push(*child),
             DeclaredType::Tuple(children) => pending.extend(children),
             DeclaredType::Record(fields) => {
                 pending.extend(fields.into_iter().map(|(_, value)| value))
@@ -2457,7 +3456,8 @@ fn dispose_declaration<K>(declaration: DeclaredType<K>) {
             | DeclaredType::String
             | DeclaredType::Member(_)
             | DeclaredType::Set(_)
-            | DeclaredType::Native(_) => {}
+            | DeclaredType::Native(_)
+            | DeclaredType::IdentitySet(_) => {}
         }
     }
 }

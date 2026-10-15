@@ -519,3 +519,15 @@ cargo +stable clippy --workspace --all-targets --locked -- -D warnings
 cargo +stable test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
+
+## Native worklists
+
+The callable function API supports `queue<T>` and `identity_set<T>` computational
+values. Queues preserve FIFO order and retained aliases; identity sets use exact
+host identities, including document and diff side. Pop returns the existing
+optional value containing a native `(item, remaining_queue)` tuple. These values
+stay native through functions, loops and scan snapshots. Their direct rendering
+or data serialization is unsupported. Hosts opt in through the defaulted
+`FunctionHost` hooks; the common expression reader and consumer frontends do not
+expose worklist operations yet. See [values](docs/values.md#native-computational-collections)
+and [host integration](docs/host-integration.md#native-computational-values).

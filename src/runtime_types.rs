@@ -28,6 +28,10 @@ pub enum DeclaredType<K> {
     Set(SetElementType),
     Keyed(Box<Self>),
     Native(K),
+    /// Computational FIFO; its elements retain this whole declaration.
+    Queue(Box<Self>),
+    /// Computational set of exact host identities for one native kind.
+    IdentitySet(K),
 }
 
 /// Contracts for one ordinary trusted Rust adapter operation.
@@ -230,7 +234,7 @@ fn reject_native(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         match declaration {
-            DeclaredType::Native(()) => {
+            DeclaredType::Native(()) | DeclaredType::Queue(_) | DeclaredType::IdentitySet(()) => {
                 return Err(refusal(
                     "native declaration requires a host",
                     budget,
@@ -273,6 +277,9 @@ pub(crate) fn copy_declaration<K: Clone>(
             }
             DeclaredType::Sequence(child) => {
                 DeclaredType::Sequence(Box::new(copy_declaration(child, budget, location)?))
+            }
+            DeclaredType::Queue(child) => {
+                DeclaredType::Queue(Box::new(copy_declaration(child, budget, location)?))
             }
             DeclaredType::Keyed(child) => {
                 DeclaredType::Keyed(Box::new(copy_declaration(child, budget, location)?))
@@ -337,14 +344,16 @@ fn compatible_declarations_with<A, B>(
             | (DeclaredType::Integer, DeclaredType::Integer)
             | (DeclaredType::Float, DeclaredType::Float)
             | (DeclaredType::String, DeclaredType::String) => true,
-            (DeclaredType::Native(a), DeclaredType::Native(b)) => native(a, b),
+            (DeclaredType::Native(a), DeclaredType::Native(b))
+            | (DeclaredType::IdentitySet(a), DeclaredType::IdentitySet(b)) => native(a, b),
             (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
             (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
             (DeclaredType::Array(a), DeclaredType::Array(b))
             | (DeclaredType::Array(a), DeclaredType::Sequence(b) | DeclaredType::Keyed(b))
             | (DeclaredType::Sequence(a) | DeclaredType::Keyed(a), DeclaredType::Array(b))
             | (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
-            | (DeclaredType::Keyed(a), DeclaredType::Keyed(b)) => {
+            | (DeclaredType::Keyed(a), DeclaredType::Keyed(b))
+            | (DeclaredType::Queue(a), DeclaredType::Queue(b)) => {
                 compatible_declarations_with(a, b, budget, location, native)?
             }
             (DeclaredType::Tuple(a), DeclaredType::Tuple(b)) => {
@@ -438,7 +447,8 @@ pub(crate) fn validate_declaration<K>(
             DeclaredType::Optional(element)
             | DeclaredType::Array(element)
             | DeclaredType::Sequence(element)
-            | DeclaredType::Keyed(element) => {
+            | DeclaredType::Keyed(element)
+            | DeclaredType::Queue(element) => {
                 validate_declaration(element, budget, location)?;
             }
             DeclaredType::Tuple(elements) => {
@@ -466,7 +476,8 @@ pub(crate) fn validate_declaration<K>(
             | DeclaredType::String
             | DeclaredType::Member(_)
             | DeclaredType::Set(_)
-            | DeclaredType::Native(_) => {}
+            | DeclaredType::Native(_)
+            | DeclaredType::IdentitySet(_) => {}
         }
         Ok(())
     })
@@ -682,6 +693,8 @@ impl<K> DeclaredType<K> {
             Self::Set(_) => "expected set of declared element type",
             Self::Keyed(_) => "expected keyed array",
             Self::Native(_) => "expected native value",
+            Self::Queue(_) => "expected computational queue",
+            Self::IdentitySet(_) => "expected native identity set",
         }
     }
 }
@@ -737,7 +750,8 @@ pub(crate) fn same_declaration<K: PartialEq>(
             (DeclaredType::Optional(a), DeclaredType::Optional(b))
             | (DeclaredType::Array(a), DeclaredType::Array(b))
             | (DeclaredType::Sequence(a), DeclaredType::Sequence(b))
-            | (DeclaredType::Keyed(a), DeclaredType::Keyed(b)) => {
+            | (DeclaredType::Keyed(a), DeclaredType::Keyed(b))
+            | (DeclaredType::Queue(a), DeclaredType::Queue(b)) => {
                 same_declaration(a, b, budget, location)?
             }
             (DeclaredType::Tuple(a), DeclaredType::Tuple(b)) if a.len() == b.len() => {
@@ -768,7 +782,8 @@ pub(crate) fn same_declaration<K: PartialEq>(
                 }
                 true
             }
-            (DeclaredType::Native(a), DeclaredType::Native(b)) => a == b,
+            (DeclaredType::Native(a), DeclaredType::Native(b))
+            | (DeclaredType::IdentitySet(a), DeclaredType::IdentitySet(b)) => a == b,
             (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
             (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
             (DeclaredType::Boolean, DeclaredType::Boolean)
@@ -824,7 +839,7 @@ pub(crate) fn constructed_declaration<K>(
             DeclaredType::String => DeclaredType::String,
             DeclaredType::Member(id) => DeclaredType::Member(*id),
             DeclaredType::Set(t) => DeclaredType::Set(*t),
-            DeclaredType::Native(_) => {
+            DeclaredType::Native(_) | DeclaredType::Queue(_) | DeclaredType::IdentitySet(_) => {
                 return Err(QueryError::query(
                     match location {
                         Location::Query(r) | Location::Source(r) => r.clone(),
@@ -844,7 +859,7 @@ pub(crate) fn contains_native<K>(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         Ok(match declaration {
-            DeclaredType::Native(_) => true,
+            DeclaredType::Native(_) | DeclaredType::Queue(_) | DeclaredType::IdentitySet(_) => true,
             DeclaredType::Optional(child)
             | DeclaredType::Array(child)
             | DeclaredType::Sequence(child)
@@ -860,6 +875,41 @@ pub(crate) fn contains_native<K>(
             DeclaredType::Record(children) => {
                 for (_, child) in children {
                     if contains_native(child, budget, location)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            _ => false,
+        })
+    })
+}
+
+/// Whether a contract contains a computational value at any position.
+pub(crate) fn contains_computational<K>(
+    declaration: &DeclaredType<K>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        Ok(match declaration {
+            DeclaredType::Queue(_) | DeclaredType::IdentitySet(_) => true,
+            DeclaredType::Optional(c)
+            | DeclaredType::Array(c)
+            | DeclaredType::Sequence(c)
+            | DeclaredType::Keyed(c) => contains_computational(c, budget, location)?,
+            DeclaredType::Tuple(c) => {
+                for c in c {
+                    if contains_computational(c, budget, location)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            DeclaredType::Record(c) => {
+                for (_, c) in c {
+                    if contains_computational(c, budget, location)? {
                         return Ok(true);
                     }
                 }

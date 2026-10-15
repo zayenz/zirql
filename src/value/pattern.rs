@@ -253,18 +253,39 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
             )?,
             PatternKind::Wildcard => {}
             PatternKind::Absent | PatternKind::Present(_) => {
-                let present = match &value.data {
-                    Data::Native(_) => true,
-                    Data::Constructed(data) => data.as_ref().occurs(),
-                };
+                let present = host.occurs(&value, budget, &location)?;
                 match &pattern.value {
                     PatternKind::Absent if present => return Ok(None),
                     PatternKind::Present(child) if present => {
                         if let Some(DeclaredType::Optional(inner)) = value.contract {
                             value.contract = Some(inner);
                         }
-                        if let Data::Constructed(data) = value.data {
-                            value.data = Data::Constructed(data.into_present(budget, &location)?);
+                        let declaration = if matches!(value.data, Data::Native(_)) {
+                            host.constructed(&value, budget, &location)?
+                                .and_then(|v| v.declaration)
+                                .map(underlying)
+                                .map(|d| copy_declaration(d, budget, &location))
+                                .transpose()?
+                        } else {
+                            None
+                        };
+                        match &mut value.data {
+                            Data::Constructed(_) => {
+                                let Data::Constructed(data) = value.data else {
+                                    unreachable!()
+                                };
+                                value.data =
+                                    Data::Constructed(data.into_present(budget, &location)?);
+                            }
+                            Data::Native(view) => {
+                                if let Some(d) = declaration {
+                                    view.retain_declaration(
+                                        std::sync::Arc::new(d),
+                                        budget,
+                                        &location,
+                                    )?;
+                                }
+                            }
                         }
                         push_metadata(
                             &mut pending,
@@ -278,10 +299,10 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
                 }
             }
             PatternKind::Literal(literal) => {
-                let Data::Constructed(data) = &value.data else {
+                let Some(data) = host.constructed(&value, budget, &location)? else {
                     return Ok(None);
                 };
-                let actual = data.as_ref().data();
+                let actual = data.value.data();
                 let compatible = matches!(
                     (literal, actual),
                     (ConstructedValue::Boolean(_), ConstructedValue::Boolean(_))
@@ -294,14 +315,18 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
                 }
             }
             PatternKind::Tuple(children) => {
-                let len = match &value.data {
-                    Data::Constructed(data) => match data.as_ref().data() {
+                let len = match host.constructed(&value, budget, &location)? {
+                    Some(data) => match data.value.data() {
                         ConstructedValue::Tuple(v) => Some(v.len()),
                         _ => None,
                     },
-                    Data::Native(view) => host
-                        .native_tuple(host.native_data(view, budget, &location)?)
-                        .map(<[_]>::len),
+                    None => {
+                        let Data::Native(view) = &value.data else {
+                            unreachable!()
+                        };
+                        host.native_tuple(host.native_data(view, budget, &location)?)
+                            .map(<[_]>::len)
+                    }
                 };
                 if len != Some(children.len()) {
                     return Ok(None);
@@ -326,14 +351,18 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
                 fields,
                 ignore_rest,
             } => {
-                let len = match &value.data {
-                    Data::Constructed(data) => match data.as_ref().data() {
+                let len = match host.constructed(&value, budget, &location)? {
+                    Some(data) => match data.value.data() {
                         ConstructedValue::Record(v) => Some(v.len()),
                         _ => None,
                     },
-                    Data::Native(view) => host
-                        .native_record(host.native_data(view, budget, &location)?)
-                        .map(|r| r.fields.len()),
+                    None => {
+                        let Data::Native(view) = &value.data else {
+                            unreachable!()
+                        };
+                        host.native_record(host.native_data(view, budget, &location)?)
+                            .map(|r| r.fields.len())
+                    }
                 };
                 let Some(len) = len else {
                     return Ok(None);
@@ -347,14 +376,17 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
                 for (label, child) in fields {
                     let mut found = None;
                     for index in 0..len {
-                        let actual = match &value.data {
-                            Data::Constructed(data) => {
-                                let ConstructedValue::Record(fields) = data.as_ref().data() else {
+                        let actual = match host.constructed(&value, budget, &location)? {
+                            Some(data) => {
+                                let ConstructedValue::Record(fields) = data.value.data() else {
                                     unreachable!()
                                 };
                                 &fields[index].0
                             }
-                            Data::Native(view) => {
+                            None => {
+                                let Data::Native(view) = &value.data else {
+                                    unreachable!()
+                                };
                                 &host
                                     .native_record(host.native_data(view, budget, &location)?)
                                     .expect("record view")
@@ -393,7 +425,7 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
     }
     Ok(Some(bindings))
 }
-fn select<'a, Q, H: Host<'a, Q>>(
+pub(crate) fn select<'a, Q, H: Host<'a, Q> + ?Sized>(
     value: &mut Value<'a, H::Native, H::Kind>,
     step: NativeStep,
     host: &H,
@@ -404,21 +436,24 @@ fn select<'a, Q, H: Host<'a, Q>>(
     while let Some(DeclaredType::Optional(inner)) = contract {
         contract = Some(inner);
     }
-    let contract = match (contract, step) {
-        (Some(DeclaredType::Tuple(children)), NativeStep::Tuple(index)) => children.get(index),
+    let contract = match (contract, &step) {
+        (Some(DeclaredType::Tuple(children)), NativeStep::Tuple(index)) => children.get(*index),
         (Some(DeclaredType::Record(fields)), NativeStep::Record(index)) => {
-            let label = match &value.data {
-                Data::Constructed(data) => {
-                    let ConstructedValue::Record(fields) = data.as_ref().data() else {
+            let label = match host.constructed(value, budget, location)? {
+                Some(data) => {
+                    let ConstructedValue::Record(fields) = data.value.data() else {
                         unreachable!()
                     };
-                    &fields[index].0
+                    &fields[*index].0
                 }
-                Data::Native(view) => {
+                None => {
+                    let Data::Native(view) = &value.data else {
+                        unreachable!()
+                    };
                     &host
                         .native_record(host.native_data(view, budget, location)?)
                         .expect("record view")
-                        .fields[index]
+                        .fields[*index]
                         .0
                 }
             };
@@ -426,11 +461,39 @@ fn select<'a, Q, H: Host<'a, Q>>(
         }
         _ => None,
     };
+    let constructed = if matches!(value.data, Data::Native(_)) {
+        host.constructed(value, budget, location)?
+    } else {
+        None
+    };
+    let is_constructed = constructed.is_some();
+    let constructed_child = match constructed {
+        Some(data) => data
+            .child(step.index(), budget, location)?
+            .declaration
+            .map(|d| copy_declaration(d, budget, location))
+            .transpose()?,
+        None => None,
+    };
     let data = match &mut value.data {
         Data::Constructed(data) => {
             Data::Constructed(data.pattern_child(step.index(), budget, location)?)
         }
-        Data::Native(view) => Data::Native(view.child(step, budget, location)?),
+        Data::Native(view) => {
+            let mut selected = view.child(
+                if is_constructed {
+                    NativeStep::Constructed(step.index())
+                } else {
+                    step
+                },
+                budget,
+                location,
+            )?;
+            if let Some(d) = constructed_child {
+                selected.retain_declaration(std::sync::Arc::new(d), budget, location)?;
+            }
+            Data::Native(selected)
+        }
     };
     Ok(Value { data, contract })
 }

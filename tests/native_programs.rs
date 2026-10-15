@@ -3,9 +3,9 @@ use std::{ops::Range, rc::Rc};
 use zirql::{
     Bindings, Budget, DeclaredType, EmissionPolicy, EvaluationError, Expression, ExpressionKind,
     ExpressionStep, Host, Located, Location, NativeInput, NativeValue, OperationSignature,
-    Pipeline, PredicateKind, Program, ProgramHost, ProgramLimits, QueryError, QueryErrorCategory,
-    RuntimeTypeHost, Stage, Statement, Truth, checked_invoke, evaluate, evaluate_expression,
-    evaluate_program,
+    Pipeline, PredicateKind, Program, ProgramHost, ProgramLimits, ProjectionHost, QueryError,
+    QueryErrorCategory, RuntimeTypeHost, Stage, Statement, Truth, checked_invoke, evaluate,
+    evaluate_expression, evaluate_program,
 };
 
 fn limits() -> ProgramLimits {
@@ -145,12 +145,15 @@ fn emit<S>(
 
 #[derive(Debug, PartialEq, Eq)]
 struct Word<'a> {
+    side: u64,
     text: &'a str,
     range: Range<usize>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum SourceValue<'a> {
+    Constructed(zirql::ConstructedValue),
+    Computational(std::sync::Arc<zirql::ComputationalValue<SourceValue<'a>, SourceKind>>),
     Words(Vec<Word<'a>>),
     Count(usize),
     Record(zirql::NativeCapture<SourceValue<'a>>),
@@ -161,10 +164,40 @@ enum SourceValue<'a> {
     },
 }
 
+// Computational values have no language equality operation. This fixture
+// compares retained wrapper identity only; native/data comparisons keep their
+// existing structural meaning.
+impl PartialEq for SourceValue<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Constructed(a), Self::Constructed(b)) => a == b,
+            (Self::Computational(a), Self::Computational(b)) => std::sync::Arc::ptr_eq(a, b),
+            (Self::Words(a), Self::Words(b)) => a == b,
+            (Self::Count(a), Self::Count(b)) => a == b,
+            (Self::Record(a), Self::Record(b)) => a == b,
+            (Self::Tuple(a), Self::Tuple(b)) => a == b,
+            (
+                Self::Sequence {
+                    values: a,
+                    element: ae,
+                },
+                Self::Sequence {
+                    values: b,
+                    element: be,
+                },
+            ) => a == b && ae == be,
+            _ => false,
+        }
+    }
+}
+
 type SourceExpression = Expression<SourceStage, (), &'static str>;
 
 #[derive(Debug, PartialEq, Eq)]
 enum SourceStage {
+    Neighbors,
+    Same,
+    Invalidate,
     Prefix(&'static str),
     Pipeline(Pipeline<()>),
     Select(Box<SourceExpression>),
@@ -221,6 +254,24 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         let location = Location::Query(range.clone());
         Ok(match value {
+            SourceValue::Constructed(v) => {
+                SourceValue::Constructed(zirql::copy_constructed_value(v, budget, location)?)
+            }
+            SourceValue::Computational(v) => {
+                zirql::admit_computational(
+                    value,
+                    &v.declaration(budget, &location)?,
+                    self,
+                    _context,
+                    budget,
+                    location.clone(),
+                )?;
+                budget.charge(1, location.clone())?;
+                budget.charge_results(1, location.clone())?;
+                SourceValue::Computational(std::sync::Arc::new(
+                    v.share(self, _context, budget, location)?,
+                ))
+            }
             SourceValue::Words(words) => {
                 budget.check_items(words.len(), location.clone())?;
                 budget.charge(words.len(), location.clone())?;
@@ -229,6 +280,7 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                     words
                         .iter()
                         .map(|word| Word {
+                            side: word.side,
                             text: word.text,
                             range: word.range.clone(),
                         })
@@ -284,6 +336,67 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         match stage {
+            SourceStage::Invalidate => {
+                context.source = &context.source[1..];
+                Ok(SourceValue::Constructed(zirql::ConstructedValue::Boolean(
+                    true,
+                )))
+            }
+            SourceStage::Same => {
+                let a = bindings.get("candidate", range.clone())?;
+                let b = bindings.get("target", range.clone())?;
+                let a_id = <Self as zirql::FunctionHost<_>>::native_identity(
+                    self,
+                    a,
+                    &SourceKind::Words,
+                    context,
+                    budget,
+                    range,
+                )?;
+                let b_id = <Self as zirql::FunctionHost<_>>::native_identity(
+                    self,
+                    b,
+                    &SourceKind::Words,
+                    context,
+                    budget,
+                    range,
+                )?;
+                budget.charge(4, Location::Query(range.clone()))?;
+                Ok(SourceValue::Constructed(zirql::ConstructedValue::Boolean(
+                    a_id == b_id,
+                )))
+            }
+            SourceStage::Neighbors => {
+                let SourceValue::Words(words) = value else {
+                    return Err(QueryError::query(range.clone(), "expected node").into());
+                };
+                let [word] = words.as_slice() else {
+                    return Err(QueryError::query(range.clone(), "expected one node").into());
+                };
+                let offsets: &[usize] = match word.text {
+                    "A" => &[2, 4],
+                    "B" => &[6],
+                    "C" => &[2],
+                    "D" => &[0],
+                    "E" => &[],
+                    _ => return Err(QueryError::query(range.clone(), "unknown graph node").into()),
+                };
+                budget.charge(offsets.len() + 1, Location::Query(range.clone()))?;
+                budget.charge_results(offsets.len() + 1, Location::Query(range.clone()))?;
+                Ok(SourceValue::Sequence {
+                    values: offsets
+                        .iter()
+                        .map(|&i| {
+                            SourceValue::Words(vec![Word {
+                                side: word.side,
+                                text: &context.source[i..i + 1],
+                                range: i..i + 1,
+                            }])
+                        })
+                        .collect(),
+                    element: DeclaredType::Native(SourceKind::Words),
+                })
+            }
             SourceStage::Prefix(prefix) => {
                 context.prefix = prefix;
                 Ok(value)
@@ -415,13 +528,19 @@ fn source_input<'a>(source: &'a str, budget: &mut Budget) -> SourceValue<'a> {
         budget
             .charge_results(1, Location::Source(range.clone()))
             .unwrap();
-        words.push(Word { text, range });
+        words.push(Word {
+            side: 0,
+            text,
+            range,
+        });
     }
     SourceValue::Words(words)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 enum SourceKind {
+    Constructed(std::sync::Arc<Vec<zirql::ValueType>>),
+    Computational(Box<DeclaredType<SourceKind>>),
     Words,
     Count,
     Record(zirql::NativeCapture<SourceKind>),
@@ -430,6 +549,13 @@ enum SourceKind {
 }
 fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
     match kind {
+        SourceKind::Constructed(types) => match types.as_slice() {
+            [zirql::ValueType::Integer] => DeclaredType::Integer,
+            [zirql::ValueType::Boolean] => DeclaredType::Boolean,
+            [zirql::ValueType::Float] => DeclaredType::Float,
+            [zirql::ValueType::String] => DeclaredType::String,
+            _ => panic!("unsupported fixture scalar declaration"),
+        },
         SourceKind::Record(record) => DeclaredType::Record(
             record
                 .fields
@@ -438,6 +564,7 @@ fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
                 .collect(),
         ),
         SourceKind::Sequence(element) => DeclaredType::Sequence(element.clone()),
+        SourceKind::Computational(d) => *d.clone(),
         SourceKind::Tuple(children) => {
             DeclaredType::Tuple(children.iter().map(source_declaration).collect())
         }
@@ -447,6 +574,15 @@ fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
 
 impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
     type Kind = SourceKind;
+    fn constructed_value<'v>(
+        &self,
+        value: &'v SourceValue<'a>,
+    ) -> Option<&'v zirql::ConstructedValue> {
+        match value {
+            SourceValue::Constructed(v) => Some(v),
+            _ => None,
+        }
+    }
 
     fn admit_native(
         &self,
@@ -456,6 +592,15 @@ impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
         budget: &mut Budget,
         location: Location,
     ) -> Result<(), EvaluationError<SourceFailure>> {
+        if zirql::admit_computational(value, expected, self, context, budget, location.clone())? {
+            return Ok(());
+        }
+        if let SourceValue::Constructed(v) = value {
+            return Ok(zirql::admit_constructed(v, expected, budget, location)?);
+        }
+        if let DeclaredType::Optional(d) = expected {
+            return self.admit_native(value, d, context, budget, location);
+        }
         match (expected, value) {
             (
                 DeclaredType::Native(
@@ -543,6 +688,16 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     ) -> Result<SourceKind, QueryError> {
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match value {
+            SourceValue::Constructed(v) => {
+                SourceKind::Constructed(std::sync::Arc::new(vec![zirql::constructed_value_type(
+                    v,
+                    budget,
+                    Location::Query(range.clone()),
+                )?]))
+            }
+            SourceValue::Computational(v) => SourceKind::Computational(Box::new(
+                v.declaration(budget, &Location::Query(range.clone()))?,
+            )),
             SourceValue::Sequence { element, .. } => {
                 SourceKind::Sequence(Box::new(element.clone()))
             }
@@ -565,11 +720,18 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     }
     fn scalar_types(
         &self,
-        _: &SourceKind,
-        _: &mut Budget,
-        _: &Range<usize>,
+        kind: &SourceKind,
+        budget: &mut Budget,
+        range: &Range<usize>,
     ) -> Result<Option<Vec<zirql::ValueType>>, QueryError> {
-        Ok(None)
+        match kind {
+            SourceKind::Constructed(types) => Ok(Some(zirql::copy_value_types(
+                types,
+                budget,
+                Location::Query(range.clone()),
+            )?)),
+            _ => Ok(None),
+        }
     }
     fn capture_record_kind<'k>(
         &self,
@@ -586,18 +748,26 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
             _ => None,
         }
     }
-    fn constructed_kind(&self, _: Vec<zirql::ValueType>) -> SourceKind {
-        SourceKind::Words
+    fn constructed_kind(&self, types: Vec<zirql::ValueType>) -> SourceKind {
+        SourceKind::Constructed(std::sync::Arc::new(types))
     }
     fn stage_kind(
         &self,
-        _: &SourceStage,
+        stage: &SourceStage,
         _: &SourceKind,
         _: &std::collections::BTreeMap<String, SourceKind>,
         _: &mut Budget,
         _: &Range<usize>,
     ) -> Result<SourceKind, QueryError> {
-        Ok(SourceKind::Words)
+        Ok(match stage {
+            SourceStage::Neighbors => {
+                SourceKind::Sequence(Box::new(DeclaredType::Native(SourceKind::Words)))
+            }
+            SourceStage::Same | SourceStage::Invalidate => {
+                self.constructed_kind(vec![zirql::ValueType::Boolean])
+            }
+            _ => SourceKind::Words,
+        })
     }
     fn is_pure(&self, _: &SourceStage) -> bool {
         true
@@ -616,6 +786,19 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
         }
         Ok(vec![])
     }
+    fn subject_kind(
+        &self,
+        kind: &SourceKind,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        match kind {
+            SourceKind::Sequence(element) => {
+                <Self as zirql::FunctionHost<_>>::declaration_kind(self, element, budget, range)
+            }
+            _ => Ok(kind.clone()),
+        }
+    }
     fn subjects(
         &self,
         input: SourceValue<'a>,
@@ -627,25 +810,127 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     }
     fn project_value(
         &self,
-        _: SourceValue<'a>,
+        value: SourceValue<'a>,
         _: &mut SourceContext<'a>,
-        _: &mut Budget,
+        budget: &mut Budget,
         r: &Range<usize>,
     ) -> Result<zirql::ConstructedValue, EvaluationError<SourceFailure>> {
-        Err(QueryError::query(r.clone(), "native-only fixture").into())
+        match value {
+            SourceValue::Constructed(v) => Ok(v),
+            SourceValue::Computational(_) => Err(runtime_refusal(
+                "unsupported computational value rendering",
+                budget,
+                Location::Query(r.clone()),
+            )?
+            .into()),
+            _ => Err(QueryError::query(r.clone(), "native-only fixture").into()),
+        }
     }
     fn lift_constructed(
         &self,
-        _: zirql::ConstructedValue,
+        value: zirql::ConstructedValue,
         _: Vec<zirql::ValueType>,
         _: &mut SourceContext<'a>,
         _: &mut Budget,
-        r: &Range<usize>,
+        _r: &Range<usize>,
     ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
-        Err(QueryError::query(r.clone(), "native-only fixture").into())
+        Ok(SourceValue::Constructed(value))
     }
 }
 impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
+    fn prepare_computational(
+        &self,
+        d: Option<&DeclaredType<SourceKind>>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        budget.charge(1, Location::Query(range.clone()))?;
+        if let Some(d) = d {
+            self.declaration_kind(d, budget, range)?;
+        }
+        Ok(())
+    }
+    fn retains_native_admission(&self) -> bool {
+        true
+    }
+    fn computational_value<'v>(
+        &self,
+        value: &'v SourceValue<'a>,
+    ) -> Option<&'v zirql::ComputationalValue<SourceValue<'a>, SourceKind>> {
+        match value {
+            SourceValue::Computational(v) => Some(v),
+            _ => None,
+        }
+    }
+    fn lift_computational(
+        &self,
+        value: zirql::ComputationalValue<SourceValue<'a>, SourceKind>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        budget.charge(1, Location::Query(range.clone()))?;
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(SourceValue::Computational(std::sync::Arc::new(value)))
+    }
+    fn construct_tuple(
+        &self,
+        values: Vec<SourceValue<'a>>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        budget.charge(values.len() + 1, Location::Query(range.clone()))?;
+        budget.charge_results(values.len() + 1, Location::Query(range.clone()))?;
+        Ok(SourceValue::Tuple(values))
+    }
+    fn resolve_type_name(
+        &self,
+        name: Located<&str>,
+        budget: &mut Budget,
+    ) -> Result<DeclaredType<SourceKind>, QueryError> {
+        budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+        if name.value == "Word" {
+            Ok(DeclaredType::Native(SourceKind::Words))
+        } else {
+            Err(QueryError::query(name.range, "unknown native type"))
+        }
+    }
+    fn worklist_context(
+        &self,
+        context: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeContextId, EvaluationError<SourceFailure>> {
+        budget.charge(1, Location::Query(range.clone()))?;
+        Ok(zirql::NativeContextId([
+            context.source.as_ptr() as usize as u64,
+            context.source.len() as u64,
+        ]))
+    }
+    fn native_identity(
+        &self,
+        value: &SourceValue<'a>,
+        _: &SourceKind,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeIdentity, EvaluationError<SourceFailure>> {
+        budget.charge(4, Location::Query(range.clone()))?;
+        let SourceValue::Words(words) = value else {
+            return Err(QueryError::query(range.clone(), "expected node").into());
+        };
+        let [word] = words.as_slice() else {
+            return Err(QueryError::query(range.clone(), "expected one node").into());
+        };
+        Ok(zirql::NativeIdentity([
+            word.text.as_ptr() as usize as u64 - word.range.start as u64,
+            word.side,
+            word.range.start as u64,
+            word.range.end as u64,
+        ]))
+    }
+
     fn sequence_items(
         &self,
         value: &SourceValue<'a>,
@@ -696,8 +981,16 @@ impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
     ) -> Result<SourceKind, QueryError> {
         budget.charge(1, Location::Query(range.clone()))?;
         Ok(match declaration {
+            DeclaredType::Boolean => self.constructed_kind(vec![zirql::ValueType::Boolean]),
+            DeclaredType::Integer => self.constructed_kind(vec![zirql::ValueType::Integer]),
+            DeclaredType::Float => self.constructed_kind(vec![zirql::ValueType::Float]),
+            DeclaredType::String => self.constructed_kind(vec![zirql::ValueType::String]),
             DeclaredType::Native(kind) => kind.clone(),
             DeclaredType::Sequence(element) => SourceKind::Sequence(element.clone()),
+            d @ (DeclaredType::Queue(_) | DeclaredType::IdentitySet(_)) => {
+                SourceKind::Computational(Box::new(d.clone()))
+            }
+            DeclaredType::Optional(d) => self.declaration_kind(d, budget, range)?,
             DeclaredType::Tuple(children) => SourceKind::Tuple(
                 children
                     .iter()
@@ -780,6 +1073,7 @@ fn named_native_accumulators_keep_handles_empty_schema_and_failed_context() {
     };
     let words = |range: Range<usize>| {
         SourceValue::Words(vec![Word {
+            side: 0,
             text: &source[range.clone()],
             range,
         }])
@@ -1258,10 +1552,12 @@ fn borrowed_program_restores_native_bindings_and_relative_input_with_one_context
         words,
         &[
             Word {
+                side: 0,
                 text: &source[6..11],
                 range: 6..11
             },
             Word {
+                side: 0,
                 text: &source[12..17],
                 range: 12..17
             },
@@ -6403,6 +6699,7 @@ fn native_pattern_views_keep_child_handles_coordinates_and_guard_failures() {
     };
     let words = |range: Range<usize>| {
         SourceValue::Words(vec![Word {
+            side: 0,
             text: &source[range.clone()],
             range,
         }])
@@ -6453,6 +6750,7 @@ fn native_pattern_views_keep_child_handles_coordinates_and_guard_failures() {
     assert_eq!(
         selected,
         vec![Word {
+            side: 0,
             text: "alpha",
             range: 0..5
         }]
@@ -6722,6 +7020,7 @@ fn prepared_binding_and_program_capture_fields_keep_native_values() {
         SourceValue::Words(vec![Word {
             text: &source[range.clone()],
             range,
+            side: 0,
         }])
     };
     let record = SourceValue::Record(zirql::NativeCapture {
@@ -6855,4 +7154,1089 @@ fn prepared_binding_and_program_capture_fields_keep_native_values() {
         )
         .is_err()
     );
+}
+
+fn worklist_value(
+    value: zirql::ValueExpressionKind<SourceExpression>,
+) -> zirql::ValueExpression<SourceExpression> {
+    at(value, 70)
+}
+fn worklist_name(name: &str) -> zirql::ValueExpression<SourceExpression> {
+    worklist_value(zirql::ValueExpressionKind::Name(name.into()))
+}
+fn word_type() -> Located<zirql::SignatureType> {
+    at(zirql::SignatureType::Named(at("Word".into(), 71)), 71)
+}
+fn word_at(source: &str, range: Range<usize>, side: u64) -> SourceValue<'_> {
+    SourceValue::Words(vec![Word {
+        text: &source[range.clone()],
+        range,
+        side,
+    }])
+}
+fn worklist_query(
+    binding: &str,
+    stage: SourceStage,
+    projected: bool,
+) -> zirql::ValueExpression<SourceExpression> {
+    let query = sequence(
+        at(ExpressionKind::Binding(binding.into()), 72),
+        vec![at(ExpressionStep::Stage(stage), 73)],
+    );
+    worklist_value(if projected {
+        zirql::ValueExpressionKind::NativeQuery(Box::new(query))
+    } else {
+        zirql::ValueExpressionKind::NativeValue(Box::new(query))
+    })
+}
+fn graph_functions() -> Vec<zirql::FunctionDeclaration<SourceExpression, SourceKind>> {
+    use zirql::{
+        ConstructedValue as V, PatternKind as P, ValueBinaryOperator as B, ValueExpressionKind as K,
+    };
+    let v = worklist_value;
+    let n = worklist_name;
+    let boolean = |b| v(K::Literal(V::Boolean(b)));
+    let integer = |i| v(K::Literal(V::Integer(i)));
+    let exit = |found| {
+        v(K::Break(Box::new(v(K::Tuple(vec![
+            boolean(found),
+            n("expanded"),
+        ])))))
+    };
+    let body = v(K::ValueMatch {
+        subject: Box::new(v(K::PopFront(Box::new(n("todo"))))),
+        arms: vec![
+            zirql::ValueMatchArm {
+                pattern: at(
+                    P::Present(Box::new(at(
+                        P::Tuple(vec![
+                            at(P::Name(at("candidate".into(), 74)), 74),
+                            at(P::Name(at("rest".into(), 75)), 75),
+                        ]),
+                        74,
+                    ))),
+                    74,
+                ),
+                guard: None,
+                value: v(K::Conditional {
+                    branches: vec![(
+                        worklist_query("candidate", SourceStage::Same, true),
+                        exit(true),
+                    )],
+                    otherwise: Box::new(v(K::Conditional {
+                        branches: vec![(
+                            v(K::Binary {
+                                operator: B::In,
+                                left: Box::new(n("candidate")),
+                                right: Box::new(n("seen")),
+                            }),
+                            v(K::Continue(vec![n("rest"), n("seen"), n("expanded")])),
+                        )],
+                        otherwise: Box::new(v(K::Continue(vec![
+                            v(K::PushBackAll {
+                                queue: Box::new(n("rest")),
+                                items: Box::new(worklist_query(
+                                    "candidate",
+                                    SourceStage::Neighbors,
+                                    false,
+                                )),
+                            }),
+                            v(K::Insert {
+                                set: Box::new(n("seen")),
+                                item: Box::new(n("candidate")),
+                            }),
+                            v(K::Binary {
+                                operator: B::Add,
+                                left: Box::new(n("expanded")),
+                                right: Box::new(integer(1)),
+                            }),
+                        ]))),
+                    })),
+                }),
+            },
+            zirql::ValueMatchArm {
+                pattern: at(P::Wildcard, 76),
+                guard: None,
+                value: exit(false),
+            },
+        ],
+    });
+    let parameters = || {
+        ["start", "target"]
+            .into_iter()
+            .map(|name| {
+                at(
+                    zirql::FunctionParameter {
+                        name: at(name.into(), 77),
+                        declaration: DeclaredType::Native(SourceKind::Words),
+                    },
+                    77,
+                )
+            })
+            .collect()
+    };
+    vec![
+        zirql::FunctionDeclaration {
+            name: at("walk".into(), 78),
+            parameters: parameters(),
+            bindings: vec![],
+            result: at(
+                DeclaredType::Tuple(vec![DeclaredType::Boolean, DeclaredType::Integer]),
+                78,
+            ),
+            value: v(K::Loop {
+                states: vec![
+                    (
+                        at("todo".into(), 79),
+                        v(K::Queue {
+                            items: Box::new(v(K::Array(vec![n("start")]))),
+                            element: None,
+                        }),
+                    ),
+                    (
+                        at("seen".into(), 80),
+                        v(K::IdentitySet {
+                            element: word_type(),
+                        }),
+                    ),
+                    (at("expanded".into(), 81), integer(0)),
+                ],
+                body: Box::new(body),
+            }),
+        },
+        zirql::FunctionDeclaration {
+            name: at("reaches".into(), 82),
+            parameters: parameters(),
+            bindings: vec![],
+            result: at(DeclaredType::Boolean, 82),
+            value: v(K::TupleAccess {
+                value: Box::new(v(K::Call {
+                    function: at("walk".into(), 83),
+                    arguments: vec![n("start"), n("target")],
+                })),
+                position: at(1, 84),
+            }),
+        },
+    ]
+}
+fn worklist_limits() -> ProgramLimits {
+    ProgramLimits {
+        work: 10_000_000,
+        results: 1_000_000,
+        nesting: 64,
+        stream_items: 10_000,
+    }
+}
+
+#[test]
+fn callable_native_worklist_reachability_handles_cycles_duplicates_and_zero_edges() {
+    use zirql::{ConstructedValue as V, FunctionLimits, FunctionRequest, ValueExpressionKind as K};
+    let source = String::from("A B C D E");
+    let functions = graph_functions();
+    for (function, target, expected) in [
+        ("reaches", 6, V::Boolean(true)),
+        ("reaches", 8, V::Boolean(false)),
+        ("reaches", 0, V::Boolean(true)),
+        ("walk", 8, V::Tuple(vec![V::Boolean(false), V::Integer(4)])),
+    ] {
+        let mut context = SourceContext {
+            source: &source,
+            prefix: "",
+            emissions: vec![],
+        };
+        let mut budget = Budget::for_program(worklist_limits());
+        let bindings = Bindings::new([
+            (at("start".into(), 1), word_at(&source, 0..1, 0)),
+            (
+                at("target".into(), 2),
+                word_at(&source, target..target + 1, 0),
+            ),
+        ])
+        .unwrap();
+        let entry = worklist_value(K::Call {
+            function: at(function.into(), 85),
+            arguments: vec![worklist_name("start"), worklist_name("target")],
+        });
+        let result = FunctionRequest::prepare(
+            &functions,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 2 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap();
+        let SourceValue::Constructed(actual) = result else {
+            panic!("constructed reachability");
+        };
+        match (actual.data(), &expected) {
+            (V::Tuple(a), V::Tuple(b)) => {
+                assert_eq!(a.len(), b.len());
+                for (a, b) in a.iter().zip(b) {
+                    assert_eq!(a.data(), b.data());
+                }
+            }
+            (a, b) => assert_eq!(a, b),
+        }
+    }
+}
+
+#[test]
+fn native_collections_keep_fifo_contracts_identities_aliases_and_current_context() {
+    use zirql::{
+        ComputationalValue as W, ConstructedValue as V, FunctionHost, FunctionLimits,
+        FunctionRequest, NativeIdentitySet, NativeQueue, ValueExpressionKind as K,
+    };
+    let source = String::from("A B C D E A");
+    let foreign = String::from("A B C D E A");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(worklist_limits());
+    let location = Location::Query(90..91);
+    let element = DeclaredType::Native(SourceKind::Words);
+    let queue = NativeQueue::new(
+        vec![word_at(&source, 0..1, 0), word_at(&source, 2..3, 0)],
+        element.clone(),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap();
+    let alias = queue
+        .share(&SourceHost, &mut context, &mut budget, location.clone())
+        .unwrap();
+    let queue = queue
+        .push_back_all(
+            vec![word_at(&source, 4..5, 0)],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap();
+    let mut queue = queue;
+    for offset in [0, 2, 4] {
+        let (item, rest) = queue
+            .pop_front(&SourceHost, &mut context, &mut budget, location.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.as_ref(), &word_at(&source, offset..offset + 1, 0));
+        queue = rest;
+    }
+    assert!(
+        queue
+            .pop_front(&SourceHost, &mut context, &mut budget, location.clone())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(alias.len(), 2);
+    let mut seen = NativeIdentitySet::new(
+        SourceKind::Words,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap();
+    seen = seen
+        .insert(
+            word_at(&source, 0..1, 0),
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap();
+    let earlier = seen
+        .share(&SourceHost, &mut context, &mut budget, location.clone())
+        .unwrap();
+    seen = seen
+        .insert(
+            word_at(&source, 0..1, 0),
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        !seen
+            .contains(
+                &word_at(&source, 10..11, 0),
+                &SourceHost,
+                &mut context,
+                &mut budget,
+                location.clone()
+            )
+            .unwrap()
+    );
+    assert!(
+        !seen
+            .contains(
+                &word_at(&source, 0..1, 1),
+                &SourceHost,
+                &mut context,
+                &mut budget,
+                location.clone()
+            )
+            .unwrap()
+    );
+    seen = seen
+        .insert(
+            word_at(&source, 10..11, 0),
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone(),
+        )
+        .unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(earlier.len(), 1);
+    let wrapper = SourceHost
+        .lift_computational(W::Queue(alias), &mut context, &mut budget, &(90..91))
+        .unwrap();
+    let declaration = DeclaredType::Queue(Box::new(element.clone()));
+    zirql::admit_value(
+        &wrapper,
+        &declaration,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap();
+    let wrong = DeclaredType::Queue(Box::new(DeclaredType::Integer));
+    assert!(
+        zirql::admit_value(
+            &wrapper,
+            &wrong,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .is_err()
+    );
+    assert!(
+        <SourceHost as zirql::ProjectionHost<_>>::project_value(
+            &SourceHost,
+            SourceHost
+                .copy_value(&wrapper, &mut context, &mut budget, &(90..91))
+                .unwrap(),
+            &mut context,
+            &mut budget,
+            &(90..91)
+        )
+        .is_err()
+    );
+    context.source = &foreign;
+    let error = zirql::admit_value(
+        &wrapper,
+        &declaration,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EvaluationError::Core(ref e) if e.location == location && e.message.contains("context"))
+    );
+    context.source = &source;
+    let empty = worklist_value(K::Queue {
+        items: Box::new(worklist_value(K::Array(vec![]))),
+        element: Some(word_type()),
+    });
+    let entry = worklist_value(K::PopFront(Box::new(empty)));
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 4 },
+    )
+    .unwrap()
+    .evaluate(&entry, &Bindings::default())
+    .unwrap();
+    assert!(matches!(result, SourceValue::Constructed(V::Absent)));
+    // A constructed queue item extracted from a native pop tuple stays usable
+    // by ordinary scalar operations.
+    let item = worklist_value(K::Binary {
+        operator: zirql::ValueBinaryOperator::Add,
+        left: Box::new(worklist_value(K::Literal(V::Integer(19)))),
+        right: Box::new(worklist_value(K::Literal(V::Integer(21)))),
+    });
+    let scalar_queue = worklist_value(K::Queue {
+        items: Box::new(worklist_value(K::Array(vec![item]))),
+        element: None,
+    });
+    let scalar_pop = worklist_value(K::Block {
+        bindings: vec![(
+            at(
+                zirql::PatternKind::Present(Box::new(at(
+                    zirql::PatternKind::Tuple(vec![
+                        at(zirql::PatternKind::Name(at("number".into(), 95)), 95),
+                        at(zirql::PatternKind::Wildcard, 96),
+                    ]),
+                    95,
+                ))),
+                95,
+            ),
+            worklist_value(K::PopFront(Box::new(scalar_queue))),
+        )],
+        value: Box::new(worklist_value(K::Binary {
+            operator: zirql::ValueBinaryOperator::Add,
+            left: Box::new(worklist_name("number")),
+            right: Box::new(worklist_value(K::Literal(V::Integer(2)))),
+        })),
+    });
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&scalar_pop, &Bindings::default())
+    .unwrap();
+    assert!(matches!(result, SourceValue::Constructed(V::Integer(42))));
+    let retained = worklist_value(K::Block {
+        bindings: vec![(
+            at(zirql::PatternKind::Name(at("held".into(), 97)), 97),
+            worklist_value(K::Queue {
+                items: Box::new(worklist_value(K::Array(vec![]))),
+                element: Some(word_type()),
+            }),
+        )],
+        value: Box::new(worklist_name("held")),
+    });
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&retained, &Bindings::default())
+    .unwrap();
+    assert!(
+        matches!(result, SourceValue::Computational(c) if matches!(c.as_ref(), W::Queue(q) if q.is_empty()))
+    );
+}
+
+#[test]
+fn queue_inference_uses_selected_input_and_refuses_untyped_empty_input() {
+    use zirql::{
+        ComputationalValue as W, ConstructedValue as V, FunctionLimits, FunctionRequest,
+        ValueExpressionKind as K,
+    };
+    let mut context = SourceContext {
+        source: "",
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(worklist_limits());
+    let selected_queue = |selected| {
+        worklist_value(K::Queue {
+            items: Box::new(worklist_value(K::Conditional {
+                branches: vec![(
+                    worklist_value(K::Literal(V::Boolean(false))),
+                    worklist_value(K::Array(vec![worklist_value(K::Literal(V::Integer(1)))])),
+                )],
+                otherwise: Box::new(worklist_value(K::Array(selected))),
+            })),
+            element: None,
+        })
+    };
+    let selected = selected_queue(vec![worklist_value(K::Literal(V::String("chosen".into())))]);
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&selected, &Bindings::default())
+    .unwrap();
+    let SourceValue::Computational(value) = result else {
+        panic!("queue");
+    };
+    let W::Queue(queue) = value.as_ref() else {
+        panic!("queue");
+    };
+    assert_eq!(queue.element(), &DeclaredType::String);
+    let (item, _) = queue
+        .share(
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            Location::Query(90..91),
+        )
+        .unwrap()
+        .pop_front(
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            Location::Query(90..91),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(matches!(item.as_ref(), SourceValue::Constructed(V::String(s)) if s == "chosen"));
+    let empty = selected_queue(vec![]);
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&empty, &Bindings::default())
+    .unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(e) if e.message.contains("empty queue needs"))
+    );
+}
+
+#[test]
+fn native_constructed_children_remain_shared_until_owned_output() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, PatternKind as P,
+        ValueExpressionKind as K,
+    };
+    let bindings = Bindings::new([
+        (
+            at("ignored".into(), 1),
+            SourceValue::Tuple(vec![SourceValue::Constructed(V::String(
+                "x".repeat(65_536),
+            ))]),
+        ),
+        (
+            at("partial".into(), 2),
+            SourceValue::Tuple(vec![SourceValue::Constructed(V::Record(vec![
+                (
+                    "payload".into(),
+                    V::Record(vec![
+                        ("small".into(), V::Integer(40)),
+                        (
+                            "ignored".into(),
+                            V::Array(vec![V::String("x".repeat(65_536))]),
+                        ),
+                    ]),
+                ),
+                ("other".into(), V::String("x".repeat(65_536))),
+            ]))]),
+        ),
+    ])
+    .unwrap();
+    let mut context = SourceContext {
+        source: "",
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut evaluate = |entry: &zirql::ValueExpression<SourceExpression>| {
+        let mut budget = Budget::for_program(ProgramLimits {
+            work: 10_000,
+            results: 10_000,
+            nesting: 64,
+            stream_items: 100,
+        });
+        FunctionRequest::prepare(
+            &[],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 4 },
+        )
+        .unwrap()
+        .evaluate(entry, &bindings)
+    };
+    let ignored = worklist_value(K::Block {
+        bindings: vec![(
+            at(P::Tuple(vec![at(P::Wildcard, 92)]), 91),
+            worklist_name("ignored"),
+        )],
+        value: Box::new(worklist_value(K::Literal(V::Boolean(true)))),
+    });
+    assert!(matches!(
+        evaluate(&ignored).unwrap(),
+        SourceValue::Constructed(V::Boolean(true))
+    ));
+    let selected = |name| {
+        worklist_value(K::TupleAccess {
+            value: Box::new(worklist_name(name)),
+            position: at(1, 93),
+        })
+    };
+    let partial = worklist_value(K::Block {
+        bindings: vec![(
+            at(
+                P::Record {
+                    fields: vec![(
+                        at("payload".into(), 94),
+                        at(
+                            P::Record {
+                                fields: vec![(
+                                    at("small".into(), 95),
+                                    at(P::Name(at("number".into(), 96)), 96),
+                                )],
+                                ignore_rest: true,
+                            },
+                            94,
+                        ),
+                    )],
+                    ignore_rest: true,
+                },
+                94,
+            ),
+            selected("partial"),
+        )],
+        value: Box::new(worklist_value(K::Binary {
+            operator: zirql::ValueBinaryOperator::Add,
+            left: Box::new(worklist_name("number")),
+            right: Box::new(worklist_value(K::Literal(V::Integer(2)))),
+        })),
+    });
+    assert!(matches!(
+        evaluate(&partial).unwrap(),
+        SourceValue::Constructed(V::Integer(42))
+    ));
+    // Returning an owned large selected value still spends its copy allowance.
+    let error = evaluate(&selected("ignored")).unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(e) if e.category == QueryErrorCategory::WorkLimit)
+    );
+    let step = zirql::FunctionDeclaration {
+        name: at("selected_scalar".into(), 1),
+        parameters: vec![
+            at(
+                zirql::FunctionParameter {
+                    name: at("state".into(), 2),
+                    declaration: DeclaredType::Integer,
+                },
+                2,
+            ),
+            at(
+                zirql::FunctionParameter {
+                    name: at("item".into(), 3),
+                    declaration: DeclaredType::Tuple(vec![DeclaredType::Integer]),
+                },
+                3,
+            ),
+        ],
+        result: at(DeclaredType::Integer, 4),
+        bindings: vec![],
+        value: selected("item"),
+    };
+    let bindings = Bindings::new([(
+        at("items".into(), 5),
+        SourceValue::Sequence {
+            values: vec![SourceValue::Tuple(vec![SourceValue::Constructed(
+                V::Integer(42),
+            )])],
+            element: DeclaredType::Tuple(vec![DeclaredType::Integer]),
+        },
+    )])
+    .unwrap();
+    let scan = worklist_value(K::Scan {
+        items: Box::new(worklist_name("items")),
+        initial: Box::new(worklist_value(K::Literal(V::Integer(0)))),
+        step: at("selected_scalar".into(), 6),
+    });
+    let mut budget = Budget::for_program(worklist_limits());
+    let result = FunctionRequest::prepare(
+        &[step],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 2 },
+    )
+    .unwrap()
+    .evaluate(&scan, &bindings)
+    .unwrap();
+    let SourceValue::Constructed(value) = result else {
+        panic!("constructed scalar scan");
+    };
+    let V::Array(items) = value.data() else {
+        panic!("scan sequence");
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].data(), &V::Integer(42));
+}
+
+#[test]
+fn prepared_binding_and_kind_queries_keep_worklist_contracts() {
+    use std::collections::BTreeMap;
+    use zirql::{
+        ComputationalValue as W, ConstructedValue as V, FunctionLimits, PreparedFunctions,
+        ValueExpressionKind as K,
+    };
+    let queue = |value| {
+        worklist_value(K::Queue {
+            items: Box::new(worklist_value(K::Array(vec![worklist_value(K::Literal(
+                value,
+            ))]))),
+            element: None,
+        })
+    };
+    let integers = queue(V::Integer(1));
+    let strings = queue(V::String("chosen".into()));
+    let pattern = at(zirql::PatternKind::Name(at("held".into(), 90)), 90);
+    let scope = BTreeMap::new();
+    let bindings = Bindings::default();
+    let mut context = SourceContext {
+        source: "",
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(worklist_limits());
+    let mut functions = PreparedFunctions::prepare([], &SourceHost, &mut budget).unwrap();
+    let binding = functions
+        .prepare_binding(&pattern, &integers, &scope, None, &mut budget)
+        .unwrap();
+    assert_eq!(
+        functions
+            .value_kind(&strings, &scope, None, &mut budget)
+            .unwrap(),
+        SourceKind::Computational(Box::new(DeclaredType::Queue(Box::new(
+            DeclaredType::String
+        ))))
+    );
+    let strings = functions
+        .prepare_value(&strings, &scope, None, &mut budget)
+        .unwrap();
+    let capture = functions
+        .evaluate_binding(
+            &binding,
+            &bindings,
+            None,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap();
+    let SourceValue::Computational(value) = &capture.fields[0].1 else {
+        panic!("queue");
+    };
+    assert!(
+        matches!(value.as_ref(), W::Queue(q) if q.element() == &DeclaredType::Integer && q.len() == 1)
+    );
+    let value = functions
+        .evaluate(
+            &strings,
+            &bindings,
+            None,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap();
+    assert!(
+        matches!(value, SourceValue::Computational(c) if matches!(c.as_ref(), W::Queue(q) if q.element() == &DeclaredType::String && q.len() == 1))
+    );
+}
+
+#[test]
+fn prepared_worklists_keep_contextual_empty_optional_and_scan_snapshots() {
+    use zirql::{
+        ConstructedValue as V, FunctionDeclaration as F, FunctionLimits, FunctionParameter as P,
+        FunctionRequest, ValueExpressionKind as K,
+    };
+    let source = String::from("A B C");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(worklist_limits());
+    let v = worklist_value;
+    let n = worklist_name;
+    let word = || DeclaredType::Native(SourceKind::Words);
+    let queue = || DeclaredType::Queue(Box::new(word()));
+    let pop = || DeclaredType::Optional(Box::new(DeclaredType::Tuple(vec![word(), queue()])));
+    let parameter = |name: &str, d| {
+        at(
+            P {
+                name: at(name.into(), 1),
+                declaration: d,
+            },
+            1,
+        )
+    };
+    let functions = vec![
+        F {
+            name: at("empty".into(), 1),
+            parameters: vec![],
+            result: at(queue(), 2),
+            bindings: vec![],
+            value: v(K::Queue {
+                items: Box::new(v(K::Array(vec![]))),
+                element: None,
+            }),
+        },
+        F {
+            name: at("peek".into(), 3),
+            parameters: vec![parameter("q", queue())],
+            result: at(pop(), 4),
+            bindings: vec![],
+            value: v(K::PopFront(Box::new(n("q")))),
+        },
+        F {
+            name: at("enqueue".into(), 5),
+            parameters: vec![parameter("q", queue()), parameter("item", word())],
+            result: at(queue(), 6),
+            bindings: vec![],
+            value: v(K::PushBackAll {
+                queue: Box::new(n("q")),
+                items: Box::new(v(K::Array(vec![n("item")]))),
+            }),
+        },
+    ];
+    let empty_call = v(K::Call {
+        function: at("empty".into(), 9),
+        arguments: vec![],
+    });
+    let empty_pop = v(K::Call {
+        function: at("peek".into(), 9),
+        arguments: vec![v(K::Queue {
+            items: Box::new(v(K::Array(vec![]))),
+            element: None,
+        })],
+    });
+    let absent = FunctionRequest::prepare(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 2 },
+    )
+    .unwrap()
+    .evaluate(&empty_pop, &Bindings::default())
+    .unwrap();
+    assert!(matches!(absent, SourceValue::Constructed(V::Absent)));
+    let empty = FunctionRequest::prepare(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 2 },
+    )
+    .unwrap()
+    .evaluate(&empty_call, &Bindings::default())
+    .unwrap();
+    assert!(
+        matches!(&empty, SourceValue::Computational(c) if matches!(c.as_ref(), zirql::ComputationalValue::Queue(q) if q.is_empty()))
+    );
+    let bindings = Bindings::new([
+        (
+            at("items".into(), 10),
+            SourceValue::Sequence {
+                values: vec![word_at(&source, 2..3, 0), word_at(&source, 4..5, 0)],
+                element: word(),
+            },
+        ),
+        (at("start".into(), 11), word_at(&source, 0..1, 0)),
+    ])
+    .unwrap();
+    let scan = v(K::Scan {
+        items: Box::new(n("items")),
+        initial: Box::new(v(K::Queue {
+            items: Box::new(v(K::Array(vec![n("start")]))),
+            element: None,
+        })),
+        step: at("enqueue".into(), 12),
+    });
+    let scan = FunctionRequest::prepare(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&scan, &bindings)
+    .unwrap();
+    let SourceValue::Sequence { values, element } = scan else {
+        panic!("native scan");
+    };
+    assert_eq!(element, queue());
+    assert_eq!(values.len(), 2);
+    for (value, expected) in values.into_iter().zip([vec![0, 2], vec![0, 2, 4]]) {
+        let SourceValue::Computational(c) = value else {
+            panic!("queue snapshot");
+        };
+        let zirql::ComputationalValue::Queue(q) = c.as_ref() else {
+            panic!("queue");
+        };
+        let mut q = q
+            .share(
+                &SourceHost,
+                &mut context,
+                &mut budget,
+                Location::Query(13..14),
+            )
+            .unwrap();
+        for i in expected {
+            let (item, rest) = q
+                .pop_front(
+                    &SourceHost,
+                    &mut context,
+                    &mut budget,
+                    Location::Query(13..14),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(item.as_ref(), &word_at(&source, i..i + 1, 0));
+            q = rest;
+        }
+        assert!(q.is_empty());
+    }
+}
+
+#[test]
+fn worklist_refusals_keep_locations_budget_and_retained_admission_context() {
+    use zirql::{
+        ConstructedValue as V, FunctionHost, FunctionLimits, FunctionRequest,
+        ValueExpressionKind as K,
+    };
+    let source = String::from("A B");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(worklist_limits());
+    let missing = worklist_value(K::Queue {
+        items: Box::new(worklist_value(K::Array(vec![]))),
+        element: None,
+    });
+    let scalar_set = worklist_value(K::IdentitySet {
+        element: at(zirql::SignatureType::Integer, 91),
+    });
+    for entry in [&missing, &scalar_set] {
+        let e = FunctionRequest::prepare(
+            &[],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(entry, &Bindings::default())
+        .unwrap_err();
+        assert!(
+            matches!(e.error, EvaluationError::Core(ref e) if matches!(e.location, Location::Query(_)))
+        );
+    }
+    let empty = zirql::NativeQueue::new(
+        vec![],
+        DeclaredType::Native(SourceKind::Words),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        Location::Query(92..93),
+    )
+    .unwrap();
+    let bindings = Bindings::new([(
+        at("input".into(), 1),
+        SourceHost
+            .lift_computational(
+                zirql::ComputationalValue::Queue(empty),
+                &mut context,
+                &mut budget,
+                &(92..93),
+            )
+            .unwrap(),
+    )])
+    .unwrap();
+    let d = DeclaredType::Queue(Box::new(DeclaredType::Native(SourceKind::Words)));
+    let function = zirql::FunctionDeclaration {
+        name: at("invalidate".into(), 2),
+        parameters: vec![at(
+            zirql::FunctionParameter {
+                name: at("q".into(), 3),
+                declaration: d.clone(),
+            },
+            3,
+        )],
+        result: at(d, 4),
+        bindings: vec![(
+            at("changed".into(), 5),
+            worklist_query("q", SourceStage::Invalidate, true),
+        )],
+        value: worklist_name("q"),
+    };
+    let entry = worklist_value(K::Call {
+        function: at("invalidate".into(), 6),
+        arguments: vec![worklist_name("input")],
+    });
+    let e = FunctionRequest::prepare(
+        &[function],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(e.error, EvaluationError::Core(ref e) if e.location == Location::Query(70..71) && e.message.contains("context"))
+    );
+    context.source = &source;
+    let location = Location::Query(94..95);
+    let mut small = Budget::for_program(ProgramLimits {
+        results: 1,
+        ..worklist_limits()
+    });
+    let e = zirql::NativeQueue::new(
+        vec![word_at(&source, 0..1, 0)],
+        DeclaredType::Native(SourceKind::Words),
+        &SourceHost,
+        &mut context,
+        &mut small,
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(e, EvaluationError::Core(ref e) if e.location == location && e.category == QueryErrorCategory::ResultLimit)
+    );
+    let mut small = Budget::for_program(ProgramLimits {
+        work: 1,
+        ..worklist_limits()
+    });
+    let e = zirql::NativeIdentitySet::new(
+        SourceKind::Words,
+        &SourceHost,
+        &mut context,
+        &mut small,
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(e, EvaluationError::Core(ref e) if e.location == location && e.category == QueryErrorCategory::WorkLimit)
+    );
+    let okay = worklist_value(K::Literal(V::Boolean(true)));
+    assert!(matches!(
+        FunctionRequest::prepare(
+            &[],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 }
+        )
+        .unwrap()
+        .evaluate(&okay, &Bindings::default())
+        .unwrap(),
+        SourceValue::Constructed(V::Boolean(true))
+    ));
 }

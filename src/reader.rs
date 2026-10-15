@@ -321,6 +321,8 @@ pub enum SignatureType {
     Record(Vec<(Located<String>, Located<Self>)>),
     Set(Box<Located<Self>>),
     Keyed(Box<Located<Self>>),
+    Queue(Box<Located<Self>>),
+    IdentitySet(Box<Located<Self>>),
 }
 #[derive(Debug, PartialEq)]
 pub struct UnresolvedFunctionParameter {
@@ -406,7 +408,7 @@ impl<Q> UnresolvedFunctionDeclaration<Q> {
     }
 }
 impl SignatureType {
-    fn resolve<K>(
+    pub(crate) fn resolve<K>(
         &self,
         budget: &mut Budget,
         range: &Range<usize>,
@@ -417,49 +419,61 @@ impl SignatureType {
     ) -> Result<crate::DeclaredType<K>, QueryError> {
         use crate::{DeclaredType as D, SetElementType as S};
         let location = Location::Query(range.clone());
-        budget.charge(1, location.clone())?;
-        budget.charge_results(1, location.clone())?;
-        let child = |value: &Located<Self>, budget: &mut Budget, resolve: &mut _| {
-            value.value.resolve(budget, &value.range, resolve)
-        };
-        Ok(match self {
-            Self::Boolean => D::Boolean,
-            Self::Integer => D::Integer,
-            Self::Float => D::Float,
-            Self::String => D::String,
-            Self::Named(name) => resolve(
-                Located::new(name.value.as_str(), name.range.clone()),
-                budget,
-            )?,
-            Self::Optional(value) => D::Optional(Box::new(child(value, budget, resolve)?)),
-            Self::Sequence(value) => D::Sequence(Box::new(child(value, budget, resolve)?)),
-            Self::Keyed(value) => D::Keyed(Box::new(child(value, budget, resolve)?)),
-            Self::Tuple(values) => D::Tuple(
-                values
-                    .iter()
-                    .map(|value| child(value, budget, resolve))
-                    .collect::<Result<_, _>>()?,
-            ),
-            Self::Record(fields) => {
-                let mut resolved = Vec::new();
-                for (label, value) in fields {
-                    budget.charge(label.value.len() + 1, location.clone())?;
-                    resolved.push((label.value.clone(), child(value, budget, resolve)?));
+        budget.within_evaluation(1, location.clone(), |budget| {
+            budget.charge(1, location.clone())?;
+            budget.charge_results(1, location.clone())?;
+            let child = |value: &Located<Self>, budget: &mut Budget, resolve: &mut _| {
+                value.value.resolve(budget, &value.range, resolve)
+            };
+            Ok(match self {
+                Self::Boolean => D::Boolean,
+                Self::Integer => D::Integer,
+                Self::Float => D::Float,
+                Self::String => D::String,
+                Self::Named(name) => resolve(
+                    Located::new(name.value.as_str(), name.range.clone()),
+                    budget,
+                )?,
+                Self::Optional(value) => D::Optional(Box::new(child(value, budget, resolve)?)),
+                Self::Sequence(value) => D::Sequence(Box::new(child(value, budget, resolve)?)),
+                Self::Keyed(value) => D::Keyed(Box::new(child(value, budget, resolve)?)),
+                Self::Queue(value) => D::Queue(Box::new(child(value, budget, resolve)?)),
+                Self::IdentitySet(value) => match child(value, budget, resolve)? {
+                    D::Native(kind) => D::IdentitySet(kind),
+                    _ => {
+                        return Err(QueryError::query(
+                            value.range.clone(),
+                            "identity_set requires a native element type",
+                        ));
+                    }
+                },
+                Self::Tuple(values) => D::Tuple(
+                    values
+                        .iter()
+                        .map(|value| child(value, budget, resolve))
+                        .collect::<Result<_, _>>()?,
+                ),
+                Self::Record(fields) => {
+                    let mut resolved = Vec::new();
+                    for (label, value) in fields {
+                        budget.charge(label.value.len() + 1, location.clone())?;
+                        resolved.push((label.value.clone(), child(value, budget, resolve)?));
+                    }
+                    D::Record(resolved)
                 }
-                D::Record(resolved)
-            }
-            Self::Set(value) => D::Set(match child(value, budget, resolve)? {
-                D::Boolean => S::Boolean,
-                D::Integer => S::Integer,
-                D::Float => S::Float,
-                D::Member(id) => S::Member(id),
-                _ => {
-                    return Err(QueryError::query(
-                        value.range.clone(),
-                        "unsupported set element type",
-                    ));
-                }
-            }),
+                Self::Set(value) => D::Set(match child(value, budget, resolve)? {
+                    D::Boolean => S::Boolean,
+                    D::Integer => S::Integer,
+                    D::Float => S::Float,
+                    D::Member(id) => S::Member(id),
+                    _ => {
+                        return Err(QueryError::query(
+                            value.range.clone(),
+                            "unsupported set element type",
+                        ));
+                    }
+                }),
+            })
         })
     }
 }
@@ -1299,13 +1313,15 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             "bool" => S::Boolean,
             "string" => S::String,
             "opt" => S::Optional(Box::new(self.signature(depth + 1)?)),
-            "sequence" | "keyed" | "set" => {
+            "sequence" | "keyed" | "set" | "queue" | "identity_set" => {
                 self.reader.expect('<')?;
                 let element = self.signature(depth + 1)?;
                 self.reader.expect('>')?;
                 match name.value {
                     "sequence" => S::Sequence(Box::new(element)),
                     "keyed" => S::Keyed(Box::new(element)),
+                    "queue" => S::Queue(Box::new(element)),
+                    "identity_set" => S::IdentitySet(Box::new(element)),
                     _ => {
                         if !matches!(
                             element.value,
@@ -2741,6 +2757,31 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
     while let Some(value) = pending.pop() {
         let clauses = match value.value {
             K::Literal(_) | K::Name(_) => continue,
+            K::IdentitySet { element } => {
+                dispose_signature(element.value);
+                continue;
+            }
+            K::Queue { items, element } => {
+                pending.push(*items);
+                if let Some(element) = element {
+                    dispose_signature(element.value);
+                }
+                continue;
+            }
+            K::PopFront(child) => {
+                pending.push(*child);
+                continue;
+            }
+            K::PushBackAll { queue, items } => {
+                pending.push(*queue);
+                pending.push(*items);
+                continue;
+            }
+            K::Insert { set, item } => {
+                pending.push(*set);
+                pending.push(*item);
+                continue;
+            }
             K::NativeQuery(query) | K::NativeValue(query) => {
                 crate::dispose_expression(*query);
                 continue;
@@ -2933,4 +2974,21 @@ fn read_string(
         start..reader.position(),
         "unterminated string",
     ))
+}
+
+fn dispose_signature(value: SignatureType) {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            SignatureType::Optional(c)
+            | SignatureType::Sequence(c)
+            | SignatureType::Keyed(c)
+            | SignatureType::Set(c)
+            | SignatureType::Queue(c)
+            | SignatureType::IdentitySet(c) => pending.push(c.value),
+            SignatureType::Tuple(c) => pending.extend(c.into_iter().map(|c| c.value)),
+            SignatureType::Record(c) => pending.extend(c.into_iter().map(|(_, c)| c.value)),
+            _ => {}
+        }
+    }
 }

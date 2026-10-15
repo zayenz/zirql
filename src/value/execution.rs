@@ -5,9 +5,9 @@ use super::{
     PreparedArgument, PreparedArguments, PreparedGenerator, PreparedKind, PreparedValue,
     QueryError, RuntimeValue, SetElementType, ValueBinaryOperator, ValueConstructor, ValueKey,
     ValueQueryHost, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
-    constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, declaration,
-    entries, equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set,
-    integer, integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
+    constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
+    equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
+    integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
     push_metadata, record_declaration, reduce_ref, scalar, select_field, sort_value, source_axis,
     string_match_ref, sum, take_one, take_position, unary, underlying, value_keys, zip_exact,
 };
@@ -19,15 +19,20 @@ pub(crate) struct Body<'a, Q, K> {
     pub value: PreparedValue<'a, Q>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum NativeStep {
     Record(usize),
     Tuple(usize),
+    // Constructed steps form a suffix after the last native wrapper. The owner
+    // stays native; matching and scalar reads borrow this selected subtree.
+    Constructed(usize),
+    Declaration(std::sync::Arc<DeclaredType<()>>),
 }
 impl NativeStep {
-    pub fn index(self) -> usize {
+    pub fn index(&self) -> usize {
         match self {
-            Self::Record(i) | Self::Tuple(i) => i,
+            Self::Record(i) | Self::Tuple(i) | Self::Constructed(i) => *i,
+            Self::Declaration(_) => unreachable!("declaration is not a child selector"),
         }
     }
 }
@@ -48,8 +53,10 @@ impl<N> NativeView<N> {
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Self, QueryError> {
-        let mut path = metadata_vec(self.path.len() + 1, budget, location)?;
-        path.extend_from_slice(&self.path);
+        let len = self.path.len()
+            - usize::from(matches!(self.path.last(), Some(NativeStep::Declaration(_))));
+        let mut path = metadata_vec(len + 1, budget, location)?;
+        path.extend_from_slice(&self.path[..len]);
         path.push(step);
         Ok(Self {
             owner: std::sync::Arc::clone(&self.owner),
@@ -64,6 +71,69 @@ impl<N> NativeView<N> {
             owner: std::sync::Arc::clone(&self.owner),
             path,
         })
+    }
+    pub fn retain_declaration(
+        &mut self,
+        declaration: std::sync::Arc<DeclaredType<()>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), QueryError> {
+        budget.charge(1, location.clone())?;
+        if let Some(NativeStep::Declaration(old)) = self.path.last_mut() {
+            *old = declaration;
+        } else {
+            push_metadata(
+                &mut self.path,
+                NativeStep::Declaration(declaration),
+                budget,
+                location,
+            )?;
+        }
+        Ok(())
+    }
+    pub fn native<'v>(
+        &'v self,
+        record: impl Fn(&'v N) -> Option<&'v crate::NativeCapture<N>>,
+        tuple: impl Fn(&'v N) -> Option<&'v [N]>,
+    ) -> &'v N {
+        let mut native = self.owner.as_ref();
+        for step in &self.path {
+            native = match step {
+                NativeStep::Record(i) => {
+                    &record(native).expect("retained record view").fields[*i].1
+                }
+                NativeStep::Tuple(i) => &tuple(native).expect("retained tuple view")[*i],
+                _ => break,
+            };
+        }
+        native
+    }
+    pub fn constructed<'v>(
+        &'v self,
+        constructed: impl Fn(&'v N) -> Option<&'v ConstructedValue>,
+        record: impl Fn(&'v N) -> Option<&'v crate::NativeCapture<N>>,
+        tuple: impl Fn(&'v N) -> Option<&'v [N]>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Option<ConstructedRef<'v>>, QueryError> {
+        budget.charge(self.path.len(), location.clone())?;
+        let native = self.native(record, tuple);
+        let Some(value) = constructed(native) else {
+            return Ok(None);
+        };
+        let mut data = ConstructedRef {
+            value,
+            declaration: super::declaration(value),
+        };
+        budget.charge(self.path.len(), location.clone())?;
+        for step in &self.path {
+            match step {
+                NativeStep::Constructed(i) => data = data.child(*i, budget, location)?,
+                NativeStep::Declaration(d) => data.declaration = Some(d),
+                _ => {}
+            }
+        }
+        Ok(Some(data))
     }
 }
 
@@ -97,7 +167,7 @@ impl<'a, N, K> Value<'a, N, K> {
             Data::Constructed(value) => Ok(value.as_ref()),
             Data::Native(_) => Err(error(
                 location,
-                "native handles require an explicit scalar projection",
+                "native handles require an explicit scalar projection; computational values cannot be rendered as data",
             )),
         }
     }
@@ -128,17 +198,159 @@ impl<'a, N, K> Value<'a, N, K> {
             }
             Data::Native(_) => Err(error(
                 location,
-                "native handles require an explicit scalar projection",
+                "native handles require an explicit scalar projection; computational values cannot be rendered as data",
             )),
         }
+    }
+    pub fn materialize_with<Q, H: Host<'a, Q, Native = N, Kind = K> + ?Sized>(
+        self,
+        host: &H,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<ConstructedValue, QueryError> {
+        host.materialize(self, budget, location)
     }
 }
 
 type Slots<'a, N, K> = [(&'a str, Value<'a, N, K>)];
+pub(crate) struct ConstructedRef<'v> {
+    pub value: &'v ConstructedValue,
+    pub declaration: Option<&'v DeclaredType<()>>,
+}
+impl<'v> ConstructedRef<'v> {
+    pub fn child(
+        &self,
+        index: usize,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Self, QueryError> {
+        let data = self.value.data();
+        let declaration = match (self.declaration.map(underlying), data) {
+            (Some(DeclaredType::Tuple(children)), _) => children.get(index),
+            (Some(DeclaredType::Record(fields)), ConstructedValue::Record(values)) => Some(
+                record_declaration(fields, &values[index].0, budget, location)?,
+            ),
+            (
+                Some(
+                    DeclaredType::Array(child)
+                    | DeclaredType::Sequence(child)
+                    | DeclaredType::Keyed(child),
+                ),
+                _,
+            ) => Some(child.as_ref()),
+            _ => None,
+        };
+        let value = match data {
+            ConstructedValue::Record(fields) => &fields[index].1,
+            ConstructedValue::Array(values)
+            | ConstructedValue::Tuple(values)
+            | ConstructedValue::Set {
+                elements: values, ..
+            } => &values[index],
+            ConstructedValue::KeyedArray { entries, .. } => &entries[index].value,
+            _ => unreachable!("selected constructed child"),
+        };
+        Ok(Self {
+            value,
+            declaration: super::declaration(value).or(declaration),
+        })
+    }
+    pub fn materialize(
+        &self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<ConstructedValue, QueryError> {
+        let value = copy_constructed_value(self.value, budget, location.clone())?;
+        match self.declaration {
+            Some(d) => annotate(
+                value,
+                copy_declaration(d, budget, location)?,
+                budget,
+                location,
+            ),
+            None => Ok(value),
+        }
+    }
+}
 pub(crate) trait Host<'a, Q> {
     type Native;
     type Kind: PartialEq;
     type Error: From<QueryError>;
+    fn native_constructed<'v>(&self, _value: &'v Self::Native) -> Option<&'v ConstructedValue> {
+        None
+    }
+    fn constructed<'v>(
+        &self,
+        value: &'v Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Option<ConstructedRef<'v>>, QueryError> {
+        match &value.data {
+            Data::Constructed(data) => Ok(Some(ConstructedRef {
+                value: data.as_ref(),
+                declaration: data.declaration(),
+            })),
+            Data::Native(view) => view.constructed(
+                |v| self.native_constructed(v),
+                |v| self.native_record(v),
+                |v| self.native_tuple(v),
+                budget,
+                location,
+            ),
+        }
+    }
+    fn scalar<'v>(
+        &self,
+        value: &'v Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<&'v ConstructedValue, QueryError> {
+        self.constructed(value, budget, location)?
+            .map(|v| v.value)
+            .ok_or_else(|| error(location, "native handles require an explicit scalar projection; computational values cannot be rendered as data"))
+    }
+    fn occurs(
+        &self,
+        value: &Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<bool, QueryError> {
+        Ok(self
+            .constructed(value, budget, location)?
+            .is_none_or(|v| v.value.occurs()))
+    }
+    fn normalize_in_place(
+        &self,
+        value: &mut Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), QueryError> {
+        if matches!(value.data, Data::Native(_))
+            && let Some(data) = self.constructed(value, budget, location)?
+        {
+            value.data =
+                Data::Constructed(RuntimeValue::Owned(data.materialize(budget, location)?));
+        }
+        Ok(())
+    }
+    fn normalize(
+        &self,
+        mut value: Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, QueryError> {
+        self.normalize_in_place(&mut value, budget, location)?;
+        Ok(value)
+    }
+    fn materialize(
+        &self,
+        value: Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<ConstructedValue, QueryError> {
+        self.normalize(value, budget, location)?
+            .materialize(budget, location)
+    }
     fn native_record<'v>(
         &self,
         _value: &'v Self::Native,
@@ -155,21 +367,7 @@ pub(crate) trait Host<'a, Q> {
         location: &Location,
     ) -> Result<&'v Self::Native, QueryError> {
         budget.charge(value.path.len(), location.clone())?;
-        let mut data = value.owner.as_ref();
-        for step in &value.path {
-            data = match step {
-                NativeStep::Record(index) => {
-                    &self
-                        .native_record(data)
-                        .expect("retained record view")
-                        .fields[*index]
-                        .1
-                }
-                NativeStep::Tuple(index) => {
-                    &self.native_tuple(data).expect("retained tuple view")[*index]
-                }
-            };
-        }
+        let data = value.native(|v| self.native_record(v), |v| self.native_tuple(v));
         Ok(data)
     }
     fn inspect_pattern(
@@ -179,6 +377,23 @@ pub(crate) trait Host<'a, Q> {
         _location: &Location,
     ) -> Result<(), Self::Error> {
         Ok(())
+    }
+    fn check_native_context(
+        &mut self,
+        _value: &Self::Native,
+        _expected: &DeclaredType<Self::Kind>,
+        _budget: &mut Budget,
+        _location: &Location,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn apply(
+        &mut self,
+        expression: &'a PreparedValue<'a, Q>,
+        values: Vec<Value<'a, Self::Native, Self::Kind>>,
+        budget: &mut Budget,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        apply(expression, values, self, budget)
     }
     fn retains_native_admission(&self) -> bool {
         false
@@ -229,7 +444,9 @@ pub(crate) trait Host<'a, Q> {
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
-        Ok(constructed_sequence(values, element, budget, location)?)
+        Ok(constructed_sequence(
+            values, element, self, budget, location,
+        )?)
     }
     fn native_contract(
         &mut self,
@@ -573,6 +790,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             &expression.range,
                                         )?);
                                     }
+                                    PreparedKind::IdentitySet { .. } => {
+                                        result =
+                                            Some(host.apply(expression, Vec::new(), budget)?);
+                                    }
                                     PreparedKind::Call { arguments, .. } => {
                                         let values =
                                             metadata_vec(arguments.len(), budget, &location)?;
@@ -731,7 +952,18 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     let value = result.take().expect("operand result");
                                     let shared = matches!(
                                         expression.value,
-                                        PreparedKind::Field { .. }
+                                        PreparedKind::Queue { .. }
+                                            | PreparedKind::PopFront(_)
+                                            | PreparedKind::PushBackAll { .. }
+                                            | PreparedKind::Insert { .. }
+                                            | PreparedKind::Array(_)
+                                            | PreparedKind::Tuple(_)
+                                            | PreparedKind::TupleAccess { .. }
+                                            | PreparedKind::Binary {
+                                                operator: ValueBinaryOperator::In,
+                                                ..
+                                            }
+                                            | PreparedKind::Field { .. }
                                             | PreparedKind::Occurs(_)
                                             | PreparedKind::Absent(_)
                                             | PreparedKind::Reduce { .. }
@@ -748,7 +980,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     {
                                         Value::constructed(RuntimeValue::Owned(
                                             ConstructedValue::Integer(integer(
-                                                value.materialize(budget, &location)?,
+                                                value.materialize_with(host, budget, &location)?,
                                                 &location,
                                             )?),
                                         ))
@@ -759,7 +991,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         )
                                     {
                                         Value::constructed(RuntimeValue::Owned(expose(
-                                            value.materialize(budget, &location)?,
+                                            value.materialize_with(host, budget, &location)?,
                                             budget,
                                             &location,
                                         )?))
@@ -770,7 +1002,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         value
                                     } else {
                                         Value::constructed(RuntimeValue::Owned(
-                                            value.materialize(budget, &location)?,
+                                            value.materialize_with(host, budget, &location)?,
                                         ))
                                     });
                                 }
@@ -808,7 +1040,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     push!(Pending::Apply(expression, depth, children, values));
                                     push!(Pending::Eval(next, depth + 1, false));
                                 } else {
-                                    result = Some(apply(expression, values, budget)?);
+                                    result = Some(host.apply(expression, values, budget)?);
                                 }
                             }
                             next @ (Pending::Initialize(..)
@@ -837,7 +1069,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     result
                                         .take()
                                         .expect("condition")
-                                        .materialize(budget, &location)?,
+                                        .materialize_with(host, budget, &location)?,
                                     &Location::Query(branches[index].0.range.clone()),
                                 )? {
                                     push!(Pending::Eval(&branches[index].1, depth + 1, tail));
@@ -861,7 +1093,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     result
                                         .take()
                                         .expect("require condition")
-                                        .materialize(budget, &location)?,
+                                        .materialize_with(host, budget, &location)?,
                                     &Location::Query(condition.range.clone()),
                                 )? {
                                     admit_diagnostic("", &message.value, budget, &location)?;
@@ -869,75 +1101,15 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 }
                                 push!(Pending::Eval(value, depth + 1, tail));
                             }
-                            Pending::Default(expression, depth, tail) => {
-                                let left = result.take().expect("default left");
-                                if matches!(&left.data, Data::Native(_))
-                                    || left.scalar(&location)?.occurs()
-                                {
-                                    result = Some(left);
-                                } else {
-                                    let PreparedKind::Default { fallback, .. } = &expression.value
-                                    else {
-                                        unreachable!()
-                                    };
-                                    let typed = left.contract.is_some()
-                                        || match &left.data {
-                                            Data::Constructed(data) => data.declaration().is_some(),
-                                            Data::Native(_) => false,
-                                        };
-                                    if typed {
-                                        push!(Pending::Fallback(expression, depth, left));
-                                    }
-                                    push!(Pending::Eval(fallback, depth + 1, tail && !typed));
-                                }
-                            }
-                            Pending::Fallback(_, _, left) => {
-                                let right = result.take().expect("default fallback");
-                                if let Some(mut expected) = left.contract {
-                                    if matches!(&right.data, Data::Native(_))
-                                        || right.scalar(&location)?.occurs()
-                                    {
-                                        while let DeclaredType::Optional(child) = expected {
-                                            expected = child;
-                                        }
-                                    }
-                                    let mut right = right;
-                                    admit(&mut right, expected, host, budget, &location)?;
-                                    result = Some(right);
-                                    return Ok(());
-                                }
-                                let expected = match left.contract {
-                                    Some(c) => crate::runtime_types::constructed_declaration(
-                                        c, budget, &location,
-                                    )?,
-                                    None => copy_declaration(
-                                        match &left.data {
-                                            Data::Constructed(data) => {
-                                                data.declaration().expect("typed absent")
-                                            }
-                                            Data::Native(_) => unreachable!(),
-                                        },
-                                        budget,
-                                        &location,
-                                    )?,
-                                };
-                                let expected = if right.scalar(&location)?.occurs() {
-                                    underlying(&expected)
-                                } else {
-                                    &expected
-                                };
-                                crate::admit_constructed(
-                                    right.scalar(&location)?,
-                                    expected,
+                            next @ (Pending::Default(..) | Pending::Fallback(..)) => {
+                                default_step(
+                                    next,
+                                    &mut pending,
+                                    &mut result,
+                                    host,
                                     budget,
-                                    location.clone(),
+                                    &location,
                                 )?;
-                                result = owned!(annotate(
-                                    right.materialize(budget, &location)?,
-                                    copy_declaration(expected, budget, &location)?,
-                                    budget,
-                                    &location
-                                )?);
                             }
                             Pending::Block(expression, depth, index, tail) => {
                                 let PreparedKind::Block { bindings, value } = &expression.value
@@ -1041,7 +1213,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     result
                                         .take()
                                         .expect("guard result")
-                                        .materialize(budget, &location)?,
+                                        .materialize_with(host, budget, &location)?,
                                     &Location::Query(guard.range.clone()),
                                 )? {
                                     drop(subject);
@@ -1306,7 +1478,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 let value = result
                                     .take()
                                     .expect("set child")
-                                    .materialize(budget, &location)?;
+                                    .materialize_with(host, budget, &location)?;
                                 insert_set(&mut values, &mut ty, value, false, budget, &location)?;
                                 let PreparedKind::Set(children) = &expression.value else {
                                     unreachable!()
@@ -1329,7 +1501,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 let key = result
                                     .take()
                                     .expect("literal key")
-                                    .materialize(budget, &location)?;
+                                    .materialize_with(host, budget, &location)?;
                                 let keys = value_keys(
                                     key,
                                     budget,
@@ -1355,7 +1527,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 let value = result
                                     .take()
                                     .expect("literal cell")
-                                    .materialize(budget, &location)?;
+                                    .materialize_with(host, budget, &location)?;
                                 values.push(Located::new(
                                     KeyedEntry { key: keys, value },
                                     entries[index].0.range.clone(),
@@ -1433,7 +1605,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 }
                             }
                             Pending::Source(c, index, saved) => {
-                                let value = result.take().expect("generator source");
+                                let mut value = result.take().expect("generator source");
                                 let clause = &c.clauses[index];
                                 let cl = Location::Query(clause.range.clone());
                                 match &clause.value {
@@ -1468,6 +1640,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         }
                                     }
                                     PreparedGenerator::In { binders, .. } => {
+                                        host.normalize_in_place(&mut value, budget, &cl)?;
                                         let contract = value.contract;
                                         let value = match value.data {
                                             Data::Native(owner) => {
@@ -1622,7 +1795,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     result
                                         .take()
                                         .expect("filter")
-                                        .materialize(budget, &location)?,
+                                        .materialize_with(host, budget, &location)?,
                                     &Location::Query(filter.range.clone()),
                                 )? {
                                     push!(Pending::Clauses(c, index + 1, saved));
@@ -1633,7 +1806,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 let value = result
                                     .take()
                                     .expect("head or key")
-                                    .materialize(budget, &location)?;
+                                    .materialize_with(host, budget, &location)?;
                                 if let Some(key) = c.key {
                                     let keys = value_keys(
                                         value,
@@ -1654,7 +1827,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 let value = result
                                     .take()
                                     .expect("keyed head")
-                                    .materialize(budget, &location)?;
+                                    .materialize_with(host, budget, &location)?;
                                 append(&c, value, Some(key), budget)?;
                             }
                             Pending::FinishComprehension(c) => {
@@ -1692,7 +1865,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     result
                                         .take()
                                         .expect("axis source")
-                                        .materialize(budget, &location)?,
+                                        .materialize_with(host, budget, &location)?,
                                     budget,
                                     &Location::Query(sources[index].range.clone()),
                                 )?);
@@ -1728,6 +1901,85 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
     })
 }
 
+// Presence and fallback transitions stage their next continuation without
+// retaining owned temporaries in the reentrant execution dispatch frame.
+fn default_step<'a, Q, H: Host<'a, Q>>(
+    next: Pending<'a, Q, H::Native, H::Kind>,
+    pending: &mut Vec<Pending<'a, Q, H::Native, H::Kind>>,
+    result: &mut Option<ResultValue<'a, H, Q>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), H::Error> {
+    macro_rules! push {
+        ($value:expr) => {
+            push_metadata(pending, $value, budget, location)?
+        };
+    }
+    match next {
+        Pending::Default(expression, depth, tail) => {
+            let left = result.take().expect("default left");
+            if host.occurs(&left, budget, location)? {
+                *result = Some(left);
+            } else {
+                let left = host.normalize(left, budget, location)?;
+                let PreparedKind::Default { fallback, .. } = &expression.value else {
+                    unreachable!()
+                };
+                let typed = left.contract.is_some()
+                    || match &left.data {
+                        Data::Constructed(data) => data.declaration().is_some(),
+                        Data::Native(_) => false,
+                    };
+                if typed {
+                    push!(Pending::Fallback(expression, depth, left));
+                }
+                push!(Pending::Eval(fallback, depth + 1, tail && !typed));
+            }
+        }
+        Pending::Fallback(_, _, left) => {
+            let right = result.take().expect("default fallback");
+            if let Some(mut expected) = left.contract {
+                if host.occurs(&right, budget, location)? {
+                    while let DeclaredType::Optional(child) = expected {
+                        expected = child;
+                    }
+                }
+                let mut right = right;
+                admit(&mut right, expected, host, budget, location)?;
+                *result = Some(right);
+                return Ok(());
+            }
+            let right = host.normalize(right, budget, location)?;
+            let expected = match left.contract {
+                Some(c) => crate::runtime_types::constructed_declaration(c, budget, location)?,
+                None => copy_declaration(
+                    match &left.data {
+                        Data::Constructed(data) => data.declaration().expect("typed absent"),
+                        Data::Native(_) => unreachable!(),
+                    },
+                    budget,
+                    location,
+                )?,
+            };
+            let expected = if right.scalar(location)?.occurs() {
+                underlying(&expected)
+            } else {
+                &expected
+            };
+            crate::admit_constructed(right.scalar(location)?, expected, budget, location.clone())?;
+            *result = Some(Value::constructed(RuntimeValue::Owned(annotate(
+                right.materialize_with(host, budget, location)?,
+                copy_declaration(expected, budget, location)?,
+                budget,
+                location,
+            )?)));
+        }
+        _ => unreachable!("default continuation dispatch"),
+    }
+    Ok(())
+}
+
 fn accumulator_source<'a, Q, H: Host<'a, Q>>(
     items_value: ResultValue<'a, H, Q>,
     element: &DeclaredType<H::Kind>,
@@ -1735,6 +1987,7 @@ fn accumulator_source<'a, Q, H: Host<'a, Q>>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ResultSource<'a, H, Q>, H::Error> {
+    let items_value = host.normalize(items_value, budget, location)?;
     if let Some(previous) = items_value.contract
         && let Some(previous) = sequence_element(previous, budget, location)?
         && !crate::runtime_types::compatible_state(previous, element, budget, location)?
@@ -1785,16 +2038,17 @@ fn sequence_element<'t, K>(
     }
 }
 
-pub(crate) fn constructed_sequence<'a, N, K>(
-    values: Vec<Value<'a, N, K>>,
-    element: &DeclaredType<K>,
+pub(crate) fn constructed_sequence<'a, Q, H: Host<'a, Q> + ?Sized>(
+    values: Vec<ResultValue<'a, H, Q>>,
+    element: &DeclaredType<H::Kind>,
+    host: &H,
     budget: &mut Budget,
     location: &Location,
-) -> Result<Value<'a, N, K>, QueryError> {
+) -> Result<ResultValue<'a, H, Q>, QueryError> {
     let element = crate::runtime_types::constructed_declaration(element, budget, location)?;
     let mut output = admit_container::<ConstructedValue>(values.len(), budget, location)?;
     for value in values {
-        output.push(value.materialize(budget, location)?);
+        output.push(value.materialize_with(host, budget, location)?);
     }
     let value = annotate(
         ConstructedValue::Array(output),
@@ -1886,18 +2140,23 @@ fn loop_step<'a, Q, H: Host<'a, Q>>(
                 let at = Location::Query(source.range.clone());
                 let contract = match value.contract {
                     Some(contract) => StateContract::Borrowed(contract),
-                    None => match &value.data {
-                        Data::Constructed(data) => StateContract::Constructed(std::sync::Arc::new(
-                            match data.declaration() {
+                    None => match host.constructed(value, budget, &at)? {
+                        Some(data) => StateContract::Constructed(std::sync::Arc::new(
+                            match data.declaration {
                                 Some(contract) => copy_declaration(contract, budget, &at)?,
-                                None => infer_state(data.as_ref(), budget, &at)?,
+                                None => infer_state(data.value, budget, &at)?,
                             },
                         )),
-                        Data::Native(view) => StateContract::Native(host.native_contract(
-                            host.native_data(view, budget, &at)?,
-                            budget,
-                            &at,
-                        )?),
+                        None => {
+                            let Data::Native(view) = &value.data else {
+                                unreachable!()
+                            };
+                            StateContract::Native(host.native_contract(
+                                host.native_data(view, budget, &at)?,
+                                budget,
+                                &at,
+                            )?)
+                        }
                     },
                 };
                 admit_state(value, &contract, host, budget, &at)?;
@@ -2012,10 +2271,10 @@ fn admit_state<'a, Q, H: Host<'a, Q>>(
             {
                 return Err(error(location, "incompatible declared loop state types").into());
             }
-            let Data::Constructed(data) = &mut value.data else {
-                return Err(error(location, "loop state needs a constructed value").into());
-            };
-            if let Some(previous) = data.declaration()
+            let data = host
+                .constructed(value, budget, location)?
+                .ok_or_else(|| error(location, "loop state needs a constructed value"))?;
+            if let Some(previous) = data.declaration
                 && !crate::runtime_types::compatible_declarations(
                     previous,
                     expected.as_ref(),
@@ -2025,52 +2284,71 @@ fn admit_state<'a, Q, H: Host<'a, Q>>(
             {
                 return Err(error(location, "incompatible declared loop state types").into());
             }
-            crate::admit_constructed(data.as_ref(), expected.as_ref(), budget, location.clone())?;
-            data.retain_declaration(expected, budget, location)?;
+            crate::admit_constructed(data.value, expected.as_ref(), budget, location.clone())?;
+            match &mut value.data {
+                Data::Constructed(data) => data.retain_declaration(expected, budget, location)?,
+                Data::Native(view) => {
+                    view.retain_declaration(std::sync::Arc::clone(expected), budget, location)?;
+                }
+            }
             return Ok(());
         }
         StateContract::Native(expected) => expected,
     };
-    check_state_contract(value, expected, budget, location)?;
-    match &value.data {
-        Data::Native(view) => host.admit_native(
+    if let Data::Native(view) = &value.data {
+        host.check_native_context(
             host.native_data(view, budget, location)?,
             expected,
             budget,
-            location.clone(),
-        ),
-        Data::Constructed(data) => Ok(crate::admit_constructed(
-            data.as_ref(),
+            location,
+        )?;
+    }
+    check_state_contract(value, expected, host, budget, location)?;
+    match host.constructed(value, budget, location)? {
+        Some(data) => Ok(crate::admit_constructed(
+            data.value,
             expected,
             budget,
             location.clone(),
         )?),
+        None => {
+            let Data::Native(view) = &value.data else {
+                unreachable!()
+            };
+            host.admit_native(
+                host.native_data(view, budget, location)?,
+                expected,
+                budget,
+                location.clone(),
+            )
+        }
     }
 }
 
-fn check_state_contract<N, K: PartialEq>(
-    value: &Value<'_, N, K>,
-    expected: &DeclaredType<K>,
+fn check_state_contract<'a, Q, H: Host<'a, Q>>(
+    value: &ResultValue<'a, H, Q>,
+    expected: &DeclaredType<H::Kind>,
+    host: &H,
     budget: &mut Budget,
     location: &Location,
-) -> Result<(), QueryError> {
+) -> Result<(), H::Error> {
     let borrowed = match value.contract {
         Some(previous) => {
             crate::runtime_types::compatible_state(previous, expected, budget, location)?
         }
         None => true,
     };
-    let constructed = match &value.data {
-        Data::Constructed(data) => match data.declaration() {
+    let constructed = match host.constructed(value, budget, location)? {
+        Some(data) => match data.declaration {
             Some(previous) => {
                 crate::runtime_types::compatible_declarations(previous, expected, budget, location)?
             }
             None => true,
         },
-        Data::Native(_) => true,
+        None => true,
     };
     if !borrowed || !constructed {
-        return Err(error(location, "incompatible declared loop state types"));
+        return Err(error(location, "incompatible declared loop state types").into());
     }
     Ok(())
 }
@@ -2158,19 +2436,28 @@ fn admit<'a, Q, H: Host<'a, Q>>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), H::Error> {
+    if let Data::Native(view) = &value.data {
+        host.check_native_context(
+            host.native_data(view, budget, location)?,
+            expected,
+            budget,
+            location,
+        )?;
+    }
     if let Some(previous) = value.contract
         && !std::ptr::eq(previous, expected)
         && !crate::runtime_types::compatible_state(previous, expected, budget, location)?
     {
         return Err(error(location, "incompatible declared underlying types").into());
     }
-    if let Data::Constructed(data) = &value.data
-        && let Some(previous) = data.declaration()
+    let constructed = host.constructed(value, budget, location)?;
+    if let Some(data) = &constructed
+        && let Some(previous) = data.declaration
         && !crate::runtime_types::compatible_declarations(previous, expected, budget, location)?
     {
         return Err(error(location, "incompatible declared underlying types").into());
     }
-    let reusable = matches!(value.data, Data::Constructed(_)) || host.retains_native_admission();
+    let reusable = constructed.is_some() || host.retains_native_admission();
     if reusable
         && let Some(previous) = value.contract
         && (std::ptr::eq(previous, expected)
@@ -2179,15 +2466,20 @@ fn admit<'a, Q, H: Host<'a, Q>>(
         value.contract = Some(expected);
         return Ok(());
     }
-    match &value.data {
-        Data::Native(value) => host.admit_native(
-            host.native_data(value, budget, location)?,
-            expected,
-            budget,
-            location.clone(),
-        )?,
-        Data::Constructed(data) => {
-            crate::admit_constructed(data.as_ref(), expected, budget, location.clone())?;
+    match constructed {
+        None => {
+            let Data::Native(view) = &value.data else {
+                unreachable!()
+            };
+            host.admit_native(
+                host.native_data(view, budget, location)?,
+                expected,
+                budget,
+                location.clone(),
+            )?
+        }
+        Some(data) => {
+            crate::admit_constructed(data.value, expected, budget, location.clone())?;
         }
     }
     value.contract = Some(expected);
@@ -2235,7 +2527,9 @@ fn operands<'a, Q>(
             .len()
             .checked_mul(2)
             .ok_or_else(|| error(location, "operand count overflow"))?,
-        PreparedKind::Binary { .. }
+        PreparedKind::PushBackAll { .. }
+        | PreparedKind::Insert { .. }
+        | PreparedKind::Binary { .. }
         | PreparedKind::Lookup { .. }
         | PreparedKind::HasKey { .. }
         | PreparedKind::ArrayAccess { .. }
@@ -2252,9 +2546,16 @@ fn operands<'a, Q>(
                 result.extend([key, value]);
             }
         }
-        PreparedKind::Binary { left, right, .. } | PreparedKind::ZipExact { left, right } => {
-            result.extend([left.as_ref(), right.as_ref()])
+        PreparedKind::PushBackAll {
+            queue: left,
+            items: right,
         }
+        | PreparedKind::Insert {
+            set: left,
+            item: right,
+        }
+        | PreparedKind::Binary { left, right, .. }
+        | PreparedKind::ZipExact { left, right } => result.extend([left.as_ref(), right.as_ref()]),
         PreparedKind::Lookup { value, key } | PreparedKind::HasKey { value, key } => {
             result.extend([value.as_ref(), key.as_ref()])
         }
@@ -2262,7 +2563,9 @@ fn operands<'a, Q>(
             result.extend([array.as_ref(), index.as_ref()])
         }
         PreparedKind::Range { lower, upper } => result.extend([lower.as_ref(), upper.as_ref()]),
-        PreparedKind::One(value)
+        PreparedKind::Queue { items: value, .. }
+        | PreparedKind::PopFront(value)
+        | PreparedKind::One(value)
         | PreparedKind::Occurs(value)
         | PreparedKind::Absent(value)
         | PreparedKind::IndexSet(value)
@@ -2279,18 +2582,19 @@ fn operands<'a, Q>(
     Ok(result)
 }
 
-fn apply<'a, Q, N, K>(
+pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
     expression: &'a PreparedValue<'a, Q>,
-    mut values: Vec<Value<'a, N, K>>,
+    mut values: Vec<ResultValue<'a, H, Q>>,
+    host: &H,
     budget: &mut Budget,
-) -> Result<Value<'a, N, K>, QueryError> {
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
     let location = Location::Query(expression.range.clone());
     if let PreparedKind::Field { field, .. } = &expression.value {
         let value = values.pop().expect("field operand");
         if let Data::Constructed(data) = value.data {
             if !matches!(data.as_ref(), ConstructedValue::Declared { .. }) {
                 let ConstructedValue::Record(fields) = data.as_ref() else {
-                    return Err(error(&location, "field access needs a record"));
+                    return Err(error(&location, "field access needs a record").into());
                 };
                 let mut selected = None;
                 for (index, (label, _)) in fields.iter().enumerate() {
@@ -2305,10 +2609,9 @@ fn apply<'a, Q, N, K>(
                 }
                 let Some(index) = selected else {
                     admit_diagnostic("missing record field: ", &field.value, budget, &location)?;
-                    return Err(error(
-                        &location,
-                        format!("missing record field: {}", field.value),
-                    ));
+                    return Err(
+                        error(&location, format!("missing record field: {}", field.value)).into(),
+                    );
                 };
                 let contract = if let Some(contract) = value.contract {
                     let mut c = contract;
@@ -2336,11 +2639,11 @@ fn apply<'a, Q, N, K>(
         return Err(error(
             &location,
             "native handles require an explicit scalar projection",
-        ));
+        )
+        .into());
     }
     if let PreparedKind::Occurs(_) | PreparedKind::Absent(_) = &expression.value {
-        let present =
-            matches!(&values[0].data, Data::Native(_)) || values[0].scalar(&location)?.occurs();
+        let present = host.occurs(&values[0], budget, &location)?;
         return Ok(Value::constructed(RuntimeValue::Owned(scalar(
             ConstructedValue::Boolean(if matches!(expression.value, PreparedKind::Occurs(_)) {
                 present
@@ -2354,7 +2657,7 @@ fn apply<'a, Q, N, K>(
     if let PreparedKind::Reduce { operator, .. } = &expression.value {
         return Ok(Value::constructed(RuntimeValue::Owned(reduce_ref(
             *operator,
-            values[0].scalar(&location)?,
+            host.scalar(&values[0], budget, &location)?,
             budget,
             &location,
         )?)));
@@ -2369,8 +2672,8 @@ fn apply<'a, Q, N, K>(
     {
         return Ok(Value::constructed(RuntimeValue::Owned(string_match_ref(
             *operator,
-            values[0].scalar(&location)?,
-            values[1].scalar(&location)?,
+            host.scalar(&values[0], budget, &location)?,
+            host.scalar(&values[1], budget, &location)?,
             budget,
             &location,
         )?)));
@@ -2379,17 +2682,14 @@ fn apply<'a, Q, N, K>(
         operator, field, ..
     } = &expression.value
     {
-        let value = values.pop().expect("extremum operand");
+        let mut value = values.pop().expect("extremum operand");
         let position = extremum_position(
             *operator,
-            value.scalar(&location)?,
+            host.scalar(&value, budget, &location)?,
             *field,
             budget,
             &location,
         )?;
-        let Data::Constructed(data) = value.data else {
-            unreachable!("scalar checked")
-        };
         let contract = value.contract.and_then(|mut contract| {
             while let DeclaredType::Optional(child) = contract {
                 contract = child;
@@ -2399,7 +2699,11 @@ fn apply<'a, Q, N, K>(
                 _ => None,
             }
         });
-        let child_declaration = match declaration(data.as_ref()).map(underlying) {
+        let child_declaration = match host
+            .constructed(&value, budget, &location)?
+            .and_then(|v| v.declaration)
+            .map(underlying)
+        {
             Some(DeclaredType::Array(child) | DeclaredType::Sequence(child)) => {
                 Some(copy_declaration(child, budget, &location)?)
             }
@@ -2425,6 +2729,20 @@ fn apply<'a, Q, N, K>(
             }
             return Ok(Value::constructed(RuntimeValue::Owned(absent)));
         };
+        if matches!(value.data, Data::Native(_)) {
+            let mut selected = super::pattern::select(
+                &mut value,
+                NativeStep::Tuple(position),
+                host,
+                budget,
+                &location,
+            )?;
+            selected.contract = contract;
+            return Ok(selected);
+        }
+        let Data::Constructed(data) = value.data else {
+            unreachable!("constructed extremum")
+        };
         let selected = data
             .into_data(budget, &location)?
             .child(position, budget, &location)?;
@@ -2445,14 +2763,14 @@ fn apply<'a, Q, N, K>(
     }
     let mut arguments = metadata_vec(values.len(), budget, &location)?;
     for value in values {
-        arguments.push(value.materialize(budget, &location)?);
+        arguments.push(host.materialize(value, budget, &location)?);
     }
     let mut arguments = arguments.into_iter();
     let mut next = || arguments.next().expect("prepared operand");
     let value = match &expression.value {
         PreparedKind::One(_) => {
             let ConstructedValue::Array(values) = expose(next(), budget, &location)? else {
-                return Err(error(&location, "one needs a positional array"));
+                return Err(error(&location, "one needs a positional array").into());
             };
             take_one(values, expression.range.clone())?
         }
@@ -2522,7 +2840,7 @@ fn apply<'a, Q, N, K>(
         }
         PreparedKind::TupleAccess { position, .. } => {
             let ConstructedValue::Tuple(values) = expose(next(), budget, &location)? else {
-                return Err(error(&location, "tuple access needs a tuple"));
+                return Err(error(&location, "tuple access needs a tuple").into());
             };
             take_position(values, position.value, budget, &location)?
         }
@@ -2548,7 +2866,7 @@ fn apply<'a, Q, N, K>(
                     }
                     selected.ok_or_else(|| error(&location, "missing keyed array cell"))?
                 }
-                _ => return Err(error(&location, "array access needs an array")),
+                _ => return Err(error(&location, "array access needs an array").into()),
             }
         }
         PreparedKind::IndexSet(_) => match expose(next(), budget, &location)? {
@@ -2578,9 +2896,9 @@ fn apply<'a, Q, N, K>(
                 }
             }
             ConstructedValue::KeyedArray { .. } => {
-                return Err(error(&location, "index_set needs rank one"));
+                return Err(error(&location, "index_set needs rank one").into());
             }
-            _ => return Err(error(&location, "index_set needs an array")),
+            _ => return Err(error(&location, "index_set needs an array").into()),
         },
         PreparedKind::Entries(_) => entries(next(), budget, &location)?,
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
