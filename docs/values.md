@@ -27,9 +27,11 @@ Use a field label or a one-based position to select a value:
 {"word": "ash", "count": 1}.word
 ```
 
-The result is `"ash"`. `words[1]` is `"ash"`, and `(2, 5)[2]` is `5`. Position
-zero, a position beyond the collection and a missing field are errors. Use
-`lookup` when a missing entry is expected.
+The result is `"ash"`. `words[1]` is `"ash"`, and `(2, 5).2` is `5`.
+Tuple positions use a dot; array positions use brackets. Accesses compose from
+left to right: `({"rows": [(2, 5)]}, 0).1.rows[1].2` is `5`. Position zero,
+a position beyond the collection and a missing field are errors. Use `lookup`
+when a missing entry is expected.
 
 Strings are scalar values. Array operations such as `length` do not implicitly
 operate on their characters. A host can expose a byte count or another text
@@ -41,7 +43,7 @@ The common reader applies these precedence levels, strongest first:
 
 | Level | Operations |
 | --- | --- |
-| Access | `a[i]`, `row.field` |
+| Access | `a[i]`, `tuple.1`, `row.field` |
 | Optional fallback | `default` |
 | Prefix | `not`, unary `+` and `-` |
 | Multiplication and division | `*`, `/`, `div`, `mod` |
@@ -310,9 +312,22 @@ and key types. A host may impose additional rules, such as contiguous axes or
 complete rectangular coverage.
 
 The host's parser supplies keyed construction syntax. The shared Rust
-representation also supports keyed comprehensions and rank-one index-set
-extraction. See [value evaluation](value-runtime.md#keyed-construction) for
-those boundaries.
+representation also supports keyed comprehensions. See
+[value evaluation](value-runtime.md#keyed-construction) for those boundaries.
+
+`index_set(a)` returns a typed set of one-dimensional array keys. For a
+positional array this is `1..length(a)`, including a typed empty integer set
+for `[]`. For a rank-one keyed array it uses the declared axis, including keys
+with no stored cell, and retains integer or nominal identity for empty axes.
+The result uses set order: numeric order for integer keys and declaration order
+for nominal members. Inputs of another kind or rank fail at the call.
+
+```zirql
+[words[i] for i in index_set(words)]
+```
+
+This returns the words in positional order. The common reader accepts
+`index_set`; keyed constructors remain supplied by the host.
 
 ## Keyed entries and exact pairing
 

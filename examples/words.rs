@@ -98,7 +98,7 @@ impl ValueQueryHost<ReadExpression<Self>> for Words {
 fn main() -> Result<(), QueryError> {
     let query = std::env::args().nth(1).unwrap_or_else(|| {
         r#"[words[i] ++ " " ++ words[i + 1]
- for i in 1..(length(words) - 1)]"#
+ for i in index_set(words) if i < length(words)]"#
             .into()
     });
     let source = "ash apple birch apple";

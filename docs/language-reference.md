@@ -32,7 +32,8 @@ additional type or index information. Native objects keep their host's identity.
 ```
 
 Arrays and tuples use one-based positions. `words[1]` is `"ash"` in the word
-example. Record access uses a label, such as `row.word`. Ordinary access fails
+example; `(2, 5).2` selects the second tuple value. Record access uses a label,
+such as `row.word`. Ordinary access fails
 when an entry is missing; `lookup(row, "word")` returns absence for a valid
 missing key.
 
@@ -84,6 +85,7 @@ names but operate on a host's native selections.
 | `v default fallback` | Evaluate the fallback only when `v` is absent |
 | `one(a)` | Require exactly one element |
 | `require(condition, value, "message")` | Return the value on true; otherwise fail with the message |
+| `index_set(a)` | Return typed keys of a positional or rank-one keyed array |
 | `entries(a)`, `zip_exact(a, b)` | Inspect keyed cells or pair arrays with identical axes and present keys |
 
 The [value reference](values.md) defines accepted types, empty inputs and error

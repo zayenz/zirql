@@ -5985,6 +5985,160 @@ mod projection {
     }
 
     #[test]
+    fn common_reader_index_sets_and_tuple_postfixes_use_shared_values() {
+        use zirql::{
+            KeyAxis, NominalMember, NominalMemberId, NominalTypeId, SetElementType, ValueKey,
+            ValueKeyType,
+        };
+        let member_type = NominalTypeId(7);
+        let member = |id, order| NominalMember {
+            type_id: member_type,
+            member_id: NominalMemberId(id),
+            declaration_order: order,
+            type_name: "Guests".into(),
+            member_name: format!("member{id}"),
+        };
+        let axis = || KeyAxis {
+            key_type: ValueKeyType::Member(member_type),
+            keys: vec![
+                ValueKey::Member(member(22, 4)),
+                ValueKey::Member(member(11, 1)),
+            ],
+        };
+        let keyed = |axes| {
+            Value::Constructed(V::KeyedArray {
+                axes,
+                entries: vec![],
+            })
+        };
+        let bindings = Bindings::new([
+            (Located::new("keyed".into(), 0..0), keyed(vec![axis()])),
+            (
+                Located::new("empty".into(), 0..0),
+                keyed(vec![KeyAxis {
+                    key_type: ValueKeyType::Member(member_type),
+                    keys: vec![],
+                }]),
+            ),
+            (
+                Located::new("matrix".into(), 0..0),
+                keyed(vec![axis(), axis()]),
+            ),
+        ])
+        .unwrap();
+        for (source, expected) in [
+            (
+                "index_set([8, 5])",
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(1), V::Integer(2)],
+                },
+            ),
+            (
+                "index_set([])",
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![],
+                },
+            ),
+            (
+                "index_set(keyed)",
+                V::Set {
+                    element_type: Some(SetElementType::Member(member_type)),
+                    elements: vec![V::Member(member(11, 1)), V::Member(member(22, 4))],
+                },
+            ),
+            (
+                "index_set(empty)",
+                V::Set {
+                    element_type: Some(SetElementType::Member(member_type)),
+                    elements: vec![],
+                },
+            ),
+            (
+                r#"({"rows": [((3, 7), 9)]}, 0).1.rows[1].1.2 + 1"#,
+                V::Integer(8),
+            ),
+            (
+                "(1, 2).2..4",
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(2), V::Integer(3), V::Integer(4)],
+                },
+            ),
+            ("(1.5, 2.5).1 + 0.5", V::Float(2.0)),
+        ] {
+            let mut allowance = budget();
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let expression =
+                zirql::read_value_expression(&mut reader, &mut SavedNames, &mut allowance, 32)
+                    .unwrap();
+            assert!(reader.remaining().is_empty(), "{source}");
+            let result = zirql::evaluate_native_value(
+                &expression,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &bindings,
+                &mut allowance,
+            )
+            .unwrap();
+            assert_eq!(result, expected, "{source}");
+            zirql::dispose_native_value(expression);
+        }
+        for (source, message) in [
+            ("index_set(matrix)", "rank one"),
+            ("index_set(1)", "needs an array"),
+            ("(1, 2).0", "missing collection position"),
+            ("(1, 2).3", "missing collection position"),
+            ("[1, 2].1", "needs a tuple"),
+            ("if true { 7 } else { index_set(1) }", "needs an array"),
+        ] {
+            let mut allowance = budget();
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let expression =
+                zirql::read_value_expression(&mut reader, &mut SavedNames, &mut allowance, 32)
+                    .unwrap();
+            let error = zirql::evaluate_native_value(
+                &expression,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &bindings,
+                &mut allowance,
+            )
+            .unwrap_err();
+            let EvaluationError::Core(error) = error else {
+                panic!("shared error")
+            };
+            assert!(error.message.contains(message), "{source}: {error}");
+            let Location::Query(range) = error.location else {
+                panic!("query location")
+            };
+            let expected = if source.starts_with("if ") {
+                "index_set(1)"
+            } else {
+                source
+            };
+            assert_eq!(&source[range], expected);
+            zirql::dispose_native_value(expression);
+        }
+        for source in [
+            "index_set()",
+            "index_set([], [])",
+            "(1, 2).-1",
+            "(1, 2).999999999999999999999999999999",
+        ] {
+            let mut allowance = budget();
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let error =
+                zirql::read_value_expression(&mut reader, &mut SavedNames, &mut allowance, 32)
+                    .unwrap_err();
+            assert!(matches!(error.location, Location::Query(_)));
+        }
+    }
+
+    #[test]
     fn native_rows_reader_preflight_and_lazy_requirement_share_the_value_runner() {
         let mut allowance = budget();
         let bindings = Bindings::new([
@@ -6026,6 +6180,13 @@ mod projection {
         ])
         .unwrap();
         for (source, expected) in [
+            (
+                "index_set(keyed)",
+                V::Set {
+                    element_type: Some(zirql::SetElementType::Integer),
+                    elements: vec![V::Integer(3), V::Integer(9)],
+                },
+            ),
             (
                 "entries(zip_exact(keyed, keyed))",
                 V::Array(vec![

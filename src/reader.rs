@@ -1847,15 +1847,32 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 && !self.reader.remaining().starts_with("..")
             {
                 self.reader.advance(1)?;
-                let field = self.name()?;
-                let range = left.value().range.start..field.range.end;
-                left = ValueGuard::new(self.node(
+                self.reader.skip_whitespace();
+                let start = left.value().range.start;
+                let kind = if self
+                    .reader
+                    .remaining()
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_digit())
+                {
+                    let position = self.reader.unsigned_integer()?;
+                    self.budget.charge(
+                        position.range.len(),
+                        Location::Query(position.range.clone()),
+                    )?;
+                    K::TupleAccess {
+                        value: Box::new(left.into_value()),
+                        position,
+                    }
+                } else {
+                    let field = self.name()?;
                     K::Field {
                         value: Box::new(left.into_value()),
                         field,
-                    },
-                    range,
-                )?);
+                    }
+                };
+                left = ValueGuard::new(self.node(kind, start..self.reader.position())?);
             } else {
                 if minimum <= 9 && self.word_is("default") {
                     self.reader.advance("default".len())?;
@@ -2139,6 +2156,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                         | "occurs"
                         | "absent"
                         | "entries"
+                        | "index_set"
                         | "one"
                 ) {
                     let mut arguments =
@@ -2288,6 +2306,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                                 K::Absent(Box::new(value.into_value()))
                             };
                             return self.node(kind, start..self.reader.position());
+                        }
+                        "index_set" => {
+                            return self.node(
+                                K::IndexSet(Box::new(value.into_value())),
+                                start..self.reader.position(),
+                            );
                         }
                         "entries" => {
                             return self.node(
