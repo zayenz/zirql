@@ -473,3 +473,27 @@ copy traversal and payload work, and admit checkpoint and body-input storage
 before allocating it. All callbacks share the active budget and nested body
 guards; iterations do not accumulate call depth. Metered comparisons and copies
 can exhaust an existing allowance earlier. Host defaults are unchanged.
+
+## Fragment and computed-entry construction
+
+`expand_fragments` charges a visit per fragment and work/result units per
+appended byte before growing the output. It admits the string container and
+checks cumulative byte arithmetic against the addressable storage limit.
+Resolvers borrow existing text; any owned conversion temporary must be admitted
+before its allocation. Newlines remain a separately admitted host append.
+These work charges also apply to legacy budgets.
+
+`construct_string_entries` admits one container and each entry slot before
+insertion, checks entry-size arithmetic and the stream ceiling, and charges
+visits and an upper bound on inspected key bytes. Callbacks admit their keys,
+values and diagnostic storage before allocation. Already-admitted payloads
+move without a second copy charge. It uses the same insertion mechanism as
+`map_native_by`, whose legacy/program work distinction remains unchanged.
+
+Computed objects enter one active nesting level. Host-recursed arrays use
+`Budget::within_evaluation` for that same guard; each actual container counts
+once. Fragment callbacks add no logical level but retain the bounded reentry
+counter. Errors restore active depth and preserve child locations, without
+refunding work or results. Partial strings and maps never become successful
+results. Newly admitted template and legacy JSON storage can refuse previously
+undercharged near-limit requests; defaults do not increase to compensate.

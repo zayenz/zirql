@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, collections::btree_map::Entry, mem::size_of};
+use std::collections::BTreeMap;
+
+use crate::construction::{EntryAccounting, construct_entries};
 
 use crate::{Budget, EvaluationError, Location, QueryError, QueryErrorCategory};
 
@@ -29,65 +31,39 @@ pub fn map_native_by<I, C: ?Sized, V, E>(
     budget: &mut Budget,
     location: Location,
     mut key: impl FnMut(&I, &mut C, &mut Budget) -> Result<Option<Vec<String>>, EvaluationError<E>>,
-    mut value: impl FnMut(I, &mut C, &mut Budget) -> Result<V, EvaluationError<E>>,
+    value: impl FnMut(I, &mut C, &mut Budget) -> Result<V, EvaluationError<E>>,
 ) -> Result<BTreeMap<String, V>, EvaluationError<E>> {
     budget.check_items(items.len(), location.clone())?;
-    budget.charge_program_work(1, location.clone())?;
-    budget.charge_results(1, location.clone())?;
-    let mut entries = BTreeMap::new();
-    for item in items {
-        budget.charge_program_work(1, location.clone())?;
-        let Some(mut keys) = key(&item, context, budget)? else {
-            return Err(key_error(&location, budget)?.into());
-        };
-        if keys.len() != 1 {
-            return Err(key_error(&location, budget)?.into());
-        }
-        let key = keys.pop().expect("one map key");
-        let count = entries
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| storage_error(&location))?;
-        count
-            .checked_mul(size_of::<(String, V)>())
-            .filter(|bytes| *bytes <= isize::MAX as usize)
-            .ok_or_else(|| storage_error(&location))?;
-        // One tree descent inspects each existing key at most once. Charging
-        // the incoming key length bounds each comparison's inspected bytes.
-        let inspected = key
-            .len()
-            .checked_mul(count)
-            .ok_or_else(|| storage_error(&location))?;
-        budget.charge_program_work(inspected, location.clone())?;
-        match entries.entry(key) {
-            Entry::Occupied(entry) => {
-                let bytes = entry
-                    .key()
-                    .len()
-                    .checked_add("map_by encountered duplicate key ``; select unique keys".len())
-                    .ok_or_else(|| storage_error(&location))?;
-                budget.charge_program_work(bytes, location.clone())?;
-                budget.charge_results(bytes, location.clone())?;
-                return Err(QueryError {
-                    location,
-                    message: format!(
-                        "map_by encountered duplicate key `{}`; select unique keys",
-                        entry.key()
-                    ),
-                    category: QueryErrorCategory::Other,
-                }
-                .into());
+    construct_entries(
+        items,
+        context,
+        budget,
+        &location,
+        |item, context, budget| {
+            let Some(mut keys) = key(item, context, budget)? else {
+                return Err(key_error(&location, budget)?.into());
+            };
+            if keys.len() != 1 {
+                return Err(key_error(&location, budget)?.into());
             }
-            Entry::Vacant(entry) => {
-                let mapped = value(item, context, budget)?;
-                budget.check_items(count, location.clone())?;
-                budget.charge_program_work(1, location.clone())?;
-                budget.charge_results(1, location.clone())?;
-                entry.insert(mapped);
-            }
-        }
-    }
-    Ok(entries)
+            Ok(keys.pop().expect("one map key"))
+        },
+        value,
+        |key, _, budget| {
+            let bytes = key
+                .len()
+                .checked_add("map_by encountered duplicate key ``; select unique keys".len())
+                .ok_or_else(|| storage_error(&location))?;
+            budget.charge_program_work(bytes, location.clone())?;
+            budget.charge_results(bytes, location.clone())?;
+            Ok(QueryError {
+                location: location.clone(),
+                message: format!("map_by encountered duplicate key `{key}`; select unique keys"),
+                category: QueryErrorCategory::Other,
+            })
+        },
+        EntryAccounting::NativeMap,
+    )
 }
 
 fn key_error(location: &Location, budget: &mut Budget) -> Result<QueryError, QueryError> {
