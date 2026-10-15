@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 61
-- Ready: 6
+- Ready: 5
 - Blocked: 1
-- Done: 54
+- Done: 55
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -58,7 +58,7 @@
 | [base-047](tasks/047-compose-constructed-collection-pipelines-in-the-shared-langu.md) | Compose constructed collection pipelines in the shared language | done | — |
 | [base-048](tasks/048-share-native-stream-bounds-reversal-and-cardinality-checks.md) | Share native stream bounds, reversal and cardinality checks | done | — |
 | [base-049](tasks/049-share-native-selector-ordering-and-all-ties-extrema.md) | Share native selector ordering and all-ties extrema | done | — |
-| [base-050](tasks/050-share-native-union-intersection-and-difference-algorithms.md) | Share native union, intersection and difference algorithms | ready | — |
+| [base-050](tasks/050-share-native-union-intersection-and-difference-algorithms.md) | Share native union, intersection and difference algorithms | done | — |
 | [base-051](tasks/051-share-correlated-native-map-construction.md) | Share correlated native map construction | ready | — |
 | [base-052](tasks/052-share-explicit-map-ranking-and-ordered-map-selection.md) | Share explicit map ranking and ordered map selection | blocked | base-051, base-048 |
 | [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | done | — |

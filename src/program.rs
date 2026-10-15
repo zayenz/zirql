@@ -561,7 +561,10 @@ pub trait ProgramHost<C> {
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>>;
 
-    /// Combine left then right results using the host's native identity/order.
+    /// Both operands have run left to right from the same incoming value.
+    /// Validate their kinds and handles before calling [`crate::combine_native_set`]
+    /// with native identities and candidates in the host's required result order.
+    /// Charge any additional scans or owned copies through this active budget.
     fn combine(
         &self,
         operator: &Self::SetOperator,

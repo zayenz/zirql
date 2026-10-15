@@ -100,9 +100,18 @@ unit each; override them only when that matches your domain's actual work.
 Charge scans and traversal that happen inside a hook, including nested work.
 
 For programs, `ProgramHost` owns native value copying, stage execution, set
-combination, native record construction and emission. `copy_value` need not
+admission, native record construction and emission. `copy_value` need not
 copy an entire document. It must admit the new result representation before
 allocating it. `construct_record` receives already-admitted field slots.
+
+In `combine`, validate both operand kinds and every handle before calling
+`combine_native_set`, including empty and discarded operands. Supply native
+identities and candidates in the established result order: document order or
+first appearance, for example. Zirql owns membership, combination and
+deduplication. `NativeSetOperator::from_keyword` reads the three shared keywords.
+Both operands already ran left to right from the same incoming selection.
+The identity callback charges variable-size inspection; additional host scans
+and owned string copies use the same budget.
 
 A borrowed selection can remain borrowed while its source lives. A document
 handle remains tied to its owner. Stale-handle checks, diff-side identity and

@@ -11,6 +11,7 @@ mod program;
 mod projection;
 mod reader;
 mod runtime_types;
+mod sets;
 mod value;
 mod worklists;
 
@@ -64,6 +65,7 @@ pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
     checked_invoke, declare_constructed,
 };
+pub use sets::{NativeSetOperator, combine_native_set};
 pub use value::{
     ArrayType, ConstructedRead, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry,
     NominalMember, NominalMemberId, NominalTypeId, Pattern, PatternKind, SetElementType,
