@@ -1436,7 +1436,71 @@ not authorize broader data-expression helpers, mutable variables, live reads
 of edited candidates, changed Unknown behavior or implicit serialization.
 Changes to those policies need a separate decision.
 
-Coordinate each consumer integration with the Zincite work chat. First reuse
-its `let` work, then compare the binding/pipeline paths above at the committed
-revision. Record concrete gaps and split only the remaining shared and consumer
-work. These planning requirements do not expand any task currently in review.
+Use the committed Zincite `let` work and compare the binding/pipeline paths above
+at the admitted revision. Preserve unrelated consumer edits. Do not message the
+quiescent Zincite or completed documentation chats; the retained integration
+authority covers bounded work in isolated checkouts.
+
+### Accepted native-operation alignment
+
+Direct native expressions are the normal Zincite form; remove the obsolete
+`query("...")` wrapper during the frontend integration. Reuse immutable bindings,
+saved native/constructed values, common functions/control flow and the existing
+constructed filter/count implementation. Original-input reads, emitter policy,
+completeness and atomic data edits retain their established semantics.
+
+Zincite native ordering and dictionary value sorting share constructed typed
+keys: present homogeneous signed integers, finite floats, exact strings or
+members of one nominal type with coherent identity/metadata. No integer/float
+mixing, absent/missing or Boolean selector keys. Convert native counts to signed
+keys with checked conversion. Reuse shared comparison and sort/extrema machinery;
+keep a distinct host comparison path only for an actual native value-domain
+requirement, not to preserve an obsolete API.
+
+Stable sorting keeps current-order ties. Native single extrema keep the first
+tie; all-ties forms keep all tied subjects in input order. New Zincite native
+empty extrema return an empty selection of the same kind. Constructed extrema
+remain optional and absent on empty. Preflight known unsupported kinds, keys and
+effects even when input is empty.
+
+Native set union keeps first appearance from left then right. Intersection and
+difference deduplicate in left order. Apply this to both hosts without changing
+the natural order supplied by domain selections/edges or their native identities.
+`map_by` keeps input insertion order, requires one string key and rejects a
+duplicate before evaluating its value. Tally keys follow first occurrence.
+Dictionary copies, saved results, sorting/bounds and nested/library JSON retain
+current order and dictionary kind. No separate ranked-map result is needed.
+
+The common `where_exists(query)` reader uses the existing correlated existence
+algorithm: retain original subjects/order/duplicates for nonempty pure relations,
+reject known complete empty relations, and refuse unresolved nonemptiness/errors.
+Zincite `fixpoint(body)` reuses same-kind replacement iteration, ordered equality
+including duplicates and bounded cycle refusal. Accumulation requires explicit
+union. Incomplete adjacency cannot prove convergence. Native ownership, locations,
+one request budget and existing effect rules remain intact.
+
+The [native guide](../../docs/native-programs.md#accepted-collection-and-native-alignment)
+records the selected behavior and examples, explicitly separated from current
+support. Complete-program comparisons established which existing shared paths to
+reuse; base-044/046/047/055/057/058/059/061 are not replacement tasks.
+The bounded implementation split is:
+
+1. Shared insertion-ordered set/dictionary construction, same-kind sorting,
+   membership/association equality and first-seen tally.
+2. Zincite direct saved-expression routing and existing constructed suffixes.
+3. Zirium dictionary/JSON migration and operand-order native sets after step 1.
+4. Common bare-brace set/dictionary reading after step 1.
+5. Common indexed array syntax and always-retained declared index sources after
+   step 4, reusing existing keyed shape and host nominal values.
+6. Zincite native ordering/sets with the concrete shared typed-key extension
+   after step 1; no duplicate sorting algorithms.
+7. Zincite retained dictionaries and ordered JSON after step 6.
+8. Common existence reading and consumer adoption of existing fixed points
+   after the native set and Zirium migration steps needed by its examples.
+
+Step 1 and the Zincite routing slice can use independent source worktrees in
+parallel. Later admission checks actual ownership and prerequisites rather than
+assuming that every ready pair is compatible. Follow-up task creation/import and
+implementation are authorized under the recorded two-role and serial integration
+limits. No publication, deployment, new reflection, model resolver or broader
+edit policy is included.

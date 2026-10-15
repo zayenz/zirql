@@ -195,51 +195,146 @@ and output contracts are covered by [host integration](host-integration.md),
 
 ## Order native selections
 
-Hosts can lower common native `sort`, `min`, `max`, `min_all` and `max_all`
-stages through `ValueReaderHost::ordering`. Their `*_by(query)` forms retain a
-singleton-relative selector with the same lexical scope as the containing
-expression. Typed adapters construct `NativeOrdering<Q>` directly. Both paths
-call `order_native_by` with native payloads and `NativeOrderKey` values; no
-rendering or constructed-value conversion is involved.
+Hosts lower native `sort`, `min`, `max`, `min_all` and `max_all` stages through
+`ValueReaderHost::ordering`. Their `*_by(query)` forms retain a
+singleton-relative selector with the containing expression's lexical scope.
+Typed adapters construct `NativeOrdering<Q>` directly. The shared algorithm
+orders native payloads without rendering them or replacing their owner.
 
 Sorting is stable. Single extrema keep the first equal-key item; all-ties
 extrema keep every equal-key item in input order. Selectors run once per item in
-input order before comparisons begin, including for extrema. Counts retain
-`usize` range and sort before text; text uses lexical order. Hosts still decide
-which native kinds and keys they accept and whether empty extrema are errors.
-The shared operation returns an empty selection for empty input.
+input order before comparisons begin, including for extrema. The existing
+`NativeOrderKey` API supports counts and text: counts retain `usize` range and
+sort before text. Hosts currently decide their admitted kinds and empty policy;
+the shared algorithm itself returns an empty selection on empty input.
 
-## Correlated native maps
+The accepted Zincite alignment below adds its constructed typed-key contract
+to native ordering. It does not claim that these new adapter paths already run.
+
+## Correlated native dictionaries
 
 `map_by(key_query, value_query)` evaluates two independent queries against each
 native input item. The key must produce exactly one string. Inputs run in their
 original order, key before value; a duplicate key fails before its value runs.
-Empty input gives an empty map, and map keys have lexical order.
+Values retain their native kind and owner, including nested dictionaries and
+counts. The host checks supported kinds and pure selector policy before
+execution, even for empty input.
 
-Values retain their native kind and owner, including nested maps and counts.
-The host checks supported kinds and read-only selector policy before execution,
-even for empty input. Rendering remains an explicit host operation.
+The current implementation returns lexical-key maps. `sort_by(value)` creates
+an explicitly ranked result with lexical-key ties. Its legacy scalar admission
+accepts homogeneous null, Boolean, numeric or string values; signed/unsigned
+integers and finite floats share the numeric category and compare exactly.
+This differs from constructed typed ordering.
 
-A supporting host can explicitly rank scalar map values with `sort_by(value)`.
-Null, Boolean, numeric and string values are separate homogeneous categories;
-signed integers, unsigned integers and finite floats share the numeric category
-and compare exactly. Nested values and incompatible categories fail. Equal
-values use lexical key order, even when reranking a previously reversed map.
-This admission rule is separate from constructed collection sorting.
+The accepted contract replaces the lexical/ranked distinction with one
+insertion-ordered dictionary. It requires the implementation work below;
+current map APIs and renderers have not yet been migrated.
 
-An explicitly ranked map keeps its entry order through saved bindings, copies,
-`reverse`, `head(n)` and `tail(n)`. Reversal includes tied keys; head and tail
-preserve the selected entries' relative order. Zero keeps no entries and an
-oversized bound keeps all entries. Hosts preserve this order at their rendering
-boundary. Ordinary maps retain lexical key order.
+## Accepted collection and native alignment
+
+The user selected these rules for the next bounded implementation. They are
+accepted design, not a list of already executable additions.
+
+Sets and dictionaries preserve insertion order. Repeated set elements keep
+their first position; duplicate dictionary keys remain errors. Sorting returns
+the same collection kind with a new iteration order. A dictionary stays a
+dictionary after `sort_by(value)`. Equal sort keys retain the incoming order,
+including after a prior sort or reversal. Saving, copying, nesting and rendering
+a collection must preserve its current order.
+Collection value equality retains its membership/key-value meaning rather than
+accidentally comparing storage order. Explicit keyed axes keep their shape
+contract; native fixed-point streams still use ordered equality.
+
+Native `map_by` dictionaries acquire key order from input traversal. Histograms
+acquire key order from the first occurrence of each spelling. `reverse`,
+`head(n)` and `tail(n)` preserve the order of retained entries; reversal also
+reverses ties. Empty dictionaries remain dictionaries, and zero bounds select
+an empty dictionary. No separate ranked-map language value or implicit
+conversion to entry records is needed.
+
+For declarations named A, B and C with use counts 1, 2 and 0, the proposed
+Zincite report is:
+
+```zirql
+let ds = declarations;
+report ds | map_by(names, uses | count)
+          | sort_by(value) | reverse | head(2);
+```
+
+Its JSON output is a dictionary in the selected order:
+
+```json
+{"complete":true,"limitations":[],"result":{"B":2,"A":1}}
+```
+
+JSON object member order is observable output here. The library must retain
+that order before serialization; constructing a default sorted JSON map would
+lose it. Native payloads remain native until the explicit rendering boundary.
+Existing keyed-array `entries(a)` does not by itself provide `entries(dictionary)`.
+Literal dictionary spelling and optional declared index sets have their own
+accepted design; native `map_by` still requires string keys.
+
+Zincite native ordering and dictionary value sorting use present homogeneous
+signed integers, finite floats, exact strings or members of one nominal type.
+Integers and floats do not mix. Missing/absent keys, Boolean keys and incompatible
+nominal identities fail. Nominal comparison uses declaration order and matching
+identity/metadata. Native counts enter this typed contract through checked
+signed conversion. Reuse constructed admission/comparison and the existing
+sort/extrema algorithms through a small typed-key path. Native handles require
+explicit scalar projections, not debug text or printed-name identity.
+
+Native `min`/`max` and their selector forms retain the first tied item;
+`min_all`/`max_all` and their selector forms retain all ties in input order.
+New Zincite native extrema return a same-kind empty selection on empty input.
+Constructed extrema keep their optional absent-on-empty contract. Known
+unsupported kinds, selectors and effects still fail preflight on empty input.
+
+Native set union keeps first appearance from left then right. Intersection and
+difference deduplicate in left order. Both operands use the same incoming
+selection and execute left then right. Handles keep their established host
+identity and owner, including diff sides. Initial operation/diff selections can
+start in document/canonical order and navigation retains its domain edge order;
+that source order is distinct from ordering the result of a set expression.
+A host migration must make any changed set-result order explicit.
+
+This algebra applies to admitted identity-bearing native streams. Literal
+streams without a defined identity, counts, dictionaries, constructed arrays
+and computational `identity_set` values are different kinds. No identity is
+invented from rendering. Constructed scalar sets also acquire insertion order
+and same-kind explicit sorting; their existing type and nominal identity checks
+remain. Internal worklist identity sets keep their computational contract.
+
+`where_exists(query)` is the selected common reader spelling for the existing
+correlated existence algorithm. It retains original incoming handles, order
+and duplicates. A nonempty pure singleton-relative relation keeps the subject;
+a known complete empty relation rejects it. Errors or unresolved nonemptiness
+fail with their locations rather than becoming false. The reader hook and
+Zincite adapter remain to be implemented.
+
+Direct native syntax is the normal Zincite form. Remove its obsolete
+`query("...")` wrapper in the bounded frontend adoption; no compatibility
+adapter is required. `let` remains its sole binding keyword. Existing
+original-input reads, lexical scope, pure functions/blocks, terminal Zincite
+emitters, host completeness and atomic data-edit rules remain unchanged.
 
 ## Native fixed points
 
-A supporting native host can read `fixpoint(query)` through the common reader.
+A supporting native host reads `fixpoint(query)` through the common reader.
 Each iteration replaces the current selection with the body's result. Equality
 is positional and includes duplicates; intermediate selections do not accumulate.
-The body runs once more to establish an unchanged result, including any
-host-approved emissions. Repeating a non-fixed selection fails.
+The final body execution establishes an unchanged result. Repeating a non-fixed
+selection fails, using one bounded cycle checkpoint.
 
-Hosts retain native kinds, identity, side and domain operations. Domain closure
-and specialized closure worklists remain host operations.
+The proposed Zincite accumulating form is:
+
+```zirql
+let seed = declarations | filter(name("C"));
+seed | fixpoint(input union referenced_declarations)
+```
+
+The union explicitly retains the current members. Zincite bodies are pure
+report computation and must return the same admitted native kind. Owners,
+identity and the active budget survive every iteration. Partial adjacency
+cannot prove convergence: use the host's complete-or-error primitives when
+that proof is required, retaining other report limitations. Domain closure,
+paths and specialized reachability remain separate operations.

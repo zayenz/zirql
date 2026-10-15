@@ -137,6 +137,16 @@ terminal results and the small `parse_pipeline` reader. The broader native
 representation also supports host stages and set operations. A host can reuse
 the common readers or lower an existing parser to that representation.
 
+The accepted next alignment makes sets and dictionaries insertion-ordered and
+sortable without changing their collection kind. Dictionary value sorting is
+stable in current entry order and JSON preserves that order as object members.
+Native set algebra retains first-seen operand order. These changes, the Zincite
+typed native key contract and its `where_exists`/`fixpoint` adoption are accepted
+design awaiting implementation; see
+[the exact native alignment contract](native-programs.md#accepted-collection-and-native-alignment).
+Current lexical-map and explicitly ranked-map behavior is documented there so
+that accepted design is not mistaken for executable support.
+
 Use `project(subject, {fields})` to turn native subjects into report records.
 Explicit projections produce constructed values; native captures and paths can
 retain the original objects. See [native programs](native-programs.md) for

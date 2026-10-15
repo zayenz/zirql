@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-060"
 key = "decide-broader-zincite-language-alignment"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 priority = "normal"
 blocked_by = []
@@ -25,11 +25,20 @@ The user explicitly requires alignment broader than let statements. The current 
 
 ## Done when
 
-- [ ] Compare complete programs for selection reused by multiple statements, a constructed report pipeline, and a correlated native report. Show current and proposed Zincite/Zirium forms, covering direct stages versus query-string wrappers, grouping and precedence, immutable binding references, common function/control forms and explicit/final reporting. Identify which differences aid the domain and which are unnecessary frontend restrictions.
-- [ ] Produce a compact adoption table for shared native ordering/all-ties extrema (049), set algebra (050), map construction/ranking (051/052), correlated existence (053) and fixed points (054), plus any already-supported functions/control forms needing only integration. For each, identify intended Zincite input/result kinds, host primitive requirements, identity/order, empty/tie rules, Unknown/incomplete behavior and effect restrictions; mark actual nonapplicability with a concrete reason.
-- [ ] Recommend shared names, syntax and semantic rules wherever they fit. Present only material unresolved choices to the user, then record accepted decisions in the base brief and affected contract documentation. Do not silently inherit Zirium legacy JSON/comparison quirks or weaken Zincite original-input/atomic-edit rules.
-- [ ] After acceptance, record a bounded implementation split separating missing shared machinery from consumer adoption, with true prerequisites and a few executable acceptance examples. Reuse existing tasks and the two alignment integration tasks; do not recreate their work. Completion requires accepted decisions and scopes ready for subsequent task creation, not newly imported implementation tasks.
+- [x] Compare complete programs for selection reused by multiple statements, a constructed report pipeline, and a correlated native report. Show current and proposed Zincite/Zirium forms, covering direct stages versus query-string wrappers, grouping and precedence, immutable binding references, common function/control forms and explicit/final reporting. Identify which differences aid the domain and which are unnecessary frontend restrictions.
+- [x] Produce a compact adoption table for shared native ordering/all-ties extrema (049), set algebra (050), map construction/ranking (051/052), correlated existence (053) and fixed points (054), plus any already-supported functions/control forms needing only integration. For each, identify intended Zincite input/result kinds, host primitive requirements, identity/order, empty/tie rules, Unknown/incomplete behavior and effect restrictions; mark actual nonapplicability with a concrete reason.
+- [x] Recommend shared names, syntax and semantic rules wherever they fit. Present only material unresolved choices to the user, then record accepted decisions in the base brief and affected contract documentation. Do not silently inherit Zirium legacy JSON/comparison quirks or weaken Zincite original-input/atomic-edit rules.
+- [x] After acceptance, record a bounded implementation split separating missing shared machinery from consumer adoption, with true prerequisites and a few executable acceptance examples. Reuse existing tasks and the two alignment integration tasks; do not recreate their work. Completion requires accepted decisions and scopes ready for subsequent task creation, not newly imported implementation tasks.
 
 ## Validation
 
 - Check proposed examples against both actual frontend grammars and shared API contracts; clearly label unimplemented syntax. Use focused source/contract inspection, not a whole-codebase audit. No new product tests are expected. Run git diff --check and zdev check base --format json plus required documentation checks for changed guides.
+
+## Result
+
+Recorded accepted whole-program and native-operation alignment, insertion-ordered sortable dictionaries and sets, typed keys/extrema and bounded shared/consumer follow-up scopes.
+
+Validation:
+
+- Independent whole review passed with unchanged task snapshot and exact owned/foreign hashes.
+- Complete-program comparisons and adoption table checked against actual core and committed host contracts; all required Rust, zdev, diff and site checks passed, with 910 internal links and rendered guide inspection.
