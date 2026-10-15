@@ -1329,6 +1329,14 @@ input-derived and calculated values. The user explicitly chose to remove
 `source` binding syntax without compatibility aliases or deprecation machinery.
 The existing frontend paths already lower to Zirql's immutable `Statement::Bind`.
 
+The user's subsequent base-140 decision also removes named `literal(...)`
+lookups and the input-before-calculation ordering rule. Select an input value
+through its native pipeline, for example
+`items | filter(name("required")) | values | one`, then bind or calculate with
+that result. A final expression supplies output without requiring `report` or
+a final semicolon. Zincite implemented this contract in `900522f`; preserve it
+when integrating later language features.
+
 Shared immutable bindings, binding lookup, pipeline sequencing and the common
 native expression reader already exist. Zincite already uses shared execution
 and supports saved native inputs and direct native composition in several
@@ -1347,9 +1355,9 @@ Plan the remaining work in these slices:
   collection. Check short inline programs and file programs through the same
   language path. Each stage consumes the preceding result; nested selectors keep
   their defined current input and outer bindings. Reuse the common reader and
-  located expressions wherever the host grammar permits. Preserve existing
-  query-string wrappers; reducing quoting or choosing additional common syntax
-  requires concrete examples and an explicit syntax decision.
+  located expressions wherever the host grammar permits. Preserve base-140's
+  direct native-input pipelines and implicit final output. Further changes to
+  quoting or common syntax require concrete examples and an explicit decision.
 - Compose native selection, explicit projection, constructed computation and
   shared collection operations without a rendering round trip. Preserve native
   handles, keyed shape, nominal identity, source locations and completeness.
@@ -1375,8 +1383,8 @@ and renderings need not produce identical bytes. Parsing, validation, reuse,
 copying, nested calls and result construction share the request budget and
 retained input/fact owners. No new benchmark suite or callback-count tests.
 
-Keep Zincite's current data-program ordering (input bindings before calculated
-bindings), original-input snapshots, explicit create/replace operations,
+Keep Zincite's statement-order scope, original-input snapshots and explicit
+create/replace operations, with
 complete-candidate validation and atomic writes. Its terminal emitters and
 Zirium's pass-through emitters remain explicit host policies. Alignment does
 not authorize broader data-expression helpers, mutable variables, live reads
