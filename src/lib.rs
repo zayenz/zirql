@@ -54,7 +54,7 @@ pub use reader::{
     read_function_declaration, read_match, read_native_expression, read_paths, read_pattern,
     read_pattern_function_declaration, read_pattern_let, read_projection, read_statement_prefix,
     read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
-    read_value_expression,
+    read_value_expression, read_value_suffix,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
