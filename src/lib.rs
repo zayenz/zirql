@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod eval;
+mod existence;
 mod functions;
 mod matching;
 mod ordering;
@@ -20,6 +21,7 @@ pub use eval::{
     Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, ProgramLimits,
     Truth, evaluate,
 };
+pub use existence::filter_native_exists;
 pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
     FunctionLimits, FunctionParameter, FunctionRequest, PatternFunctionDeclaration,
