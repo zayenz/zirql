@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 72
-- Ready: 2
+- Total: 73
+- Ready: 3
 - Blocked: 1
 - Done: 69
 
@@ -81,3 +81,4 @@
 | [base-070](tasks/070-run-shared-zirql-queries-over-implicit-and-named-csv-inputs.md) | Run shared Zirql queries over implicit and named CSV inputs | done | — |
 | [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | ready | base-070 |
 | [base-072](tasks/072-pass-current-stable-clippy-for-ordered-tally.md) | Pass current stable Clippy for ordered tally | done | — |
+| [base-073](tasks/073-retain-csv-header-schemas-in-runtime-rows.md) | Retain CSV header schemas in runtime rows | ready | base-070 |
