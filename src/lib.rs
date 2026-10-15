@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod construction;
 mod eval;
 mod existence;
 mod fixed_point;
@@ -20,6 +21,7 @@ mod worklists;
 use std::fmt;
 use std::ops::Range;
 
+pub use construction::{construct_string_entries, expand_fragments};
 pub use eval::{
     Budget, EvaluationError, Host, Limits, NativeInput, NativeResult, NativeValue, ProgramLimits,
     Truth, evaluate,

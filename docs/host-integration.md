@@ -697,3 +697,33 @@ Use `ordered_native_equal` after checking kind and owner, including empty input.
 Keep the body stable in prepared native arguments so functions retain their
 parameters, locals and saved bindings on every iteration. Host callbacks retain
 native admission, nested execution guards and approved effect policy.
+
+## Fragments and computed object keys
+
+Call `expand_fragments(parts, context, budget, location, resolve)` with the
+host's parsed or borrowed fragments. The resolver returns `Cow<str>`: borrow
+existing text and admit any owned temporary, such as decimal count text,
+before allocation. The core resolves and appends each fragment in written
+order. It does not parse inserted text, escape it or append a print newline.
+Keep those rules in the host, and preflight every written binding and known
+kind before effects.
+
+Call `construct_string_entries(entries, context, budget, location, key, value,
+duplicate)` to build computed string-key objects. The key callback can call
+`expand_fragments`; the value callback can expand text or recursively construct
+another object. Both use the same mutable context and budget. For each entry,
+the core evaluates the key, refuses a duplicate, then evaluates the value.
+The duplicate callback admits and constructs the host's existing diagnostic;
+it cannot permit replacement. Keys have lexical result order.
+
+Return admitted owned keys and payloads from the callbacks. They move into the
+map, so a value can retain a borrowed native handle and its source coordinates
+without serialization. A host choosing JSON still owns snapshot conversion,
+null and numeric admission, escaping and emission. Admit another result
+container before moving entries into it.
+
+The constructor guards its one actual object level. A host with its own array
+recursion can use `budget.within_evaluation(1, location, operation)` for each
+array instead. Do not guard a shared object constructor twice. The guard
+restores active depth on success or error and does not refund spent allowance.
+Fragment expansion uses a zero-depth guard to bound resolver reentry.

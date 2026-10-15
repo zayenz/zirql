@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ops::Range};
 
 use zirql::{
-    Bindings, Budget, EvaluationError, Expression, ExpressionStep, Location, MapSelection,
+    Bindings, Budget, EvaluationError, Expression, ExpressionStep, Limits, Location, MapSelection,
     NativeMap, NativeOrdering, ProgramHost, ProgramLimits, QueryError, QueryErrorCategory,
     ScalarMapKey, ValueReaderHost,
 };
@@ -673,4 +673,24 @@ fn map_selector_keeps_binding_and_local_precedence() {
         &steps[0].value,
         ExpressionStep::Stage(Stage::Order(_))
     ));
+}
+
+#[test]
+fn callable_map_retains_legacy_work_and_enclosing_nesting_accounting() {
+    let mut budget = Budget::new(Limits {
+        work: 0,
+        items: 1,
+        nesting: 0,
+    });
+    let map = zirql::map_native_by(
+        vec!["a"],
+        &mut (),
+        &mut budget,
+        Location::Query(8..29),
+        |key, _, _| Ok::<_, EvaluationError<()>>(Some(vec![(*key).into()])),
+        |value, _, _| Ok(value),
+    )
+    .unwrap();
+    assert_eq!(map["a"], "a");
+    assert_eq!(budget.remaining_work(), 0);
 }

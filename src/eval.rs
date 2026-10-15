@@ -177,7 +177,7 @@ impl Budget {
                 category: QueryErrorCategory::Other,
             });
         }
-        if self.depth + depth > self.max_nesting {
+        if self.depth.saturating_add(depth) > self.max_nesting {
             return Err(QueryError {
                 location,
                 message: "nesting limit exceeded".into(),
@@ -187,7 +187,17 @@ impl Budget {
         Ok(())
     }
 
-    pub(crate) fn within_evaluation<T, E: From<QueryError>>(
+    /// Run nested evaluation with this request's active depth and call guard.
+    /// Hosts use this for recursive containers not built by a shared operation,
+    /// for example legacy JSON arrays. Count each actual container once; shared
+    /// constructors already enter their own level. A zero depth bounds callback
+    /// reentry without adding a logical value level. Success and error restore
+    /// the prior depth/call state; spent work and result units are not refunded.
+    ///
+    /// # Errors
+    /// Refuses excess nesting/reentry at `location`, or propagates the child's
+    /// failure unchanged.
+    pub fn within_evaluation<T, E: From<QueryError>>(
         &mut self,
         depth: usize,
         location: Location,
