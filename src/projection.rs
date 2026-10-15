@@ -200,6 +200,24 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Self::Kind, QueryError>;
+    /// Admit native set operand kinds before execution, including empty operands
+    /// and unused branches. The default requires equal kinds; hosts can also
+    /// refuse kinds without a native membership identity.
+    fn set_kind(
+        &self,
+        left: &Self::Kind,
+        right: &Self::Kind,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        if left != right {
+            return Err(QueryError::query(
+                range.clone(),
+                "set operands require the same native kind",
+            ));
+        }
+        Ok(left.clone())
+    }
     /// A pure stage that supplies its own explicit native input through declared
     /// arguments, rather than reading the surrounding pipeline input. The runner
     /// supplies an absent placeholder which this stage must ignore.
@@ -360,15 +378,10 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
                     pending.push((right.as_ref(), &operand.range));
                     operand = left;
                 }
-                let left = native_expression_kind(operand, host, input, scope, budget)?;
+                let mut left = native_expression_kind(operand, host, input, scope, budget)?;
                 while let Some((right, range)) = pending.pop() {
                     let right = native_expression_kind(right, host, input, scope, budget)?;
-                    if left != right {
-                        return Err(QueryError::query(
-                            range.clone(),
-                            "set operands require the same native kind",
-                        ));
-                    }
+                    left = host.set_kind(&left, &right, budget, range)?;
                 }
                 Ok(left)
             }

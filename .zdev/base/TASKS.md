@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 72
-- Ready: 2
-- Blocked: 4
-- Done: 66
+- Ready: 3
+- Blocked: 2
+- Done: 67
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -75,9 +75,9 @@
 | [base-064](tasks/064-adopt-ordered-dictionaries-and-operand-order-sets-in-zirium.md) | Adopt ordered dictionaries and operand-order sets in Zirium | done | base-062 |
 | [base-065](tasks/065-read-bare-brace-sets-and-computed-dictionaries.md) | Read bare-brace sets and computed dictionaries | blocked | base-062, base-064, base-068 |
 | [base-066](tasks/066-read-indexed-arrays-with-optional-declared-index-sets.md) | Read indexed arrays with optional declared index sets | blocked | base-065 |
-| [base-067](tasks/067-adopt-typed-native-ordering-and-stable-sets-in-zincite.md) | Adopt typed native ordering and stable sets in Zincite | ready | base-062 |
-| [base-068](tasks/068-expose-retained-sortable-dictionaries-in-zincite.md) | Expose retained sortable dictionaries in Zincite | blocked | base-067 |
-| [base-069](tasks/069-read-correlated-existence-and-adopt-zincite-fixed-points.md) | Read correlated existence and adopt Zincite fixed points | blocked | base-067, base-064 |
+| [base-067](tasks/067-adopt-typed-native-ordering-and-stable-sets-in-zincite.md) | Adopt typed native ordering and stable sets in Zincite | done | base-062 |
+| [base-068](tasks/068-expose-retained-sortable-dictionaries-in-zincite.md) | Expose retained sortable dictionaries in Zincite | ready | base-067 |
+| [base-069](tasks/069-read-correlated-existence-and-adopt-zincite-fixed-points.md) | Read correlated existence and adopt Zincite fixed points | ready | base-067, base-064 |
 | [base-070](tasks/070-run-shared-zirql-queries-over-implicit-and-named-csv-inputs.md) | Run shared Zirql queries over implicit and named CSV inputs | done | — |
 | [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | ready | base-070 |
 | [base-072](tasks/072-pass-current-stable-clippy-for-ordered-tally.md) | Pass current stable Clippy for ordered tally | done | — |

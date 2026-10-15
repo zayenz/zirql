@@ -877,6 +877,22 @@ fn runtime_refusal(
 
 impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     type Kind = SourceKind;
+    fn set_kind(
+        &self,
+        left: &SourceKind,
+        right: &SourceKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        if left != right || !matches!(left, SourceKind::Words) {
+            return Err(QueryError::query(
+                range.clone(),
+                "sets require word identities",
+            ));
+        }
+        Ok(left.clone())
+    }
+
     fn kind(
         &self,
         value: &SourceValue<'a>,
@@ -9138,8 +9154,8 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         type SetOperator = ();
         type Emitter = &'static str;
         type Predicate = ();
-        fn is_binding(&self, _: &str) -> bool {
-            false
+        fn is_binding(&self, name: &str) -> bool {
+            name == "saved"
         }
         fn is_stage(&self, name: &str) -> bool {
             name == "count"
@@ -9190,10 +9206,25 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         ) -> Result<SourceStage, QueryError> {
             Ok(SourceStage::FixedPoint(Box::new(body)))
         }
-        fn set_operator(&self, _: &str) -> Option<()> {
-            None
+        fn set_operator(&self, word: &str) -> Option<()> {
+            zirql::NativeSetOperator::from_keyword(word).map(|_| ())
         }
     }
+    let saved = zirql::read_native_expression(
+        &mut zirql::ArgumentReader::new("(saved union saved) | count", 0).unwrap(),
+        &mut Reader,
+        &mut Budget::for_program(limits()),
+        16,
+    )
+    .unwrap();
+    let ExpressionKind::Sequence { input, .. } = &saved.value else {
+        panic!("pipeline")
+    };
+    let ExpressionKind::Group(group) = &input.value else {
+        panic!("group")
+    };
+    assert!(matches!(group.value, ExpressionKind::Set { .. }));
+    zirql::dispose_expression(saved);
     let source = "βeta alpha alpha";
     let input = || {
         SourceValue::Words(vec![
@@ -9348,6 +9379,96 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
     )
     .unwrap();
     assert_eq!(ordered, ["count", "tie", "text"]);
+
+    for (order, expected) in [
+        (zirql::NativeOrder::Sort, vec![1, 2, 0]),
+        (zirql::NativeOrder::Min, vec![1]),
+        (zirql::NativeOrder::Max, vec![0]),
+        (zirql::NativeOrder::MinAll, vec![1, 2]),
+        (zirql::NativeOrder::MaxAll, vec![0]),
+    ] {
+        let ordered = zirql::order_native_by(
+            vec![0, 1, 2],
+            order,
+            &mut Budget::for_program(limits()),
+            Location::Query(21..28),
+            |index, _| {
+                Ok::<_, EvaluationError<SourceFailure>>(zirql::NativeOrderKey::Value(
+                    zirql::ConstructedValue::Integer([7, 2, 2][*index]),
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(ordered, expected);
+    }
+    let member = |id, order, name: &str| {
+        zirql::ConstructedValue::Member(zirql::NominalMember {
+            type_id: zirql::NominalTypeId(9),
+            member_id: zirql::NominalMemberId(id),
+            declaration_order: order,
+            type_name: "Size".into(),
+            member_name: name.into(),
+        })
+    };
+    for keys in [
+        vec![
+            zirql::ConstructedValue::Integer(1),
+            zirql::ConstructedValue::Float(2.0),
+        ],
+        vec![
+            zirql::ConstructedValue::Integer(1),
+            zirql::ConstructedValue::Absent,
+        ],
+        vec![zirql::ConstructedValue::Boolean(true)],
+        vec![zirql::ConstructedValue::Float(f64::INFINITY)],
+        // Both contradictory members lose to the first key.
+        vec![
+            member(1, 0, "small"),
+            member(2, 1, "large"),
+            member(2, 2, "other"),
+        ],
+    ] {
+        let error = zirql::order_native_by(
+            keys,
+            zirql::NativeOrder::Min,
+            &mut Budget::for_program(limits()),
+            Location::Query(21..28),
+            |key, budget| {
+                Ok::<_, EvaluationError<SourceFailure>>(zirql::NativeOrderKey::Value(
+                    zirql::copy_constructed_value(key, budget, Location::Query(21..28))?,
+                ))
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, EvaluationError::Core(QueryError { location: Location::Query(range), .. }) if range == (21..28))
+        );
+    }
+    for keys in [
+        vec![
+            zirql::ConstructedValue::Float(2.5),
+            zirql::ConstructedValue::Float(-1.0),
+        ],
+        vec![
+            zirql::ConstructedValue::String("z".into()),
+            zirql::ConstructedValue::String("a".into()),
+        ],
+        vec![member(2, 1, "a"), member(1, 0, "z")],
+    ] {
+        let ordered = zirql::order_native_by(
+            vec![0, 1],
+            zirql::NativeOrder::Sort,
+            &mut Budget::for_program(limits()),
+            Location::Query(21..28),
+            |index, budget| {
+                Ok::<_, EvaluationError<SourceFailure>>(zirql::NativeOrderKey::Value(
+                    zirql::copy_constructed_value(&keys[*index], budget, Location::Query(21..28))?,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(ordered, [1, 0]);
+    }
 }
 
 #[test]
@@ -9502,4 +9623,54 @@ fn shared_fixed_point_spelling_is_reserved_for_functions() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("reserved operation"));
+}
+
+#[test]
+fn native_set_kind_admission_reaches_unused_value_branches() {
+    use zirql::{ConstructedValue as V, ValueExpressionKind as K};
+    let set = Located::new(
+        ExpressionKind::Set {
+            operator: (),
+            left: Box::new(Located::new(
+                ExpressionKind::Binding("count".into()),
+                21..26,
+            )),
+            right: Box::new(Located::new(
+                ExpressionKind::Binding("count".into()),
+                33..38,
+            )),
+        },
+        21..38,
+    );
+    let expression = Located::new(
+        K::Conditional {
+            branches: vec![(
+                Located::new(K::Literal(V::Boolean(true)), 0..4),
+                Located::new(K::Literal(V::Integer(1)), 5..6),
+            )],
+            otherwise: Box::new(Located::new(K::NativeQuery(Box::new(set)), 21..38)),
+        },
+        0..38,
+    );
+    let error = zirql::evaluate_native_value(
+        &expression,
+        &SourceHost,
+        SourceValue::Words(vec![]),
+        &mut SourceContext {
+            source: "",
+            prefix: "",
+            emissions: vec![],
+        },
+        &Bindings::new(vec![(
+            Located::new("count".into(), 0..1),
+            SourceValue::Count(0),
+        )])
+        .unwrap(),
+        &mut Budget::for_program(limits()),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, EvaluationError::Core(QueryError { location: Location::Query(range), message, .. }) if range == &(21..38) && message == "sets require word identities"),
+        "{error:?}"
+    );
 }

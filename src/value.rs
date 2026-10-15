@@ -1806,7 +1806,7 @@ fn member_bytes(
     Ok(bytes)
 }
 
-fn check_member_pair(
+pub(crate) fn check_member_pair(
     left: &NominalMember,
     right: &NominalMember,
     budget: &mut Budget,
@@ -5785,14 +5785,14 @@ fn check_ordering_types<'a>(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum OrderingKeyType {
+pub(crate) enum OrderingKeyType {
     Integer,
     Float,
     String,
     Member(NominalTypeId),
 }
 
-fn ordering_key<'a>(
+pub(crate) fn ordering_key<'a>(
     row: &'a ConstructedValue,
     field: Option<&str>,
     budget: &mut Budget,
@@ -5841,7 +5841,7 @@ fn ordering_key<'a>(
     Ok((key, ty))
 }
 
-fn compare_ordering_keys(
+pub(crate) fn compare_ordering_keys(
     left: &ConstructedValue,
     right: &ConstructedValue,
     budget: &mut Budget,
