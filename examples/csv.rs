@@ -11,8 +11,8 @@ use zirql::{
     ArgumentReader, ArrayType, Budget, CommonStatement, ConstructedValue as V, DeclaredType,
     ExpressionStep, Located, Location, PatternKind, Predicate, ProgramLimits, Projection,
     QueryError, ReadExpression, ValueExpression, ValueExpressionKind as K, ValueQueryHost,
-    ValueReaderHost, ValueType, copy_constructed_value, dispose_native_value, evaluate_query_value,
-    read_statement_prefix, read_value_expression,
+    ValueReaderHost, ValueType, copy_constructed_value, declare_constructed, dispose_native_value,
+    evaluate_query_value, read_statement_prefix, read_value_expression,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -309,6 +309,7 @@ fn decode_table(bytes: &[u8], budget: &mut Budget) -> Result<Table, QueryError> 
         ));
     }
     let mut headers: Vec<String> = Vec::new();
+    let mut declaration = Vec::new();
     for header in header_record {
         budget.charge(header.len() + headers.len() + 1, header_location.clone())?;
         if header.is_empty() || headers.iter().any(|previous| previous == header) {
@@ -321,9 +322,11 @@ fn decode_table(bytes: &[u8], budget: &mut Budget) -> Result<Table, QueryError> 
                 category: zirql::QueryErrorCategory::Other,
             });
         }
+        budget.charge(header.len() + 1, header_location.clone())?;
+        declaration.push((header.to_owned(), DeclaredType::String));
         headers.push(header.to_owned());
     }
-    budget.charge_results(1, header_location)?;
+    budget.charge_results(1, header_location.clone())?;
     let mut rows = Vec::new();
     for record in reader.records() {
         let record = record.map_err(csv_error)?;
@@ -343,10 +346,13 @@ fn decode_table(bytes: &[u8], budget: &mut Budget) -> Result<Table, QueryError> 
         }
         rows.push(V::Record(fields));
     }
-    Ok(Table {
-        headers,
-        rows: V::Array(rows),
-    })
+    let rows = declare_constructed(
+        V::Array(rows),
+        DeclaredType::Array(Box::new(DeclaredType::Record(declaration))),
+        budget,
+        header_location,
+    )?;
+    Ok(Table { headers, rows })
 }
 
 fn csv_location(position: Option<&csv::Position>) -> Location {
@@ -747,6 +753,33 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
         assert_eq!(text(REPORT, &named()), REPORT_JSON);
         assert_eq!(
+            text(
+                r#"let column = "name"; [lookup(rows[1], column), has_key(rows[1], column)]"#,
+                &people()
+            ),
+            "[\"Grace Hopper\",true]\n"
+        );
+        assert_eq!(
+            text(
+                r#"let selected = [p for p in people if p.active == "yes"]; let row = selected[1]; let column = "name"; {"row": row, "name": lookup(row, column), "present": has_key(row, column)}"#,
+                &named()
+            ),
+            "{\"row\":{\"id\":\"2\",\"name\":\"Grace Hopper\",\"team\":\"compiler\",\"active\":\"yes\",\"note\":\"Said \\\"hello\\\"\"},\"name\":\"Grace Hopper\",\"present\":true}\n"
+        );
+        assert_eq!(
+            text(
+                r#"let row = {"name": "Ada"}; let column = "missing"; [lookup(row, column), has_key(row, column)]"#,
+                &people()
+            ),
+            "[null,false]\n"
+        );
+        let query = r#"let column = "missing"; lookup(rows[1], column)"#;
+        let error = refusal(query, &people(), "record label outside declared schema");
+        assert_eq!(error.error.location, Location::Query(24..47));
+        let query = r#"let row = people[1]; let column = "missing"; has_key(row, column)"#;
+        let error = refusal(query, &named(), "record label outside declared schema");
+        assert_eq!(error.error.location, Location::Query(45..65));
+        assert_eq!(
             text("[p.note for p in rows if p.active == \"no\"]", &people()),
             "[\"01\"]\n"
         );
@@ -775,12 +808,12 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
 
         let table = decode_table(b"full name, team\nAda,compiler\n", &mut budget).unwrap();
-        let V::Array(rows) = table.rows else {
+        let V::Array(rows) = table.rows.data() else {
             panic!("CSV table is an array")
         };
         assert_eq!(
             rows,
-            vec![V::Record(vec![
+            &vec![V::Record(vec![
                 ("full name".into(), V::String("Ada".into())),
                 (" team".into(), V::String("compiler".into()))
             ])]

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-073"
 key = "csv-runtime-header-schema"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 blocked_by = ["base-070"]
@@ -25,11 +25,21 @@ The CSV adapter declares header record types in examples/csv.rs::Table::types, b
 
 ## Done when
 
-- [ ] Runtime CSV table values retain their header declaration through named/implicit reads, saved bindings, row selection and existing copies. Valid computed lookup and has_key work; unknown computed labels fail like literal labels, with original query locations and empty failed-request stdout. Keep preflight header checks for empty tables.
-- [ ] Existing JSON output and insertion order are unchanged, including nested row output and one/multiple named tables. Declaration storage, admission and copying remain charged through the current budget.
-- [ ] Extend one existing focused CSV example control for valid and invalid computed labels, saved-row reuse and the documented schema distinction. Reuse existing input/budget/refusal controls and exact guide examples; no syntax matrix, timing assertions or new test harness. Update guide wording only if necessary to describe the actual fixed contract.
+- [x] Runtime CSV table values retain their header declaration through named/implicit reads, saved bindings, row selection and existing copies. Valid computed lookup and has_key work; unknown computed labels fail like literal labels, with original query locations and empty failed-request stdout. Keep preflight header checks for empty tables.
+- [x] Existing JSON output and insertion order are unchanged, including nested row output and one/multiple named tables. Declaration storage, admission and copying remain charged through the current budget.
+- [x] Extend one existing focused CSV example control for valid and invalid computed labels, saved-row reuse and the documented schema distinction. Reuse existing input/budget/refusal controls and exact guide examples; no syntax matrix, timing assertions or new test harness. Update guide wording only if necessary to describe the actual fixed contract.
 
 ## Validation
 
 - Run git diff --check and zdev check base --format json in the authoritative checkout, required Rust formatting/Clippy/locked workspace tests and Rust 1.88 tests. Run the CSV example tests explicitly if workspace tests do not exercise examples.
 - Run the existing CSV guide commands and compact computed-label success/refusal cases against the actual example, checking buffered output and order. For changed guides run site check/build/link checks and desktop/mobile review; documentation needs no new product tests.
+
+## Result
+
+Retain one budgeted CSV header declaration through saved rows and row selection; reject computed unknown columns while preserving structural-record absence.
+
+Validation:
+
+- Independent whole review PASS at Wf302b0a0ad7c3ea0; canonical snapshot unchanged.
+- Formatting, zdev check, default and Rust 1.99 Clippy, default and Rust 1.88 locked workspace and explicit CSV example tests passed.
+- All seven exact CSV guide commands and focused runtime schema, UTF-8, buffering and aggregate-limit checks passed.
