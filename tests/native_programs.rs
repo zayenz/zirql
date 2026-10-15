@@ -319,6 +319,7 @@ type SourceExpression = Expression<SourceStage, (), &'static str>;
 enum SourceStage {
     Order(Box<zirql::NativeOrdering<SourceExpression>>),
     FixedPoint(Box<SourceExpression>),
+    Exists(Box<SourceExpression>),
     Neighbors,
     Same,
     Invalidate,
@@ -508,6 +509,32 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                     },
                 )?;
                 Ok(SourceValue::Words(words))
+            }
+            SourceStage::Exists(body) => {
+                let SourceValue::Words(words) = value else {
+                    return Err(QueryError::query(range.clone(), "expected words").into());
+                };
+                Ok(SourceValue::Words(zirql::filter_native_exists(
+                    words,
+                    budget,
+                    Location::Query(range.clone()),
+                    |word, budget| {
+                        let input = self.copy_value(
+                            &SourceValue::Words(vec![Word {
+                                side: word.side,
+                                text: word.text,
+                                range: word.range.clone(),
+                            }]),
+                            context,
+                            budget,
+                            range,
+                        )?;
+                        match evaluate_expression(body, self, input, context, bindings, budget)? {
+                            SourceValue::Words(words) => Ok(words),
+                            _ => Err(QueryError::query(range.clone(), "expected words").into()),
+                        }
+                    },
+                )?))
             }
             SourceStage::FixedPoint(body) => zirql::evaluate_native_fixed_point(
                 value,
@@ -7101,7 +7128,12 @@ fn shared_reader_releases_native_values_on_errors() {
     };
     let prefix = format!("input{}", " union input".repeat(100_000));
     let mut host = ReaderHost::default();
-    for source in [format!("fixpoint({prefix})"), format!("fixpoint({prefix}")] {
+    for source in [
+        format!("fixpoint({prefix})"),
+        format!("fixpoint({prefix}"),
+        format!("where_exists({prefix})"),
+        format!("where_exists({prefix}"),
+    ] {
         let error = zirql::read_native_expression(
             &mut zirql::ArgumentReader::new(&source, 0).unwrap(),
             &mut host,
@@ -9199,6 +9231,13 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         ) -> Result<SourceStage, QueryError> {
             Ok(SourceStage::Order(Box::new(ordering)))
         }
+        fn where_exists(
+            &mut self,
+            body: SourceExpression,
+            _: Range<usize>,
+        ) -> Result<SourceStage, QueryError> {
+            Ok(SourceStage::Exists(Box::new(body)))
+        }
         fn fixed_point(
             &mut self,
             body: SourceExpression,
@@ -9225,6 +9264,30 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
     };
     assert!(matches!(group.value, ExpressionKind::Set { .. }));
     zirql::dispose_expression(saved);
+    let source = "fn selected(local: Word) -> Word { where_exists(local) }";
+    let declaration = zirql::read_pattern_function_declaration(
+        &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+        &mut Reader,
+        &mut Budget::for_program(limits()),
+        16,
+        |_, _| Ok(DeclaredType::Native(SourceKind::Words)),
+    )
+    .unwrap()
+    .unwrap();
+    let zirql::ValueExpressionKind::NativeQuery(query) = &declaration.value.value else {
+        panic!("native function body")
+    };
+    let ExpressionKind::Sequence { steps, .. } = &query.value else {
+        panic!("existence pipeline")
+    };
+    let ExpressionStep::Stage(SourceStage::Exists(body)) = &steps[0].value else {
+        panic!("retained relation")
+    };
+    let ExpressionKind::Sequence { input, .. } = &body.value else {
+        panic!("relation input")
+    };
+    assert!(matches!(&input.value, ExpressionKind::Binding(name) if name == "local"));
+    assert_eq!(&source[input.range.clone()], "local");
     let source = "βeta alpha alpha";
     let input = || {
         SourceValue::Words(vec![
@@ -9251,6 +9314,12 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         emissions: vec![],
     };
     for (query, expected) in [
+        ("where_exists(input)", vec![(0, 5), (6, 11), (12, 17)]),
+        ("(where_exists(input))", vec![(0, 5), (6, 11), (12, 17)]),
+        (
+            "input | where_exists(where_exists(input))",
+            vec![(0, 5), (6, 11), (12, 17)],
+        ),
         ("fixpoint(input)", vec![(0, 5), (6, 11), (12, 17)]),
         ("input | fixpoint(input)", vec![(0, 5), (6, 11), (12, 17)]),
         ("fixpoint(fixpoint(input))", vec![(0, 5), (6, 11), (12, 17)]),
@@ -9296,7 +9365,14 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
             assert_eq!(word.text.as_ptr(), source[word.range.clone()].as_ptr());
         }
     }
-    for query in ["fixpoint(", "fixpoint(input", "fixpoint()"] {
+    for query in [
+        "fixpoint(",
+        "fixpoint(input",
+        "fixpoint()",
+        "where_exists(",
+        "where_exists(input",
+        "where_exists()",
+    ] {
         assert!(
             zirql::read_native_expression(
                 &mut zirql::ArgumentReader::new(query, 0).unwrap(),
@@ -9600,29 +9676,31 @@ fn native_fixed_points_replace_ordered_integer_selections_with_bounded_checkpoin
 }
 
 #[test]
-fn shared_fixed_point_spelling_is_reserved_for_functions() {
+fn shared_native_body_spellings_are_reserved_for_functions() {
     let value = || {
         at(
             zirql::ValueExpressionKind::Literal(zirql::ConstructedValue::Integer(0)),
             4,
         )
     };
-    let declaration = zirql::FunctionDeclaration {
-        name: at("fixpoint".into(), 1),
-        parameters: vec![],
-        result: at(DeclaredType::Integer, 2),
-        bindings: vec![],
-        value: value(),
-    };
-    let error = zirql::evaluate_functions(
-        &[declaration],
-        &value(),
-        &Bindings::default(),
-        &mut Budget::for_program(limits()),
-        zirql::FunctionLimits { active_depth: 1 },
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("reserved operation"));
+    for name in ["fixpoint", "where_exists"] {
+        let declaration = zirql::FunctionDeclaration {
+            name: at(name.into(), 1),
+            parameters: vec![],
+            result: at(DeclaredType::Integer, 2),
+            bindings: vec![],
+            value: value(),
+        };
+        let error = zirql::evaluate_functions(
+            &[declaration],
+            &value(),
+            &Bindings::default(),
+            &mut Budget::for_program(limits()),
+            zirql::FunctionLimits { active_depth: 1 },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("reserved operation"));
+    }
 }
 
 #[test]

@@ -268,6 +268,16 @@ dependency. Zincite retained-map operations and later common reader spellings
 remain separate work. Native identity, effects, completeness and data-edit
 policies stay with each host.
 
+## Native existence
+
+Supporting native hosts read `where_exists(query)` at the start of an expression,
+in a group or after a pipeline. The pure relation runs against each singleton
+subject with the current lexical scope. A nonempty native result keeps that
+original subject, preserving its order and duplicates. A complete empty result
+rejects it. Unresolved nonemptiness and nested errors fail the query, including
+a failure after earlier matches. Hosts preflight kinds, selectors and effects
+even when the incoming stream is empty.
+
 ## Native fixed points
 
 A supporting native host reads `fixpoint(query)` through the common reader.

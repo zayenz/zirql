@@ -125,6 +125,22 @@ pub trait ValueReaderHost {
             "native mapping is unsupported by this host",
         ))
     }
+    /// Retain a pure singleton-relative relation. Supporting hosts preflight it
+    /// before delegating subject filtering to `filter_native_exists`.
+    fn where_exists(
+        &mut self,
+        query: ReadExpression<Self>,
+        range: Range<usize>,
+    ) -> Result<Self::Stage, QueryError>
+    where
+        Self: Sized,
+    {
+        crate::dispose_expression(query);
+        Err(QueryError::query(
+            range,
+            "native existence is unsupported by this host",
+        ))
+    }
     /// Retain a common fixed-point body. Hosts supply native admission and body
     /// execution, delegating replacement and cycle handling to the shared runner.
     fn fixed_point(
@@ -1830,10 +1846,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             .is_ok_and(|word| word.value == "project" && self.host.is_stage(word.value))
             && probe.consume('(')
     }
-    fn fixed_point_call(&self) -> bool {
+    fn native_body_call(&self, name: &str) -> bool {
         let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
             .expect("reader byte boundary");
-        probe.word().is_ok_and(|word| word.value == "fixpoint") && probe.consume('(')
+        probe.word().is_ok_and(|word| word.value == name) && probe.consume('(')
     }
     fn ordering_call(&mut self) -> Result<bool, QueryError> {
         let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
@@ -2274,7 +2290,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 .word()
                 .is_ok_and(|next| self.host.set_operator(next.value).is_some());
         if set_operand
-            || (word.value == "fixpoint" && probe.remaining().starts_with('('))
+            || (matches!(word.value, "fixpoint" | "where_exists")
+                && probe.remaining().starts_with('('))
             || self.match_call()
             || self.field_pipeline()
             || ((self.host.is_stage(word.value)
@@ -2843,14 +2860,15 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             let first = probe.word()?;
             probe.skip_whitespace();
             let projection_call = self.projection_call();
-            let fixed_point_call = first.value == "fixpoint" && probe.remaining().starts_with('(');
+            let native_body_call = matches!(first.value, "fixpoint" | "where_exists")
+                && probe.remaining().starts_with('(');
             let binding =
                 self.is_local(first.value, &first.range)? || self.host.is_binding(first.value);
             if first.value == "input" && !binding {
                 self.reader.advance(probe.position() - start)?;
                 Located::new(ExpressionKind::Input, first.range)
             } else if !projection_call
-                && !fixed_point_call
+                && !native_body_call
                 && (binding
                     || (!self.host.is_stage(first.value)
                         && native_order(first.value).is_none()
@@ -2926,7 +2944,16 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     self.host
                         .filter(predicate, stage_start..self.reader.position()),
                 )
-            } else if self.fixed_point_call() {
+            } else if self.native_body_call("where_exists") {
+                self.name()?;
+                self.reader.expect('(')?;
+                let mut body = NativeGuard(Some(self.native_expression(depth + 1)?));
+                self.reader.expect(')')?;
+                ExpressionStep::Stage(self.host.where_exists(
+                    body.0.take().expect("existence relation"),
+                    stage_start..self.reader.position(),
+                )?)
+            } else if self.native_body_call("fixpoint") {
                 self.name()?;
                 self.reader.expect('(')?;
                 let mut body = NativeGuard(Some(self.native_expression(depth + 1)?));
