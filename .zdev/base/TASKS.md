@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 61
-- Ready: 8
+- Ready: 7
 - Blocked: 1
-- Done: 52
+- Done: 53
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@
 | [base-050](tasks/050-share-native-union-intersection-and-difference-algorithms.md) | Share native union, intersection and difference algorithms | ready | — |
 | [base-051](tasks/051-share-correlated-native-map-construction.md) | Share correlated native map construction | ready | — |
 | [base-052](tasks/052-share-explicit-map-ranking-and-ordered-map-selection.md) | Share explicit map ranking and ordered map selection | blocked | base-051, base-048 |
-| [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | ready | — |
+| [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | done | — |
 | [base-054](tasks/054-share-bounded-native-fixed-point-execution.md) | Share bounded native fixed-point execution | ready | — |
 | [base-055](tasks/055-expose-index-sets-and-tuple-positions-in-the-common-reader.md) | Expose index sets and tuple positions in the common reader | done | — |
 | [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | ready | — |

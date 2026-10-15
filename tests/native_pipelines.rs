@@ -1141,3 +1141,82 @@ fn native_bounds_and_checks_preserve_borrowed_rows_and_failure_locations() {
         )),
     );
 }
+
+#[test]
+fn correlated_existence_keeps_native_rows_and_propagates_relation_failures() {
+    fn run<'a>(
+        items: Vec<Selection<'a>>,
+        query: &str,
+        budget: &mut Budget,
+    ) -> Result<Vec<Selection<'a>>, EvaluationError<QueryError>> {
+        // Preflight belongs to the native runner, even when there are no items.
+        let pipeline = parse_pipeline(query, source_leaf, 64)?;
+        zirql::filter_native_exists(
+            items,
+            budget,
+            Location::Query(0..query.len()),
+            |item, budget| {
+                let input = NativeInput::collect(
+                    Rc::new(SourceView { source: item.text }),
+                    [Selection {
+                        text: item.text,
+                        range: item.range.clone(),
+                    }],
+                    budget,
+                    Location::Source(item.range.clone()),
+                )?;
+                let result = evaluate(&pipeline, &SourceHost, input, budget)?;
+                let NativeValue::Stream(items) = result.value else {
+                    return Err(QueryError::query(
+                        0..query.len(),
+                        "relation must return native rows",
+                    )
+                    .into());
+                };
+                Ok(items)
+            },
+        )
+    }
+    let source = String::from("alpha beta");
+    let items = || {
+        vec![
+            Selection {
+                text: &source[..5],
+                range: 0..5,
+            },
+            Selection {
+                text: &source[6..],
+                range: 6..10,
+            },
+            Selection {
+                text: &source[..5],
+                range: 0..5,
+            },
+        ]
+    };
+    let rows = run(items(), "filter(prefix(\"a\"))", &mut Budget::new(limits())).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], rows[1]);
+    assert_eq!(rows[0].range, 0..5);
+    assert_eq!(rows[0].text.as_ptr(), source.as_ptr());
+    assert!(
+        run(items(), "filter(no)", &mut Budget::new(limits()))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        run(items(), "filter(fail)", &mut Budget::new(limits())).unwrap_err(),
+        EvaluationError::Host(QueryError::source(0..5, "source leaf failed")),
+    );
+    assert!(run(Vec::new(), "filter(bad)", &mut Budget::new(limits())).is_err());
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 100,
+        results: 1,
+        stream_items: 8,
+        nesting: 64,
+    });
+    let error = run(items(), "filter(yes)", &mut budget).unwrap_err();
+    assert!(
+        matches!(error, EvaluationError::Core(error) if error.category == QueryErrorCategory::ResultLimit)
+    );
+}
