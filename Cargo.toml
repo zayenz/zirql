@@ -20,3 +20,10 @@ include = [
 
 [dependencies]
 serde_json = "1"
+
+[dev-dependencies]
+csv = "1.4"
+
+[[example]]
+name = "csv"
+test = true

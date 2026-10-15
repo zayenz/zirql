@@ -1,0 +1,6 @@
+id,name,team,active,note
+2,Grace Hopper,compiler,yes,"Said ""hello"""
+1,"Ada, Lovelace",compiler,yes,"First line
+second line"
+3,Barbara Liskov,runtime,yes,
+4,Edsger Dijkstra,compiler,no,01
