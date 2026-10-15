@@ -6,7 +6,7 @@ area = "base"
 status = "open"
 complexity = "advanced"
 afk = true
-blocked_by = ["base-062"]
+blocked_by = ["base-062", "base-064"]
 +++
 # Read bare-brace sets and computed dictionaries
 

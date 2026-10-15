@@ -1519,7 +1519,8 @@ The bounded implementation split is:
    membership/association equality and first-seen tally.
 2. Zincite direct saved-expression routing and existing constructed suffixes.
 3. Zirium dictionary/JSON migration and operand-order native sets after step 1.
-4. Common bare-brace set/dictionary reading after step 1.
+4. Common bare-brace set/dictionary reading after steps 1 and 3, so real Zirium
+   pin adoption includes the ordered dictionary API migration.
 5. Common indexed array syntax and always-retained declared index sources after
    step 4, reusing existing keyed shape and host nominal values.
 6. Zincite native ordering/sets with the concrete shared typed-key extension
