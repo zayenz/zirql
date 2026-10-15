@@ -478,6 +478,13 @@ storage arithmetic are checked before growth. These scans and declaration
 checks during constructed sorting can refuse near-limit requests sooner;
 allowances are unchanged.
 
+## Native existence
+
+The reader admits the retained relation with the request's parsing and nesting
+limits. `filter_native_exists` charges each original subject and admits each
+retained result. Host singleton copies, relation execution and native result
+admission share that same budget and the host's nested execution guards.
+
 ## Native fixed points
 
 The shared runner charges each completed iteration. Ordered equality checks

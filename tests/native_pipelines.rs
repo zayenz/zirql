@@ -1177,6 +1177,57 @@ fn correlated_existence_keeps_native_rows_and_propagates_relation_failures() {
             },
         )
     }
+    struct Required;
+    impl<'a> Host<Selection<'a>, Rc<SourceView<'a>>, SourceLeaf> for Required {
+        type Error = QueryError;
+        type Key = ();
+        fn evaluate_leaf(
+            &self,
+            leaf: &SourceLeaf,
+            item: &Selection<'a>,
+            context: &mut Rc<SourceView<'a>>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            SourceHost.evaluate_leaf(leaf, item, context, budget, range)
+        }
+        fn filter_truth(
+            &self,
+            truth: Truth,
+            _: &mut Rc<SourceView<'a>>,
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<bool, EvaluationError<QueryError>> {
+            if truth == Truth::Unknown {
+                return Err(
+                    QueryError::query(range.clone(), "required relation is unknown").into(),
+                );
+            }
+            Ok(truth == Truth::True)
+        }
+    }
+    for query in ["filter(unknown)", "filter(unknown or yes)"] {
+        let mut budget = Budget::new(limits());
+        let pipeline = parse_pipeline(query, source_leaf, 64).unwrap();
+        let input = NativeInput::collect(
+            Rc::new(SourceView { source: "alpha" }),
+            [Selection {
+                text: "alpha",
+                range: 0..5,
+            }],
+            &mut budget,
+            Location::Query(0..query.len()),
+        )
+        .unwrap();
+        let result = evaluate(&pipeline, &Required, input, &mut budget);
+        if query == "filter(unknown)" {
+            assert!(
+                matches!(result, Err(EvaluationError::Core(QueryError { location: Location::Query(range), .. })) if range == (7..14))
+            );
+        } else {
+            assert!(matches!(result.unwrap().value, NativeValue::Stream(rows) if rows.len() == 1));
+        }
+    }
     let source = String::from("alpha beta");
     let items = || {
         vec![

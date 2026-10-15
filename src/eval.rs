@@ -341,6 +341,19 @@ pub trait Host<I, C, L, S = ()> {
         Ok(budget.charge(1, Location::Query(range.clone()))?)
     }
 
+    /// Admit the completed filter result after shared Boolean evaluation.
+    /// The default retains known true rows. Hosts that require a complete
+    /// observation may refuse final Unknown while allowing decisive alternatives.
+    fn filter_truth(
+        &self,
+        truth: Truth,
+        _context: &mut C,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<bool, EvaluationError<Self::Error>> {
+        Ok(truth == Truth::True)
+    }
+
     fn evaluate_leaf(
         &self,
         leaf: &L,
@@ -424,15 +437,15 @@ where
                         let mut retained = Vec::new();
                         for item in items {
                             host.prepare_filter_item(&item, &mut context, budget, &stage.range)?;
-                            if evaluate_predicate(
+                            let truth = evaluate_predicate(
                                 predicate,
                                 pipeline.nesting,
                                 budget,
                                 |leaf, budget, range| {
                                     host.evaluate_leaf(leaf, &item, &mut context, budget, range)
                                 },
-                            )? == Truth::True
-                            {
+                            )?;
+                            if host.filter_truth(truth, &mut context, budget, &predicate.range)? {
                                 retained.push(item);
                             }
                         }

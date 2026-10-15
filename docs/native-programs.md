@@ -269,6 +269,18 @@ native and constructed dictionaries render as ordered JSON objects. Later common
 reader spellings remain separate work. Native identity, effects, completeness
 and data-edit policies stay with each host.
 
+## Native existence
+
+Supporting native hosts read `where_exists(query)` at the start of an expression,
+in a group or after a pipeline. The pure relation runs against each singleton
+subject with the current lexical scope. A nonempty native result keeps that
+original subject, preserving its order and duplicates. A complete empty result
+rejects it. Unresolved nonemptiness and nested errors fail the query, including
+a failure after earlier matches. Hosts preflight kinds, selectors and effects
+even when the incoming stream is empty. Zirium supports ordinary and projected
+diff relations; Zincite supports pure native report relations. Zincite normalizes
+a singular node or declaration to its possibly empty selection kind.
+
 ## Native fixed points
 
 A supporting native host reads `fixpoint(query)` through the common reader.
@@ -277,7 +289,7 @@ is positional and includes duplicates; intermediate selections do not accumulate
 The final body execution establishes an unchanged result. Repeating a non-fixed
 selection fails, using one bounded cycle checkpoint.
 
-The proposed Zincite accumulating form is:
+Zincite supports this accumulating form:
 
 ```zirql
 let seed = declarations | filter(name("C"));
@@ -287,6 +299,7 @@ seed | fixpoint(input union referenced_declarations)
 The union explicitly retains the current members. Zincite bodies are pure
 report computation and must return the same admitted native kind. Owners,
 identity and the active budget survive every iteration. Partial adjacency
-cannot prove convergence: use the host's complete-or-error primitives when
-that proof is required, retaining other report limitations. Domain closure,
+cannot prove convergence. Zincite uses complete-or-error adjacency and refuses
+saved partial selections at their responsible locations while retaining other
+report limitations. Domain closure,
 paths and specialized reachability remain separate operations.

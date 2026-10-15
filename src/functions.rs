@@ -420,6 +420,7 @@ fn builtin(name: &str) -> bool {
             | "contains"
             | "filter"
             | "fixpoint"
+            | "where_exists"
             | "starts_with"
             | "ends_with"
             | "length"
