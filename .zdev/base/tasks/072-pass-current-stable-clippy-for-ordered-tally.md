@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-072"
 key = "ci-tally-closure-borrows"
 area = "base"
-status = "open"
+status = "done"
 complexity = "routine"
 afk = true
 priority = "high"
@@ -25,11 +25,21 @@ Verified collection commit b92aa4c passes local Rust1.98.1 checks and CI Rust1.8
 
 ## Done when
 
-- [ ] Both ordered native tally storage failures pass the reusable closure by value while retaining their current locations, categories and checked arithmetic.
-- [ ] Current stable Rust1.99 formatting/Clippy with warnings denied and existing workspace tests pass; declared Rust1.88 tests remain passing, and the pushed follow-up CI is green.
+- [x] Both ordered native tally storage failures pass the reusable closure by value while retaining their current locations, categories and checked arithmetic.
+- [x] Current stable Rust1.99 formatting/Clippy with warnings denied and existing workspace tests pass; declared Rust1.88 tests remain passing, and the pushed follow-up CI is green.
 
 ## Validation
 
 - Reproduce the two CI diagnostics with cargo +1.99.0 clippy --workspace --all-targets --locked -- -D warnings before editing; run the same command after the minimal fix.
 - Run cargo fmt --all -- --check, cargo test --workspace --locked, cargo +1.88.0 test --workspace --locked, git diff --check and zdev check base --format json; no new product tests.
 - Independent focused review confirms the two-line diff preserves tally failure behavior; check the actual pushed CI run.
+
+## Result
+
+Ordered native tally passes its reusable Copy storage-error closure by value at both failure sites, preserving checked arithmetic, locations, categories and budget behavior.
+
+Validation:
+
+- Independent focused whole-task review passed without corrections; native snapshot comparison is equal and validation made no tracked writes.
+- Rust1.99 Clippy with warnings denied and formatting pass; existing workspace and doctests pass on Rust1.99, default1.98.1 and minimum1.88.
+- Diff and zdev checks pass; no new tests, warning suppression, dependency or default-toolchain changes. Coordinator checks actual pushed CI after the final commit.

@@ -493,7 +493,7 @@ where
                                     .len()
                                     .min(key.len())
                                     .checked_add(1)
-                                    .ok_or_else(&storage_error)?;
+                                    .ok_or_else(storage_error)?;
                                 budget.charge_program_work(work, location.clone())?;
                                 if previous == &key {
                                     existing = Some(count);
@@ -513,7 +513,7 @@ where
                                             .checked_mul(std::mem::size_of::<(String, usize)>())
                                             .is_some_and(|bytes| bytes <= isize::MAX as usize)
                                     })
-                                    .ok_or_else(&storage_error)?;
+                                    .ok_or_else(storage_error)?;
                                 budget.check_items(count, location.clone())?;
                                 budget.charge_program_work(1, location.clone())?;
                                 // One dictionary entry and its newly produced count.
