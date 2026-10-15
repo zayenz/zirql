@@ -355,6 +355,13 @@ pub enum ValueExpressionKind<Q = ()> {
     Array(Vec<ValueExpression<Q>>),
     Tuple(Vec<ValueExpression<Q>>),
     Record(Vec<(Located<String>, ValueExpression<Q>)>),
+    /// Computed string keys run before their values and retain insertion order.
+    Dictionary(Vec<(ValueExpression<Q>, ValueExpression<Q>)>),
+    DictionaryComprehension {
+        clauses: Vec<Located<ValueGenerator<Q>>>,
+        key: Box<ValueExpression<Q>>,
+        head: Box<ValueExpression<Q>>,
+    },
     Set(Vec<ValueExpression<Q>>),
     /// Literal pairs run in written order and normalize to row-major order.
     /// Empty literals require explicit typed axes; generic sparse data is valid.
@@ -1544,6 +1551,7 @@ fn access_type(
     ty: ValueType,
     keys: &[ValueType],
     label: Option<&str>,
+    optional: bool,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Vec<ValueType>, QueryError> {
@@ -1614,7 +1622,11 @@ fn access_type(
     if let Some(child) = child {
         return one_type(
             declared_fact(
-                &DeclaredType::Optional(Box::new(child)),
+                &if optional {
+                    DeclaredType::Optional(Box::new(child))
+                } else {
+                    child
+                },
                 ValueType::Unestablished,
                 budget,
                 location,
@@ -1623,7 +1635,9 @@ fn access_type(
             location,
         );
     }
-    push_metadata(&mut result, ValueType::Absent, budget, location)?;
+    if optional {
+        push_metadata(&mut result, ValueType::Absent, budget, location)?;
+    }
     Ok(result)
 }
 
@@ -3049,7 +3063,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 for value in values {
                     append_types(
                         &mut result,
-                        access_type(value, &keys, label, budget, location)?,
+                        access_type(value, &keys, label, true, budget, location)?,
                         budget,
                         location,
                     )?;
@@ -3192,6 +3206,36 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     types.push(ValueType::Record(result));
                 }
                 Ok(types)
+            }
+            ValueExpressionKind::Dictionary(entries) => {
+                for (key, value) in entries {
+                    for ty in self.walk(key, budget)? {
+                        require_type(
+                            &ty,
+                            ScalarRequirement::String,
+                            &Location::Query(key.range.clone()),
+                        )?;
+                    }
+                    self.walk(value, budget)?;
+                }
+                one_type(ValueType::RecordKind, budget, location)
+            }
+            ValueExpressionKind::DictionaryComprehension { clauses, key, head } => {
+                let saved = self.locals.len();
+                let result = (|| {
+                    self.clauses(clauses, budget)?;
+                    for ty in self.walk(key, budget)? {
+                        require_type(
+                            &ty,
+                            ScalarRequirement::String,
+                            &Location::Query(key.range.clone()),
+                        )?;
+                    }
+                    self.walk(head, budget)?;
+                    one_type(ValueType::RecordKind, budget, location)
+                })();
+                self.locals.truncate(saved);
+                result
             }
             ValueExpressionKind::Set(children) => {
                 let mut element_type = None;
@@ -3386,6 +3430,24 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 };
                 let mut result = Vec::new();
                 for array in arrays {
+                    if matches!(&array, ValueType::Record(_) | ValueType::RecordKind)
+                        || matches!(&array, ValueType::Declared { declaration, .. }
+                            if matches!(underlying(declaration), DeclaredType::Record(_)))
+                    {
+                        let label = match &index.value {
+                            ValueExpressionKind::Literal(ConstructedValue::String(label)) => {
+                                Some(label.as_str())
+                            }
+                            _ => None,
+                        };
+                        append_types(
+                            &mut result,
+                            access_type(array, &indices, label, false, budget, location)?,
+                            budget,
+                            location,
+                        )?;
+                        continue;
+                    }
                     match shape_type(array, budget, location)? {
                         ValueType::ArrayKind(elements) => {
                             let mut facts = None;
@@ -3432,11 +3494,21 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             }
                         }
                         ValueType::Unestablished => {
-                            let mut facts = None;
-                            merge_key_facts(&mut facts, &indices, budget, location)?;
+                            for ty in &indices {
+                                if matches!(ty, ValueType::String) {
+                                    continue;
+                                }
+                                let mut facts = None;
+                                merge_key_facts(
+                                    &mut facts,
+                                    std::slice::from_ref(ty),
+                                    budget,
+                                    location,
+                                )?;
+                            }
                             push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
                         }
-                        _ => return Err(error(location, "array access needs an array")),
+                        _ => return Err(error(location, "array access needs an array or record")),
                     }
                 }
                 if result.is_empty() {
@@ -4278,6 +4350,7 @@ fn check_fallback_facts(
 
 #[derive(Clone, Copy)]
 enum ScalarRequirement {
+    String,
     Boolean,
     Integer,
     Numeric,
@@ -4298,6 +4371,7 @@ fn require_type(
         }
         let expected = underlying(declaration);
         let accepted = match requirement {
+            ScalarRequirement::String => matches!(expected, DeclaredType::String),
             ScalarRequirement::Boolean => matches!(expected, DeclaredType::Boolean),
             ScalarRequirement::Integer => matches!(expected, DeclaredType::Integer),
             ScalarRequirement::Numeric => {
@@ -4311,6 +4385,7 @@ fn require_type(
     }
     let accepted = matches!(ty, ValueType::Unestablished)
         || match requirement {
+            ScalarRequirement::String => matches!(ty, ValueType::String),
             ScalarRequirement::Boolean => matches!(ty, ValueType::Boolean),
             ScalarRequirement::Integer => matches!(ty, ValueType::Integer),
             ScalarRequirement::Numeric => matches!(ty, ValueType::Integer | ValueType::Float),
@@ -4319,6 +4394,7 @@ fn require_type(
         return Err(error(
             location,
             match requirement {
+                ScalarRequirement::String => "dictionary key needs a present string",
                 ScalarRequirement::Boolean => "condition needs a fixed Boolean",
                 ScalarRequirement::Integer => "operation needs integers",
                 ScalarRequirement::Numeric => "operation needs numeric operands",
@@ -5159,31 +5235,6 @@ where
             declaration: None,
         })
     }
-}
-
-fn select_field(
-    value: ConstructedValue,
-    field: &Located<String>,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<ConstructedValue, QueryError> {
-    let ConstructedValue::Record(fields) = value else {
-        return Err(error(location, "field access needs a record"));
-    };
-    for (label, value) in fields {
-        budget.charge(
-            sum(1, label.len().min(field.value.len()), location)?,
-            location.clone(),
-        )?;
-        if label == field.value {
-            return Ok(value);
-        }
-    }
-    admit_diagnostic("missing record field: ", &field.value, budget, location)?;
-    Err(error(
-        location,
-        format!("missing record field: {}", field.value),
-    ))
 }
 
 fn run_value<'a, Q, H: ValueQueryHost<Q> + ?Sized>(

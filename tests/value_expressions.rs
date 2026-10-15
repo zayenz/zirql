@@ -3994,6 +3994,209 @@ impl<Q> zirql::ValueQueryHost<Q> for WordInput {
 }
 
 #[test]
+fn brace_collections_share_order_scope_and_strict_dictionary_access() {
+    let run = |source: &str| {
+        let mut host = WordInput {
+            value: V::Array(vec![]),
+            unknown: false,
+        };
+        let mut allowance = ample();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let parsed = zirql::read_value_expression(&mut reader, &mut host, &mut allowance, 64)?;
+        assert!(reader.remaining().trim().is_empty());
+        let result =
+            zirql::evaluate_query_value(&parsed, &BTreeMap::new(), &mut host, &mut allowance);
+        zirql::dispose_native_value(parsed);
+        result
+    };
+    let ordered_set = |values: &[i64]| V::Set {
+        element_type: Some(SetElementType::Integer),
+        elements: values.iter().copied().map(V::Integer).collect(),
+    };
+    assert_eq!(
+        run("{3,1,3}").unwrap(),
+        evaluate(&e(K::Set(vec![int(3), int(1), int(3)]))).unwrap()
+    );
+    let source = r#"{k: {n mod 3 for n in 1..5} for w in ["pear","apple"] for k in [w,w ++ "!"] if ends_with(k,"!")}"#;
+    let report = V::Record(vec![
+        ("pear!".into(), ordered_set(&[1, 2, 0])),
+        ("apple!".into(), ordered_set(&[1, 2, 0])),
+    ]);
+    assert_eq!(run(source).unwrap(), report);
+    let typed = e(K::DictionaryComprehension {
+        clauses: vec![
+            clause(G::In {
+                binders: vec![binder("w")],
+                source: e(K::Array(vec![text("pear"), text("apple")])),
+                filter: None,
+            }),
+            clause(G::In {
+                binders: vec![binder("k")],
+                source: e(K::Array(vec![
+                    name("w"),
+                    binary(B::Concatenate, name("w"), text("!")),
+                ])),
+                filter: Some(binary(B::EndsWith, name("k"), text("!"))),
+            }),
+        ],
+        key: Box::new(name("k")),
+        head: Box::new(e(K::Comprehension {
+            constructor: ValueConstructor::Set,
+            clauses: vec![clause(G::In {
+                binders: vec![binder("n")],
+                source: e(K::Range {
+                    lower: Box::new(int(1)),
+                    upper: Box::new(int(5)),
+                }),
+                filter: None,
+            })],
+            head: Box::new(binary(B::Modulo, name("n"), int(3))),
+        })),
+    });
+    assert_eq!(evaluate(&typed).unwrap(), report);
+    assert!(
+        free_value_names(&typed, &BTreeMap::new(), &mut ample())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        value_expression_types(&typed, &BTreeMap::new(), &mut ample()).unwrap(),
+        vec![ValueType::RecordKind]
+    );
+    assert_eq!(
+        copy_constructed_value(&report, &mut ample(), Location::Query(0..1)).unwrap(),
+        report
+    );
+    assert_eq!(run("sort({3,1,3})").unwrap(), ordered_set(&[1, 3]));
+    assert_eq!(
+        run("if true { {3,1,3} } else { set<int>() }").unwrap(),
+        ordered_set(&[3, 1])
+    );
+    assert_eq!(
+        run(r#"if true { let k = "pear"; {k: 7}[k] } else { 0 }"#).unwrap(),
+        V::Integer(7)
+    );
+    assert_eq!(run(r#"{"pear": 7}["pear"]"#).unwrap(), V::Integer(7));
+    assert_eq!(run(r#"{"pear": <>}["pear"]"#).unwrap(), V::Absent);
+    assert!(
+        run(r#"{"pear": 7}["missing"]"#)
+            .unwrap_err()
+            .message
+            .contains("missing record field")
+    );
+    assert_eq!(run("{}").unwrap(), V::Record(vec![]));
+    assert_eq!(
+        run("[set<int>(),set<bool>(),set<float>()]").unwrap(),
+        V::Array(vec![
+            ordered_set(&[]),
+            V::Set {
+                element_type: Some(SetElementType::Boolean),
+                elements: vec![]
+            },
+            V::Set {
+                element_type: Some(SetElementType::Float),
+                elements: vec![]
+            },
+        ])
+    );
+    let duplicate = r#"if true { let k = "pear"; {k: 1, (k ++ ""): 1 div 0} } else { {} }"#;
+    let error = run(duplicate).unwrap_err();
+    assert!(
+        error.message.contains("duplicate dictionary key"),
+        "{error:?}"
+    );
+    assert_eq!(error.location, Location::Query(33..42));
+    for source in [
+        r#"{1: 2}"#,
+        r#"{<>: 2}"#,
+        r#"{"string"}"#,
+        "{1,true}",
+        "{missing:1}",
+        "{n for n in n}",
+        "{n for n in [] if 1}",
+        "{1:2 for n in []}",
+        "set<string>()",
+    ] {
+        assert!(run(source).is_err(), "{source}");
+    }
+    let schema_value = literal(declared(
+        V::Record(vec![("pear".into(), ordered_set(&[]))]),
+        D::Record(vec![("pear".into(), D::Set(SetElementType::Integer))]),
+    ));
+    assert!(matches!(
+        value_expression_types(
+            &access(schema_value, text("pear")),
+            &BTreeMap::new(),
+            &mut ample()
+        )
+        .unwrap()[0],
+        ValueType::Declared { .. }
+    ));
+    let functions = [function(
+        "make",
+        vec![("key", D::String)],
+        D::Record(vec![("pear".into(), D::Set(SetElementType::Integer))]),
+        e(K::Dictionary(vec![(
+            name("key"),
+            e(K::Set(vec![int(3), int(1), int(3)])),
+        )])),
+    )];
+    let selected = run_functions(
+        &functions,
+        &access(call("make", vec![text("pear")]), text("pear")),
+        2,
+        &mut ample(),
+    )
+    .unwrap();
+    assert_eq!(selected.data(), &ordered_set(&[3, 1]));
+    assert!(matches!(
+        selected,
+        V::Declared {
+            declaration: D::Set(SetElementType::Integer),
+            ..
+        }
+    ));
+    let nominal_empty = V::Set {
+        element_type: Some(SetElementType::Member(NominalTypeId(7))),
+        elements: vec![],
+    };
+    let bindings = Bindings::new([(Located::new("empty".into(), 0..5), nominal_empty)]).unwrap();
+    assert!(
+        matches!(evaluate_value(&name("empty"), &bindings, &mut ample()).unwrap(), V::Set { element_type: Some(SetElementType::Member(NominalTypeId(7))), elements } if elements.is_empty())
+    );
+    let missing = literal(declared(V::Record(vec![]), D::Record(vec![])));
+    assert!(
+        value_expression_types(
+            &access(missing, text("pear")),
+            &BTreeMap::new(),
+            &mut ample()
+        )
+        .is_err()
+    );
+    let mut host = WordInput {
+        value: V::Array(vec![]),
+        unknown: false,
+    };
+    let parsed = zirql::read_value_expression(
+        &mut zirql::ArgumentReader::new("{n for n in 1..101 if false}", 0).unwrap(),
+        &mut host,
+        &mut ample(),
+        64,
+    )
+    .unwrap();
+    assert!(
+        zirql::evaluate_query_value(
+            &parsed,
+            &BTreeMap::new(),
+            &mut host,
+            &mut budget(1000, 100, 64)
+        )
+        .is_err()
+    );
+    zirql::dispose_native_value(parsed);
+}
+
+#[test]
 fn constructed_current_input_summaries_share_the_reader_and_callable_nodes() {
     let mut host = WordInput {
         value: V::Array(

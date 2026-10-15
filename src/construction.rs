@@ -99,6 +99,59 @@ impl EntryAccounting {
         }
     }
 
+    pub(crate) fn entries<V>(
+        &self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<(String, V)>, QueryError> {
+        self.charge(budget, 1, location)?;
+        budget.charge_results(1, location.clone())?;
+        Ok(Vec::new())
+    }
+
+    pub(crate) fn contains<V>(
+        &self,
+        entries: &[(String, V)],
+        key: &str,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<bool, QueryError> {
+        let count = entries
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| self.storage_error(location))?;
+        count
+            .checked_mul(size_of::<(String, V)>())
+            .filter(|bytes| *bytes <= isize::MAX as usize)
+            .ok_or_else(|| self.storage_error(location))?;
+        let inspected = key
+            .len()
+            .checked_add(1)
+            .and_then(|per_key| per_key.checked_mul(count))
+            .ok_or_else(|| self.storage_error(location))?;
+        self.charge(budget, inspected, location)?;
+        Ok(entries.iter().any(|(previous, _)| previous == key))
+    }
+
+    pub(crate) fn append<V>(
+        &self,
+        entries: &mut Vec<(String, V)>,
+        key: String,
+        value: V,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), QueryError> {
+        let count = entries
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| self.storage_error(location))?;
+        budget.check_items(count, location.clone())?;
+        self.charge(budget, 1, location)?;
+        budget.charge_results(1, location.clone())?;
+        entries.push((key, value));
+        Ok(())
+    }
+
     fn storage_error(&self, location: &Location) -> QueryError {
         storage_error(
             location,
@@ -126,35 +179,15 @@ pub(crate) fn construct_entries<I, C: ?Sized, V, E>(
     mut duplicate: impl FnMut(&str, &mut C, &mut Budget) -> Result<QueryError, EvaluationError<E>>,
     accounting: EntryAccounting,
 ) -> Result<Vec<(String, V)>, EvaluationError<E>> {
-    accounting.charge(budget, 1, location)?;
-    budget.charge_results(1, location.clone())?;
-    let mut result: Vec<(String, V)> = Vec::new();
+    let mut result = accounting.entries(budget, location)?;
     for item in entries {
         accounting.charge(budget, 1, location)?;
         let key = key(&item, context, budget)?;
-        let count = result
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| accounting.storage_error(location))?;
-        count
-            .checked_mul(size_of::<(String, V)>())
-            .filter(|bytes| *bytes <= isize::MAX as usize)
-            .ok_or_else(|| accounting.storage_error(location))?;
-        // A direct scan checks prior keys without changing their order.
-        let inspected = key
-            .len()
-            .checked_add(1)
-            .and_then(|per_key| per_key.checked_mul(count))
-            .ok_or_else(|| accounting.storage_error(location))?;
-        accounting.charge(budget, inspected, location)?;
-        if result.iter().any(|(previous, _)| previous == &key) {
+        if accounting.contains(&result, &key, budget, location)? {
             return Err(duplicate(&key, context, budget)?.into());
         }
         let mapped = value(item, context, budget)?;
-        budget.check_items(count, location.clone())?;
-        accounting.charge(budget, 1, location)?;
-        budget.charge_results(1, location.clone())?;
-        result.push((key, mapped));
+        accounting.append(&mut result, key, mapped, budget, location)?;
     }
     Ok(result)
 }

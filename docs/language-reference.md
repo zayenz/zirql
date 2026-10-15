@@ -33,7 +33,7 @@ additional type or index information. Native objects keep their host's identity.
 
 Arrays and tuples use one-based positions. `words[1]` is `"ash"` in the word
 example; `(2, 5).2` selects the second tuple value. Record access uses a label,
-such as `row.word`. Ordinary access fails
+such as `row.word` or `row["word"]`. Ordinary access fails
 when an entry is missing; `lookup(row, "word")` returns absence for a valid
 missing key.
 
@@ -61,6 +61,19 @@ The head constructs each result. The generator binds `w`, and the condition
 selects which words reach the head. Arrays preserve generation order and
 repeated values. Multiple `for` clauses form a nested traversal; later sources
 can use earlier binders.
+
+Bare braces construct a set without an outer colon, or a string dictionary
+with one:
+
+```zirql
+{n mod 3 for n in 1..5}
+{w: length([w]) for w in ["pear", "apple"]}
+```
+
+The set keeps `1, 2, 0`; the dictionary keeps `pear`, then `apple`.
+Keys are expressions and must produce present strings. Duplicate keys fail
+before their values run. Empty `{}` is a dictionary. Empty scalar sets use
+`set<int>()`, `set<bool>()` or `set<float>()`.
 
 Comprehensions are eager. A reducer such as `length` or `sum` receives the
 completed array, and rejected candidates still cost work. See

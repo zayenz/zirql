@@ -74,6 +74,12 @@ pub(crate) enum PreparedKind<'a, Q> {
     Array(Vec<PreparedValue<'a, Q>>),
     Tuple(Vec<PreparedValue<'a, Q>>),
     Record(Vec<(&'a Located<String>, PreparedValue<'a, Q>)>),
+    Dictionary(Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>),
+    DictionaryComprehension {
+        clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
+        key: Box<PreparedValue<'a, Q>>,
+        head: Box<PreparedValue<'a, Q>>,
+    },
     Set(Vec<PreparedValue<'a, Q>>),
     /// Literal pairs run in written order and normalize to row-major order.
     /// Empty literals require explicit typed axes; generic sparse data is valid.
@@ -402,6 +408,24 @@ impl<'a> Preparation<'a> {
                         children.push((label, self.resolve(child, queries, budget)?));
                     }
                     PreparedKind::Record(children)
+                }
+                ValueExpressionKind::Dictionary(entries) => {
+                    let mut children = metadata_vec(entries.len(), budget, &location)?;
+                    for (key, value) in entries {
+                        children.push((
+                            self.resolve(key, queries, budget)?,
+                            self.resolve(value, queries, budget)?,
+                        ));
+                    }
+                    PreparedKind::Dictionary(children)
+                }
+                ValueExpressionKind::DictionaryComprehension { clauses, key, head } => {
+                    let saved = self.locals.len();
+                    let clauses = self.clauses(clauses, queries, budget, &location)?;
+                    let key = Box::new(self.resolve(key, queries, budget)?);
+                    let head = Box::new(self.resolve(head, queries, budget)?);
+                    self.locals.truncate(saved);
+                    PreparedKind::DictionaryComprehension { clauses, key, head }
                 }
                 ValueExpressionKind::KeyedArray { axes, entries } => {
                     let mut children = metadata_vec(entries.len(), budget, &location)?;
