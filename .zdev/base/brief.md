@@ -1324,9 +1324,10 @@ changed repository's required checks and record separate consumer commits.
 
 On 2026-10-15, the user requested planning for Zincite to align more closely with
 Zirium, including intermediate bindings and pipelines. Zincite base-140 owns
-the bounded frontend change that makes `let` the normal spelling for both
-input-derived and calculated values, retaining `source` for compatibility.
-The existing `source` and `let` paths lower to Zirql's immutable `Statement::Bind`.
+the bounded frontend change that makes `let` the single spelling for both
+input-derived and calculated values. The user explicitly chose to remove
+`source` binding syntax without compatibility aliases or deprecation machinery.
+The existing frontend paths already lower to Zirql's immutable `Statement::Bind`.
 
 Shared immutable bindings, binding lookup, pipeline sequencing and the common
 native expression reader already exist. Zincite already uses shared execution
@@ -1340,8 +1341,8 @@ Plan the remaining work in these slices:
   A binding evaluates its right-hand side once, retains its admitted value and
   becomes visible to later statements. Duplicate/forward names, lexical scope,
   parameter/function references and forbidden effects use shared rules where
-  applicable. The source operation determines original-input semantics; the
-  `source` versus `let` spelling must not invent a second binding model.
+  applicable. Classify input reads and calculations by their expressions,
+  preserving original-input semantics under the single binding spelling.
 - Continue pipelines from saved results, including a computed positional report
   collection. Check short inline programs and file programs through the same
   language path. Each stage consumes the preceding result; nested selectors keep
