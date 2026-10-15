@@ -18,6 +18,128 @@ fn limits() -> ProgramLimits {
 }
 
 #[test]
+fn native_sets_keep_identity_and_host_candidate_order() {
+    use zirql::{NativeSetOperator as Operator, combine_native_set};
+
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    struct Handle {
+        owner: u8,
+        index: u8,
+    }
+    let handle = |index| Handle { owner: 7, index };
+    for (operator, expected) in [
+        (Operator::Union, vec![1, 2, 3]),
+        (Operator::Intersect, vec![2]),
+        (Operator::Except, vec![3]),
+    ] {
+        let result = combine_native_set::<_, QueryError>(
+            operator,
+            [3, 2, 3].into_iter().map(handle),
+            [1, 2].into_iter().map(handle),
+            (0..20).map(|index| Ok(handle(index))),
+            &mut Budget::for_program(ProgramLimits {
+                stream_items: 3,
+                ..limits()
+            }),
+            Location::Query(20..30),
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(result, expected.into_iter().map(handle).collect::<Vec<_>>());
+    }
+    let left = ["beta", "alpha", "beta"];
+    let right = ["gamma", "alpha", "gamma"];
+    for (word, expected) in [
+        ("union", vec!["beta", "alpha", "gamma"]),
+        ("intersect", vec!["alpha"]),
+        ("except", vec!["beta"]),
+    ] {
+        let result = combine_native_set::<_, QueryError>(
+            Operator::from_keyword(word).unwrap(),
+            left.into_iter(),
+            right.into_iter(),
+            left.into_iter().chain(right).map(Ok),
+            &mut Budget::for_program(limits()),
+            Location::Query(20..30),
+            |text, budget| Ok(budget.charge(text.len(), Location::Query(20..30))?),
+        )
+        .unwrap();
+        assert_eq!(result, expected);
+    }
+    assert_eq!(Operator::from_keyword("difference"), None);
+    assert_eq!(Operator::from_keyword("Union"), None);
+    let empty = combine_native_set::<u8, QueryError>(
+        Operator::Union,
+        [].into_iter(),
+        [].into_iter(),
+        [],
+        &mut Budget::for_program(limits()),
+        Location::Query(20..30),
+        |_, _| Ok(()),
+    )
+    .unwrap();
+    assert!(empty.is_empty());
+}
+
+#[test]
+fn native_sets_keep_located_limits_and_candidate_failures() {
+    use zirql::{NativeSetOperator, combine_native_set};
+
+    for (mut budget, category) in [
+        (
+            Budget::new(zirql::Limits {
+                work: 0,
+                items: 8,
+                nesting: 16,
+            }),
+            QueryErrorCategory::WorkLimit,
+        ),
+        (
+            Budget::for_program(ProgramLimits {
+                results: 0,
+                ..limits()
+            }),
+            QueryErrorCategory::ResultLimit,
+        ),
+        (
+            Budget::for_program(ProgramLimits {
+                stream_items: 1,
+                ..limits()
+            }),
+            QueryErrorCategory::ItemLimit,
+        ),
+    ] {
+        let error = combine_native_set::<_, QueryError>(
+            NativeSetOperator::Union,
+            [1, 2].into_iter(),
+            [].into_iter(),
+            [Ok(1), Ok(2)],
+            &mut budget,
+            Location::Query(20..30),
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        let EvaluationError::Core(error) = error else {
+            panic!("core error")
+        };
+        assert_eq!(error.location, Location::Query(20..30));
+        assert_eq!(error.category, category);
+    }
+    let failure = QueryError::source(40..42, "foreign candidate");
+    let error = combine_native_set::<u8, QueryError>(
+        NativeSetOperator::Except,
+        [].into_iter(),
+        [].into_iter(),
+        [Err(EvaluationError::Host(failure.clone()))],
+        &mut Budget::for_program(limits()),
+        Location::Query(20..30),
+        |_, _| Ok(()),
+    )
+    .unwrap_err();
+    assert_eq!(error, EvaluationError::Host(failure));
+}
+
+#[test]
 fn parameter_declarations_are_contextual_located_and_require_a_terminator() {
     let source = "  param factor: int; param label: string; param enabled: bool;";
     let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();

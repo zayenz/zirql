@@ -420,3 +420,18 @@ move the selected payloads in input order. They do not sort the input or copy
 the best key on each improvement. Newly charged comparisons and scratch work
 can refuse a request that previously passed an undercharged host implementation;
 host allowances do not increase to compensate.
+
+## Native set combination
+
+`combine_native_set` admits both membership tables before allocation and charges
+each insertion, candidate visit, membership probe and selected output slot.
+Temporary storage spends work even with a legacy budget; aggregate budgets also
+charge its containers and slots as results. The host charges variable-size
+identity inspection and any additional scans or owned string copies. Native
+identities move without cloning their payloads.
+
+Hosts validate both operand kinds and every handle before combination, including
+empty or discarded operands. Canonical candidates supply result order; their
+scan does not apply the stream-item ceiling to a whole document. Selected output
+keeps that ceiling. Membership and temporary work can refuse formerly
+undercharged near-limit requests; host allowances do not increase to compensate.
