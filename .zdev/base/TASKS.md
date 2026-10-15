@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 47
-- Ready: 3
-- Blocked: 1
+- Total: 54
+- Ready: 9
+- Blocked: 2
 - Done: 43
 
 | ID | Task | State | Blocked by |
@@ -56,3 +56,10 @@
 | [base-045](tasks/045-run-explicit-loops-fold-and-scan-worklists-in-zirium.md) | Run explicit loops, fold and scan worklists in Zirium | ready | base-040, base-041, base-042, base-043 |
 | [base-046](tasks/046-run-explicit-loops-fold-and-scan-worklists-in-zincite.md) | Run explicit loops, fold and scan worklists in Zincite | blocked | base-040, base-041, base-042, base-044 |
 | [base-047](tasks/047-compose-constructed-collection-pipelines-in-the-shared-langu.md) | Compose constructed collection pipelines in the shared language | ready | — |
+| [base-048](tasks/048-share-native-stream-bounds-reversal-and-cardinality-checks.md) | Share native stream bounds, reversal and cardinality checks | ready | — |
+| [base-049](tasks/049-share-native-selector-ordering-and-all-ties-extrema.md) | Share native selector ordering and all-ties extrema | ready | — |
+| [base-050](tasks/050-share-native-union-intersection-and-difference-algorithms.md) | Share native union, intersection and difference algorithms | ready | — |
+| [base-051](tasks/051-share-correlated-native-map-construction.md) | Share correlated native map construction | ready | — |
+| [base-052](tasks/052-share-explicit-map-ranking-and-ordered-map-selection.md) | Share explicit map ranking and ordered map selection | blocked | base-051, base-048 |
+| [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | ready | — |
+| [base-054](tasks/054-share-bounded-native-fixed-point-execution.md) | Share bounded native fixed-point execution | ready | — |
