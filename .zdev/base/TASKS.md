@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 57
-- Ready: 11
-- Blocked: 2
+- Total: 60
+- Ready: 13
+- Blocked: 3
 - Done: 44
 
 | ID | Task | State | Blocked by |
@@ -66,3 +66,6 @@
 | [base-055](tasks/055-expose-index-sets-and-tuple-positions-in-the-common-reader.md) | Expose index sets and tuple positions in the common reader | ready | — |
 | [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | ready | — |
 | [base-057](tasks/057-share-pure-interpolation-and-computed-object-key-constructio.md) | Share pure interpolation and computed object-key construction | ready | — |
+| [base-058](tasks/058-compose-saved-native-and-constructed-results-consistently-in.md) | Compose saved native and constructed results consistently in Zincite | ready | base-047 |
+| [base-059](tasks/059-adopt-shared-stream-bounds-reversal-and-cardinality-checks-i.md) | Adopt shared stream bounds, reversal and cardinality checks in Zincite | blocked | base-048 |
+| [base-060](tasks/060-define-broader-zincite-program-and-shared-operation-alignmen.md) | Define broader Zincite program and shared-operation alignment | ready | — |
