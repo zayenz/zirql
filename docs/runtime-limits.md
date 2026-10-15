@@ -393,3 +393,21 @@ fields retain their native owner through explicit tuple views. Native container
 inspection keeps the ordinary nesting guard. A stale context, element mismatch,
 unsupported serialization or exhausted allowance remains an error, distinct from
 an empty pop or a false membership result.
+
+## Native ordering
+
+`order_native_by` shares the caller's request budget with every singleton key
+selector. It checks the stream ceiling and allocation sizes before collecting
+keys or allocating descriptors. Temporary containers and slots consume the
+aggregate result allowance; collection, descriptor writes, comparisons and
+payload moves consume work even with legacy `Budget::new` allowances.
+Text comparisons charge each inspected byte. A host moving an admitted owned
+text key pays no second copy charge; a host copying a borrowed text key charges
+its bytes and new result before allocation.
+
+Stable sorting uses an iterative merge of indices with O(n log n) comparisons
+and O(n) temporary slots. Extrema use a linear scan after key collection and
+move the selected payloads in input order. They do not sort the input or copy
+the best key on each improvement. Newly charged comparisons and scratch work
+can refuse a request that previously passed an undercharged host implementation;
+host allowances do not increase to compensate.

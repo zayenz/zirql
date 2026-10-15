@@ -2,10 +2,10 @@ use std::ops::Range;
 
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
-    Located, Location, MatchClause, NativeMatch, NativePaths, ParameterDeclaration, ParameterType,
-    Predicate, PredicateKind, Projection, QueryError, ValueBinaryOperator as B, ValueConstructor,
-    ValueExpression, ValueExpressionKind as K, ValueExtremum, ValueGenerator, ValueReducer,
-    ValueUnaryOperator as U,
+    Located, Location, MatchClause, NativeMatch, NativeOrder, NativeOrdering, NativePaths,
+    ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection, QueryError,
+    ValueBinaryOperator as B, ValueConstructor, ValueExpression, ValueExpressionKind as K,
+    ValueExtremum, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
 };
 
 pub type ReadExpression<H> = Expression<
@@ -79,6 +79,24 @@ pub trait ValueReaderHost {
         Err(QueryError::query(
             range,
             "native matching is unsupported by this host",
+        ))
+    }
+    /// Lower common native ordering, retaining its singleton-relative selector.
+    /// Hosts own kind checks, empty policy and native key projection.
+    fn ordering(
+        &mut self,
+        ordering: NativeOrdering<ReadExpression<Self>>,
+        range: Range<usize>,
+    ) -> Result<Self::Stage, QueryError>
+    where
+        Self: Sized,
+    {
+        if let Some(selector) = ordering.selector {
+            crate::dispose_expression(selector);
+        }
+        Err(QueryError::query(
+            range,
+            "native ordering is unsupported by this host",
         ))
     }
     /// Map one located edge identifier to an existing typed native primitive.
@@ -2146,7 +2164,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let ordering_call = self.ordering_call()?;
         if self.match_call()
             || self.field_pipeline()
-            || (self.host.is_stage(word.value)
+            || ((self.host.is_stage(word.value) || native_order(word.value).is_some())
                 && !ordering_call
                 && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
             || (word.value == "input" && !local)
@@ -2703,7 +2721,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             if first.value == "input" && !binding {
                 self.reader.advance(probe.position() - start)?;
                 Located::new(ExpressionKind::Input, first.range)
-            } else if !projection_call && (binding || !self.host.is_stage(first.value)) {
+            } else if !projection_call
+                && (binding
+                    || (!self.host.is_stage(first.value) && native_order(first.value).is_none()))
+            {
                 self.reader.advance(probe.position() - start)?;
                 self.budget
                     .charge(first.value.len(), Location::Query(first.range.clone()))?;
@@ -2780,6 +2801,24 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     self.host
                         .projection(projection, stage_start..self.reader.position()),
                 )
+            } else if let Some((order, keyed)) = {
+                let mut probe = ArgumentReader::new(self.reader.source(), stage_start)?;
+                probe.word().ok().and_then(|word| native_order(word.value))
+            } {
+                self.name()?;
+                let mut selector = NativeGuard(None);
+                if keyed {
+                    self.reader.expect('(')?;
+                    selector.0 = Some(self.native_expression(depth + 1)?);
+                    self.reader.expect(')')?;
+                }
+                ExpressionStep::Stage(self.host.ordering(
+                    NativeOrdering {
+                        order,
+                        selector: selector.0.take(),
+                    },
+                    stage_start..self.reader.position(),
+                )?)
             } else {
                 self.host
                     .parse_stage_in_scope(self.reader, &self.locals, self.budget)?
@@ -3314,4 +3353,20 @@ fn dispose_signature(value: SignatureType) {
             _ => {}
         }
     }
+}
+
+fn native_order(name: &str) -> Option<(NativeOrder, bool)> {
+    Some(match name {
+        "sort" => (NativeOrder::Sort, false),
+        "min" => (NativeOrder::Min, false),
+        "max" => (NativeOrder::Max, false),
+        "min_all" => (NativeOrder::MinAll, false),
+        "max_all" => (NativeOrder::MaxAll, false),
+        "sort_by" => (NativeOrder::Sort, true),
+        "min_by" => (NativeOrder::Min, true),
+        "max_by" => (NativeOrder::Max, true),
+        "min_all_by" => (NativeOrder::MinAll, true),
+        "max_all_by" => (NativeOrder::MaxAll, true),
+        _ => return None,
+    })
 }

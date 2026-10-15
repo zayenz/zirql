@@ -192,3 +192,19 @@ Named declarations, recursion and patterns have their own
 [language chapter](functions-and-control-flow.md). Rust copying, preparation
 and output contracts are covered by [host integration](host-integration.md),
 [program construction](embedding-programs.md) and [execution costs](computation.md).
+
+## Order native selections
+
+Hosts can lower common native `sort`, `min`, `max`, `min_all` and `max_all`
+stages through `ValueReaderHost::ordering`. Their `*_by(query)` forms retain a
+singleton-relative selector with the same lexical scope as the containing
+expression. Typed adapters construct `NativeOrdering<Q>` directly. Both paths
+call `order_native_by` with native payloads and `NativeOrderKey` values; no
+rendering or constructed-value conversion is involved.
+
+Sorting is stable. Single extrema keep the first equal-key item; all-ties
+extrema keep every equal-key item in input order. Selectors run once per item in
+input order before comparisons begin, including for extrema. Counts retain
+`usize` range and sort before text; text uses lexical order. Hosts still decide
+which native kinds and keys they accept and whether empty extrema are errors.
+The shared operation returns an empty selection for empty input.

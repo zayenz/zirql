@@ -3,6 +3,7 @@
 mod eval;
 mod functions;
 mod matching;
+mod ordering;
 mod parser;
 mod paths;
 mod program;
@@ -30,6 +31,7 @@ pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
     evaluate_match_with_arguments, match_types,
 };
+pub use ordering::{NativeOrder, NativeOrderKey, NativeOrdering, order_native_by};
 pub use parser::{ArgumentReader, parse_pipeline};
 pub use paths::{
     NativePaths, PathHost, dispose_paths, evaluate_paths, evaluate_paths_with_arguments, path_types,
