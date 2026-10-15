@@ -877,6 +877,22 @@ fn runtime_refusal(
 
 impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     type Kind = SourceKind;
+    fn set_kind(
+        &self,
+        left: &SourceKind,
+        right: &SourceKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        if left != right || !matches!(left, SourceKind::Words) {
+            return Err(QueryError::query(
+                range.clone(),
+                "sets require word identities",
+            ));
+        }
+        Ok(left.clone())
+    }
+
     fn kind(
         &self,
         value: &SourceValue<'a>,
@@ -9592,4 +9608,54 @@ fn shared_fixed_point_spelling_is_reserved_for_functions() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("reserved operation"));
+}
+
+#[test]
+fn native_set_kind_admission_reaches_unused_value_branches() {
+    use zirql::{ConstructedValue as V, ValueExpressionKind as K};
+    let set = Located::new(
+        ExpressionKind::Set {
+            operator: (),
+            left: Box::new(Located::new(
+                ExpressionKind::Binding("count".into()),
+                21..26,
+            )),
+            right: Box::new(Located::new(
+                ExpressionKind::Binding("count".into()),
+                33..38,
+            )),
+        },
+        21..38,
+    );
+    let expression = Located::new(
+        K::Conditional {
+            branches: vec![(
+                Located::new(K::Literal(V::Boolean(true)), 0..4),
+                Located::new(K::Literal(V::Integer(1)), 5..6),
+            )],
+            otherwise: Box::new(Located::new(K::NativeQuery(Box::new(set)), 21..38)),
+        },
+        0..38,
+    );
+    let error = zirql::evaluate_native_value(
+        &expression,
+        &SourceHost,
+        SourceValue::Words(vec![]),
+        &mut SourceContext {
+            source: "",
+            prefix: "",
+            emissions: vec![],
+        },
+        &Bindings::new(vec![(
+            Located::new("count".into(), 0..1),
+            SourceValue::Count(0),
+        )])
+        .unwrap(),
+        &mut Budget::for_program(limits()),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, EvaluationError::Core(QueryError { location: Location::Query(range), message, .. }) if range == &(21..38) && message == "sets require word identities"),
+        "{error:?}"
+    );
 }

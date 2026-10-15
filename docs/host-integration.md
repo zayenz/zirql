@@ -733,3 +733,8 @@ constructed scalar. Convert native counts to signed integers with checked
 conversion when using this typed domain. Native handles need an explicit scalar
 projection. The shared operation validates all keys before selecting results;
 the adapter retains its input kind and owner when rebuilding an empty extremum.
+
+`ProjectionHost::set_kind` admits set operands during shared preflight. Its
+default requires equal kinds. Override it to reject kinds without a native
+membership identity, including when an operand is empty or its branch is unused.
+Runtime combination still validates every retained owner and handle.
