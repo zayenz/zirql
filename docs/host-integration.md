@@ -702,6 +702,12 @@ errors must refuse at their responsible locations. Keep original handles, order,
 duplicates, owners and diff sides. Rendering and scalar truth are not cardinality
 checks.
 
+For required nested observations, override `Host::filter_truth` to admit the
+completed shared Boolean result. Reject final `Unknown` with the host's
+responsible diagnostic. Keep decisive conditions such as `unknown or true`
+valid; an unknown leaf alone cannot determine the whole condition. The default
+keeps ordinary best-effort filtering unchanged.
+
 ## Native fixed-point execution
 
 Implement `ValueReaderHost::fixed_point` to retain the common reader's body; the
