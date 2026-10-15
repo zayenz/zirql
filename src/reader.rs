@@ -99,6 +99,15 @@ pub trait ValueReaderHost {
             "native ordering is unsupported by this host",
         ))
     }
+    /// Lower `sort_by(value)` for an explicitly ranked map. The common reader
+    /// recognizes an unbound `value`, including grouping, without parsing a
+    /// host value stage. Other ordering selectors keep the ordinary hook.
+    fn map_ranking(&mut self, range: Range<usize>) -> Result<Self::Stage, QueryError> {
+        Err(QueryError::query(
+            range,
+            "map ranking is unsupported by this host",
+        ))
+    }
     /// Retain independent singleton-relative map selectors. Hosts preflight
     /// their native kinds and effect policy before calling the map constructor.
     fn mapping(
@@ -2926,18 +2935,30 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             } {
                 self.name()?;
                 let mut selector = NativeGuard(None);
-                if keyed {
+                let map_value = if keyed {
                     self.reader.expect('(')?;
-                    selector.0 = Some(self.native_expression(depth + 1)?);
+                    let map_value =
+                        order == NativeOrder::Sort && self.map_value_selector(depth + 1)?;
+                    if !map_value {
+                        selector.0 = Some(self.native_expression(depth + 1)?);
+                    }
                     self.reader.expect(')')?;
-                }
-                ExpressionStep::Stage(self.host.ordering(
-                    NativeOrdering {
-                        order,
-                        selector: selector.0.take(),
-                    },
-                    stage_start..self.reader.position(),
-                )?)
+                    map_value
+                } else {
+                    false
+                };
+                let range = stage_start..self.reader.position();
+                ExpressionStep::Stage(if map_value {
+                    self.host.map_ranking(range)?
+                } else {
+                    self.host.ordering(
+                        NativeOrdering {
+                            order,
+                            selector: selector.0.take(),
+                        },
+                        range,
+                    )?
+                })
             } else {
                 self.host
                     .parse_stage_in_scope(self.reader, &self.locals, self.budget)?
@@ -2970,6 +2991,38 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             },
             range,
         ))
+    }
+    fn map_value_selector(&mut self, depth: usize) -> Result<bool, QueryError> {
+        let start = self.reader.position();
+        let mut probe = ArgumentReader::new(self.reader.source(), start)?;
+        let mut groups = 0;
+        self.depth(depth)?;
+        while probe.consume('(') {
+            groups += 1;
+            self.depth(depth + groups)?;
+        }
+        let Ok(name) = probe.word() else {
+            return Ok(false);
+        };
+        if name.value != "value"
+            || self.is_local(name.value, &name.range)?
+            || self.host.is_binding(name.value)
+        {
+            return Ok(false);
+        }
+        for _ in 0..groups {
+            if !probe.consume(')') {
+                return Ok(false);
+            }
+        }
+        let end = probe.position();
+        if !probe.consume(')') {
+            return Ok(false);
+        }
+        self.budget
+            .charge(end - start, Location::Query(start..end))?;
+        self.reader.advance(end - start)?;
+        Ok(true)
     }
     fn native_expression(&mut self, depth: usize) -> Result<ReadExpression<H>, QueryError> {
         let value = self.native(depth)?;
