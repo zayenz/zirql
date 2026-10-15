@@ -2268,7 +2268,13 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             }
         }
         let ordering_call = self.ordering_call()?;
-        if (word.value == "fixpoint" && probe.remaining().starts_with('('))
+        let mut next = ArgumentReader::new(self.reader.source(), probe.position())?;
+        let set_operand = (local || self.host.is_binding(word.value))
+            && next
+                .word()
+                .is_ok_and(|next| self.host.set_operator(next.value).is_some());
+        if set_operand
+            || (word.value == "fixpoint" && probe.remaining().starts_with('('))
             || self.match_call()
             || self.field_pipeline()
             || ((self.host.is_stage(word.value)

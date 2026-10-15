@@ -9154,8 +9154,8 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         type SetOperator = ();
         type Emitter = &'static str;
         type Predicate = ();
-        fn is_binding(&self, _: &str) -> bool {
-            false
+        fn is_binding(&self, name: &str) -> bool {
+            name == "saved"
         }
         fn is_stage(&self, name: &str) -> bool {
             name == "count"
@@ -9206,10 +9206,25 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         ) -> Result<SourceStage, QueryError> {
             Ok(SourceStage::FixedPoint(Box::new(body)))
         }
-        fn set_operator(&self, _: &str) -> Option<()> {
-            None
+        fn set_operator(&self, word: &str) -> Option<()> {
+            zirql::NativeSetOperator::from_keyword(word).map(|_| ())
         }
     }
+    let saved = zirql::read_native_expression(
+        &mut zirql::ArgumentReader::new("(saved union saved) | count", 0).unwrap(),
+        &mut Reader,
+        &mut Budget::for_program(limits()),
+        16,
+    )
+    .unwrap();
+    let ExpressionKind::Sequence { input, .. } = &saved.value else {
+        panic!("pipeline")
+    };
+    let ExpressionKind::Group(group) = &input.value else {
+        panic!("group")
+    };
+    assert!(matches!(group.value, ExpressionKind::Set { .. }));
+    zirql::dispose_expression(saved);
     let source = "βeta alpha alpha";
     let input = || {
         SourceValue::Words(vec![
