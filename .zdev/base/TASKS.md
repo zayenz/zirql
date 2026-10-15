@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 71
-- Ready: 3
+- Total: 72
+- Ready: 4
 - Blocked: 5
 - Done: 63
 
@@ -80,3 +80,4 @@
 | [base-069](tasks/069-read-correlated-existence-and-adopt-zincite-fixed-points.md) | Read correlated existence and adopt Zincite fixed points | blocked | base-067, base-064 |
 | [base-070](tasks/070-run-shared-zirql-queries-over-implicit-and-named-csv-inputs.md) | Run shared Zirql queries over implicit and named CSV inputs | ready | — |
 | [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | blocked | base-070 |
+| [base-072](tasks/072-pass-current-stable-clippy-for-ordered-tally.md) | Pass current stable Clippy for ordered tally | ready | — |
