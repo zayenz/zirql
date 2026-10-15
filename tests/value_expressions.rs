@@ -5219,3 +5219,26 @@ fn loops_inside_named_steps_keep_the_fixed_state_return_contract() {
     assert_eq!(error.calls[0].function, "selected");
     assert!(error.error.message.contains("integer"));
 }
+
+#[test]
+fn rejected_literal_payloads_have_stack_safe_cleanup() {
+    std::thread::spawn(|| {
+        let deep = || {
+            let mut value = V::Integer(1);
+            let mut declaration = D::Integer;
+            for _ in 0..20_000 {
+                value = V::Tuple(vec![value]);
+                declaration = D::Optional(Box::new(declaration));
+            }
+            V::Declared {
+                value: Box::new(value),
+                declaration,
+            }
+        };
+        let expression: E<zirql::Expression<(), (), ()>> = Located::new(K::Literal(deep()), 0..1);
+        zirql::dispose_native_value(expression);
+        zirql::dispose_pattern(Located::new(zirql::PatternKind::Literal(deep()), 0..1));
+    })
+    .join()
+    .unwrap();
+}

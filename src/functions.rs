@@ -3453,7 +3453,7 @@ pub fn dispose_pattern_functions<S, O, E, K>(
     }
 }
 
-fn dispose_declaration<K>(declaration: DeclaredType<K>) {
+pub(crate) fn dispose_declaration<K>(declaration: DeclaredType<K>) {
     let mut pending = vec![declaration];
     while let Some(declaration) = pending.pop() {
         match declaration {

@@ -120,6 +120,35 @@ pub enum ConstructedValue {
     },
 }
 
+/// Release owned payloads even when admission rejected their depth.
+pub(crate) fn dispose_constructed_value(value: ConstructedValue) {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            ConstructedValue::Declared { value, declaration } => {
+                crate::functions::dispose_declaration(declaration);
+                pending.push(*value);
+            }
+            ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => {
+                pending.extend(values);
+            }
+            ConstructedValue::Record(fields) => {
+                pending.extend(fields.into_iter().map(|(_, value)| value));
+            }
+            ConstructedValue::KeyedArray { entries, .. } => {
+                pending.extend(entries.into_iter().map(|entry| entry.value));
+            }
+            ConstructedValue::Set { elements, .. } => pending.extend(elements),
+            ConstructedValue::Absent
+            | ConstructedValue::Boolean(_)
+            | ConstructedValue::Integer(_)
+            | ConstructedValue::Float(_)
+            | ConstructedValue::String(_)
+            | ConstructedValue::Member(_) => {}
+        }
+    }
+}
+
 /// Concrete positional facts, including heterogeneous arrays. `Elements`
 /// describes possible element types, without claiming a length or positions.
 #[derive(Debug, PartialEq, Eq)]
