@@ -393,3 +393,110 @@ Functions, patterns and the availability of other control-flow forms are covered
 in [functions and control flow](functions-and-control-flow.md). Rust ownership,
 prepared reads and native worklist values are described in
 [value evaluation](value-runtime.md).
+
+## Selected collection syntax and ordering
+
+The following design is selected for subsequent implementation. These new set,
+computed-key dictionary and indexed-array forms are **not yet accepted by the
+common reader**. The executable forms earlier on this page retain their current
+behavior until that implementation lands.
+
+Ordinary sets and dictionaries use bare braces, suited to short command-line
+expressions:
+
+```text
+{3, 1, 3}                              # set, iterating as 3, 1
+{x mod 3 for x in 1..5}                # set, iterating as 1, 2, 0
+{"pear": 3, "apple": 7}                # dictionary, pear then apple
+{w: 1 for w in words}                  # computed string keys; duplicates fail
+{}                                     # empty dictionary
+set<int>()                             # explicitly typed empty set
+```
+
+A colon at the brace body's own level selects a dictionary; a nonempty body
+without a colon selects a set. Each key is an ordinary expression, so `{k: v}`
+reads the binding `k`; static string keys stay quoted. Nested collections keep
+their own delimiters. Empty braces select a dictionary. The exceptional
+`set<int>()`, `set<bool>()` and `set<float>()` forms supply an empty set with an
+explicit existing scalar element type. A host can supply a typed empty nominal
+set directly; no common model or member-name resolver is introduced.
+
+String dictionaries reuse the existing ordered string-field objects and their
+structural schemas. There is no separate everyday record syntax. `.field`
+continues to select a static string field; bracket access and `lookup` accept
+computed string keys. A dictionary key must evaluate to a string, with no
+implicit conversion from integer, member or native-handle text. Integer and
+nominal indexed data use the array-shaped forms below, retaining typed axes.
+This does not introduce a generalized arbitrary-key dictionary value.
+
+Sets preserve the first occurrence of each identity. Dictionaries preserve
+entry insertion order and refuse duplicate keys before evaluating that entry's
+value. Construction, iteration, saved values and rendering agree on this order.
+Set elements retain the existing homogeneous Boolean, integer, finite-float and
+nominal-member support; string sets remain outside this increment. Set equality
+compares membership; dictionary equality compares key/value associations.
+Iteration order remains observable separately.
+
+Both kinds support explicit stable sorting and retain their collection kind:
+
+```text
+sort({3, 1, 2})
+sort({"pear": 3, "apple": 7})
+sort_by({"pear": 3, "apple": 3}, value)
+```
+
+These produce a set ordered 1, 2, 3; a dictionary ordered apple, pear; and a
+dictionary retaining pear, apple because the values tie. `sort(d)` orders
+string keys; `sort_by(d, value)` orders values through a closed built-in
+selector. For record-valued dictionaries, `sort_by(d, "cost")` selects that
+field from each value. `descending=true` reverses comparison direction while
+keeping the current order within ties. Unsupported or absent sort keys fail.
+Sorting a dictionary never implicitly converts it to entry records or a list,
+including when a host renders it as a JSON object.
+
+Array-shaped indexed values remain distinct from insertion-ordered dictionaries:
+
+```text
+[2: {"cost": 3}, 5: {"cost": 7}]
+[2: {"cost": 3}, 5: {"cost": 7}] axes([5, 2, 9])
+[(g, j): j for g in guests for j in [8, 1] if j == 8]
+    axes(guests, [8, 1])
+[] axes(set<int>(), [8, 1])
+```
+
+Keys normally establish their integer or nominal dimensions. Optional declared
+index sets retain their full order and unused keys for both empty and nonempty
+results. The explicit integer example retains axis 5, 2, 9, stores cells 5 then
+2, and leaves 9 missing. Multidimensional arrays remain row-major rather than
+preserving arbitrary cell insertion order. Each tuple key supplies one component
+per axis. String keys belong to ordinary dictionaries, not these array axes.
+
+Evaluate declared axis sources once, left to right, in surrounding scope before
+entries or generators. Sources are integer/member arrays or typed sets; a typed
+empty source establishes an empty axis. An untyped empty positional array does
+not establish its key identity. Supplied nominal values retain their host's
+identity and metadata. Duplicate axis keys, wrong rank or keys outside declared
+axes fail. Without declared axes, zero emitted cells must not silently become a
+positional array when keyed shape is unestablished. `[]` alone remains the empty
+positional array.
+
+The existing shared comprehension API's `empty_axis_sources` is only a
+zero-cell fallback. It cannot implement these always-retained declarations.
+Later implementation needs a located explicit axis-source path on the existing
+keyed nodes, while preserving established consumer fallback behavior. It also
+needs insertion-ordered set construction, ordered computed string entries and
+sorting that retains set/dictionary kind; those are changes to current code,
+not claims about functionality already available.
+
+Blocks keep their explicit function/control positions. A final dictionary or
+set inside a block uses its own braces, such as
+`if test { {"yes": 1} } else { {} }`. Existing generator scope, repeated `for`,
+optional `if`, access/operator precedence and grouping remain unchanged. A
+pipeline follows the completed collection expression, including its axes.
+All parsing, key/axis work, comparisons, copies and rendering share the active
+budget and retain expression locations and native owners.
+
+Zincite may keep its natural MiniZinc literal and comprehension spelling while
+lowering to the same shared behavior. Its model facts, target shape validation,
+serialization and atomic edit rules stay with the host. This design introduces
+no implicit model evaluation, native reflection or broader data-edit policy.

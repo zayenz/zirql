@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 61
-- Ready: 2
+- Ready: 1
 - Blocked: 0
-- Done: 59
+- Done: 60
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -64,7 +64,7 @@
 | [base-053](tasks/053-share-correlated-native-existence-filtering.md) | Share correlated native existence filtering | done | — |
 | [base-054](tasks/054-share-bounded-native-fixed-point-execution.md) | Share bounded native fixed-point execution | done | — |
 | [base-055](tasks/055-expose-index-sets-and-tuple-positions-in-the-common-reader.md) | Expose index sets and tuple positions in the common reader | done | — |
-| [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | ready | — |
+| [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | done | — |
 | [base-057](tasks/057-share-pure-interpolation-and-computed-object-key-constructio.md) | Share pure interpolation and computed object-key construction | done | — |
 | [base-058](tasks/058-compose-saved-native-and-constructed-results-consistently-in.md) | Compose saved native and constructed results consistently in Zincite | done | base-047 |
 | [base-059](tasks/059-adopt-shared-stream-bounds-reversal-and-cardinality-checks-i.md) | Adopt shared stream bounds, reversal and cardinality checks in Zincite | done | base-048 |

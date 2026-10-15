@@ -86,7 +86,9 @@ there is no string-to-number coercion or enum-member identity from spelling.
 Positional sequences preserve generation order. Tuples and records preserve
 their declared positions/labels; record labels are not scalar values. A
 string-keyed report map rejects duplicate keys rather than overwriting them.
-Typed sets remove duplicate identities and use their supported type order.
+Typed sets remove duplicate identities and preserve first insertion order;
+explicit sorting uses their supported type order. Dictionaries preserve entry
+insertion order too, and sorting a dictionary returns a reordered dictionary.
 Zincite excludes string sets because its MiniZinc target cannot serialize them;
 a host that permits them must define an order and renderer explicitly.
 

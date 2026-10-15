@@ -29,6 +29,51 @@ Observable success:
 
 ## User decisions
 
+### Collection syntax and order
+
+Queries are primarily written by hand as short expressions, often in a command
+line string. Ordinary sets and dictionaries use bare braces, for example
+`{3, 1, 2}` and `{"apple": 2, "ash": 1}`. They must not require `set` or
+`keyed` prefixes. Infer keys from entries normally; permit optional declared
+index sets for array-shaped data, including declared keys without present cells.
+Keep typed keyed-array shape and host nominal identity explicit where needed.
+
+Sets and dictionaries preserve insertion order. Sets remove repeated elements
+without moving their first occurrence. Both support explicit sorting. Sorting
+returns the same collection kind, and equal sort keys retain their current
+relative order. A dictionary sorted by value remains a dictionary, including
+when rendered as a JSON object; it does not become a list of key/value records.
+Construction, library iteration, saved results and rendering must agree on this
+order. Host selection primitives may produce their natural source order; that
+does not require set algebra to reorder its operands into source order.
+Set equality compares membership and dictionary equality compares key/value
+associations independently of iteration order. Sequence order, explicit keyed
+array shape and native fixed-point stream equality remain separate contracts.
+
+The common reader distinguishes a dictionary's colon from a set's element list
+inside bare braces. Empty `{}` is a dictionary; `set<int>()` and corresponding
+supported scalar types express typed empty sets. Ordinary dictionaries reuse
+existing string-field values and structural schemas. Integer/nominal indexed
+data stays array-shaped, using `[key: value]` and optional `axes(...)` sources;
+explicit dimensions retain their full index sets, order and missing cells.
+The selected grammar, lowering gaps and bounded implementation scope are in
+[the collection guide](../../docs/values.md#selected-collection-syntax-and-ordering).
+They are accepted design awaiting implementation, not current reader support.
+
+The language has no compatibility requirement solely for existing users.
+Remove obsolete aliases or wrappers when they complicate the chosen design;
+do not add compatibility layers for superseded lexical-map ordering or a
+separate ranked-map result kind. Native ownership, source locations, nominal
+identity, completeness and host effect rules remain substantive requirements.
+These decisions supersede earlier collection-order and compatibility wording.
+
+The approved follow-up work may be split into bounded zdev tasks, imported and
+implemented without further task-bundle confirmation. Use at most two delegated
+roles, isolated source worktrees, serial integration, independent verification
+and separate framework/consumer commits. Clean up run-owned worktrees and
+branches after verified integration, retaining Git references used by consumers.
+Development uses pinned Git dependencies without additional package releases.
+
 Confirmed on 2026-10-12:
 
 - Name the project and framework `Zirql`, with `zirql` as the intended crate name.
