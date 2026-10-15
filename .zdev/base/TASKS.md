@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 61
-- Ready: 11
+- Ready: 10
 - Blocked: 1
-- Done: 49
+- Done: 50
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -66,7 +66,7 @@
 | [base-055](tasks/055-expose-index-sets-and-tuple-positions-in-the-common-reader.md) | Expose index sets and tuple positions in the common reader | done | — |
 | [base-056](tasks/056-choose-common-syntax-for-sets-and-keyed-arrays.md) | Choose common syntax for sets and keyed arrays | ready | — |
 | [base-057](tasks/057-share-pure-interpolation-and-computed-object-key-constructio.md) | Share pure interpolation and computed object-key construction | ready | — |
-| [base-058](tasks/058-compose-saved-native-and-constructed-results-consistently-in.md) | Compose saved native and constructed results consistently in Zincite | ready | base-047 |
+| [base-058](tasks/058-compose-saved-native-and-constructed-results-consistently-in.md) | Compose saved native and constructed results consistently in Zincite | done | base-047 |
 | [base-059](tasks/059-adopt-shared-stream-bounds-reversal-and-cardinality-checks-i.md) | Adopt shared stream bounds, reversal and cardinality checks in Zincite | ready | base-048 |
 | [base-060](tasks/060-define-broader-zincite-program-and-shared-operation-alignmen.md) | Define broader Zincite program and shared-operation alignment | ready | — |
 | [base-061](tasks/061-support-filter-count-expressions-over-the-current-constructe.md) | Support filter/count expressions over the current constructed input | ready | base-047 |

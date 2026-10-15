@@ -860,6 +860,63 @@ pub fn read_value_expression<H: ValueReaderHost>(
     .expression(0, 0)
 }
 
+/// Continue an already lowered value with bare `sort`, `unique` and `tally`
+/// stages at the current cursor. The prefix must already satisfy its reader's
+/// nesting checks; `nesting` is the allowance remaining for suffix wrappers.
+/// Stage ranges and parsing charges match [`read_value_expression`]. A successful
+/// tree belongs to the caller; failures release the prefix iteratively.
+///
+/// # Errors
+/// Unsupported stages, a stage after `tally`, and exhausted parsing allowances
+/// fail at original query offsets.
+pub fn read_value_suffix<S, O, E>(
+    reader: &mut ArgumentReader<'_>,
+    value: ValueExpression<Expression<S, O, E>>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
+    let mut value = ValueGuard::new(value);
+    let mut terminal = matches!(value.value().value, K::Tally(_));
+    let mut depth = 0usize;
+    while reader.consume('|') {
+        let stage = reader.word()?;
+        budget.charge(stage.value.len(), Location::Query(stage.range.clone()))?;
+        if terminal {
+            return Err(QueryError::query(
+                stage.range,
+                "tally must be the terminal stage",
+            ));
+        }
+        let kind = match stage.value {
+            "sort" => K::Sort {
+                array: Box::new(value.into_value()),
+                field: None,
+                descending: false,
+            },
+            "unique" => K::Unique(Box::new(value.into_value())),
+            "tally" => {
+                terminal = true;
+                K::Tally(Box::new(value.into_value()))
+            }
+            _ => {
+                return Err(QueryError::query(
+                    stage.range,
+                    "unsupported constructed pipeline stage",
+                ));
+            }
+        };
+        value = ValueGuard::new(Located::new(kind, stage.range));
+        let location = Location::Query(reader.position()..reader.position());
+        budget.charge(1, location.clone())?;
+        budget.charge_results(1, location)?;
+        depth += 1;
+        if depth >= nesting.min(crate::MAX_NESTING) {
+            return Err(reader.error("value nesting limit exceeded"));
+        }
+    }
+    Ok(value.into_value())
+}
+
 /// Read a normalized native expression, including capture field postfixes.
 /// Domain stage hooks own native primitive arguments; common composition stays shared.
 ///
@@ -1946,37 +2003,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             self.depth(depth + chain)?;
         }
         if minimum == 0 {
-            let mut terminal = matches!(left.value().value, K::Tally(_));
-            while self.reader.consume('|') {
-                let stage = self.name()?;
-                if terminal {
-                    return Err(QueryError::query(
-                        stage.range,
-                        "tally must be the terminal stage",
-                    ));
-                }
-                let kind = match stage.value.as_str() {
-                    "sort" => K::Sort {
-                        array: Box::new(left.into_value()),
-                        field: None,
-                        descending: false,
-                    },
-                    "unique" => K::Unique(Box::new(left.into_value())),
-                    "tally" => {
-                        terminal = true;
-                        K::Tally(Box::new(left.into_value()))
-                    }
-                    _ => {
-                        return Err(QueryError::query(
-                            stage.range,
-                            "unsupported constructed pipeline stage",
-                        ));
-                    }
-                };
-                left = ValueGuard::new(self.node(kind, stage.range)?);
-                chain += 1;
-                self.depth(depth + chain)?;
-            }
+            return read_value_suffix(
+                self.reader,
+                left.into_value(),
+                self.budget,
+                self.nesting.saturating_sub(depth + chain),
+            );
         }
         Ok(left.into_value())
     }
