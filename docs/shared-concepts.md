@@ -68,9 +68,9 @@ frontends can expose these same stages together with domain operations.
 
 Stable unique keeps the first item for each native identity key, preserving
 input order. String tally counts the keys projected by the host and returns
-counts in sorted key order. For word spellings it can directly produce `apple:
-2`, `ash: 1`, `birch: 1`. When a host exposes tally, a frequency count needs no
-manual grouping. Tally, like count, is terminal.
+counts in first-seen key order. For input `ash, apple, birch, apple`, it
+produces `ash: 1`, `apple: 2`, `birch: 1`. When a host exposes tally, a frequency
+count needs no manual grouping. Tally, like count, is terminal.
 
 Identity is a host choice. Two occurrences of the same spelling can be distinct
 native objects. Projecting their spellings before comparing them answers a

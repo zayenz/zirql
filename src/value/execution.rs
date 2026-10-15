@@ -2930,8 +2930,10 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
         PreparedKind::GroupBy { field, .. } => group_by(next(), field, budget, &location)?,
         PreparedKind::Sort {
-            field, descending, ..
-        } => sort_value(next(), *field, *descending, budget, &location)?,
+            selector,
+            descending,
+            ..
+        } => sort_value(next(), *selector, *descending, budget, &location)?,
         PreparedKind::Range { .. } => integer_range(
             integer(next(), &location)?,
             integer(next(), &location)?,

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, btree_map::Entry};
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
@@ -260,7 +260,7 @@ impl<I, C> NativeInput<I, C> {
 pub enum NativeValue<I> {
     Stream(Vec<I>),
     Count(usize),
-    Tally(BTreeMap<String, usize>),
+    Tally(Vec<(String, usize)>),
 }
 
 /// Context survives stream, count and tally results. The host owns identity,
@@ -474,30 +474,51 @@ where
                         items = retained;
                     }
                     Stage::Tally => {
-                        budget.charge_results(1, Location::Query(stage.range.clone()))?;
-                        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+                        let location = Location::Query(stage.range.clone());
+                        let storage_error = || {
+                            QueryError::query(stage.range.clone(), "tally storage limit exceeded")
+                                .with_category(QueryErrorCategory::ResultLimit)
+                        };
+                        budget.charge_results(1, location.clone())?;
+                        let mut counts: Vec<(String, usize)> = Vec::new();
                         for item in items {
                             budget.charge(
                                 host.collection_item_work(),
                                 Location::Query(stage.range.clone()),
                             )?;
                             let key = host.tally_key(item, &mut context, budget, &stage.range)?;
-                            match counts.entry(key) {
-                                Entry::Occupied(mut entry) => {
-                                    *entry.get_mut() =
-                                        entry.get().checked_add(1).ok_or_else(|| {
-                                            QueryError::query(
-                                                stage.range.clone(),
-                                                "tally count overflow",
-                                            )
-                                        })?;
+                            let mut existing = None;
+                            for (previous, count) in &mut counts {
+                                let work = previous
+                                    .len()
+                                    .min(key.len())
+                                    .checked_add(1)
+                                    .ok_or_else(&storage_error)?;
+                                budget.charge_program_work(work, location.clone())?;
+                                if previous == &key {
+                                    existing = Some(count);
+                                    break;
                                 }
-                                Entry::Vacant(entry) => {
-                                    // One map entry and its newly produced count.
-                                    budget
-                                        .charge_results(2, Location::Query(stage.range.clone()))?;
-                                    entry.insert(1);
-                                }
+                            }
+                            if let Some(count) = existing {
+                                *count = count.checked_add(1).ok_or_else(|| {
+                                    QueryError::query(stage.range.clone(), "tally count overflow")
+                                })?;
+                            } else {
+                                let count = counts
+                                    .len()
+                                    .checked_add(1)
+                                    .filter(|count| {
+                                        count
+                                            .checked_mul(std::mem::size_of::<(String, usize)>())
+                                            .is_some_and(|bytes| bytes <= isize::MAX as usize)
+                                    })
+                                    .ok_or_else(&storage_error)?;
+                                budget.check_items(count, location.clone())?;
+                                budget.charge_program_work(1, location.clone())?;
+                                // One dictionary entry and its newly produced count.
+                                budget.charge_results(2, location.clone())?;
+                                counts.push((key, 1));
                             }
                         }
                         return Ok(NativeResult {

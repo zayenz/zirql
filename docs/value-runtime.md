@@ -168,8 +168,8 @@ A worklist computation can keep pending items in a queue and visited native
 identities in a set. The Rust function API represents their contracts with
 `DeclaredType::Queue(Box<DeclaredType<K>>)` and `DeclaredType::IdentitySet(K)`.
 A queue carries its whole element contract; an identity set accepts one native
-kind. Existing sorted scalar and nominal sets retain their ordering and
-operations.
+kind. Scalar and nominal sets retain insertion order and support explicit
+sorting; they remain separate from native identity sets.
 
 | Value expression | Result |
 | --- | --- |

@@ -73,10 +73,10 @@ Use `tally` to count each selected spelling:
 ```
 
 ```json
-{"apple": 2, "ash": 1}
+{"ash": 1, "apple": 2}
 ```
 
-The record fields follow lexical string order. Counts are checked signed
+The record fields follow each spelling's first occurrence. Counts are checked signed
 integers. Tally ends a constructed pipeline; a later stage is refused. Empty
 input gives `[]` for sort or unique and `{}` for tally.
 

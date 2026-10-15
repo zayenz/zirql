@@ -77,7 +77,7 @@ names but operate on a host's native selections.
 | `contains(s, part)`, `starts_with(s, prefix)`, `ends_with(s, suffix)` | Exact, case-sensitive string matching |
 | `length(a)`, `sum(a)` | Count present array entries or sum integer entries |
 | `forall(a)`, `exists(a)` | Reduce an array of known Booleans |
-| `sort(a)`, `sort_by(rows, "field")` | Stable ordering, optionally `descending=true` |
+| `sort(a)`, `sort_by(d, value)`, `sort_by(rows, "field")` | Stable same-kind array, set or dictionary ordering, optionally `descending=true` |
 | `min(a)`, `max(a)`, `min_by(rows, "field")`, `max_by(rows, "field")` | Select an extremum, or absence on empty input |
 | `group_by(rows, "field")` | First-seen groups, each with `key` and `items` |
 | `lookup(a, key)`, `has_key(a, key)` | Optional access and membership |
@@ -111,7 +111,7 @@ accepts only `starts_with` with a literal string prefix and requires positional
 strings. Empty and no-match inputs count as zero. Count returns a scalar, so a
 later collection stage is invalid. Missing input and incompatible types receive
 located errors. The last two return `["apple", "ash"]` and
-`{"apple": 2, "ash": 1}`. Pipes apply
+`{"ash": 1, "apple": 2}`. Pipes apply
 left-to-right after ordinary operators, defaults, comprehensions and
 conditionals. Tally is terminal. Group bare constructed names and user calls,
 such as `(words) | unique` or `(make_words()) | tally`, to preserve the native
@@ -137,15 +137,13 @@ terminal results and the small `parse_pipeline` reader. The broader native
 representation also supports host stages and set operations. A host can reuse
 the common readers or lower an existing parser to that representation.
 
-The accepted next alignment makes sets and dictionaries insertion-ordered and
-sortable without changing their collection kind. Dictionary value sorting is
-stable in current entry order and JSON preserves that order as object members.
-Native set algebra retains first-seen operand order. These changes, the Zincite
-typed native key contract and its `where_exists`/`fixpoint` adoption are accepted
-design awaiting implementation; see
-[the exact native alignment contract](native-programs.md#accepted-collection-and-native-alignment).
-Current lexical-map and explicitly ranked-map behavior is documented there so
-that accepted design is not mistaken for executable support.
+Callable sets and dictionaries preserve insertion order and retain their kind
+through explicit sorting. `sort(d)` orders dictionary keys; `sort_by(d, value)`
+orders values and retains current-order ties. The common reader accepts static
+string dictionaries; set construction is available through Rust nodes and
+comprehensions. See [collection order](values.md#selected-collection-syntax-and-ordering)
+for current syntax and examples. Native adapters adopt the ordered dictionary
+APIs separately; their current pinned versions retain their documented behavior.
 
 Use `project(subject, {fields})` to turn native subjects into report records.
 Explicit projections produce constructed values; native captures and paths can

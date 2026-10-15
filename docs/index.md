@@ -71,10 +71,10 @@ Count each selected spelling with a terminal tally:
 ```
 
 ```json
-{"apple": 2, "ash": 1}
+{"ash": 1, "apple": 2}
 ```
 
-Tally returns a record in lexical key order. All three stages belong to Zirql;
+Tally returns a record in first-seen key order. All three stages belong to Zirql;
 the application supplies the string array.
 
 ### Build a summary

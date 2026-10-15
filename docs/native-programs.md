@@ -220,102 +220,51 @@ Values retain their native kind and owner, including nested dictionaries and
 counts. The host checks supported kinds and pure selector policy before
 execution, even for empty input.
 
-The current implementation returns lexical-key maps. `sort_by(value)` creates
-an explicitly ranked result with lexical-key ties. Its legacy scalar admission
-accepts homogeneous null, Boolean, numeric or string values; signed/unsigned
-integers and finite floats share the numeric category and compare exactly.
-This differs from constructed typed ordering.
+The callable constructor returns `Vec<(String, V)>` in insertion order.
+`sort_map_by_value` reorders those entries stably; equal values keep their
+current order. `select_map` applies reverse/head/tail to the same dictionary
+kind, including an unsorted dictionary. Values remain native throughout.
 
-The accepted contract replaces the lexical/ranked distinction with one
-insertion-ordered dictionary. It requires the implementation work below;
-current map APIs and renderers have not yet been migrated.
+Its scalar projection accepts homogeneous null, Boolean, numeric or string
+values. Signed/unsigned integers and finite floats share the numeric category
+and compare exactly. Constructed dictionary selectors use the narrower
+constructed ordering contract: homogeneous signed integers, finite floats,
+strings or one nominal member type, with no integer/float mixing.
 
 ## Accepted collection and native alignment
 
-The user selected these rules for the next bounded implementation. They are
-accepted design, not a list of already executable additions.
+The shared library keeps insertion order for scalar sets and string dictionaries.
+Set duplicates retain their first representative. Constructed sorting returns
+the same collection kind. Dictionary equality compares associations and set
+equality compares membership, independently of stored order. Explicit keyed
+axes retain their shape contract; native fixed-point streams still use ordered
+equality.
 
-Sets and dictionaries preserve insertion order. Repeated set elements keep
-their first position; duplicate dictionary keys remain errors. Sorting returns
-the same collection kind with a new iteration order. A dictionary stays a
-dictionary after `sort_by(value)`. Equal sort keys retain the incoming order,
-including after a prior sort or reversal. Saving, copying, nesting and rendering
-a collection must preserve its current order.
-Collection value equality retains its membership/key-value meaning rather than
-accidentally comparing storage order. Explicit keyed axes keep their shape
-contract; native fixed-point streams still use ordered equality.
-
-Native `map_by` dictionaries acquire key order from input traversal. Histograms
-acquire key order from the first occurrence of each spelling. `reverse`,
-`head(n)` and `tail(n)` preserve the order of retained entries; reversal also
-reverses ties. Empty dictionaries remain dictionaries, and zero bounds select
-an empty dictionary. No separate ranked-map language value or implicit
-conversion to entry records is needed.
-
-For declarations named A, B and C with use counts 1, 2 and 0, the proposed
-Zincite report is:
+For example, these expressions run with the word example host:
 
 ```zirql
-let ds = declarations;
-report ds | map_by(names, uses | count)
-          | sort_by(value) | reverse | head(2);
+sort({"z": 2, "a": 2, "m": 1})
+sort_by({"z": 2, "a": 2, "m": 1}, value)
+sort_by({"z": 2, "a": 2, "m": 1}, value, descending=true)
 ```
 
-Its JSON output is a dictionary in the selected order:
+They return dictionaries ordered `a, m, z`, `m, z, a` and `z, a, m`.
+Equal keys retain their incoming order in both directions. Sorting again after
+reversal keeps the reversed order within ties. Tally fields follow the first
+occurrence of each spelling. Empty dictionaries and zero bounds retain the
+dictionary kind. A dictionary never implicitly becomes a list of entry records.
 
-```json
-{"complete":true,"limitations":[],"result":{"B":2,"A":1}}
-```
+Host adapters retain this entry order through saved results, copies and nested
+values. JSON object member order is observable here: a renderer must iterate
+the retained entries rather than collect them into an automatically sorted map.
+Native handles and source coordinates survive until explicit rendering.
 
-JSON object member order is observable output here. The library must retain
-that order before serialization; constructing a default sorted JSON map would
-lose it. Native payloads remain native until the explicit rendering boundary.
-Existing keyed-array `entries(a)` does not by itself provide `entries(dictionary)`.
-Literal dictionary spelling and optional declared index sets have their own
-accepted design; native `map_by` still requires string keys.
-
-Zincite native ordering and dictionary value sorting use present homogeneous
-signed integers, finite floats, exact strings or members of one nominal type.
-Integers and floats do not mix. Missing/absent keys, Boolean keys and incompatible
-nominal identities fail. Nominal comparison uses declaration order and matching
-identity/metadata. Native counts enter this typed contract through checked
-signed conversion. Reuse constructed admission/comparison and the existing
-sort/extrema algorithms through a small typed-key path. Native handles require
-explicit scalar projections, not debug text or printed-name identity.
-
-Native `min`/`max` and their selector forms retain the first tied item;
-`min_all`/`max_all` and their selector forms retain all ties in input order.
-New Zincite native extrema return a same-kind empty selection on empty input.
-Constructed extrema keep their optional absent-on-empty contract. Known
-unsupported kinds, selectors and effects still fail preflight on empty input.
-
-Native set union keeps first appearance from left then right. Intersection and
-difference deduplicate in left order. Both operands use the same incoming
-selection and execute left then right. Handles keep their established host
-identity and owner, including diff sides. Initial operation/diff selections can
-start in document/canonical order and navigation retains its domain edge order;
-that source order is distinct from ordering the result of a set expression.
-A host migration must make any changed set-result order explicit.
-
-This algebra applies to admitted identity-bearing native streams. Literal
-streams without a defined identity, counts, dictionaries, constructed arrays
-and computational `identity_set` values are different kinds. No identity is
-invented from rendering. Constructed scalar sets also acquire insertion order
-and same-kind explicit sorting; their existing type and nominal identity checks
-remain. Internal worklist identity sets keep their computational contract.
-
-`where_exists(query)` is the selected common reader spelling for the existing
-correlated existence algorithm. It retains original incoming handles, order
-and duplicates. A nonempty pure singleton-relative relation keeps the subject;
-a known complete empty relation rejects it. Errors or unresolved nonemptiness
-fail with their locations rather than becoming false. The reader hook and
-Zincite adapter remain to be implemented.
-
-Direct native syntax is the normal Zincite form. Remove its obsolete
-`query("...")` wrapper in the bounded frontend adoption; no compatibility
-adapter is required. `let` remains its sole binding keyword. Existing
-original-input reads, lexical scope, pure functions/blocks, terminal Zincite
-emitters, host completeness and atomic data-edit rules remain unchanged.
+Zirium and Zincite still use their admitted older pinned dependencies. Their
+CLI dictionary ordering and renderers retain the behavior documented by those
+versions until their adapters adopt these callable APIs. Native typed-key
+alignment, operand-order set algebra and later reader spellings are separate
+consumer and reader work. The library does not infer native identity from
+rendering or broaden host effect, completeness or data-edit policies.
 
 ## Native fixed points
 

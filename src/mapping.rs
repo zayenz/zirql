@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use crate::construction::{EntryAccounting, construct_entries};
 
 use crate::{Budget, EvaluationError, Location, QueryError, QueryErrorCategory};
@@ -14,7 +12,7 @@ pub struct NativeMap<Q> {
 /// Construct a map while retaining each host value without copying or rendering it.
 /// Inputs run in their original order, key first, then value against that same
 /// item. A key must yield exactly one string (`None` denotes a different shape).
-/// A duplicate fails before its value runs. Returned keys have lexical order.
+/// A duplicate fails before its value runs. Entries retain insertion order.
 ///
 /// Hosts preflight both selectors and input kinds even for empty input. The
 /// callbacks use the active context and budget for singleton copies, selector
@@ -32,7 +30,7 @@ pub fn map_native_by<I, C: ?Sized, V, E>(
     location: Location,
     mut key: impl FnMut(&I, &mut C, &mut Budget) -> Result<Option<Vec<String>>, EvaluationError<E>>,
     value: impl FnMut(I, &mut C, &mut Budget) -> Result<V, EvaluationError<E>>,
-) -> Result<BTreeMap<String, V>, EvaluationError<E>> {
+) -> Result<Vec<(String, V)>, EvaluationError<E>> {
     budget.check_items(items.len(), location.clone())?;
     construct_entries(
         items,
@@ -85,7 +83,7 @@ fn storage_error(location: &Location) -> QueryError {
     }
 }
 
-/// A host-projected scalar used to rank map entries. Numeric variants share
+/// A host-projected scalar used to sort dictionary entries. Numeric variants share
 /// one category and compare exactly; the other categories must not mix.
 /// Hosts reject nested payloads and admit copied text before constructing it.
 #[derive(Debug, PartialEq)]
@@ -98,28 +96,27 @@ pub enum ScalarMapKey {
     String(String),
 }
 
-/// Rank already-admitted unique-key entries without copying their payloads.
+/// Sort already-admitted unique-key entries without copying their payloads.
 /// Collect and validate descriptors before sorting. Values must be all null,
 /// all Boolean, all numeric or all string; floats must be finite. Equal values
-/// use lexical entry keys, regardless of the incoming entry order.
+/// retain their incoming entry order.
 ///
-/// The callback shares this budget for host access and any text copy. The
-/// caller admits conversion from a map into entry slots before allocation.
+/// The callback shares this budget for host access and any text copy.
 /// This operation admits descriptor and index storage, charges descriptor
-/// visits, comparisons (including inspected text/key bytes), and payload moves.
+/// visits, comparisons (including inspected scalar text bytes), and payload moves.
 /// Legacy budgets charge work too. Payload ownership and rendering stay with
 /// the caller; no serialization is needed.
 ///
 /// # Errors
 /// Propagates projection failures and located scalar, item, work and storage
 /// refusals, including invalid descriptors on singleton inputs.
-pub fn rank_map_by_value<V, E>(
+pub fn sort_map_by_value<V, E>(
     mut entries: Vec<(String, V)>,
     budget: &mut Budget,
     location: Location,
     mut key: impl FnMut(&V, &mut Budget) -> Result<ScalarMapKey, EvaluationError<E>>,
 ) -> Result<Vec<(String, V)>, EvaluationError<E>> {
-    use crate::ordering::{admit_slots, apply_order, compare_text, sort_indices};
+    use crate::ordering::{admit_slots, apply_order, sort_indices};
 
     let count = entries.len();
     budget.check_items(count, location.clone())?;
@@ -145,18 +142,13 @@ pub fn rank_map_by_value<V, E>(
         keys.push(key);
     }
     let destinations = sort_indices(count, budget, &location, |left, right, budget| {
-        let comparison = compare_scalars(&keys[left], &keys[right], budget, &location)?;
-        if comparison == std::cmp::Ordering::Equal {
-            compare_text(&entries[left].0, &entries[right].0, budget, &location)
-        } else {
-            Ok(comparison)
-        }
+        compare_scalars(&keys[left], &keys[right], budget, &location)
     })?;
     apply_order(&mut entries, destinations, budget, &location)?;
     Ok(entries)
 }
 
-/// Select entries of an explicitly ranked map, retaining their current order.
+/// Select dictionary entries, retaining their current order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapSelection {
     Reverse,
@@ -170,7 +162,7 @@ pub enum MapSelection {
 ///
 /// # Errors
 /// Returns a located item or work refusal without changing the entries.
-pub fn select_ranked_map<V>(
+pub fn select_map<V>(
     entries: &mut Vec<(String, V)>,
     selection: MapSelection,
     budget: &mut Budget,

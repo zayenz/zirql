@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap};
+use std::borrow::Cow;
 
 use zirql::{
     Budget, EvaluationError, Location, ProgramLimits, QueryError, QueryErrorCategory,
@@ -23,7 +23,7 @@ struct Captioned<'a> {
 fn construct<'a>(
     rows: impl IntoIterator<Item = (&'a str, &'a str, bool)>,
     budget: &mut Budget,
-) -> Result<BTreeMap<String, Captioned<'a>>, EvaluationError<&'static str>> {
+) -> Result<Vec<(String, Captioned<'a>)>, EvaluationError<&'static str>> {
     let location = Location::Query(10..30);
     construct_string_entries(
         rows,
@@ -70,12 +70,15 @@ fn fragments_compose_with_entries_and_retain_native_values_in_written_failure_or
     )
     .unwrap();
     assert_eq!(
-        entries.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["row:a", "row:b"]
+        entries
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["row:b", "row:a"]
     );
-    assert_eq!(entries["row:b"].caption, "b caption");
-    assert_eq!(entries["row:b"].native.as_ptr(), source.as_ptr());
-    assert_eq!(entries["row:a"].native, "alpha");
+    assert_eq!(entries[0].1.caption, "b caption");
+    assert_eq!(entries[0].1.native.as_ptr(), source.as_ptr());
+    assert_eq!(entries[1].1.native, "alpha");
 
     let error = construct(
         [("a", "first", false), ("a", "duplicate", true)],

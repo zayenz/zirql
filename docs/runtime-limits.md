@@ -152,13 +152,13 @@ constructed outputs charge before allocation. An annotation adds bounded
 validation/copy nesting, and repeated re-admission does not accumulate wrappers.
 Arithmetic, host and allowance failures retain their responsible locations.
 
-Sorting evaluates its positional input once and inspects each scalar or record
-key once. Field-label inspection, finite/nominal checks and key comparisons pay
+Sorting evaluates its collection once and inspects each scalar, dictionary label
+or selected field once. Field-label inspection, finite/nominal checks and key comparisons pay
 work at the selector range, or the scalar helper's call range. A string comparison
 charges each inspected UTF-8 byte through the first difference or common prefix.
 Sort admits O(n) descriptor, merge and permutation slots before allocation and
 charges descriptor writes on each merge pass and payload swaps. These are
-metadata work units, with no produced-value charge. An owned array is reordered
+metadata work units, with no produced-value charge. An owned array, set or dictionary is reordered
 in place; materializing a shared input pays the ordinary full output-copy costs.
 Rows and declarations move intact. Descending equality still selects the left
 merge input. Every comparison is fallible and stops immediately on refusal.
@@ -176,14 +176,18 @@ Constructed pipe sort uses this same sorting operation and accounting. Unique
 materializes a shared array through the ordinary budgeted copy path, then
 compacts owned rows in place. It scans retained values for equality and charges
 row visits, comparisons, string bytes and nominal checks. This direct scan can
-take quadratic work; the work allowance bounds it. Tally uses the same budgeted
-lexical string sort, then scans equal adjacent spellings with checked signed
-counts. It admits record storage, entries and count results before growth.
+take quadratic work; the work allowance bounds it. Tally validates every input
+string before counting, then scans existing fields and appends each spelling on
+its first occurrence. It charges field visits and inspected string bytes, uses
+checked signed counts and admits record storage, entries and count results
+before growth. Its lookup work can be quadratic in the number of distinct
+spellings. It allocates no sorting scratch.
 
 These constructed stages share the active work, result and nesting allowances.
-Current-input reads and prefix filtering also check `stream_items`. Existing
-sort/unique/tally stages keep their constructed-array allowance rules. Nested
-native operands and host input scans keep their existing item checks. A refusal
+Current-input reads and prefix filtering also check `stream_items`. Sort keeps
+its metadata accounting for each supported collection; unique/tally keep their
+constructed-array allowance rules. Nested native operands and host input scans
+keep their existing item checks. A refusal
 returns no partial constructed result and retains the spent allowance. Pipe errors identify the written stage.
 
 Extrema scan all keys once, retaining one winner without allocating sort scratch
@@ -436,7 +440,7 @@ scan does not apply the stream-item ceiling to a whole document. Selected output
 keeps that ceiling. Membership and temporary work can refuse formerly
 undercharged near-limit requests; host allowances do not increase to compensate.
 
-## Native maps
+## Native dictionaries
 
 `map_native_by` shares the active budget with both selectors. It admits one map
 container and one slot per stored entry, checks entry-size arithmetic and the
@@ -445,21 +449,31 @@ charge selector work, singleton copies and their existing content limits. An
 additional host output container is admitted before materialization.
 
 With program budgets, iteration, storage and key inspection consume work. Key
-inspection uses the incoming key length times the entry count as an upper bound
-for a single tree descent. Diagnostic bytes are admitted before allocation.
+inspection charges the incoming key length plus one visit per possible prior
+entry, including a visit for empty keys. It admits that upper bound before
+scanning prior keys. Diagnostic bytes are admitted before allocation.
 Legacy budgets retain their existing work accounting, with these new program
 bookkeeping charges inactive. No nested evaluation resets the allowance.
 
-`rank_map_by_value` admits descriptor and index slots before allocation and
+`sort_map_by_value` admits descriptor and index slots before allocation and
 shares the request allowance with the host's scalar projection. Visits,
-comparisons, inspected scalar/key bytes and payload moves consume work under
-both legacy and aggregate budgets. Text descriptor copies and a caller's
-map-to-vector conversion must be admitted before allocation. Ranking moves
-already-admitted keys and payloads rather than copying or rendering them.
+comparisons, inspected scalar bytes and payload moves consume work under
+both legacy and aggregate budgets. Text descriptor copies must be admitted
+before allocation. Equal values retain current entry order without inspecting
+entry keys. Sorting moves already-admitted keys and payloads without copying
+or rendering them.
 
-`select_ranked_map` charges entry moves or drops before changing the vector.
+`select_map` charges entry moves or drops before changing the vector.
 It allocates no new result storage. Saved-result copies still charge their
 entries, keys and payload content through the host's ordinary copy hook.
+
+Native tally keeps first-seen string keys in an entry vector and uses checked
+`usize` counts. Its existing per-row work hook applies to both budget modes.
+Lookup visits, inspected key bytes and entry bookkeeping additionally charge
+program work; legacy budgets keep their existing hook costs. Result slots and
+storage arithmetic are checked before growth. These scans and declaration
+checks during constructed sorting can refuse near-limit requests sooner;
+allowances are unchanged.
 
 ## Native fixed points
 

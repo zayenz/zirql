@@ -126,8 +126,8 @@ pub(crate) fn admit_slots<T>(
     budget.charge_results(units, location.clone())
 }
 
-/// Return the destination of each source slot. Both native ordering and map
-/// ranking use this fallible stable merge, admitting its storage before work.
+/// Return the destination of each source slot. Both native ordering and dictionary
+/// sorting use this fallible stable merge, admitting its storage before work.
 pub(crate) fn sort_indices(
     count: usize,
     budget: &mut Budget,

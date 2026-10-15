@@ -4,7 +4,7 @@ use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
     Located, Location, MatchClause, NativeMap, NativeMatch, NativeOrder, NativeOrdering,
     NativePaths, ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection,
-    QueryError, ValueBinaryOperator as B, ValueConstructor, ValueExpression,
+    QueryError, SortSelector, ValueBinaryOperator as B, ValueConstructor, ValueExpression,
     ValueExpressionKind as K, ValueExtremum, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
 };
 
@@ -99,13 +99,13 @@ pub trait ValueReaderHost {
             "native ordering is unsupported by this host",
         ))
     }
-    /// Lower `sort_by(value)` for an explicitly ranked map. The common reader
+    /// Lower `sort_by(value)` for a native dictionary. The common reader
     /// recognizes an unbound `value`, including grouping, without parsing a
     /// host value stage. Other ordering selectors keep the ordinary hook.
-    fn map_ranking(&mut self, range: Range<usize>) -> Result<Self::Stage, QueryError> {
+    fn map_sorting(&mut self, range: Range<usize>) -> Result<Self::Stage, QueryError> {
         Err(QueryError::query(
             range,
-            "map ranking is unsupported by this host",
+            "dictionary value sorting is unsupported by this host",
         ))
     }
     /// Retain independent singleton-relative map selectors. Hosts preflight
@@ -958,7 +958,7 @@ pub fn read_value_suffix<S, O, E>(
             },
             "sort" => K::Sort {
                 array: Box::new(value.into_value()),
-                field: None,
+                selector: None,
                 descending: false,
             },
             "unique" => K::Unique(Box::new(value.into_value())),
@@ -2398,21 +2398,33 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     name.value.as_str(),
                     "sort" | "sort_by" | "min" | "max" | "min_by" | "max_by"
                 ) {
-                    let field = if name.value.ends_with("_by") {
-                        self.reader.expect(',')?;
-                        Some(self.string()?)
-                    } else {
-                        None
-                    };
                     if matches!(name.value.as_str(), "sort" | "sort_by") {
+                        let selector = if name.value == "sort_by" {
+                            self.reader.expect(',')?;
+                            if self.reader.keyword("value") {
+                                let end = self.reader.position();
+                                Some(Located::new(SortSelector::Value, end - "value".len()..end))
+                            } else {
+                                let field = self.string()?;
+                                Some(Located::new(SortSelector::Field(field.value), field.range))
+                            }
+                        } else {
+                            None
+                        };
                         let descending = self.descending_option()?;
                         self.reader.expect(')')?;
                         K::Sort {
                             array: Box::new(value.into_value()),
-                            field,
+                            selector,
                             descending,
                         }
                     } else {
+                        let field = if name.value.ends_with("_by") {
+                            self.reader.expect(',')?;
+                            Some(self.string()?)
+                        } else {
+                            None
+                        };
                         self.reader.expect(')')?;
                         K::Extremum {
                             operator: if name.value.starts_with("min") {
@@ -2949,7 +2961,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 };
                 let range = stage_start..self.reader.position();
                 ExpressionStep::Stage(if map_value {
-                    self.host.map_ranking(range)?
+                    self.host.map_sorting(range)?
                 } else {
                     self.host.ordering(
                         NativeOrdering {

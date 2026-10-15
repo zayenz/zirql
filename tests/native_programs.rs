@@ -3886,7 +3886,7 @@ mod projection {
         let piped = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
         let typed = function_value(K::Unique(Box::new(function_value(K::Sort {
             array: Box::new(function_call("make_words", vec![])),
-            field: None,
+            selector: None,
             descending: false,
         }))));
         let prepared = functions
@@ -6152,8 +6152,8 @@ mod projection {
             (
                 r#"[w for w in words if starts_with(w, "a")] | tally"#,
                 V::Record(vec![
-                    ("apple".into(), V::Integer(2)),
                     ("ash".into(), V::Integer(1)),
+                    ("apple".into(), V::Integer(2)),
                 ]),
             ),
             (
@@ -6315,7 +6315,7 @@ mod projection {
                 "index_set(keyed)",
                 V::Set {
                     element_type: Some(SetElementType::Member(member_type)),
-                    elements: vec![V::Member(member(11, 1)), V::Member(member(22, 4))],
+                    elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))],
                 },
             ),
             (
@@ -6454,7 +6454,7 @@ mod projection {
                 "index_set(keyed)",
                 V::Set {
                     element_type: Some(zirql::SetElementType::Integer),
-                    elements: vec![V::Integer(3), V::Integer(9)],
+                    elements: vec![V::Integer(9), V::Integer(3)],
                 },
             ),
             (

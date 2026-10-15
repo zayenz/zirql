@@ -663,29 +663,29 @@ active runner/context and budget. Its key adapter returns `Some(strings)` or
 `None` for another shape; the core enforces the single-string rule and duplicate
 refusal. Its value adapter returns the native value to store. Both adapters use
 the same singleton and existing saved/prepared-call scope. The core owns the
-ordered loop and lexical map storage. The host owns singleton copies, domain
+ordered loop and insertion-ordered entry storage. The host owns singleton copies, domain
 admission and any explicit legacy per-entry conversion before insertion.
 
-For explicit scalar map ranking, implement `ValueReaderHost::map_ranking`.
+For native dictionary value sorting, implement `ValueReaderHost::map_sorting`.
 The common reader calls it for `sort_by(value)`, including grouped selectors,
 without asking the host to parse a `value` stage. Saved and local names keep
 precedence. Other ordering selectors use `ordering` as before.
 
-Call `rank_map_by_value(entries, budget, location, key)` with owned, admitted
+Call `sort_map_by_value(entries, budget, location, key)` with owned, admitted
 unique-key entries. The callback projects each payload to `ScalarMapKey`:
 `Null`, `Boolean(bool)`, `Integer(i64)`, `Unsigned(u64)`, `Float(f64)` or
 `String(String)`. Reject unsupported nested payloads in that callback and admit
 text copies before allocation. The core validates homogeneous scalar categories
 and finite numbers, compares numbers without integer-to-float precision loss,
-and breaks value ties by lexical entry key. It moves keys and payloads into the
-ranked vector; native owners and coordinates stay intact.
+and keeps current-order ties. It reorders the owned entry vector; native owners
+and coordinates stay intact.
 
-Admit a map-to-vector conversion before collecting entries. Retain that vector
-as an explicit ordered result through bindings, copies and rendering. Call
-`select_ranked_map(&mut entries, selection, budget, location)` with
-`MapSelection::Reverse`, `Head(n)` or `Tail(n)` for subsequent bounds. Keep
-unranked lexical maps distinct. Neither operation converts native values or
-serializes JSON.
+Both construction APIs return `Vec<(String, V)>`. Retain it as one dictionary
+kind through bindings, copies and rendering. Call
+`select_map(&mut entries, selection, budget, location)` with
+`MapSelection::Reverse`, `Head(n)` or `Tail(n)` for dictionary bounds, whether
+or not the dictionary has been sorted. Neither operation converts native values
+or serializes JSON.
 
 ## Native fixed-point execution
 
@@ -714,7 +714,7 @@ duplicate)` to build computed string-key objects. The key callback can call
 another object. Both use the same mutable context and budget. For each entry,
 the core evaluates the key, refuses a duplicate, then evaluates the value.
 The duplicate callback admits and constructs the host's existing diagnostic;
-it cannot permit replacement. Keys have lexical result order.
+it cannot permit replacement. Entries retain insertion order.
 
 Return admitted owned keys and payloads from the callbacks. They move into the
 map, so a value can retain a borrowed native handle and its source coordinates

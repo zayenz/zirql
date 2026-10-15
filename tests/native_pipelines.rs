@@ -684,7 +684,7 @@ fn native_stages_unique_and_tally_retain_rows_and_mutable_context() {
     };
     assert_eq!(
         counts.into_iter().collect::<Vec<_>>(),
-        [("alpha".into(), 2), ("apple".into(), 1), ("beta".into(), 2),]
+        [("beta".into(), 2), ("alpha".into(), 2), ("apple".into(), 1),]
     );
     assert!(result.context.strings);
     assert!(!result.context.document);
@@ -1053,7 +1053,7 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
     let result = evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget).unwrap();
     assert_eq!(
         result.value,
-        NativeValue::Tally([("alpha".into(), 1), ("apple".into(), 1), ("beta".into(), 1)].into())
+        NativeValue::Tally([("beta".into(), 1), ("alpha".into(), 1), ("apple".into(), 1)].into())
     );
     assert_eq!(budget.remaining_work(), 0);
 
@@ -1082,7 +1082,7 @@ fn weighted_stages_and_zero_collection_row_work_share_the_allowance() {
         evaluate(&pipeline, &WeightedHost, input(&mut budget), &mut budget)
             .unwrap()
             .value,
-        NativeValue::Tally([("alpha".into(), 1), ("apple".into(), 1), ("beta".into(), 1)].into())
+        NativeValue::Tally([("beta".into(), 1), ("alpha".into(), 1), ("apple".into(), 1)].into())
     );
     let mut budget = Budget::for_program(ProgramLimits {
         results: 10,

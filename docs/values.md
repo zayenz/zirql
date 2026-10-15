@@ -218,8 +218,10 @@ for a report that retains the positions of repeated words.
 
 ## Sorting and optional extrema
 
-`sort(a)` orders a positional array of scalars. `sort_by(rows, "field")` orders
-records by a literal field label. Both are ascending and stable.
+`sort(a)` orders an array or set by its scalar values and a dictionary by its
+string keys. It retains the collection kind. `sort_by(rows, "field")` orders
+array rows or dictionary values by a literal field label; `sort_by(d, value)`
+orders dictionary values directly. All sorts are ascending and stable.
 `descending=true` reverses key order while preserving input order within ties.
 
 ```zirql
@@ -239,8 +241,8 @@ min([]) default "no minimum"
 This returns `"no minimum"`. Sorting an empty array returns an empty array.
 
 Ordering keys must be present and homogeneous: integers, finite floats, strings
-or members of one nominal type. Integers and floats do not mix. Boolean values
-and native handles need a supported projection first. A missing field, absent
+or members of one nominal type. Integers and floats do not mix. Boolean sets also support their usual false-before-true order. Array and
+dictionary Boolean keys and native handles need a supported projection first. A missing field, absent
 key or later incompatible key fails the whole operation, including an extremum
 that already has a candidate winner. Project an explicit default key before
 sorting if missing data should have an order. Keyed arrays need an explicit
@@ -264,7 +266,8 @@ pipeline and returns `1`. Empty and no-match arrays count as zero. Missing
 input, scalar or keyed filter sources and non-string elements fail at their
 query locations. Incompatible declarations fail even for empty arrays.
 
-A positional array can also pass through ascending scalar `sort`, stable
+The `sort` suffix applies the same ascending sort to arrays, sets and
+dictionaries, retaining their kind. Positional arrays also support stable
 `unique` and terminal string `tally`:
 
 ```zirql
@@ -282,8 +285,8 @@ strings implicitly.
 [w for w in words if starts_with(w, "a")] | tally
 ```
 
-Tally accepts only strings and returns `{"apple": 2, "ash": 1}`, with record
-fields in lexical string order and checked signed integer counts. No further
+Tally accepts only strings and returns `{"ash": 1, "apple": 2}`, with record
+fields in first-seen order and checked signed integer counts. No further
 stage may follow tally. Empty untyped arrays yield `[]` for sort/unique and
 `{}` for tally. Explicit incompatible element declarations still fail on empty
 input; unique retains valid declarations and element kinds.
@@ -311,10 +314,13 @@ one for a fixed set of word categories. Identity includes both the type and
 member, so identical printed names from different types are not equal. Members
 use declaration order. Arithmetic on members and mixed nominal types fail.
 
-Typed sets remove equal elements and use their type's order. Supported scalar
-set elements are Booleans, integers, finite floats and nominal members. Strings
-are not set elements. Set construction has a Rust representation; its text
-spelling belongs to the frontend.
+Typed sets remove equal elements while retaining each first occurrence,
+including the sign of the first floating zero. Supported scalar set elements
+are Booleans, integers, finite floats and nominal members. Strings are not set
+elements. Set equality compares membership independently of stored order.
+`sort` orders a set explicitly by its supported type order and returns a set.
+The callable `ValueExpressionKind::Set` and set comprehensions construct sets;
+the common reader does not yet accept brace-set text.
 
 ## Keyed arrays
 
@@ -336,8 +342,8 @@ representation also supports keyed comprehensions. See
 positional array this is `1..length(a)`, including a typed empty integer set
 for `[]`. For a rank-one keyed array it uses the declared axis, including keys
 with no stored cell, and retains integer or nominal identity for empty axes.
-The result uses set order: numeric order for integer keys and declaration order
-for nominal members. Inputs of another kind or rank fail at the call.
+The result retains the declared axis order, even when it differs from numeric
+or nominal declaration order. Inputs of another kind or rank fail at the call.
 
 ```zirql
 [words[i] for i in index_set(words)]
@@ -396,107 +402,44 @@ prepared reads and native worklist values are described in
 
 ## Selected collection syntax and ordering
 
-The following design is selected for subsequent implementation. These new set,
-computed-key dictionary and indexed-array forms are **not yet accepted by the
-common reader**. The executable forms earlier on this page retain their current
-behavior until that implementation lands.
+The common reader accepts static string dictionaries such as
+`{"z": 2, "a": 2, "m": 1}`. They use `ConstructedValue::Record` and its
+structural schemas. `.field` selects a static label; bracket access and `lookup`
+accept computed string keys. Empty `{}` is an empty dictionary.
 
-Ordinary sets and dictionaries use bare braces, suited to short command-line
-expressions:
+Dictionaries preserve entry insertion order. Duplicate labels fail before
+that entry's value runs. The callable `construct_string_entries` operation
+also supports computed keys, evaluates each key before its value and returns
+`Vec<(String, V)>` in insertion order. Keys must be strings; there is no
+implicit conversion from integer, member or native-handle text.
 
-```text
-{3, 1, 3}                              # set, iterating as 3, 1
-{x mod 3 for x in 1..5}                # set, iterating as 1, 2, 0
-{"pear": 3, "apple": 7}                # dictionary, pear then apple
-{w: 1 for w in words}                  # computed string keys; duplicates fail
-{}                                     # empty dictionary
-set<int>()                             # explicitly typed empty set
+```zirql
+sort({"z": 2, "a": 2, "m": 1})
+sort_by({"z": 2, "a": 2, "m": 1}, value)
+sort_by({"z": {"cost": 2}, "a": {"cost": 2}, "m": {"cost": 1}}, "cost", descending=true)
 ```
 
-A colon at the brace body's own level selects a dictionary; a nonempty body
-without a colon selects a set. Each key is an ordinary expression, so `{k: v}`
-reads the binding `k`; static string keys stay quoted. Nested collections keep
-their own delimiters. Empty braces select a dictionary. The exceptional
-`set<int>()`, `set<bool>()` and `set<float>()` forms supply an empty set with an
-explicit existing scalar element type. A host can supply a typed empty nominal
-set directly; no common model or member-name resolver is introduced.
+The first dictionary has key order `a, m, z`. The second has order `m, z, a`.
+The last has order `z, a, m`: descending comparisons retain the current order
+of the tied values. Bare `value` selects a dictionary value; quoted `"value"`
+selects that field within each value. Dictionary key sorting permits
+heterogeneous values because it does not inspect them as ordering keys.
+Unsupported or absent selector keys fail at the selector.
 
-String dictionaries reuse the existing ordered string-field objects and their
-structural schemas. There is no separate everyday record syntax. `.field`
-continues to select a static string field; bracket access and `lookup` accept
-computed string keys. A dictionary key must evaluate to a string, with no
-implicit conversion from integer, member or native-handle text. Integer and
-nominal indexed data use the array-shaped forms below, retaining typed axes.
-This does not introduce a generalized arbitrary-key dictionary value.
+Sorting, copying and saving a dictionary retain its kind and current order.
+Dictionary equality compares key/value associations independently of field
+order. Hosts rendering a JSON object must preserve the same member order.
+Keyed arrays remain distinct: they retain typed axes, missing cells and
+row-major cell order.
 
-Sets preserve the first occurrence of each identity. Dictionaries preserve
-entry insertion order and refuse duplicate keys before evaluating that entry's
-value. Construction, iteration, saved values and rendering agree on this order.
-Set elements retain the existing homogeneous Boolean, integer, finite-float and
-nominal-member support; string sets remain outside this increment. Set equality
-compares membership; dictionary equality compares key/value associations.
-Iteration order remains observable separately.
+Sets use the callable `Set` node or set comprehensions. For example,
+`ValueExpressionKind::Set` with integer expressions `3, 1, 3, 2` yields a set
+ordered `3, 1, 2`; wrapping it in `Sort` yields a set ordered `1, 2, 3`.
+Typed empty sets retain their supplied element identity through sorting.
 
-Both kinds support explicit stable sorting and retain their collection kind:
-
-```text
-sort({3, 1, 2})
-sort({"pear": 3, "apple": 7})
-sort_by({"pear": 3, "apple": 3}, value)
-```
-
-These produce a set ordered 1, 2, 3; a dictionary ordered apple, pear; and a
-dictionary retaining pear, apple because the values tie. `sort(d)` orders
-string keys; `sort_by(d, value)` orders values through a closed built-in
-selector. For record-valued dictionaries, `sort_by(d, "cost")` selects that
-field from each value. `descending=true` reverses comparison direction while
-keeping the current order within ties. Unsupported or absent sort keys fail.
-Sorting a dictionary never implicitly converts it to entry records or a list,
-including when a host renders it as a JSON object.
-
-Array-shaped indexed values remain distinct from insertion-ordered dictionaries:
-
-```text
-[2: {"cost": 3}, 5: {"cost": 7}]
-[2: {"cost": 3}, 5: {"cost": 7}] axes([5, 2, 9])
-[(g, j): j for g in guests for j in [8, 1] if j == 8]
-    axes(guests, [8, 1])
-[] axes(set<int>(), [8, 1])
-```
-
-Keys normally establish their integer or nominal dimensions. Optional declared
-index sets retain their full order and unused keys for both empty and nonempty
-results. The explicit integer example retains axis 5, 2, 9, stores cells 5 then
-2, and leaves 9 missing. Multidimensional arrays remain row-major rather than
-preserving arbitrary cell insertion order. Each tuple key supplies one component
-per axis. String keys belong to ordinary dictionaries, not these array axes.
-
-Evaluate declared axis sources once, left to right, in surrounding scope before
-entries or generators. Sources are integer/member arrays or typed sets; a typed
-empty source establishes an empty axis. An untyped empty positional array does
-not establish its key identity. Supplied nominal values retain their host's
-identity and metadata. Duplicate axis keys, wrong rank or keys outside declared
-axes fail. Without declared axes, zero emitted cells must not silently become a
-positional array when keyed shape is unestablished. `[]` alone remains the empty
-positional array.
-
-The existing shared comprehension API's `empty_axis_sources` is only a
-zero-cell fallback. It cannot implement these always-retained declarations.
-Later implementation needs a located explicit axis-source path on the existing
-keyed nodes, while preserving established consumer fallback behavior. It also
-needs insertion-ordered set construction, ordered computed string entries and
-sorting that retains set/dictionary kind; those are changes to current code,
-not claims about functionality already available.
-
-Blocks keep their explicit function/control positions. A final dictionary or
-set inside a block uses its own braces, such as
-`if test { {"yes": 1} } else { {} }`. Existing generator scope, repeated `for`,
-optional `if`, access/operator precedence and grouping remain unchanged. A
-pipeline follows the completed collection expression, including its axes.
-All parsing, key/axis work, comparisons, copies and rendering share the active
-budget and retain expression locations and native owners.
-
-Zincite may keep its natural MiniZinc literal and comprehension spelling while
-lowering to the same shared behavior. Its model facts, target shape validation,
-serialization and atomic edit rules stay with the host. This design introduces
-no implicit model evaluation, native reflection or broader data-edit policy.
+The common reader does not yet accept bare-brace sets, computed-key brace
+expressions, typed-empty set text or indexed-axis grammar. Hosts can construct
+those supported values directly through the Rust API. The current keyed
+comprehension `empty_axis_sources` supplies axes only when no cell is produced.
+All construction, comparison, copies and rendering use the active budget and
+retain expression locations and native owners.

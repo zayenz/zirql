@@ -131,7 +131,7 @@ pub(crate) enum PreparedKind<'a, Q> {
     },
     Sort {
         array: Box<PreparedValue<'a, Q>>,
-        field: Option<&'a Located<String>>,
+        selector: Option<&'a Located<SortSelector>>,
         descending: bool,
     },
     Unique(Box<PreparedValue<'a, Q>>),
@@ -453,11 +453,11 @@ impl<'a> Preparation<'a> {
                 }
                 ValueExpressionKind::Sort {
                     array,
-                    field,
+                    selector,
                     descending,
                 } => PreparedKind::Sort {
                     array: Box::new(self.resolve(array, queries, budget)?),
-                    field: field.as_ref(),
+                    selector: selector.as_ref(),
                     descending: *descending,
                 },
                 ValueExpressionKind::Unique(array) => {

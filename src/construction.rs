@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap, collections::btree_map::Entry, mem::size_of};
+use std::{borrow::Cow, mem::size_of};
 
 use crate::{Budget, EvaluationError, Location, QueryError, QueryErrorCategory};
 
@@ -46,7 +46,7 @@ pub fn expand_fragments<'a, P, C: ?Sized, E>(
 /// Each entry runs its key, checks for a collision, then runs its value before
 /// proceeding to the next entry. A duplicate fails before that value runs. The
 /// diagnostic callback admits and builds the caller's duplicate error; it cannot
-/// allow a duplicate. Returned keys have lexical order. All partial data stays
+/// allow a duplicate. Entries retain insertion order. All partial data stays
 /// private on failure.
 ///
 /// Callbacks share the active context and budget. Admit key/value allocations
@@ -66,7 +66,7 @@ pub fn construct_string_entries<I, C: ?Sized, V, E>(
     key: impl FnMut(&I, &mut C, &mut Budget) -> Result<String, EvaluationError<E>>,
     value: impl FnMut(I, &mut C, &mut Budget) -> Result<V, EvaluationError<E>>,
     duplicate: impl FnMut(&str, &mut C, &mut Budget) -> Result<QueryError, EvaluationError<E>>,
-) -> Result<BTreeMap<String, V>, EvaluationError<E>> {
+) -> Result<Vec<(String, V)>, EvaluationError<E>> {
     budget.within_evaluation(1, location.clone(), |budget| {
         construct_entries(
             entries,
@@ -125,10 +125,10 @@ pub(crate) fn construct_entries<I, C: ?Sized, V, E>(
     mut value: impl FnMut(I, &mut C, &mut Budget) -> Result<V, EvaluationError<E>>,
     mut duplicate: impl FnMut(&str, &mut C, &mut Budget) -> Result<QueryError, EvaluationError<E>>,
     accounting: EntryAccounting,
-) -> Result<BTreeMap<String, V>, EvaluationError<E>> {
+) -> Result<Vec<(String, V)>, EvaluationError<E>> {
     accounting.charge(budget, 1, location)?;
     budget.charge_results(1, location.clone())?;
-    let mut result = BTreeMap::new();
+    let mut result: Vec<(String, V)> = Vec::new();
     for item in entries {
         accounting.charge(budget, 1, location)?;
         let key = key(&item, context, budget)?;
@@ -140,24 +140,21 @@ pub(crate) fn construct_entries<I, C: ?Sized, V, E>(
             .checked_mul(size_of::<(String, V)>())
             .filter(|bytes| *bytes <= isize::MAX as usize)
             .ok_or_else(|| accounting.storage_error(location))?;
-        // One tree descent inspects each existing key at most once.
+        // A direct scan checks prior keys without changing their order.
         let inspected = key
             .len()
-            .checked_mul(count)
+            .checked_add(1)
+            .and_then(|per_key| per_key.checked_mul(count))
             .ok_or_else(|| accounting.storage_error(location))?;
         accounting.charge(budget, inspected, location)?;
-        match result.entry(key) {
-            Entry::Occupied(entry) => {
-                return Err(duplicate(entry.key(), context, budget)?.into());
-            }
-            Entry::Vacant(entry) => {
-                let mapped = value(item, context, budget)?;
-                budget.check_items(count, location.clone())?;
-                accounting.charge(budget, 1, location)?;
-                budget.charge_results(1, location.clone())?;
-                entry.insert(mapped);
-            }
+        if result.iter().any(|(previous, _)| previous == &key) {
+            return Err(duplicate(&key, context, budget)?.into());
         }
+        let mapped = value(item, context, budget)?;
+        budget.check_items(count, location.clone())?;
+        accounting.charge(budget, 1, location)?;
+        budget.charge_results(1, location.clone())?;
+        result.push((key, mapped));
     }
     Ok(result)
 }

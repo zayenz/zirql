@@ -28,6 +28,16 @@ cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")]
 cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")] | tally'
 ```
 
+The tally returns fields in first-seen order: `ash: 1`, then `apple: 2`.
+To order a dictionary explicitly, sort its keys or select its values:
+
+```sh
+cargo run --locked --example words -- 'sort({"z": 2, "a": 2, "m": 1})'
+cargo run --locked --example words -- 'sort_by({"z": 2, "a": 2, "m": 1}, value)'
+```
+
+These retain dictionaries, ordered `a, m, z` and `m, z, a` respectively.
+
 Build a summary directly from the current input:
 
 ```sh

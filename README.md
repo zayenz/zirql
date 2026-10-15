@@ -98,9 +98,9 @@ document identity needed to interpret them.
 Evaluation takes explicit `NativeInput<Item, Context>` and returns
 `NativeResult<Item, Context>`. The core moves rows and context without requiring
 `Clone`, `Send`, `Sync` or `'static`. Context survives streams, `Count(usize)`
-and `Tally(BTreeMap<String, usize>)`. Stable unique retains the first row for
+and `Tally(Vec<(String, usize)>)`. Stable unique retains the first row for
 each host identity key and preserves input order. Tally consumes string keys
-and returns their counts in sorted key order. Hosts own rendering.
+and returns their counts in first-seen key order. Hosts own rendering.
 
 `Host<Item, Context, Leaf, HostStage>` declares a native `Error` type and an
 identity `Key: Eq + Hash`. Evaluation hooks receive the retained mutable

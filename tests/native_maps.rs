@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ops::Range};
+use std::ops::Range;
 
 use zirql::{
     Bindings, Budget, EvaluationError, Expression, ExpressionStep, Limits, Location, MapSelection,
@@ -14,7 +14,7 @@ enum Stage {
     Many,
     Wrong,
     Keep,
-    Rank,
+    SortValues,
     Select(MapSelection),
     Order(Box<NativeOrdering<Query>>),
     Map(Box<NativeMap<Query>>),
@@ -29,8 +29,7 @@ struct Row<'a> {
 enum Value<'a> {
     Rows(Vec<Row<'a>>),
     Strings(Vec<String>),
-    Map(BTreeMap<String, Value<'a>>),
-    Ranked(Vec<(String, Value<'a>)>),
+    Map(Vec<(String, Value<'a>)>),
 }
 #[derive(Default)]
 struct Words {
@@ -92,8 +91,8 @@ impl ValueReaderHost for Words {
     fn mapping(&mut self, map: NativeMap<Query>, _: Range<usize>) -> Result<Stage, QueryError> {
         Ok(Stage::Map(Box::new(map)))
     }
-    fn map_ranking(&mut self, _: Range<usize>) -> Result<Stage, QueryError> {
-        Ok(Stage::Rank)
+    fn map_sorting(&mut self, _: Range<usize>) -> Result<Stage, QueryError> {
+        Ok(Stage::SortValues)
     }
     fn ordering(
         &mut self,
@@ -128,7 +127,6 @@ impl<'a> ProgramHost<&'a str> for Words {
                 Value::Rows(rows) => rows.len(),
                 Value::Strings(strings) => strings.len(),
                 Value::Map(entries) => entries.len(),
-                Value::Ranked(entries) => entries.len(),
             };
             budget.charge(count + 1, Location::Query(range.clone()))?;
             budget.charge_results(count + 1, Location::Query(range.clone()))?;
@@ -141,13 +139,6 @@ impl<'a> ProgramHost<&'a str> for Words {
                     }
                 }
                 Value::Map(entries) => {
-                    for (key, value) in entries {
-                        budget.charge(key.len(), Location::Query(range.clone()))?;
-                        budget.charge_results(key.len(), Location::Query(range.clone()))?;
-                        admit(value, budget, range)?;
-                    }
-                }
-                Value::Ranked(entries) => {
                     for (key, value) in entries {
                         budget.charge(key.len(), Location::Query(range.clone()))?;
                         budget.charge_results(key.len(), Location::Query(range.clone()))?;
@@ -170,18 +161,11 @@ impl<'a> ProgramHost<&'a str> for Words {
         range: &Range<usize>,
     ) -> Result<Value<'a>, EvaluationError<QueryError>> {
         let value = match (stage, value) {
-            (Stage::Rank, value) => {
-                let entries = match value {
-                    Value::Map(entries) => {
-                        let count = entries.len();
-                        budget.charge(count + 1, Location::Query(range.clone()))?;
-                        budget.charge_results(count + 1, Location::Query(range.clone()))?;
-                        entries.into_iter().collect()
-                    }
-                    Value::Ranked(entries) => entries,
-                    _ => return Err(QueryError::query(range.clone(), "map required").into()),
+            (Stage::SortValues, value) => {
+                let Value::Map(entries) = value else {
+                    return Err(QueryError::query(range.clone(), "dictionary required").into());
                 };
-                return Ok(Value::Ranked(zirql::rank_map_by_value(
+                return Ok(Value::Map(zirql::sort_map_by_value(
                     entries,
                     budget,
                     Location::Query(range.clone()),
@@ -196,14 +180,14 @@ impl<'a> ProgramHost<&'a str> for Words {
                     },
                 )?));
             }
-            (Stage::Select(selection), Value::Ranked(mut entries)) => {
-                zirql::select_ranked_map(
+            (Stage::Select(selection), Value::Map(mut entries)) => {
+                zirql::select_map(
                     &mut entries,
                     *selection,
                     budget,
                     Location::Query(range.clone()),
                 )?;
-                return Ok(Value::Ranked(entries));
+                return Ok(Value::Map(entries));
             }
             (_, value) => value,
         };
@@ -232,7 +216,7 @@ impl<'a> ProgramHost<&'a str> for Words {
                 }
                 Value::Rows(rows)
             }
-            Stage::Rank | Stage::Select(_) | Stage::Order(_) => unreachable!(),
+            Stage::SortValues | Stage::Select(_) | Stage::Order(_) => unreachable!(),
             Stage::Map(map) => Value::Map(zirql::map_native_by(
                 rows,
                 context,
@@ -330,7 +314,7 @@ fn row(name: &str, offset: usize, fails: bool) -> Row<'_> {
     }
 }
 #[test]
-fn common_map_reader_and_constructor_retain_native_rows_and_lexical_keys() {
+fn common_map_reader_and_constructor_retain_native_rows_and_insertion_order() {
     let source = String::from("βeta alpha");
     let beta = row(&source[..5], 0, false);
     let alpha = row(&source[6..], 6, false);
@@ -340,21 +324,24 @@ fn common_map_reader_and_constructor_retain_native_rows_and_lexical_keys() {
         panic!("map")
     };
     assert_eq!(
-        entries.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["alpha", "βeta"]
+        entries
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["βeta", "alpha"]
     );
-    assert_eq!(entries["alpha"], Value::Rows(vec![alpha]));
-    let Value::Rows(rows) = &entries["βeta"] else {
+    assert_eq!(entries[1].1, Value::Rows(vec![alpha]));
+    let Value::Rows(rows) = &entries[0].1 else {
         panic!("native rows")
     };
     assert_eq!(rows, &[beta]);
     assert_eq!(rows[0].name.as_ptr(), source.as_ptr());
     assert_eq!(
         run("map_by(names, keep)", vec![]).unwrap(),
-        Value::Map(BTreeMap::new())
+        Value::Map(Vec::new())
     );
     assert!(
-        matches!(run("map_by(names, map_by(names, keep))", vec![row("a", 0, false)]).unwrap(), Value::Map(map) if matches!(&map["a"], Value::Map(nested) if matches!(&nested["a"], Value::Rows(_))))
+        matches!(run("map_by(names, map_by(names, keep))", vec![row("a", 0, false)]).unwrap(), Value::Map(map) if matches!(&map[0].1, Value::Map(nested) if matches!(&nested[0].1, Value::Rows(_))))
     );
 }
 #[test]
@@ -407,7 +394,7 @@ fn callable_map_storage_uses_the_active_located_allowance() {
 }
 
 #[test]
-fn ranked_native_maps_keep_owners_and_order_through_saved_selection() {
+fn native_dictionaries_keep_owners_and_order_through_saved_selection() {
     let source = String::from("zeta alpha beta");
     let rows = vec![
         row(&source[5..10], 5, false),
@@ -420,8 +407,8 @@ fn ranked_native_maps_keep_owners_and_order_through_saved_selection() {
         rows,
     )
     .unwrap();
-    let Value::Ranked(entries) = &ranked else {
-        panic!("ranked map")
+    let Value::Map(entries) = &ranked else {
+        panic!("dictionary")
     };
     assert_eq!(
         entries
@@ -440,7 +427,7 @@ fn ranked_native_maps_keep_owners_and_order_through_saved_selection() {
         16,
     )
     .unwrap();
-    let Value::Ranked(selected) = zirql::evaluate_expression(
+    let Value::Map(selected) = zirql::evaluate_expression(
         &query,
         &Words::default(),
         Value::Rows(vec![]),
@@ -449,7 +436,7 @@ fn ranked_native_maps_keep_owners_and_order_through_saved_selection() {
         &mut budget,
     )
     .unwrap() else {
-        panic!("ranked map")
+        panic!("dictionary")
     };
     assert_eq!(selected[0].0, "alpha");
     let Value::Rows(rows) = &selected[0].1 else {
@@ -457,8 +444,8 @@ fn ranked_native_maps_keep_owners_and_order_through_saved_selection() {
     };
     assert_eq!(rows[0].source, 5..10);
     assert_eq!(rows[0].name.as_ptr(), source[5..].as_ptr());
-    let Value::Ranked(saved) = bindings.get("saved", 0..5).unwrap() else {
-        panic!("saved ranked map")
+    let Value::Map(saved) = bindings.get("saved", 0..5).unwrap() else {
+        panic!("saved dictionary")
     };
     assert_eq!(saved[0].0, "zeta");
     assert_eq!(saved.len(), 3);
@@ -467,11 +454,11 @@ fn ranked_native_maps_keep_owners_and_order_through_saved_selection() {
     );
 }
 
-fn scalar_rank(
+fn scalar_sort(
     entries: Vec<(&str, ScalarMapKey)>,
     budget: &mut Budget,
 ) -> Result<Vec<(String, ScalarMapKey)>, EvaluationError<()>> {
-    zirql::rank_map_by_value(
+    zirql::sort_map_by_value(
         entries
             .into_iter()
             .map(|(key, value)| (key.to_owned(), value))
@@ -496,10 +483,10 @@ fn scalar_rank(
 }
 
 #[test]
-fn scalar_map_ranking_keeps_exact_numbers_categories_and_lexical_ties() {
+fn dictionary_sorting_keeps_exact_numbers_categories_and_current_ties() {
     use ScalarMapKey as K;
     let mut budget = Budget::for_program(limits());
-    let numbers = scalar_rank(
+    let numbers = scalar_sort(
         vec![
             ("unsigned", K::Unsigned(u64::MAX)),
             ("beyond", K::Float(18_446_744_073_709_551_616.0)),
@@ -520,28 +507,66 @@ fn scalar_map_ranking_keeps_exact_numbers_categories_and_lexical_ties() {
             "fraction", "negative", "float", "integer", "unsigned", "beyond"
         ]
     );
-    let mut nulls = scalar_rank(vec![("z", K::Null), ("a", K::Null)], &mut budget).unwrap();
-    assert_eq!(nulls[0].0, "a");
-    zirql::select_ranked_map(
+    let mut entries = scalar_sort(
+        vec![
+            ("z", K::Integer(2)),
+            ("a", K::Integer(2)),
+            ("m", K::Integer(1)),
+        ],
+        &mut budget,
+    )
+    .unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["m", "z", "a"]
+    );
+    zirql::select_map(
+        &mut entries,
+        MapSelection::Reverse,
+        &mut budget,
+        Location::Query(8..22),
+    )
+    .unwrap();
+    let reranked =
+        zirql::sort_map_by_value(entries, &mut budget, Location::Query(8..22), |value, _| {
+            let K::Integer(value) = value else {
+                unreachable!()
+            };
+            Ok::<_, EvaluationError<()>>(K::Integer(*value))
+        })
+        .unwrap();
+    assert_eq!(
+        reranked
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["m", "a", "z"]
+    );
+    let mut nulls = scalar_sort(vec![("z", K::Null), ("a", K::Null)], &mut budget).unwrap();
+    assert_eq!(nulls[0].0, "z");
+    zirql::select_map(
         &mut nulls,
         MapSelection::Reverse,
         &mut budget,
         Location::Query(8..22),
     )
     .unwrap();
-    assert_eq!(nulls[0].0, "z");
-    let reranked = zirql::rank_map_by_value(nulls, &mut budget, Location::Query(8..22), |_, _| {
+    assert_eq!(nulls[0].0, "a");
+    let reranked = zirql::sort_map_by_value(nulls, &mut budget, Location::Query(8..22), |_, _| {
         Ok::<_, EvaluationError<()>>(K::Null)
     })
     .unwrap();
     assert_eq!(reranked[0].0, "a");
-    let booleans = scalar_rank(
+    let booleans = scalar_sort(
         vec![("true", K::Boolean(true)), ("false", K::Boolean(false))],
         &mut budget,
     )
     .unwrap();
     assert_eq!(booleans[0].0, "false");
-    let mut strings = scalar_rank(
+    let mut strings = scalar_sort(
         vec![
             ("first", K::String("β".into())),
             ("last", K::String("a".into())),
@@ -550,7 +575,7 @@ fn scalar_map_ranking_keeps_exact_numbers_categories_and_lexical_ties() {
     )
     .unwrap();
     assert_eq!(strings[0].0, "last");
-    zirql::select_ranked_map(
+    zirql::select_map(
         &mut strings,
         MapSelection::Tail(usize::MAX),
         &mut budget,
@@ -558,7 +583,7 @@ fn scalar_map_ranking_keeps_exact_numbers_categories_and_lexical_ties() {
     )
     .unwrap();
     assert_eq!(strings.len(), 2);
-    zirql::select_ranked_map(
+    zirql::select_map(
         &mut strings,
         MapSelection::Head(0),
         &mut budget,
@@ -566,7 +591,7 @@ fn scalar_map_ranking_keeps_exact_numbers_categories_and_lexical_ties() {
     )
     .unwrap();
     assert!(strings.is_empty());
-    assert!(scalar_rank(vec![], &mut budget).unwrap().is_empty());
+    assert!(scalar_sort(vec![], &mut budget).unwrap().is_empty());
 }
 
 #[test]
@@ -576,14 +601,13 @@ fn scalar_map_refusals_keep_locations_and_legacy_work_limits() {
         vec![("a", K::Null), ("b", K::Boolean(false))],
         vec![("a", K::Float(f64::INFINITY))],
     ] {
-        let error = scalar_rank(entries, &mut Budget::for_program(limits())).unwrap_err();
+        let error = scalar_sort(entries, &mut Budget::for_program(limits())).unwrap_err();
         assert!(
             matches!(error, EvaluationError::Core(error) if error.location == Location::Query(8..22) && error.category == QueryErrorCategory::Other)
         );
     }
-    let key = "a".repeat(100);
-    let error = scalar_rank(
-        vec![(&key, K::Null), (&format!("{key}b"), K::Null)],
+    let error = scalar_sort(
+        vec![("a", K::Null), ("b", K::Null)],
         &mut Budget::new(zirql::Limits {
             work: 12,
             items: 16,
@@ -594,7 +618,7 @@ fn scalar_map_refusals_keep_locations_and_legacy_work_limits() {
     assert!(
         matches!(error, EvaluationError::Core(error) if error.location == Location::Query(8..22) && error.category == QueryErrorCategory::WorkLimit)
     );
-    let error = scalar_rank(
+    let error = scalar_sort(
         vec![("a", K::Null)],
         &mut Budget::for_program(ProgramLimits {
             results: 1,
@@ -606,7 +630,7 @@ fn scalar_map_refusals_keep_locations_and_legacy_work_limits() {
         matches!(error, EvaluationError::Core(error) if error.location == Location::Query(8..22) && error.category == QueryErrorCategory::ResultLimit)
     );
     let mut entries = vec![("a".into(), ())];
-    let error = zirql::select_ranked_map(
+    let error = zirql::select_map(
         &mut entries,
         MapSelection::Reverse,
         &mut Budget::new(zirql::Limits {
@@ -691,6 +715,6 @@ fn callable_map_retains_legacy_work_and_enclosing_nesting_accounting() {
         |value, _, _| Ok(value),
     )
     .unwrap();
-    assert_eq!(map["a"], "a");
+    assert_eq!(map[0].1, "a");
     assert_eq!(budget.remaining_work(), 0);
 }

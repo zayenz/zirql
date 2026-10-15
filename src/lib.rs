@@ -36,7 +36,7 @@ pub use functions::{
     evaluate_functions, evaluate_pattern_functions, pattern_function_value_kind,
 };
 pub use mapping::{
-    MapSelection, NativeMap, ScalarMapKey, map_native_by, rank_map_by_value, select_ranked_map,
+    MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,
 };
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
@@ -77,12 +77,13 @@ pub use sets::{NativeSetOperator, combine_native_set};
 pub use value::{
     ArrayType, ConstructedRead, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry,
     NominalMember, NominalMemberId, NominalTypeId, Pattern, PatternKind, SetElementType,
-    ValueArguments, ValueBinaryOperator, ValueConstructor, ValueExpression, ValueExpressionKind,
-    ValueExtremum, ValueGenerator, ValueKey, ValueKeyType, ValueMatchArm, ValueQueryHost,
-    ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type, copy_constructed_value,
-    copy_pattern, copy_value_types, count_value, dispose_pattern, evaluate_query_value,
-    evaluate_value, evaluate_value_with_host_validation, free_query_value_names, free_value_names,
-    pattern_names, query_value_types, take_one, validate_value_expression, value_expression_types,
+    SortSelector, ValueArguments, ValueBinaryOperator, ValueConstructor, ValueExpression,
+    ValueExpressionKind, ValueExtremum, ValueGenerator, ValueKey, ValueKeyType, ValueMatchArm,
+    ValueQueryHost, ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type,
+    copy_constructed_value, copy_pattern, copy_value_types, count_value, dispose_pattern,
+    evaluate_query_value, evaluate_value, evaluate_value_with_host_validation,
+    free_query_value_names, free_value_names, pattern_names, query_value_types, take_one,
+    validate_value_expression, value_expression_types,
 };
 pub use worklists::{
     ComputationalValue, NativeContextId, NativeIdentity, NativeIdentitySet, NativeQueue,

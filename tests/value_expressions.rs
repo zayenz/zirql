@@ -806,7 +806,7 @@ fn checked_numbers_and_typed_values_keep_responsible_failures() {
         evaluate(&e(K::Set(vec![int(2), int(1), int(2)]))).unwrap(),
         V::Set {
             element_type: Some(SetElementType::Integer),
-            elements: vec![V::Integer(1), V::Integer(2)]
+            elements: vec![V::Integer(2), V::Integer(1)]
         }
     );
     assert_eq!(
@@ -1171,7 +1171,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         members,
         V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![V::Member(member(11, 1)), V::Member(member(22, 4))]
+            elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))]
         }
     );
     assert_eq!(
@@ -1442,7 +1442,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         .unwrap(),
         V::Set {
             element_type: Some(SetElementType::Integer),
-            elements: vec![V::Integer(3), V::Integer(9)]
+            elements: vec![V::Integer(9), V::Integer(3)]
         }
     );
     assert_eq!(
@@ -1459,7 +1459,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         .unwrap(),
         V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![V::Member(member(11, 1)), V::Member(member(22, 4))]
+            elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))]
         }
     );
 
@@ -3280,12 +3280,213 @@ fn sorting(array: E, field: Option<&str>, descending: bool) -> E {
     Located::new(
         K::Sort {
             array: Box::new(array),
-            field: field.map(|field| Located::new(field.into(), 5..12)),
+            selector: field
+                .map(|field| Located::new(zirql::SortSelector::Field(field.into()), 5..12)),
             descending,
         },
         2..40,
     )
 }
+#[test]
+fn sets_keep_insertion_order_first_representatives_and_membership_after_sorting() {
+    let set = || e(K::Set(vec![int(3), int(1), int(3), int(2)]));
+    let value = evaluate(&set()).unwrap();
+    let expected = V::Set {
+        element_type: Some(SetElementType::Integer),
+        elements: vec![V::Integer(3), V::Integer(1), V::Integer(2)],
+    };
+    assert_eq!(value, expected);
+    admit_constructed(
+        &value,
+        &D::<()>::Set(SetElementType::Integer),
+        &mut ample(),
+        Location::Source(2..8),
+    )
+    .unwrap();
+    assert_eq!(
+        copy_constructed_value(&value, &mut ample(), Location::Source(2..8)).unwrap(),
+        value
+    );
+    let sorted = sorting(set(), None, false);
+    assert_eq!(
+        evaluate(&binary(B::Equal, set(), sorted)).unwrap(),
+        V::Boolean(true)
+    );
+    assert_eq!(
+        evaluate(&sorting(set(), None, false)).unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::Integer),
+            elements: vec![V::Integer(1), V::Integer(2), V::Integer(3)],
+        }
+    );
+    let comprehension = e(K::Comprehension {
+        constructor: ValueConstructor::Set,
+        clauses: vec![clause(G::In {
+            binders: vec![binder("x")],
+            source: e(K::Array(vec![int(3), int(1), int(3), int(2)])),
+            filter: None,
+        })],
+        head: Box::new(name("x")),
+    });
+    assert_eq!(evaluate(&comprehension).unwrap(), expected);
+    let zeros = evaluate(&e(K::Set(vec![
+        literal(V::Float(-0.0)),
+        literal(V::Float(0.0)),
+        literal(V::Float(2.0)),
+    ])))
+    .unwrap();
+    let V::Set { elements, .. } = zeros else {
+        panic!("set")
+    };
+    assert!(matches!(elements[0], V::Float(value) if value.is_sign_negative()));
+    assert_eq!(elements.len(), 2);
+    assert_eq!(
+        evaluate(&sorting(
+            e(K::Set(vec![
+                literal(V::Boolean(true)),
+                literal(V::Boolean(false))
+            ])),
+            None,
+            false
+        ))
+        .unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::Boolean),
+            elements: vec![V::Boolean(false), V::Boolean(true)]
+        }
+    );
+    let empty = || {
+        literal(declared(
+            V::Set {
+                element_type: Some(SetElementType::Member(NominalTypeId(7))),
+                elements: vec![],
+            },
+            D::Set(SetElementType::Member(NominalTypeId(7))),
+        ))
+    };
+    let sorted = evaluate(&sorting(empty(), None, false)).unwrap();
+    assert!(
+        matches!(sorted, V::Declared { declaration: D::Set(SetElementType::Member(NominalTypeId(7))), value } if matches!(&*value, V::Set { elements, .. } if elements.is_empty()))
+    );
+    assert!(
+        matches!(&value_expression_types(&sorting(empty(), None, false), &BTreeMap::new(), &mut ample()).unwrap()[0], ValueType::Declared { actual, .. } if matches!(actual.as_ref(), ValueType::Set(Some(SetElementType::Member(NominalTypeId(7))))))
+    );
+    let mut contradictory = member(22, 4);
+    contradictory.member_name = "contradiction".into();
+    assert!(
+        evaluate(&e(K::Set(vec![
+            member_expression(22, 4),
+            member_expression(11, 1),
+            literal(V::Member(contradictory))
+        ])))
+        .is_err()
+    );
+}
+
+#[test]
+fn dictionaries_keep_kind_stable_current_ties_static_fields_and_first_seen_tally() {
+    let run = |source: &str| {
+        let mut host = WordInput {
+            value: V::Array(vec![]),
+            unknown: false,
+        };
+        let expression = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+            &mut host,
+            &mut ample(),
+            64,
+        )
+        .unwrap();
+        zirql::evaluate_query_value(&expression, &BTreeMap::new(), &mut host, &mut ample())
+    };
+    let entries = || record(vec![("z", int(2)), ("a", int(2)), ("m", int(1))]);
+    let original = evaluate(&entries()).unwrap();
+    assert_eq!(
+        original,
+        V::Record(vec![
+            ("z".into(), V::Integer(2)),
+            ("a".into(), V::Integer(2)),
+            ("m".into(), V::Integer(1))
+        ])
+    );
+    for (source, expected) in [
+        (r#"sort({"z": 2, "a": 2, "m": 1})"#, ["a", "m", "z"]),
+        (
+            r#"sort_by({"z": 2, "a": 2, "m": 1}, value)"#,
+            ["m", "z", "a"],
+        ),
+        (
+            r#"sort_by({"z": 2, "a": 2, "m": 1}, value, descending=true)"#,
+            ["z", "a", "m"],
+        ),
+        (
+            r#"sort_by({"z": {"value": 2}, "a": {"value": 2}, "m": {"value": 1}}, "value", descending=true)"#,
+            ["z", "a", "m"],
+        ),
+    ] {
+        let V::Record(fields) = run(source).unwrap() else {
+            panic!("dictionary")
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+    assert_eq!(
+        evaluate(&binary(
+            B::Equal,
+            entries(),
+            sorting(entries(), None, false)
+        ))
+        .unwrap(),
+        V::Boolean(true)
+    );
+    assert_eq!(
+        run(r#"sort({"z": true, "a": [1]})"#).unwrap(),
+        V::Record(vec![
+            ("a".into(), V::Array(vec![V::Integer(1)])),
+            ("z".into(), V::Boolean(true))
+        ])
+    );
+    assert_eq!(run("sort({})").unwrap(), V::Record(vec![]));
+    assert_eq!(run("sort_by({}, value)").unwrap(), V::Record(vec![]));
+    assert_eq!(run("sort([])").unwrap(), V::Array(vec![]));
+    assert_eq!(
+        run(r#"["z", "a", "z", "m", "a"] | tally"#).unwrap(),
+        V::Record(vec![
+            ("z".into(), V::Integer(2)),
+            ("a".into(), V::Integer(2)),
+            ("m".into(), V::Integer(1))
+        ])
+    );
+    let missing = r#"sort_by({"z": {"other": 1}}, "value")"#;
+    assert_eq!(run(missing).unwrap_err().location, Location::Query(29..36));
+    assert!(run(r#"sort_by({"z": {"value": 1}}, value)"#).is_err());
+    let empty_boolean = sorting(
+        literal(declared(
+            V::Array(vec![]),
+            D::Sequence(Box::new(D::Boolean)),
+        )),
+        None,
+        false,
+    );
+    assert!(evaluate(&choose(empty_boolean)).is_err());
+    let incompatible_selector = e(K::Sort {
+        array: Box::new(e(K::Array(vec![]))),
+        selector: Some(Located::new(zirql::SortSelector::Value, 5..10)),
+        descending: false,
+    });
+    assert_eq!(
+        evaluate(&choose(incompatible_selector))
+            .unwrap_err()
+            .location,
+        Location::Query(5..10)
+    );
+}
+
 fn extremum(operator: zirql::ValueExtremum, array: E, field: Option<&str>) -> E {
     Located::new(
         K::Extremum {
@@ -3642,8 +3843,8 @@ fn scalar_pipelines_keep_stable_equality_declarations_and_nonpositional_facts() 
     assert_eq!(
         value,
         V::Record(vec![
-            ("apple".into(), V::Integer(2)),
-            ("ash".into(), V::Integer(1))
+            ("ash".into(), V::Integer(1)),
+            ("apple".into(), V::Integer(2))
         ])
     );
     assert_eq!(
@@ -4023,14 +4224,14 @@ fn prefix_filter_keeps_order_duplicates_empty_contracts_and_shared_value_analysi
     }
     let scalar = e(K::Sort {
         array: Box::new(reduction(R::Length, e(K::Array(vec![])))),
-        field: None,
+        selector: None,
         descending: false,
     });
     assert!(
         evaluate(&scalar)
             .unwrap_err()
             .message
-            .contains("positional array")
+            .contains("sort needs an array, set or dictionary")
     );
     let missing = evaluate(&e(K::CurrentInput)).unwrap_err();
     assert_eq!(missing.location, Location::Query(0..1));
