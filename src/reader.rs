@@ -878,9 +878,9 @@ pub fn read_value_expression<H: ValueReaderHost>(
     .expression(0, 0)
 }
 
-/// Continue an already lowered value with bare `sort`, `unique` and `tally`
-/// stages at the current cursor. The prefix must already satisfy its reader's
-/// nesting checks; `nesting` is the allowance remaining for suffix wrappers.
+/// Continue an already lowered value with `filter(starts_with("prefix"))`,
+/// `count`, `sort`, `unique` and `tally` stages at the current cursor. The prefix
+/// must already satisfy its reader's nesting checks; `nesting` is the allowance remaining for suffix wrappers.
 /// Stage ranges and parsing charges match [`read_value_expression`]. A successful
 /// tree belongs to the caller; failures release the prefix iteratively.
 ///
@@ -906,6 +906,14 @@ pub fn read_value_suffix<S, O, E>(
             ));
         }
         let kind = match stage.value {
+            "filter" => K::FilterStartsWith {
+                prefix: read_prefix_filter(reader, budget)?,
+                array: Box::new(value.into_value()),
+            },
+            "count" => K::Reduce {
+                operator: ValueReducer::Length,
+                array: Box::new(value.into_value()),
+            },
             "sort" => K::Sort {
                 array: Box::new(value.into_value()),
                 field: None,
@@ -923,7 +931,7 @@ pub fn read_value_suffix<S, O, E>(
                 ));
             }
         };
-        value = ValueGuard::new(Located::new(kind, stage.range));
+        value = ValueGuard::new(Located::new(kind, stage.range.start..reader.position()));
         let location = Location::Query(reader.position()..reader.position());
         budget.charge(1, location.clone())?;
         budget.charge_results(1, location)?;
@@ -933,6 +941,30 @@ pub fn read_value_suffix<S, O, E>(
         }
     }
     Ok(value.into_value())
+}
+
+// The one-argument spelling is deliberately confined to this closed predicate.
+fn read_prefix_filter(
+    reader: &mut ArgumentReader<'_>,
+    budget: &mut Budget,
+) -> Result<Located<String>, QueryError> {
+    reader.expect('(')?;
+    let predicate = reader.word()?;
+    budget.charge(
+        predicate.value.len(),
+        Location::Query(predicate.range.clone()),
+    )?;
+    if predicate.value != "starts_with" {
+        return Err(QueryError::query(
+            predicate.range,
+            "constructed filter needs starts_with(\"prefix\")",
+        ));
+    }
+    reader.expect('(')?;
+    let prefix = read_string(reader, budget)?;
+    reader.expect(')')?;
+    reader.expect(')')?;
+    Ok(prefix)
 }
 
 /// Read a normalized native expression, including capture field postfixes.
@@ -2161,6 +2193,33 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         if word.value == "match" && self.value_match_call()? {
             return self.value_match(depth);
         }
+        if !local && !self.host.is_binding(word.value) && !self.host.is_stage(word.value) {
+            if word.value == "filter" && probe.remaining().starts_with('(') {
+                let name = self.name()?;
+                let prefix = read_prefix_filter(self.reader, self.budget)?;
+                self.depth(depth + 1)?;
+                let input = self.node(K::CurrentInput, name.range)?;
+                return self.node(
+                    K::FilterStartsWith {
+                        array: Box::new(input),
+                        prefix,
+                    },
+                    start..self.reader.position(),
+                );
+            }
+            if word.value == "count" && !probe.remaining().starts_with('(') {
+                let name = self.name()?;
+                self.depth(depth + 1)?;
+                let input = self.node(K::CurrentInput, name.range.clone())?;
+                return self.node(
+                    K::Reduce {
+                        operator: ValueReducer::Length,
+                        array: Box::new(input),
+                    },
+                    name.range,
+                );
+            }
+        }
         let ordering_call = self.ordering_call()?;
         if self.match_call()
             || self.field_pipeline()
@@ -3116,7 +3175,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 crate::value::dispose_constructed_value(value);
                 continue;
             }
-            K::Name(_) => continue,
+            K::Name(_) | K::CurrentInput => continue,
             K::IdentitySet { element } => {
                 dispose_signature(element.value);
                 continue;
@@ -3158,6 +3217,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }
             | K::GroupBy { rows: child, .. }
+            | K::FilterStartsWith { array: child, .. }
             | K::Reduce { array: child, .. }
             | K::Sort { array: child, .. }
             | K::Extremum { array: child, .. } => {

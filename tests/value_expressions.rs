@@ -3709,6 +3709,333 @@ fn scalar_pipelines_keep_stable_equality_declarations_and_nonpositional_facts() 
     );
 }
 
+struct WordInput {
+    value: V,
+    unknown: bool,
+}
+impl zirql::ValueReaderHost for WordInput {
+    type Stage = ();
+    type SetOperator = ();
+    type Emitter = ();
+    type Predicate = ();
+    fn is_binding(&self, name: &str) -> bool {
+        name == "words"
+    }
+    fn is_stage(&self, _: &str) -> bool {
+        false
+    }
+    fn parse_stage(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        _: &mut Budget,
+    ) -> Result<zirql::ExpressionStep<(), ()>, zirql::QueryError> {
+        Err(reader.error("no native stages"))
+    }
+    fn parse_predicate_leaf(
+        &mut self,
+        reader: &mut zirql::ArgumentReader<'_>,
+        _: &mut Budget,
+    ) -> Result<(), zirql::QueryError> {
+        Err(reader.error("no native predicates"))
+    }
+    fn filter(&mut self, _: zirql::Predicate<()>, _: std::ops::Range<usize>) {}
+    fn projection(
+        &mut self,
+        _: zirql::Projection<zirql::ReadExpression<Self>>,
+        _: std::ops::Range<usize>,
+    ) {
+    }
+    fn set_operator(&self, _: &str) -> Option<()> {
+        None
+    }
+}
+impl<Q> zirql::ValueQueryHost<Q> for WordInput {
+    type Error = zirql::QueryError;
+    fn current_input_types(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, Self::Error> {
+        Ok(vec![if self.unknown {
+            ValueType::Unestablished
+        } else {
+            constructed_value_type(&self.value, budget, Location::Query(range.clone()))?
+        }])
+    }
+    fn read_current_input(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<V, Self::Error> {
+        copy_constructed_value(&self.value, budget, Location::Query(range.clone()))
+    }
+    fn query_types(
+        &mut self,
+        _: &Q,
+        _: &[(&str, Vec<ValueType>)],
+        _: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Vec<ValueType>, Self::Error> {
+        Err(zirql::QueryError::query(range.clone(), "no native queries"))
+    }
+    fn evaluate_query(&mut self, _: &Q, _: &[(&str, V)], _: &mut Budget) -> Result<V, Self::Error> {
+        unreachable!()
+    }
+    fn read_binding(
+        &mut self,
+        _: &str,
+        range: &std::ops::Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<V, Self::Error> {
+        copy_constructed_value(&self.value, budget, Location::Query(range.clone()))
+    }
+}
+
+#[test]
+fn constructed_current_input_summaries_share_the_reader_and_callable_nodes() {
+    let mut host = WordInput {
+        value: V::Array(
+            ["ash", "apple", "birch", "apple"]
+                .into_iter()
+                .map(|s| V::String(s.into()))
+                .collect(),
+        ),
+        unknown: false,
+    };
+    let typed = record(vec![(
+        "beginning_with_a",
+        reduction(R::Length, prefix_filter(e(K::CurrentInput), "a")),
+    )]);
+    let types = BTreeMap::new();
+    assert_eq!(
+        zirql::evaluate_query_value(&typed, &types, &mut host, &mut ample()).unwrap(),
+        V::Record(vec![("beginning_with_a".into(), V::Integer(3))])
+    );
+    assert!(
+        zirql::free_query_value_names(&typed, &types, &mut host, &mut ample())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        &zirql::query_value_types(&e(K::CurrentInput), &types, &mut host, &mut ample()).unwrap()[..],
+        [ValueType::Array(_)]
+    ));
+    for (source, expected) in [
+        (
+            r#"{"beginning_with_a": filter(starts_with("a")) | count}"#,
+            V::Record(vec![("beginning_with_a".into(), V::Integer(3))]),
+        ),
+        (
+            r#"{"beginning_with_a": filter(starts_with("a")) | count, "total": count}"#,
+            V::Record(vec![
+                ("beginning_with_a".into(), V::Integer(3)),
+                ("total".into(), V::Integer(4)),
+            ]),
+        ),
+        (
+            r#"filter(starts_with("a"))"#,
+            V::Array(vec![
+                V::String("ash".into()),
+                V::String("apple".into()),
+                V::String("apple".into()),
+            ]),
+        ),
+        (
+            r#"{"explicit": ["apple", "ash", "birch", "apple"] | filter(starts_with("a")) | sort | unique | count, "total": count}"#,
+            V::Record(vec![
+                ("explicit".into(), V::Integer(2)),
+                ("total".into(), V::Integer(4)),
+            ]),
+        ),
+    ] {
+        let mut allowance = ample();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let parsed =
+            zirql::read_value_expression(&mut reader, &mut host, &mut allowance, 64).unwrap();
+        assert!(reader.remaining().trim().is_empty());
+        assert_eq!(
+            zirql::evaluate_query_value(&parsed, &types, &mut host, &mut allowance).unwrap(),
+            expected
+        );
+        zirql::dispose_native_value(parsed);
+    }
+    let filter = prefix_filter(e(K::CurrentInput), "a");
+    for value in [
+        V::Integer(1),
+        V::Array(vec![V::Integer(1)]),
+        declared(V::Array(vec![]), D::Sequence(Box::new(D::Integer))),
+    ] {
+        host.value = value;
+        assert_eq!(
+            zirql::evaluate_query_value(&filter, &types, &mut host, &mut ample())
+                .unwrap_err()
+                .location,
+            Location::Query(0..1)
+        );
+    }
+    host.unknown = true;
+    assert_eq!(
+        zirql::evaluate_query_value(&filter, &types, &mut host, &mut ample())
+            .unwrap_err()
+            .location,
+        Location::Query(0..1)
+    );
+    host.value = V::Array(vec![V::String("ash".into()), V::Integer(1)]);
+    assert_eq!(
+        zirql::evaluate_query_value(&filter, &types, &mut host, &mut ample())
+            .unwrap_err()
+            .location,
+        Location::Query(0..1)
+    );
+    host.value = V::Array((0..101).map(|_| V::String("ash".into())).collect());
+    assert_eq!(
+        zirql::evaluate_query_value(&e(K::CurrentInput), &types, &mut host, &mut ample())
+            .unwrap_err()
+            .category,
+        zirql::QueryErrorCategory::ItemLimit
+    );
+    for source in [r#"filter(contains("a"))"#, "filter(starts_with(1))"] {
+        let error = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+            &mut host,
+            &mut ample(),
+            64,
+        )
+        .unwrap_err();
+        assert!(matches!(error.location, Location::Query(range) if range.start > 0));
+    }
+    let source = "[] | count | sort";
+    let parsed = zirql::read_value_expression(
+        &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+        &mut host,
+        &mut ample(),
+        64,
+    )
+    .unwrap();
+    let error = zirql::evaluate_query_value(&parsed, &types, &mut host, &mut ample()).unwrap_err();
+    assert_eq!(error.location, Location::Query(13..17));
+    zirql::dispose_native_value(parsed);
+    for (mut allowance, nesting) in [
+        (budget(1, 1000, 64), 64),
+        (budget(1000, 1, 64), 64),
+        (budget(1000, 1000, 64), 1),
+    ] {
+        assert!(
+            zirql::read_value_expression(
+                &mut zirql::ArgumentReader::new(r#"filter(starts_with("a")) | count"#, 0).unwrap(),
+                &mut host,
+                &mut allowance,
+                nesting
+            )
+            .is_err()
+        );
+    }
+}
+
+fn prefix_filter(array: E, prefix: &str) -> E {
+    e(K::FilterStartsWith {
+        array: Box::new(array),
+        prefix: Located::new(prefix.into(), 8..11),
+    })
+}
+
+#[test]
+fn prefix_filter_keeps_order_duplicates_empty_contracts_and_shared_value_analysis() {
+    let selected = prefix_filter(
+        e(K::Array(vec![
+            text("ash"),
+            text("apple"),
+            text("birch"),
+            text("apple"),
+        ])),
+        "a",
+    );
+    assert_eq!(
+        evaluate(&selected).unwrap(),
+        V::Array(vec![
+            V::String("ash".into()),
+            V::String("apple".into()),
+            V::String("apple".into())
+        ])
+    );
+    let facts = value_expression_types(&selected, &BTreeMap::new(), &mut ample()).unwrap();
+    assert!(
+        matches!(&facts[..], [ValueType::Array(ArrayType::Elements(elements))] if elements.iter().all(|t| *t == ValueType::String))
+    );
+    let explicit = prefix_filter(name("words"), "a");
+    let types = BTreeMap::from([(
+        "words".into(),
+        ValueType::Array(ArrayType::Elements(vec![ValueType::String])),
+    )]);
+    validate_value_expression(&explicit, &types, &mut ample()).unwrap();
+    assert_eq!(
+        free_value_names(&explicit, &types, &mut ample()).unwrap()[0].value,
+        "words"
+    );
+    let empty = prefix_filter(
+        literal(declared(V::Array(vec![]), D::Sequence(Box::new(D::String)))),
+        "a",
+    );
+    assert_eq!(
+        evaluate(&empty).unwrap(),
+        declared(V::Array(vec![]), D::Sequence(Box::new(D::String)))
+    );
+    for source in [e(K::Array(vec![])), e(K::Array(vec![text("birch")]))] {
+        assert_eq!(
+            evaluate(&reduction(R::Length, prefix_filter(source, "a"))).unwrap(),
+            V::Integer(0)
+        );
+    }
+    assert_eq!(
+        evaluate(&prefix_filter(
+            e(K::Array(vec![text("ash"), text("Ash")])),
+            ""
+        ))
+        .unwrap(),
+        V::Array(vec![V::String("ash".into()), V::String("Ash".into())])
+    );
+    assert_eq!(
+        evaluate(&prefix_filter(e(K::Array(vec![text("Ash")])), "a")).unwrap(),
+        V::Array(vec![])
+    );
+    for source in [
+        int(1),
+        literal(V::KeyedArray {
+            axes: vec![KeyAxis {
+                key_type: ValueKeyType::Integer,
+                keys: vec![],
+            }],
+            entries: vec![],
+        }),
+        e(K::Array(vec![int(1)])),
+        literal(declared(
+            V::Array(vec![]),
+            D::Sequence(Box::new(D::Integer)),
+        )),
+    ] {
+        assert_eq!(
+            evaluate(&choose(prefix_filter(source, "a")))
+                .unwrap_err()
+                .location,
+            Location::Query(0..1)
+        );
+    }
+    let scalar = e(K::Sort {
+        array: Box::new(reduction(R::Length, e(K::Array(vec![])))),
+        field: None,
+        descending: false,
+    });
+    assert!(
+        evaluate(&scalar)
+            .unwrap_err()
+            .message
+            .contains("positional array")
+    );
+    let missing = evaluate(&e(K::CurrentInput)).unwrap_err();
+    assert_eq!(missing.location, Location::Query(0..1));
+    assert_eq!(missing.message, "constructed current input is unavailable");
+}
+
 #[test]
 fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
     for bad in [
@@ -3782,6 +4109,14 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
     assert_eq!(error.location, Location::Query(0..1));
 
     for (expression, result_refusal) in [
+        (
+            prefix_filter(e(K::Array(vec![text("ash"), text("ash")])), "a"),
+            false,
+        ),
+        (
+            prefix_filter(e(K::Array(vec![text("ash"), text("ash")])), "a"),
+            true,
+        ),
         (
             e(K::Unique(Box::new(e(K::Array(vec![
                 text("ash"),

@@ -252,6 +252,8 @@ pub type ValueExpression<Q = ()> = Located<ValueExpressionKind<Q>>;
 #[derive(Debug, PartialEq)]
 pub enum ValueExpressionKind<Q = ()> {
     Literal(ConstructedValue),
+    /// The immutable constructed input supplied for this evaluation invocation.
+    CurrentInput,
     /// Computational FIFO. An explicit type supports empty native input.
     Queue {
         items: Box<ValueExpression<Q>>,
@@ -392,6 +394,11 @@ pub enum ValueExpressionKind<Q = ()> {
     Reduce {
         operator: ValueReducer,
         array: Box<ValueExpression<Q>>,
+    },
+    /// Retain positional strings beginning with one literal prefix, in order.
+    FilterStartsWith {
+        array: Box<ValueExpression<Q>>,
+        prefix: Located<String>,
     },
     /// Stably sort a positional array by its scalar values or a static record
     /// field. Descending reverses key order, preserving input order for ties.
@@ -593,6 +600,28 @@ pub trait ValueArguments<Q, E: From<QueryError>> {
 /// Generator locals are visible to the native operand under the same budget.
 pub trait ValueQueryHost<Q> {
     type Error: From<QueryError>;
+
+    /// Facts for the immutable constructed input. Native input is separate.
+    /// Hosts without constructed input keep the located default refusal.
+    fn current_input_types(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        _budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "constructed current input is unavailable",
+        ))
+    }
+    /// Supply the constructed input once per invocation. Charge host scans and
+    /// copies to this budget; the evaluator admits and retains the result.
+    fn read_current_input(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        _budget: &mut Budget,
+    ) -> Result<ConstructedValue, Self::Error> {
+        Err(QueryError::query(range.clone(), "constructed current input is unavailable").into())
+    }
 
     /// Prepare contextual contracts before visiting an expression's operands.
     /// Ordinary value hosts need no native computation metadata.
@@ -3072,6 +3101,9 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     Ok(result)
                 }
             }
+            ValueExpressionKind::CurrentInput => {
+                self.queries.current_input_types(&expression.range, budget)
+            }
             ValueExpressionKind::Name(name) => self.name(name, expression, budget),
             ValueExpressionKind::NativeQuery(query) => {
                 self.queries
@@ -3521,6 +3553,28 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     budget,
                     location,
                 )
+            }
+            ValueExpressionKind::FilterStartsWith { array, prefix } => {
+                budget.charge(prefix.value.len(), Location::Query(prefix.range.clone()))?;
+                let mut result = Vec::new();
+                for ty in self.walk(array, budget)? {
+                    let retained = match &ty {
+                        ValueType::Declared { declaration, .. } => {
+                            Some(copy_declaration(declaration, budget, location)?)
+                        }
+                        _ => None,
+                    };
+                    let elements = filter_elements(ty, budget, location)?;
+                    let mut ty = ValueType::Array(ArrayType::Elements(elements));
+                    if let Some(declaration) = retained {
+                        ty = ValueType::Declared {
+                            actual: Box::new(ty),
+                            declaration,
+                        };
+                    }
+                    push_metadata(&mut result, ty, budget, location)?;
+                }
+                Ok(result)
             }
             ValueExpressionKind::Sort { array, field, .. }
             | ValueExpressionKind::Extremum { array, field, .. } => {
@@ -5312,6 +5366,96 @@ fn group_by(
         items.push(row);
     }
     Ok(ConstructedValue::Array(groups))
+}
+
+// Filtering loses positions while preserving declared string element contracts.
+fn filter_elements(
+    ty: ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    let elements = match shape_type(ty, budget, location)? {
+        ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
+        | ValueType::ArrayKind(elements) => elements,
+        ValueType::Unestablished => return one_type(ValueType::Unestablished, budget, location),
+        _ => return Err(error(location, "filter needs a positional string array")),
+    };
+    for element in &elements {
+        budget.charge(1, location.clone())?;
+        let ty = shape_type(copy_type(element, budget, location)?, budget, location)?;
+        if !matches!(ty, ValueType::String | ValueType::Unestablished) {
+            return Err(error(location, "filter needs strings"));
+        }
+    }
+    Ok(elements)
+}
+
+fn filter_starts_with(
+    array: RuntimeValue,
+    prefix: &Located<String>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let contract = array
+        .declaration()
+        .map(|contract| copy_declaration(contract, budget, location))
+        .transpose()?;
+    if let Some(contract) = &contract {
+        let actual = constructed_value_type(array.as_ref(), budget, location.clone())?;
+        filter_elements(
+            declared_fact(contract, actual, budget, location)?,
+            budget,
+            location,
+        )?;
+    }
+    let prefix_location = Location::Query(prefix.range.clone());
+    allocation::<u8>(prefix.value.len(), &prefix_location)?;
+    budget.charge(prefix.value.len(), prefix_location.clone())?;
+    budget.charge_results(1, prefix_location)?;
+    let prefix = ConstructedValue::String(prefix.value.clone());
+    let array = array.into_data(budget, location)?;
+    let ConstructedValue::Array(rows) = array.as_ref() else {
+        return Err(error(location, "filter needs a positional string array"));
+    };
+    budget.check_items(rows.len(), location.clone())?;
+    let mut output = admit_container(rows.len(), budget, location)?;
+    let matches_prefix = |row: &ConstructedValue, budget: &mut Budget| {
+        budget.charge(1, location.clone())?;
+        Ok::<_, QueryError>(matches!(
+            string_match_ref(
+                ValueBinaryOperator::StartsWith,
+                row,
+                &prefix,
+                budget,
+                location,
+            )?,
+            ConstructedValue::Boolean(true)
+        ))
+    };
+    match array {
+        RuntimeValue::Owned(ConstructedValue::Array(rows)) => {
+            for row in rows {
+                if matches_prefix(&row, budget)? {
+                    output.push(row);
+                }
+            }
+        }
+        shared => {
+            let ConstructedValue::Array(rows) = shared.as_ref() else {
+                unreachable!()
+            };
+            for row in rows {
+                if matches_prefix(row, budget)? {
+                    output.push(copy_constructed_value(row, budget, location.clone())?);
+                }
+            }
+        }
+    }
+    let value = ConstructedValue::Array(output);
+    match contract {
+        Some(contract) => annotate(value, contract, budget, location),
+        None => Ok(value),
+    }
 }
 
 // Removal loses positional facts, but retains admitted element kinds.

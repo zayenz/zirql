@@ -1,7 +1,7 @@
 # Word analysis
 
 Start with the text `ash apple birch apple`. Our application splits it at
-whitespace and supplies a binding named `words`:
+whitespace and supplies the array as current input and as the binding `words`:
 
 ```json
 ["ash", "apple", "birch", "apple"]
@@ -18,7 +18,18 @@ native pipeline example.
 
 ## Select words
 
-A comprehension visits the array and keeps words whose spelling begins with `a`:
+Filter the current input by a literal prefix:
+
+```zirql
+filter(starts_with("a"))
+```
+
+This returns `["ash", "apple", "apple"]`. Filtering preserves order and repeated
+entries. Prefix matching is case-sensitive; an empty prefix matches every
+string. This form accepts a literal string prefix. It does not create a
+function value.
+
+A comprehension can also select words explicitly:
 
 ```zirql
 [w for w in words if starts_with(w, "a")]
@@ -165,8 +176,8 @@ Count all words, count a selection and sort the original array in one record:
 
 ```zirql
 {
-  "count": length(words),
-  "beginning_with_a": length([w for w in words if starts_with(w, "a")]),
+  "count": count,
+  "beginning_with_a": filter(starts_with("a")) | count,
   "alphabetical": sort(words)
 }
 ```
@@ -179,8 +190,21 @@ Count all words, count a selection and sort the original array in one record:
 }
 ```
 
-`length` counts array entries. It does not count characters in a string. The
-selection is an eager array, so Zirql constructs it before counting it.
+`count` counts array entries. Each field starts from the same immutable input,
+so filtering one field leaves all four words available to another. Filtering is
+eager: Zirql constructs the selection before counting it.
+
+An explicit source takes precedence for its own stages:
+
+```zirql
+{"distinct": ["apple", "ash", "birch", "apple"] | filter(starts_with("a")) | sort | unique | count, "total": count}
+```
+
+This returns `{"distinct": 2, "total": 4}`. Empty input or a filter with no
+matches gives count `0`. A missing current input, a scalar or keyed filter
+source, or non-string filter elements produce located errors, including an
+empty array declared with an incompatible element type. The existing
+`starts_with(word, prefix)` helper remains available in scalar expressions.
 
 An empty `words` array gives zero counts and an empty alphabetical list. The
 grouped report is also empty. No fallback is needed for these cases.

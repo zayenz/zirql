@@ -11,7 +11,7 @@ struct Words {
     words: ConstructedValue,
 }
 
-// This host exposes one constructed binding. It registers no native operations.
+// This host exposes the same immutable words as input and a named binding.
 impl ValueReaderHost for Words {
     type Stage = ();
     type SetOperator = ();
@@ -53,6 +53,29 @@ impl ValueReaderHost for Words {
 
 impl ValueQueryHost<ReadExpression<Self>> for Words {
     type Error = QueryError;
+
+    fn current_input_types(
+        &mut self,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        Ok(vec![constructed_value_type(
+            &self.words,
+            budget,
+            Location::Query(range.clone()),
+        )?])
+    }
+
+    fn read_current_input(
+        &mut self,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<ConstructedValue, QueryError> {
+        if let ConstructedValue::Array(rows) = self.words.data() {
+            budget.check_items(rows.len(), Location::Query(range.clone()))?;
+        }
+        copy_constructed_value(&self.words, budget, Location::Query(range.clone()))
+    }
 
     fn query_types(
         &mut self,

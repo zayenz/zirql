@@ -95,14 +95,23 @@ not turn its construction into a lazy traversal.
 
 ## Constructed pipelines
 
-The common reader accepts bare collection stages after a completed value:
+The common reader accepts constructed filter/count and collection stages:
 
 ```zirql
+{"beginning_with_a": filter(starts_with("a")) | count, "total": count}
+["ash", "apple", "birch", "apple"] | filter(starts_with("a")) | sort | unique | count
 [w for w in words if starts_with(w, "a")] | sort | unique
 [w for w in words if starts_with(w, "a")] | tally
 ```
 
-These return `["apple", "ash"]` and `{"apple": 2, "ash": 1}`. Pipes apply
+The first two return `{"beginning_with_a": 3, "total": 4}` and `2` with the
+word host. Bare filter/count use the same constructed input independently in
+each record field; an explicit source supplies its own stages. The filter
+accepts only `starts_with` with a literal string prefix and requires positional
+strings. Empty and no-match inputs count as zero. Count returns a scalar, so a
+later collection stage is invalid. Missing input and incompatible types receive
+located errors. The last two return `["apple", "ash"]` and
+`{"apple": 2, "ash": 1}`. Pipes apply
 left-to-right after ordinary operators, defaults, comprehensions and
 conditionals. Tally is terminal. Group bare constructed names and user calls,
 such as `(words) | unique` or `(make_words()) | tally`, to preserve the native

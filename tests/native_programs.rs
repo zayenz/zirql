@@ -3668,6 +3668,7 @@ mod projection {
             fn forwarded_local(xs: Subjects) -> int { let if = xs; native(if) | count }
             fn make_words() -> sequence<string> { ["ash", "apple", "ash"] }
             fn distinct_words() -> sequence<string> { (make_words()) | unique }
+            fn matching_words(xs: sequence<string>) -> int { (xs) | filter(starts_with("a")) | count }
             counts(source)
         "#;
         let mut budget = function_budget();
@@ -3723,6 +3724,16 @@ mod projection {
                 value: Box::new(V::Integer(0)),
                 declaration: D::Integer
             })
+        );
+        let mut reader =
+            zirql::ArgumentReader::new(r#"matching_words(["ash", "birch", "apple"])"#, 0).unwrap();
+        let matching =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let prepared = functions
+            .prepare_value(&matching, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        assert!(
+            matches!(functions.evaluate(&prepared, &Bindings::default(), None, &mut (), &mut budget, limits).unwrap(), Value::Constructed(value) if value.data() == &V::Integer(2))
         );
         let mut reader = zirql::ArgumentReader::new("(make_words()) | sort | unique", 0).unwrap();
         let piped = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
@@ -5975,6 +5986,14 @@ mod projection {
         };
         for (source, expected) in [
             (r#"[w for w in words if starts_with(w, "a")]"#, selected()),
+            (
+                r#"["ash", "apple", "birch", "apple"] | filter(starts_with("a"))"#,
+                selected(),
+            ),
+            (
+                r#"["ash", "apple", "birch", "apple"] | filter(starts_with("a")) | count"#,
+                V::Integer(3),
+            ),
             (
                 r#"[w for w in words if starts_with(w, "a")] | unique"#,
                 V::Array(vec![V::String("ash".into()), V::String("apple".into())]),

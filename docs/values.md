@@ -248,8 +248,24 @@ conversion such as `[cell.value for cell in entries(a)]` before ordering.
 
 ## Constructed collection pipelines
 
-A positional array can pass through ascending scalar `sort`, stable `unique`
-and terminal string `tally`:
+A positional string array can pass through `filter(starts_with("prefix"))`.
+It retains matches in order, including duplicates. The prefix must be a literal
+string; matching is case-sensitive and an empty prefix matches every string.
+`count` returns the number of array entries as an integer. For example:
+
+```zirql
+{"beginning_with_a": filter(starts_with("a")) | count, "total": count}
+```
+
+With the word host this returns `{"beginning_with_a": 3, "total": 4}`. Each
+field reads the same immutable constructed input. An explicit source, such as
+`["apple", "birch"] | filter(starts_with("a")) | count`, supplies only its own
+pipeline and returns `1`. Empty and no-match arrays count as zero. Missing
+input, scalar or keyed filter sources and non-string elements fail at their
+query locations. Incompatible declarations fail even for empty arrays.
+
+A positional array can also pass through ascending scalar `sort`, stable
+`unique` and terminal string `tally`:
 
 ```zirql
 [w for w in words if starts_with(w, "a")] | sort | unique
@@ -284,8 +300,9 @@ Group a bare constructed binding or user function call explicitly:
 The second form requires a host that registers `make_words`. Bare names and
 user calls followed by a pipe retain their established native routing. Group
 any pipeline result before using it in a larger expression, for example
-`length(([w for w in words] | unique))`. The richer `sort(a, descending=true)`
-and `sort_by` call forms keep their existing contracts.
+`length(([w for w in words] | unique))`. Count produces a scalar; a subsequent
+collection stage fails at that stage. The richer `sort(a, descending=true)` and
+`sort_by` call forms keep their existing contracts.
 
 ## Nominal members and sets
 

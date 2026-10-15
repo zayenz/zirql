@@ -24,9 +24,23 @@ current generator locals and the active budget. Runtime branch selection
 controls whether the native query executes.
 
 The [word example](getting-started.md) uses the common reader and a
-`ValueQueryHost` with one constructed binding. The generic expression type still
-allows native operands, so the adapter explicitly refuses them. No native
+`ValueQueryHost` with constructed current input and the `words` binding. The
+generic expression type still allows native operands, so the adapter explicitly refuses them. No native
 program or function host is needed for that model.
+
+The host supplies input facts through `current_input_types(range, budget)` and
+an immutable value through `read_current_input(range, budget)`. The defaults
+report unavailable constructed input. `CurrentInput` reads share one admitted
+owner per evaluation invocation; sibling record fields each see that input.
+Explicit sources do not read or replace it. Native `ExpressionKind::Input`
+keeps its separate host-owned meaning. Pure functions receive collections as
+explicit parameters and do not capture caller input.
+
+The common reader lowers `filter(starts_with("a")) | count` to
+`FilterStartsWith { array: CurrentInput, prefix: "a" }` inside
+`Reduce { operator: Length, array: ... }`. Typed callers use the same nodes and
+`evaluate_query_value`, with the host's input facts and the same budget.
+`read_value_suffix` also accepts filter/count after an already lowered value.
 
 ## Values, facts and declarations
 
@@ -76,6 +90,7 @@ preflight still covers those branches.
 | Absence checks and fallback | `Occurs`, `Absent`, `Default` |
 | Conditional selection | `Conditional` |
 | Array or set comprehension | `Comprehension` with `ValueConstructor` and `ValueGenerator` clauses |
+| Prefix selection | `FilterStartsWith { array, prefix }` |
 | Summaries | `Reduce` with `ValueReducer::{Length, Sum, Forall, Exists}` |
 | Requirement | `Require { condition, value, message }` |
 | Grouping | `GroupBy { rows, field }` |

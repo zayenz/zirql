@@ -6,11 +6,11 @@ use super::{
     QueryError, RuntimeValue, SetElementType, ValueBinaryOperator, ValueConstructor, ValueKey,
     ValueQueryHost, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
     constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
-    equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
-    integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
-    push_metadata, record_declaration, reduce_ref, scalar, select_field, sort_value, source_axis,
-    string_match_ref, sum, take_one, take_position, tally_value, unary, underlying, unique_value,
-    value_keys, zip_exact,
+    equal_keys, error, expose, extremum_position, filter_starts_with, finish_keyed, group_by,
+    insert_set, integer, integer_range, key_positions, key_set_type, key_value, metadata_vec,
+    optional_access, push_metadata, record_declaration, reduce_ref, scalar, select_field,
+    sort_value, source_axis, string_match_ref, sum, take_one, take_position, tally_value, unary,
+    underlying, unique_value, value_keys, zip_exact,
 };
 use std::rc::Rc;
 
@@ -399,6 +399,13 @@ pub(crate) trait Host<'a, Q> {
     fn retains_native_admission(&self) -> bool {
         false
     }
+    fn current_input(
+        &mut self,
+        _budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        Err(QueryError::query(range.clone(), "constructed current input is unavailable").into())
+    }
     fn outer(
         &mut self,
         slot: usize,
@@ -761,6 +768,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     PreparedKind::Literal(value) => {
                                         result =
                                             owned!(copy_constructed_value(value, budget, location)?)
+                                    }
+                                    PreparedKind::CurrentInput => {
+                                        result =
+                                            Some(host.current_input(budget, &expression.range)?);
                                     }
                                     PreparedKind::Name(ReadSlot::Local(index)) => {
                                         result =
@@ -2576,6 +2587,7 @@ fn operands<'a, Q>(
         | PreparedKind::Unary { operand: value, .. }
         | PreparedKind::Field { value, .. }
         | PreparedKind::TupleAccess { value, .. }
+        | PreparedKind::FilterStartsWith { array: value, .. }
         | PreparedKind::Reduce { array: value, .. }
         | PreparedKind::Sort { array: value, .. }
         | PreparedKind::Extremum { array: value, .. }
@@ -2655,6 +2667,15 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             }),
             budget,
             &location,
+        )?)));
+    }
+    if let PreparedKind::FilterStartsWith { prefix, .. } = &expression.value {
+        let value = host.normalize(values.pop().expect("filter source"), budget, &location)?;
+        let Data::Constructed(array) = value.data else {
+            return Err(error(&location, "filter needs a positional string array").into());
+        };
+        return Ok(Value::constructed(RuntimeValue::Owned(filter_starts_with(
+            array, prefix, budget, &location,
         )?)));
     }
     if let PreparedKind::Reduce { operator, .. } = &expression.value {
@@ -2937,6 +2958,17 @@ where
     type Native = std::convert::Infallible;
     type Kind = ();
     type Error = H::Error;
+    fn current_input(
+        &mut self,
+        budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Value<'a, Self::Native, ()>, Self::Error> {
+        Ok(Value::constructed(self.frame.current_input(
+            self.queries,
+            budget,
+            range,
+        )?))
+    }
     fn outer(
         &mut self,
         slot: usize,

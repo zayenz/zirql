@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 61
-- Ready: 7
+- Ready: 6
 - Blocked: 1
-- Done: 53
+- Done: 54
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -69,4 +69,4 @@
 | [base-058](tasks/058-compose-saved-native-and-constructed-results-consistently-in.md) | Compose saved native and constructed results consistently in Zincite | done | base-047 |
 | [base-059](tasks/059-adopt-shared-stream-bounds-reversal-and-cardinality-checks-i.md) | Adopt shared stream bounds, reversal and cardinality checks in Zincite | done | base-048 |
 | [base-060](tasks/060-define-broader-zincite-program-and-shared-operation-alignmen.md) | Define broader Zincite program and shared-operation alignment | ready | — |
-| [base-061](tasks/061-support-filter-count-expressions-over-the-current-constructe.md) | Support filter/count expressions over the current constructed input | ready | base-047 |
+| [base-061](tasks/061-support-filter-count-expressions-over-the-current-constructe.md) | Support filter/count expressions over the current constructed input | done | base-047 |

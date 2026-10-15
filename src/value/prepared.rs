@@ -17,6 +17,7 @@ pub(crate) struct PreparedArgument<'a, Q> {
 
 pub(crate) enum PreparedKind<'a, Q> {
     Literal(&'a ConstructedValue),
+    CurrentInput,
     Queue {
         source: usize,
         items: Box<PreparedValue<'a, Q>>,
@@ -123,6 +124,10 @@ pub(crate) enum PreparedKind<'a, Q> {
     Reduce {
         operator: ValueReducer,
         array: Box<PreparedValue<'a, Q>>,
+    },
+    FilterStartsWith {
+        array: Box<PreparedValue<'a, Q>>,
+        prefix: &'a Located<String>,
     },
     Sort {
         array: Box<PreparedValue<'a, Q>>,
@@ -238,6 +243,7 @@ impl<'a> Preparation<'a> {
             check_loop_terminal(&expression.value, transfer, &location)?;
             let kind = match &expression.value {
                 ValueExpressionKind::Literal(value) => PreparedKind::Literal(value),
+                ValueExpressionKind::CurrentInput => PreparedKind::CurrentInput,
                 ValueExpressionKind::Queue { items, .. } => PreparedKind::Queue {
                     source: queries.worklist_id(expression, budget)?,
                     items: Box::new(self.resolve(items, queries, budget)?),
@@ -439,6 +445,12 @@ impl<'a> Preparation<'a> {
                     operator: *operator,
                     array: Box::new(self.resolve(array, queries, budget)?),
                 },
+                ValueExpressionKind::FilterStartsWith { array, prefix } => {
+                    PreparedKind::FilterStartsWith {
+                        array: Box::new(self.resolve(array, queries, budget)?),
+                        prefix,
+                    }
+                }
                 ValueExpressionKind::Sort {
                     array,
                     field,
@@ -960,6 +972,7 @@ impl RuntimeValue {
 pub(crate) struct Frame<'a> {
     pub(crate) names: Vec<&'a str>,
     pub(crate) outer: Vec<Option<RuntimeValue>>,
+    current_input: Option<RuntimeValue>,
     pub(crate) locals: Vec<(&'a str, RuntimeValue)>,
 }
 impl<'a> Frame<'a> {
@@ -973,8 +986,30 @@ impl<'a> Frame<'a> {
         Ok(Self {
             names,
             outer,
+            current_input: None,
             locals: Vec::new(),
         })
+    }
+    pub(crate) fn current_input<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        queries: &mut H,
+        budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<RuntimeValue, H::Error> {
+        let location = Location::Query(range.clone());
+        if self.current_input.is_none() {
+            let value = queries.read_current_input(range, budget)?;
+            if let ConstructedValue::Array(rows) = value.data() {
+                budget.check_items(rows.len(), location.clone())?;
+            }
+            constructed_value_type(&value, budget, location.clone())?;
+            self.current_input = Some(RuntimeValue::Owned(value));
+        }
+        Ok(self
+            .current_input
+            .as_mut()
+            .expect("retained current input")
+            .share(budget, &location)?)
     }
     pub fn named_slot(
         &self,

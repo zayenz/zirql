@@ -3,8 +3,11 @@
 The [word tutorial](examples.md) works with an array that Zirql can inspect
 directly. A host can also expose an ordered stream of native items, such as
 borrowed words or document nodes. A pipeline applies stages in written order.
-Constructed arrays also accept `| sort`, `| unique` and terminal `| tally`, as
-shown in the [word tutorial](examples.md#sort-and-retain-distinct-words).
+Constructed arrays accept `| filter(starts_with("prefix"))`, `| count`,
+`| sort`, `| unique` and terminal `| tally`. Bare constructed filter/count read
+immutable current input supplied by the host. Each sibling record field sees
+the same input; explicit sources supply their own stages. See the examples
+in the [word tutorial](examples.md#sort-and-retain-distinct-words).
 
 The examples here use the same text, `ash apple birch apple`, through the
 [borrowed-word host](../README.md#a-borrowed-source-query). That host defines

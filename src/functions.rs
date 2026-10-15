@@ -418,6 +418,7 @@ fn builtin(name: &str) -> bool {
             | "entries"
             | "zip_exact"
             | "contains"
+            | "filter"
             | "starts_with"
             | "ends_with"
             | "length"

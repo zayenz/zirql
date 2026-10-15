@@ -1,9 +1,9 @@
 # Set up the word model
 
-The word-analysis example is a Rust application with one binding, `words`,
-containing an array of strings. It is the host: the application that embeds
-Zirql and supplies its data. Zirql reads and evaluates the expression; the host
-prints the result.
+The word-analysis example is a Rust application that supplies an array of strings
+as current input and as the binding `words`. It is the host: the application
+that embeds Zirql and supplies its data. Zirql reads and evaluates the
+expression; the host prints the result.
 
 This guide connects the [word tutorial](examples.md) to its Rust implementation.
 The two small trait implementations in the example form its adapter to Zirql.
@@ -28,6 +28,18 @@ cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")]
 cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")] | tally'
 ```
 
+Build a summary directly from the current input:
+
+```sh
+cargo run --locked --example words -- '{"beginning_with_a": filter(starts_with("a")) | count}'
+cargo run --locked --example words -- '{"beginning_with_a": filter(starts_with("a")) | count, "total": count}'
+cargo run --locked --example words -- '{"explicit": ["apple", "ash", "birch", "apple"] | filter(starts_with("a")) | sort | unique | count, "total": count}'
+```
+
+The results contain counts `3`, then `3` and `4`, then `2` and `4`.
+Each record field starts from the same input. The explicit array supplies only
+its own pipeline; it does not replace the input used by `total`.
+
 Array keys and tuple positions are also available through the common reader:
 
 ```sh
@@ -50,11 +62,10 @@ The application calls Rust's `split_whitespace` and converts each slice to a
 `ConstructedValue::String`. It stores those strings in a `ConstructedValue::Array`.
 There is no normalization, punctuation removal or case folding.
 
-The host exposes the array under the name `words`. It also supplies type facts
-so Zirql can check the expression before running it. The reference calls this
-check preflight validation. All expressions on the [front page](index.md) work
-with this one binding. The shared language reads and evaluates selection,
-sorting, stable unique and tally.
+The host exposes the array under the name `words` and supplies it as immutable
+current input. It also supplies type facts so Zirql can check the expression
+before running it. The reference calls this check preflight validation. Zirql
+owns filtering, counting, sorting, stable unique and tally.
 
 ## Read and evaluate an expression
 
@@ -62,7 +73,9 @@ The example implements two interfaces:
 
 - `ValueReaderHost` identifies `words` as a binding and declares that this host
   has no native stages or domain predicates.
-- `ValueQueryHost` supplies the binding's value. It copies constructed data
+- `ValueQueryHost` supplies the binding's value, current-input facts through
+  `current_input_types`, and the input through `read_current_input`. Zirql
+  retains one admitted input per invocation. The host copies constructed data
   through `copy_constructed_value`, which accounts for the copy in the request
   budget. Native queries are rejected because this model does not define them.
 

@@ -163,6 +163,15 @@ in place; materializing a shared input pays the ordinary full output-copy costs.
 Rows and declarations move intact. Descending equality still selects the left
 merge input. Every comparison is fallible and stops immediately on refusal.
 
+Constructed current input is admitted once and retained for the invocation.
+Reading it again shares its owner; returning owned data charges materialization.
+Prefix filtering charges literal storage, every visited item, the existing exact
+string comparison and admitted output storage. It checks the stream-item limit
+and copies selected shared values through the ordinary charged copy boundary.
+Filtering remains eager before count; count uses the checked signed length
+reducer and charges its integer result. Parsing, facts, host reads, filtering,
+copies and counting all spend the same request allowance.
+
 Constructed pipe sort uses this same sorting operation and accounting. Unique
 materializes a shared array through the ordinary budgeted copy path, then
 compacts owned rows in place. It scans retained values for equality and charges
@@ -172,10 +181,10 @@ lexical string sort, then scans equal adjacent spellings with checked signed
 counts. It admits record storage, entries and count results before growth.
 
 These constructed stages share the active work, result and nesting allowances.
-`stream_items` remains the ceiling for native streams; it does not become a
-positional constructed-array limit. Nested native operands and host input scans
-keep their existing item checks. A refusal returns no partial constructed result
-and retains the spent allowance. Pipe errors identify the written stage.
+Current-input reads and prefix filtering also check `stream_items`. Existing
+sort/unique/tally stages keep their constructed-array allowance rules. Nested
+native operands and host input scans keep their existing item checks. A refusal
+returns no partial constructed result and retains the spent allowance. Pipe errors identify the written stage.
 
 Extrema scan all keys once, retaining one winner without allocating sort scratch
 or copying the whole input. An owned winner moves; a shared winner retains its

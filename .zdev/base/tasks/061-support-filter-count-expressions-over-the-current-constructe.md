@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-061"
 key = "constructed-filter-count-current-input"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -26,13 +26,24 @@ The user requested {"beginning_with_a": filter(starts_with("a")) | count} while 
 
 ## Done when
 
-- [ ] With the host supplying ["ash", "apple", "birch", "apple"] as current input, {"beginning_with_a": filter(starts_with("a")) | count} parses and evaluates to a record containing integer 3 through both the common reader and callable evaluation. starts_with("a") tests each current string with the existing case-sensitive prefix semantics.
-- [ ] The same filter/count operations compose from an explicit constructed collection source and with the existing constructed pipeline stages where result types permit. Filtering preserves order and duplicates; count counts retained items. Empty input and no matches yield zero.
-- [ ] Each sibling record field starts from the same input; evaluating one field does not consume or replace the input seen by another. Explicit pipeline sources override that input for their stages. Document scope and precedence, and report missing or incompatible input with a located diagnostic.
-- [ ] Parsing, validation, filtering and counting use the active request limits. Wrong predicate/input types and exhausted budgets fail explicitly. Existing two-argument starts_with, comprehensions and native pipelines retain their behavior.
-- [ ] Update the words host and documentation to demonstrate the exact summary expression and how an application supplies current input, retaining the words binding for existing examples.
+- [x] With the host supplying ["ash", "apple", "birch", "apple"] as current input, {"beginning_with_a": filter(starts_with("a")) | count} parses and evaluates to a record containing integer 3 through both the common reader and callable evaluation. starts_with("a") tests each current string with the existing case-sensitive prefix semantics.
+- [x] The same filter/count operations compose from an explicit constructed collection source and with the existing constructed pipeline stages where result types permit. Filtering preserves order and duplicates; count counts retained items. Empty input and no matches yield zero.
+- [x] Each sibling record field starts from the same input; evaluating one field does not consume or replace the input seen by another. Explicit pipeline sources override that input for their stages. Document scope and precedence, and report missing or incompatible input with a located diagnostic.
+- [x] Parsing, validation, filtering and counting use the active request limits. Wrong predicate/input types and exhausted budgets fail explicitly. Existing two-argument starts_with, comprehensions and native pipelines retain their behavior.
+- [x] Update the words host and documentation to demonstrate the exact summary expression and how an application supplies current input, retaining the words binding for existing examples.
 
 ## Validation
 
 - Use a focused public word-summary case with two independent record fields, an explicit-source pipeline and empty/no-match controls. Reuse existing tests for type refusals and work/result limits; add only the missing checks. No syntax matrix, internal call-count tests or timing assertions.
 - Run repository-required Rust and documentation checks, git diff --check and zdev check base --format json. Execute the documented words example.
+
+## Result
+
+Added shared constructed current input with literal prefix filtering and count; record fields retain immutable input and explicit sources compose with existing collection stages.
+
+Validation:
+
+- Independent whole review 1/correction 0 passed: common reader, callable nodes, typed facts/preparation/execution, located refusals, limits and native/function compatibility.
+- Stable and Rust 1.88 strict Clippy and workspace tests passed (109 integration tests and 8 doctests each); formatting and all eight documented words commands passed.
+- Site check/build passed; rendered seven changed routes in desktop light/dark and mobile light, search and keyboard anchor navigation; 19 pages and 876 internal links checked with no errors.
+- git diff checks and zdev check passed; exact integrated snapshot unchanged after independent verification.
