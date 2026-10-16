@@ -295,15 +295,16 @@ input; unique retains valid declarations and element kinds.
 
 A pipe applies to the completed expression, after arithmetic, Boolean and
 `default` operators. A completed comprehension or conditional can pipe directly.
-Group a bare constructed binding or user function call explicitly:
+A host that knows a binding is constructed accepts its bare name:
 
 ```zirql
-(words) | sort | unique
+words | sort | unique
 (make_words()) | tally
 ```
 
-The second form requires a host that registers `make_words`. Bare names and
-user calls followed by a pipe retain their established native routing. Group
+The word and CSV examples supply this binding fact. The second form requires
+a host that registers `make_words`; grouping also works for bindings. Hosts
+resolve native sources and function results using their own type facts. Group
 any pipeline result before using it in a larger expression, for example
 `length(([w for w in words] | unique))`. Count produces a scalar; a subsequent
 collection stage fails at that stage. The richer `sort(a, descending=true)` and

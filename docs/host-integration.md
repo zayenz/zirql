@@ -73,9 +73,15 @@ wraps that value in the existing `Sort`, `Unique` and `Tally` nodes, keeping
 stage locations and rejecting any stage after `tally`. Pass the active parsing
 budget and the nesting allowance remaining for suffix wrappers. Zincite uses
 this path after lowering a MiniZinc array or comprehension; the generator pipe
-inside brackets remains part of its MiniZinc prefix. Saved constructed values
-and function calls can use explicit grouping, such as `(rows) | sort | unique`.
-Native name and call pipelines retain their host stage routing.
+inside brackets remains part of its MiniZinc prefix. A host with known
+constructed bindings implements `ValueReaderHost::is_constructed_binding` so
+`rows | sort | unique` takes the same route as `(rows) | sort | unique`.
+The default is conservative for native or unknown bindings. This fact does not
+classify lexical locals or function results; their existing preparation can use
+`lower_value_suffix` once their kinds are known. The helper builds the same
+value nodes as the text reader. Native sources retain their host stage routing.
+`is_common_value_call` identifies the fixed shared calls without deciding native
+ordering argument shapes or declared function names.
 
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
 quoted-string helpers that skip whitespace and `#` line comments. Quoted strings

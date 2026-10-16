@@ -126,9 +126,9 @@ later collection stage is invalid. Missing input and incompatible types receive
 located errors. The last two return `["apple", "ash"]` and
 `{"ash": 1, "apple": 2}`. Pipes apply
 left-to-right after ordinary operators, defaults, comprehensions and
-conditionals. Tally is terminal. Group bare constructed names and user calls,
-such as `(words) | unique` or `(make_words()) | tally`, to preserve the native
-routing of an ungrouped name or call. See [collection pipelines](values.md#constructed-collection-pipelines)
+conditionals. Tally is terminal. Known constructed bindings can pipe directly,
+such as `words | unique`. Grouping also works, including for a user call such
+as `(make_words()) | tally`. Hosts retain native routing for native sources. See [collection pipelines](values.md#constructed-collection-pipelines)
 for supported scalar kinds, empty results and grouping in larger expressions.
 
 ## Pipelines and native data

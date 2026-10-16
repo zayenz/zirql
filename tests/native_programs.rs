@@ -5154,6 +5154,9 @@ mod projection {
         fn is_binding(&self, name: &str) -> bool {
             matches!(name, "f" | "one" | "project" | "if" | "words")
         }
+        fn is_constructed_binding(&self, name: &str) -> bool {
+            name == "words"
+        }
         fn is_stage(&self, name: &str) -> bool {
             Host.is_stage(name)
                 || matches!(
@@ -6200,7 +6203,7 @@ mod projection {
                 ]),
             ),
             (
-                "(words) | unique",
+                "words | unique",
                 V::Array(
                     ["ash", "apple", "birch"]
                         .into_iter()
