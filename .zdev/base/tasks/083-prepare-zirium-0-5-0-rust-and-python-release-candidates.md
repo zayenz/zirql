@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-083"
 key = "zirium-050-release-candidate"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -28,13 +28,21 @@ Current Rust/extension/pyproject/uv metadata is 0.4.0 and changelog lacks 0.5.0.
 
 ## Done when
 
-- [ ] Cargo manifests/lock, pyproject/uv metadata, CLI/Python versions, artifact filenames, release validation and 0.5.0 notes agree. Normalized Zirql dependency targets the actual selected 0.1.0 API.
-- [ ] A current local wheel installs into an isolated environment outside source trees, with correct import identity, stubs/py.typed/licenses and a meaningful public query. An sdist installs from its own contents with no stale local extension or undeclared checkout dependency.
-- [ ] Existing supported CLI archive preparation is reviewable, with locally available artifacts checked. Candidate/quality workflow configuration preserves the existing platform coverage without publishing. Hosted artifacts at exact candidate commits are checked during final acceptance when available; unavailable hosted prerequisites and actual registry availability remain explicit late gates.
-- [ ] Required Rust/Python/packaging and affected all-site install/support/reference examples, link and Root desktop/mobile checks pass. Root independently verifies and records separate commits and exact artifacts.
+- [x] Cargo manifests/lock, pyproject/uv metadata, CLI/Python versions, artifact filenames, release validation and 0.5.0 notes agree. Normalized Zirql dependency targets the actual selected 0.1.0 API.
+- [x] A current local wheel installs into an isolated environment outside source trees, with correct import identity, stubs/py.typed/licenses and a meaningful public query. An sdist installs from its own contents with no stale local extension or undeclared checkout dependency.
+- [x] Existing supported CLI archive preparation is reviewable, with locally available artifacts checked. Candidate/quality workflow configuration preserves the existing platform coverage without publishing. Hosted artifacts at exact candidate commits are checked during final acceptance when available; unavailable hosted prerequisites and actual registry availability remain explicit late gates.
+- [x] Required Rust/Python/packaging and affected all-site install/support/reference examples, link and Root desktop/mobile checks pass. Root independently verifies and records separate commits and exact artifacts.
 
 ## Validation
 
 - Run required current-stable Rust formatting/fatal Clippy/tests plus the existing MSRV 1.88 tests proportionate to affected packaging, doctests/warning-clean docs. Rebuild current extension and prove import identity before the full current Python suite and existing lint/type checks.
 - Build/check local native wheel+sdist, clean installs and exact version agreement; validate existing hosted quality/platform/artifact configuration. Attempt hosted candidate artifacts during final acceptance and retain unavailable credentials or runner permissions as an explicit late external gate. Do not expand the matrix.
 - Inspect tag/publication/candidate workflow conditions, actual normalized manifest/locked metadata and licenses/checksums. Run affected site builds/links and Root desktop/mobile checks.
+
+## Result
+
+Prepared consistent Zirium 0.5.0 Rust/Python metadata, candidate-only build workflow and reader/release guides. Independent whole review passed on all19 product paths; this is the pre-predicate packaging milestone, whose core pin and artifacts are superseded by required086087 integration before release acceptance.
+
+Validation:
+
+- Independent stable+Rust1.88 fatal all-target/all-feature checks, doctests/fatal docs; rebuilt CPython3.14 identity and175 tests/2 existing skips/Ruff/ty; fresh wheel/sdist isolated installs with empty sdist caches; normalized two-package nativeCargo1.99 archive verification; macOS11 CLI/license/checksum/strictStableHLO; workflow publisher gates; site build/links and Root desktop/mobile/search all pass. Real unpublished Zirql registry remains085 gate. SnapshotW0867827514051e53/all3guards unchanged, single completion comparison equal.
