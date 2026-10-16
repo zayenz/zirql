@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 94
-- Ready: 2
+- Ready: 1
 - Blocked: 2
-- Done: 90
+- Done: 91
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -97,7 +97,7 @@
 | [base-086](tasks/086-share-scoped-predicate-expressions-and-unnamed-arguments.md) | Share scoped predicate expressions and unnamed arguments | done | — |
 | [base-087](tasks/087-unify-predicate-expressions-across-zirium-and-zincite-releas.md) | Integrate shared predicates into Zincite | ready | base-091, base-082, base-093, base-094 |
 | [base-088](tasks/088-handle-early-stdin-closure-in-zincite-cli-test-helpers.md) | Handle early stdin closure in Zincite CLI test helpers | done | — |
-| [base-089](tasks/089-integrate-shared-predicates-into-zirium-and-its-diff-languag.md) | Integrate shared predicates into Zirium and its diff language | ready | base-091, base-083, base-093, base-094 |
+| [base-089](tasks/089-integrate-shared-predicates-into-zirium-and-its-diff-languag.md) | Integrate shared predicates into Zirium and its diff language | done | base-091, base-083, base-093, base-094 |
 | [base-090](tasks/090-share-destructuring-across-bindings-and-predicate-arguments.md) | Share destructuring across bindings and predicate arguments | done | base-086 |
 | [base-091](tasks/091-read-both-comprehension-forms-and-shared-query-expressions-i.md) | Read both comprehension forms and shared query expressions in Zirql | done | base-090 |
 | [base-092](tasks/092-expose-the-shared-native-predicate-argument-reader.md) | Expose the shared native predicate argument reader | done | base-091 |
