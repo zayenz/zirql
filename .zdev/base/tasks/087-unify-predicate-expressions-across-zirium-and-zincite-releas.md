@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "high"
-blocked_by = ["base-086", "base-082"]
+blocked_by = ["base-090", "base-082"]
 +++
 # Integrate shared predicates into Zincite
 
@@ -17,7 +17,7 @@ Zincite uses the reviewed shared named and unnamed predicate language in all its
 
 ## Context
 
-Consume the actual independently reviewed Zirql 0.1.0 source and API from base-086 and the packaging contracts from base-082. Read the brief's complete predicate inventory and scope rules. Zincite program/composition.rs currently calls the hostless suffix reader and separately parses native predicates. functions.rs and program/builder.rs/free-name walkers prepare calls and captures. Public Query and legacy Program readers remain distinct entry paths and must use the same predicate rules. filter_elements currently stores a fixed Comparison in language.rs and makes scalar decisions in structured.rs; general scalar bodies must use shared execution under the existing Data expression policy. The read-only inventory at /private/tmp/zirql-predicate-zincite-inventory.json records these current seams; inspect source as authority. Zirium's separate integration task owns its adapter, and final acceptance checks all three hosts together.
+Consume the actual independently reviewed Zirql 0.1.0 scoped-predicate and shared-pattern API from base-086/base-090 and the packaging contracts from base-082. Read the brief's Shared destructuring patterns section. Adapt Zincite's natural expression lowering and all pattern/generator walkers so let bindings, typed parameters, predicate arguments, comprehensions and value-match arms use those same tuple/list rules, including the closed Data policy where applicable. Read the brief's complete predicate inventory and scope rules. Zincite program/composition.rs currently calls the hostless suffix reader and separately parses native predicates. functions.rs and program/builder.rs/free-name walkers prepare calls and captures. Public Query and legacy Program readers remain distinct entry paths and must use the same predicate rules. filter_elements currently stores a fixed Comparison in language.rs and makes scalar decisions in structured.rs; general scalar bodies must use shared execution under the existing Data expression policy. The read-only inventory at /private/tmp/zirql-predicate-zincite-inventory.json records these current seams; inspect source as authority. Zirium's separate integration task owns its adapter, and final acceptance checks all three hosts together.
 
 ## Boundaries
 
@@ -27,6 +27,7 @@ Consume the actual independently reviewed Zirql 0.1.0 source and API from base-0
 
 ## Done when
 
+- [ ] Shared exact tuple/list and discarded-prefix list patterns work consistently in existing let bindings, function/predicate arguments, comprehension binders and value-match arms. Pattern mismatch errors and match fallback agree with core; predicate _ still reads the whole subject. Preserve native views and Data limits without inventing structure.
 - [ ] Constructed/native filter, paths target, native match where and scalar filter_elements accept named and implicit _ forms using shared Boolean/type/purity/call/scope/budget rules. Public Query, legacy Program and shared-reader routes agree. Match guards retain original input plus separate named captures; path predicates receive the candidate declaration.
 - [ ] Saved/nested/declared-function contexts where supported retain calls and lexical captures. Nested predicates rebind _, explicit outer names remain usable, wildcard patterns remain unchanged, typed-empty invalid predicates are refused and failures retain source locations. Host domain leaves remain usable; Data contexts still refuse report-only calls and effects.
 - [ ] A few existing-style library/CLI controls demonstrate filter-comprehension equivalence and order, prepared capture/function scope, representative path/match and scalar edit behavior, empty/type/purity/budget refusal and later-error empty stdout. Source-preserving scalar edits keep their existing candidate/write safeguards. No form-by-position matrix.
@@ -35,5 +36,5 @@ Consume the actual independently reviewed Zirql 0.1.0 source and API from base-0
 ## Validation
 
 - Run required fmt, fatal all-target workspace Clippy, workspace tests and warning-fatal docs. Add only focused public-behavior coverage of the exhibited defect, using existing query/CLI and source-edit controls.
-- Replay a few inline/file/library programs and later-error buffering, including an actual scalar edit candidate with preserved source and one refused body. Inspect every call site and exhaustive walker against the brief inventory.
+- Replay a compact shared-pattern program through inline/file/library paths, including a short-list refusal with empty stdout; avoid a form-by-position matrix. Replay a few inline/file/library programs and later-error buffering, including an actual scalar edit candidate with preserved source and one refused body. Inspect every call site and exhaustive walker against the brief inventory.
 - Run affected site check/build/link checks and Root desktop/mobile/search review. Inspect dependency identities and package requirements; base-084 owns final graph/artifacts/hosted acceptance. Do not claim source installs as public registry proof.
