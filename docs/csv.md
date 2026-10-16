@@ -51,6 +51,16 @@ uses the unnamed row argument. Both agree with
 `[p for p in rows if p.active == "yes"]`. Predicates can capture earlier bindings,
 such as `let wanted = "yes"; rows | filter(_.active == wanted)`.
 
+A selected field can feed collection stages directly:
+
+```sh
+cargo run --locked --example csv -- '[outer.items | filter(_ > 1) for outer in [{"items": [1, 2, 3]}]]' examples/csv/people.csv
+```
+
+This prints `[[2,3]]`. Grouping `outer.items` gives the same result. Within a
+nested filter, `_` denotes the inner element and named outer arguments remain
+available, as in `filter(outer => length(outer.items | filter(_ > outer.minimum)) > 0)`.
+
 CSV lets and predicates also use shared destructuring:
 
 ```sh
@@ -216,3 +226,5 @@ whose identity or shape ordinary JSON would discard.
 The [host integration guide](host-integration.md) explains the adapter traits;
 [embedding programs](embedding-programs.md) covers the larger native-program API.
 The CSV example needs only the value-reader and value-query interfaces.
+It selects `FieldPipelineSource::Constructed` so fields use the same shared
+collection stages as other constructed sources.

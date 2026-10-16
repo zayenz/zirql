@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-093"
 key = "consistent-field-pipeline-routing"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "high"
@@ -27,13 +27,22 @@ The core5b CSV program [outer.items | filter(_ > 1) for outer in [{"items":[1,2,
 
 ## Done when
 
-- [ ] Ungrouped and grouped constructed field prefixes followed by existing common suffixes have the same shared value behavior. The reported CSV field/filter example returns [[2,3]] in both forms, and a named outer capture in a nested predicate retains its scope and actual element subject.
-- [ ] Existing native capture field pipelines and native operation continuations remain usable with typed native results and identity/ownership preserved. The reader uses a coherent shared continuation boundary rather than consumer-specific generic parsing; scalar-only readers such as CSV need no native query implementation.
-- [ ] Original source ranges, lexical captures, all-written/typed-empty admission, purity and one cumulative work/result/nesting allowance survive the changed route, including located invalid field or predicate refusal and error restoration.
-- [ ] Required Rust/MSRV/fatal docs checks and affected site/link/Root desktop/mobile review pass. Document the current shared composition and narrow adapter contract; retain runnable CSV and native capture examples without a grouping-only workaround. Root independently accepts and pushes the actual revision before final consumer pin/verification.
+- [x] Ungrouped and grouped constructed field prefixes followed by existing common suffixes have the same shared value behavior. The reported CSV field/filter example returns [[2,3]] in both forms, and a named outer capture in a nested predicate retains its scope and actual element subject.
+- [x] Existing native capture field pipelines and native operation continuations remain usable with typed native results and identity/ownership preserved. The reader uses a coherent shared continuation boundary rather than consumer-specific generic parsing; scalar-only readers such as CSV need no native query implementation.
+- [x] Original source ranges, lexical captures, all-written/typed-empty admission, purity and one cumulative work/result/nesting allowance survive the changed route, including located invalid field or predicate refusal and error restoration.
+- [x] Required Rust/MSRV/fatal docs checks and affected site/link/Root desktop/mobile review pass. Document the current shared composition and narrow adapter contract; retain runnable CSV and native capture examples without a grouping-only workaround. Root independently accepts and pushes the actual revision before final consumer pin/verification.
 
 ## Validation
 
 - Reuse the isolated grouped/ungrouped CSV pair and a nearby public native fixture for one named nested field-filter body; add focused assertions only for this concrete routing defect. Preserve existing native capture names/count continuation controls and native identity/owner tests; no syntax matrix or separate cross-consumer replay campaign.
 - Use a typed empty field source and a located invalid field/predicate or low-limit reentry refusal to check unchanged admission and budgets. Inspect both actual consumer call sequences read-only; their source/runtime integration remains in base087/base089.
 - Run cargo fmt --all -- --check; fatal workspace/all-target Clippy; workspace tests; Rust1.88 tests; warning-fatal docs/doctests; git diff --check and zdev check base --format json. Run affected site check/build/local links and Root desktop/mobile review. Package contents or examples changed by the fix are checked proportionally; final combined registry/installation/CI acceptance remains084.
+
+## Result
+
+Compose grouped and ungrouped fields through shared constructed or prepared native pipelines while retaining raw native captures and set continuation.
+
+Validation:
+
+- Independent whole review and focused correction recheck passed; stable fmt, fatal Clippy, workspace/MSRV tests, fatal docs/doctests and zdev check pass.
+- Runnable CSV pair, native capture/union/typed-empty/refusal controls and exact desktop/mobile docs/link proof pass.

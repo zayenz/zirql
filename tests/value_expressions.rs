@@ -3957,6 +3957,9 @@ impl zirql::ValueReaderHost for WordInput {
     type SetOperator = ();
     type Emitter = ();
     type Predicate = ();
+    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
+        zirql::FieldPipelineSource::Constructed
+    }
     fn is_binding(&self, name: &str) -> bool {
         name == "words"
     }
@@ -6508,6 +6511,30 @@ fn scoped_filters_match_comprehensions_and_rebind_only_the_unnamed_subject() {
     let typed_empty = declared(
         V::Array(vec![]),
         D::Sequence(Box::new(D::Record(vec![("active".into(), D::String)]))),
+    );
+    let empty_fields = || {
+        declared(
+            V::Array(vec![]),
+            D::Sequence(Box::new(D::Record(vec![(
+                "items".into(),
+                D::Sequence(Box::new(D::Integer)),
+            )]))),
+        )
+    };
+    assert_eq!(
+        run(
+            "[p.items | filter(_ > 1) for p in words]",
+            empty_fields(),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![])
+    );
+    let invalid = "[p.missing | filter(_ > 1) for p in words]";
+    let error = run(invalid, empty_fields(), &mut ample()).unwrap_err();
+    assert!(
+        matches!(error.location, Location::Query(ref range) if &invalid[range.clone()] == "p.missing"),
+        "{error}"
     );
     for source in [
         r#"filter(_.active)"#,

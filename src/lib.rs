@@ -61,16 +61,17 @@ pub use projection::{
     native_predicate_value_types, native_value_types, projection_types,
 };
 pub use reader::{
-    CommonStatement, ReadExpression, ResolvedFunctionSignature, ResolvedPatternFunctionSignature,
-    SignatureType, UnresolvedFunctionDeclaration, UnresolvedFunctionParameter,
-    UnresolvedPatternFunctionDeclaration, UnresolvedPatternFunctionParameter, ValueReaderHost,
-    ValueSuffix, dispose_native_value, dispose_unresolved_functions,
-    dispose_unresolved_pattern_functions, is_common_value_call, lower_value_suffix,
-    read_constructed_filter, read_function_declaration, read_match, read_native_expression,
-    read_native_predicate_argument, read_paths, read_pattern, read_pattern_function_declaration,
-    read_pattern_let, read_predicate_argument, read_projection, read_statement_prefix,
-    read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
-    read_value_expression, read_value_expression_in_scope, read_value_suffix,
+    CommonStatement, FieldPipelineSource, ReadExpression, ResolvedFunctionSignature,
+    ResolvedPatternFunctionSignature, SignatureType, UnresolvedFunctionDeclaration,
+    UnresolvedFunctionParameter, UnresolvedPatternFunctionDeclaration,
+    UnresolvedPatternFunctionParameter, ValueReaderHost, ValueSuffix, dispose_native_value,
+    dispose_unresolved_functions, dispose_unresolved_pattern_functions, is_common_value_call,
+    lower_value_suffix, read_constructed_filter, read_function_declaration, read_match,
+    read_native_expression, read_native_predicate_argument, read_paths, read_pattern,
+    read_pattern_function_declaration, read_pattern_let, read_predicate_argument, read_projection,
+    read_statement_prefix, read_unresolved_function_declaration,
+    read_unresolved_pattern_function_declaration, read_value_expression,
+    read_value_expression_in_scope, read_value_suffix,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,

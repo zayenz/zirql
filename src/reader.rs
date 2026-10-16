@@ -15,6 +15,17 @@ pub type ReadExpression<H> = Expression<
     <H as ValueReaderHost>::Emitter,
 >;
 
+/// How an ordinary field value continues into a pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldPipelineSource {
+    /// Read a dotted name as native capture fields before native stages.
+    NativeCapture,
+    /// Apply common constructed collection stages to the selected value.
+    Constructed,
+    /// Pass the selected value to the host's declared explicit-source argument.
+    ValueArgument,
+}
+
 /// Registered domain grammar leaves. Shared readers own values, projection,
 /// native composition and Boolean predicate wrappers; hooks consume one leaf.
 pub trait ValueReaderHost {
@@ -236,6 +247,17 @@ pub trait ValueReaderHost {
     /// Function-bearing frontends opt in; ordinary readers preserve their path.
     fn retains_native_values(&self) -> bool {
         false
+    }
+
+    /// Select field continuation for ordinary value expressions, including
+    /// grouped fields. The default retains native capture pipelines.
+    /// Constructed-only hosts choose [`FieldPipelineSource::Constructed`]. Hosts
+    /// that execute [`Self::value_source`] with the active prepared argument
+    /// runner choose [`FieldPipelineSource::ValueArgument`]. This is independent
+    /// of whether native results are retained by [`Self::retains_native_values`].
+    /// Explicit native readers keep their native field postfixes.
+    fn field_pipeline_source(&self) -> FieldPipelineSource {
+        FieldPipelineSource::NativeCapture
     }
 
     /// Read one recognized domain call after its semantic callee name.
@@ -2317,9 +2339,12 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             .expect("reader byte boundary");
         probe.word().is_ok_and(|word| word.value == "match") && probe.consume('{')
     }
-    // A dotted scalar name stays a scalar field access unless it feeds a native
-    // pipeline. Explicit native readers always admit the same postfix chain.
+    // Default readers retain their native capture postfix route. Value-capable
+    // and constructed-only readers select fields through the value tree.
     fn field_pipeline(&self) -> bool {
+        if self.host.field_pipeline_source() != FieldPipelineSource::NativeCapture {
+            return false;
+        }
         let mut probe = self
             .reader
             .at(self.reader.position())
@@ -2496,6 +2521,13 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             self.depth(depth + chain)?;
         }
         if minimum == 0 {
+            if matches!(left.value().value, K::Field { .. })
+                && self.host.field_pipeline_source() == FieldPipelineSource::ValueArgument
+                && self.reader.consume('|')
+            {
+                let value = self.value_pipeline(left.into_value(), depth + chain)?;
+                return self.native_sets(value, depth + chain);
+            }
             return self.value_suffix(left.into_value(), depth + chain);
         }
         Ok(left.into_value())
@@ -2950,18 +2982,30 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             start..self.reader.position(),
         )?;
         if self.reader.consume('|') {
-            let range = call.range.clone();
-            let stage = self.host.value_source(call, range.clone())?;
-            let source = Located::new(
-                ExpressionKind::Sequence {
-                    input: Box::new(Located::new(ExpressionKind::Input, start..start)),
-                    steps: vec![Located::new(ExpressionStep::Stage(stage), range.clone())],
-                },
-                range,
-            );
-            return self.native_tail(source, depth, true);
+            return self.value_pipeline(call, depth);
         }
         Ok(call)
+    }
+    fn value_pipeline(
+        &mut self,
+        value: ValueExpression<ReadExpression<H>>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let value = ValueGuard::new(value);
+        self.depth(depth)?;
+        self.slots::<ReadExpression<H>>(2)?;
+        self.slots::<Located<ExpressionStep<H::Stage, H::Emitter>>>(1)?;
+        let range = value.value().range.clone();
+        let start = range.start;
+        let stage = self.host.value_source(value.into_value(), range.clone())?;
+        let source = Located::new(
+            ExpressionKind::Sequence {
+                input: Box::new(Located::new(ExpressionKind::Input, start..start)),
+                steps: vec![Located::new(ExpressionStep::Stage(stage), range.clone())],
+            },
+            range,
+        );
+        self.native_tail(source, depth, true)
     }
     fn fields(
         &mut self,

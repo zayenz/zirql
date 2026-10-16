@@ -5368,6 +5368,16 @@ mod projection {
         type SetOperator = ();
         type Emitter = ();
         type Predicate = Guard;
+        fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
+            zirql::FieldPipelineSource::ValueArgument
+        }
+        fn value_source(
+            &mut self,
+            value: zirql::ValueExpression<Query>,
+            range: Range<usize>,
+        ) -> Result<Stage, QueryError> {
+            Host.value_source(value, range)
+        }
         fn is_binding(&self, name: &str) -> bool {
             self.0.contains(&name)
         }
@@ -6983,6 +6993,49 @@ mod projection {
         zirql::dispose_expression(bare);
         zirql::dispose_expression(field);
         zirql::dispose_match(matching);
+    }
+
+    #[test]
+    fn field_value_arguments_feed_native_stages_with_report_results() {
+        use zirql::{FunctionLimits, FunctionRequest};
+        let bindings = Bindings::new([(
+            Located::new("m".into(), 0..1),
+            Value::Capture(NativeCapture {
+                fields: vec![("add".into(), Value::Subjects(vec!["alpha"]))],
+            }),
+        )])
+        .unwrap();
+        for (text, expected) in [
+            ("m.add | names | one", V::String("alpha".into())),
+            ("(m.add) | names | one", V::String("alpha".into())),
+            (
+                "m.add | names union (m.add | names)",
+                V::Array(vec![V::String("alpha".into())]),
+            ),
+        ] {
+            let mut allowance = budget();
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let value = zirql::read_value_expression(
+                &mut reader,
+                &mut ArgumentScope(&["m"]),
+                &mut allowance,
+                32,
+            )
+            .unwrap();
+            assert!(reader.remaining().is_empty());
+            let result = FunctionRequest::prepare(
+                &[],
+                &Host,
+                &mut (),
+                &mut allowance,
+                FunctionLimits { active_depth: 1 },
+            )
+            .unwrap()
+            .evaluate(&value, &bindings)
+            .unwrap();
+            assert_eq!(result, Value::Constructed(expected));
+            zirql::dispose_native_value(value);
+        }
     }
 
     #[test]

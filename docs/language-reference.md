@@ -219,7 +219,15 @@ located errors. The last two return `["apple", "ash"]` and
 left-to-right after ordinary operators, defaults, comprehensions and
 conditionals. Tally is terminal. Known constructed bindings can pipe directly,
 such as `words | unique`. Grouping also works, including for a user call such
-as `(make_words()) | tally`. Hosts retain native routing for native sources. See [collection pipelines](values.md#constructed-collection-pipelines)
+as `(make_words()) | tally`. Fields compose with the same stages:
+
+```zirql
+[outer.items | filter(_ > 1) for outer in [{"items": [1, 2, 3]}]]
+```
+
+This returns `[[2,3]]`; grouping `outer.items` gives the same result. A nested
+filter gives `_` its current element and keeps named outer arguments available.
+Native fields retain their host's stage meanings and native values. See [collection pipelines](values.md#constructed-collection-pipelines)
 for supported scalar kinds, empty results and grouping in larger expressions.
 
 ## Pipelines and native data

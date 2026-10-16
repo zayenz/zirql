@@ -205,6 +205,24 @@ value nodes as the text reader. Native sources retain their host stage routing.
 `is_common_value_call` identifies the fixed shared calls without deciding native
 ordering argument shapes or declared function names.
 
+`ValueReaderHost::field_pipeline_source` selects how an ordinary field prefix
+such as `outer.items | filter(_ > 1)` continues:
+
+- `FieldPipelineSource::Constructed` uses the common constructed suffixes.
+  CSV and the word example use this route and need no native query evaluator.
+- `FieldPipelineSource::ValueArgument` retains the shared `Field` value and
+  passes it to `value_source` before reading the host's native stages. Choose
+  this when the adapter executes that declared argument with the active
+  prepared runner. Its existing kind checks decide which stages accept the
+  selected value, including constructed values inside native reports.
+- The default, `FieldPipelineSource::NativeCapture`, retains dotted-name
+  native capture pipelines for direct native evaluation and standalone
+  projections. `read_native_expression` always keeps native field postfixes.
+
+The constructed and value-argument routes accept grouped and ungrouped fields
+equally. This hook describes the field source's execution path. It does not
+classify names or change `read_value_suffix`, which always reads constructed stages.
+
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
 quoted-string helpers that skip whitespace, `#`/`%` line comments and nonnested
 block comments. `word()` returns single-quoted names without their quotes while
@@ -734,13 +752,18 @@ types, calls and conditional expressions; see [function
 embedding](embedding-programs.md#call-typed-pure-functions).
 
 A frontend that retains native expression results opts into
-`ValueReaderHost::retains_native_values`. Its `value_source` hook lowers an
-explicit function result at the start of a native pipeline to a host stage with
-one declared argument. Mark that stage with `ProjectionHost::is_explicit_source`;
+`ValueReaderHost::retains_native_values`. This chooses `NativeValue` rather than
+`NativeQuery` result representation independently of `field_pipeline_source`.
+The `value_source` hook lowers an explicit function result, or a field selected
+with `FieldPipelineSource::ValueArgument`, to a host stage with one declared
+argument. Mark that stage with `ProjectionHost::is_explicit_source`;
 it must ignore the runner's absent input placeholder and evaluate its declared
 argument. This prevents a source such as `identity(op) | children` from reading
-an ambient subject. Register pure native primitives through the same argument
-runner and admission hooks.
+an ambient subject. Register the value in `value_arguments` and execute it with
+`NativeArguments::evaluate_native` so native owners and constructed contracts
+survive selection. Keep this path available in ordinary reports as well as
+functions and predicates. Register pure native primitives through the same
+argument runner and admission hooks.
 
 Native `in` sources reuse `subjects` and `subject_kind`. Enumeration preserves
 the host's sequence order, including explicit empty-sequence kinds. Each binder

@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 94
-- Ready: 2
+- Ready: 1
 - Blocked: 4
-- Done: 88
+- Done: 89
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -101,5 +101,5 @@
 | [base-090](tasks/090-share-destructuring-across-bindings-and-predicate-arguments.md) | Share destructuring across bindings and predicate arguments | done | base-086 |
 | [base-091](tasks/091-read-both-comprehension-forms-and-shared-query-expressions-i.md) | Read both comprehension forms and shared query expressions in Zirql | done | base-090 |
 | [base-092](tasks/092-expose-the-shared-native-predicate-argument-reader.md) | Expose the shared native predicate argument reader | done | base-091 |
-| [base-093](tasks/093-compose-field-access-with-shared-pipeline-suffixes-consisten.md) | Compose field access with shared pipeline suffixes consistently | ready | base-092 |
+| [base-093](tasks/093-compose-field-access-with-shared-pipeline-suffixes-consisten.md) | Compose field access with shared pipeline suffixes consistently | done | base-092 |
 | [base-094](tasks/094-preserve-native-operand-kinds-through-shared-predicate-scope.md) | Preserve native operand kinds through shared predicate scopes | ready | base-092 |

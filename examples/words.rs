@@ -18,6 +18,10 @@ impl ValueReaderHost for Words {
     type Emitter = ();
     type Predicate = ();
 
+    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
+        zirql::FieldPipelineSource::Constructed
+    }
+
     fn is_binding(&self, name: &str) -> bool {
         name == "words"
     }

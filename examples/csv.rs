@@ -411,6 +411,9 @@ impl ValueReaderHost for CsvHost<'_> {
     type SetOperator = ();
     type Emitter = ();
     type Predicate = ();
+    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
+        zirql::FieldPipelineSource::Constructed
+    }
     fn is_binding(&self, name: &str) -> bool {
         name == "rows"
             || self
@@ -747,6 +750,22 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
 
     #[test]
     fn fixture_queries_keep_decoded_strings_saved_values_and_written_order() {
+        let fields = r#"[outer.items | filter(_ > 1) for outer in [{"items": [1, 2, 3]}]]"#;
+        assert_eq!(text(fields, &people()), "[[2,3]]\n");
+        assert_eq!(
+            text(
+                r#"[(outer.items) | filter(_ > 1) for outer in [{"items": [1, 2, 3]}]]"#,
+                &people()
+            ),
+            text(fields, &people())
+        );
+        assert_eq!(
+            text(
+                r#"[{"items": [1, 2, 3], "minimum": 1}] | filter(outer => length(outer.items | filter(_ > outer.minimum)) == 2) | count"#,
+                &people()
+            ),
+            "1\n"
+        );
         assert_eq!(
             text("let xs = [1,2,3]; [x*2 for x in xs if x>1]", &people()),
             "[4,6]\n"
