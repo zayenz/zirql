@@ -43,44 +43,52 @@ pub trait ValueReaderHost {
     /// Parse one domain stage in the current lexical scope. An adapter that
     /// starts a nested common value reader carries these borrowed names into
     /// that reader's binding facts. This exposes names, never caller values.
-    /// Existing hosts keep their ordinary stage parser.
+    /// `nesting` is the remaining allowance for argument expressions. Forward
+    /// it with the same budget when reentering a shared reader.
     fn parse_stage_in_scope(
         &mut self,
         reader: &mut ArgumentReader<'_>,
         _locals: &[&str],
         budget: &mut Budget,
+        _nesting: usize,
     ) -> Result<ExpressionStep<Self::Stage, Self::Emitter>, QueryError> {
         self.parse_stage(reader, budget)
     }
     /// Preserve the same lexical names when a domain predicate has value
-    /// arguments of its own. Existing predicate parsers remain unchanged.
+    /// arguments of its own. Forward the supplied remaining nesting allowance
+    /// with the same budget when reentering a shared reader.
     fn parse_predicate_leaf_in_scope(
         &mut self,
         reader: &mut ArgumentReader<'_>,
         _locals: &[&str],
         budget: &mut Budget,
+        _nesting: usize,
     ) -> Result<Self::Predicate, QueryError> {
         self.parse_predicate_leaf(reader, budget)
     }
     /// Parse an existing domain leaf inside a predicate argument. The optional
     /// pattern selects names while `_` retains the whole subject. Hosts with dynamic
     /// value arguments can retain each through `PredicateArgument::bind_value`.
+    /// Argument readers forward `nesting` and the same budget.
     fn parse_predicate_leaf_in_argument(
         &mut self,
         reader: &mut ArgumentReader<'_>,
         _argument: Option<&crate::Pattern>,
         locals: &[&str],
         budget: &mut Budget,
+        nesting: usize,
     ) -> Result<Self::Predicate, QueryError> {
-        self.parse_predicate_leaf_in_scope(reader, locals, budget)
+        self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting)
     }
     /// Admit a host's constructed filter spelling before native predicate parsing.
     /// Return `None` without consuming input to keep the ordinary native filter.
+    /// Nested value readers use the supplied remaining `nesting` and budget.
     fn parse_constructed_filter_in_scope(
         &mut self,
         _reader: &mut ArgumentReader<'_>,
         _locals: &[&str],
         _budget: &mut Budget,
+        _nesting: usize,
     ) -> Result<Option<Self::Stage>, QueryError> {
         Ok(None)
     }
@@ -110,21 +118,6 @@ pub trait ValueReaderHost {
             range,
             "predicate expressions are unsupported by this host",
         ))
-    }
-    /// Lower one predicate body in the host's expression syntax. `None` leaves
-    /// the cursor unchanged and selects the shared grammar. The names include
-    /// `_` and every pattern name, alongside enclosing lexical names.
-    fn parse_predicate_value(
-        &mut self,
-        reader: &mut ArgumentReader<'_>,
-        locals: &[&str],
-        budget: &mut Budget,
-        nesting: usize,
-    ) -> Result<Option<ValueExpression<ReadExpression<Self>>>, QueryError>
-    where
-        Self: Sized,
-    {
-        self.parse_function_value(reader, locals, budget, nesting)
     }
     fn filter(&mut self, predicate: Predicate<Self::Predicate>, range: Range<usize>)
     -> Self::Stage;
@@ -245,12 +238,15 @@ pub trait ValueReaderHost {
         false
     }
 
-    /// Lower a function's local initializer or final value using host syntax.
-    /// The cursor and lexical names refer to the original source. Consume one
-    /// expression, leaving its `;` or closing `}` to the common declaration
-    /// reader. `None` selects the existing common value grammar.
-    fn parse_function_value(
+    /// Read one recognized domain call after its semantic callee name.
+    /// The cursor is at `(`. `None` must leave it unchanged so the shared
+    /// reader can read an ordinary function call. This hook owns only a domain
+    /// signature, such as `enum_member(TypeIdentifier, "member")`, never a
+    /// generic expression. Expression-valued arguments reenter
+    /// [`read_value_expression_in_scope`] with these locals and remaining nesting.
+    fn parse_domain_call(
         &mut self,
+        _callee: Located<&str>,
         _reader: &mut ArgumentReader<'_>,
         _locals: &[&str],
         _budget: &mut Budget,
@@ -302,8 +298,10 @@ pub fn read_pattern(
 ) -> Result<crate::Pattern, QueryError> {
     PatternReader {
         reader,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
     }
     .pattern(0)
 }
@@ -320,38 +318,43 @@ pub fn read_pattern_let(
     budget: &mut Budget,
     nesting: usize,
 ) -> Result<Option<crate::Pattern>, QueryError> {
-    let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
+    let nesting = nesting
+        .min(crate::MAX_NESTING)
+        .min(budget.remaining_nesting());
+    let mut probe = reader.at(reader.position())?;
     if !probe.keyword("let")
         || !probe
             .remaining()
-            .starts_with(|ch: char| ch.is_whitespace() || ch == '#')
+            .starts_with(|ch: char| ch.is_whitespace() || matches!(ch, '#' | '%' | '/'))
     {
         return Ok(None);
     }
-    probe.skip_whitespace();
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
+    probe.skip_trivia()?;
+    let scan_start = probe.position();
+    let mut stack = Vec::new();
     let mut declaration = false;
     while let Some(ch) = probe.remaining().chars().next() {
-        if quoted {
-            probe.advance(ch.len_utf8())?;
-            if ch == '"' && !escaped {
-                quoted = false;
-            }
-            escaped = ch == '\\' && !escaped;
+        if probe.protected_span()? {
             continue;
         }
         match ch {
-            '"' => quoted = true,
-            '#' => {
-                probe.skip_whitespace();
-                continue;
+            '(' | '[' | '{' => {
+                if stack.len() >= nesting.min(crate::MAX_NESTING) {
+                    return Err(probe.error("pattern nesting limit exceeded"));
+                }
+                stack.push(match ch {
+                    '(' => ')',
+                    '[' => ']',
+                    _ => '}',
+                });
             }
-            '(' | '{' => depth += 1,
-            ')' | '}' if depth > 0 => depth -= 1,
-            ';' | '}' if depth == 0 => break,
-            '=' if depth == 0 => {
+            ')' | ']' | '}' if !stack.is_empty() => {
+                if stack.pop() != Some(ch) {
+                    return Err(probe.error("mismatched pattern delimiter"));
+                }
+            }
+            ';' | '}' if stack.is_empty() => break,
+            '=' if stack.is_empty() => {
                 declaration =
                     !(probe.remaining().starts_with("==") || probe.remaining().starts_with("=>"));
                 break;
@@ -363,6 +366,10 @@ pub fn read_pattern_let(
     if !declaration {
         return Ok(None);
     }
+    budget.charge(
+        probe.position() - scan_start,
+        Location::Query(scan_start..probe.position()),
+    )?;
     reader.keyword("let");
     let pattern = PatternGuard(Some(
         PatternReader {
@@ -636,7 +643,7 @@ pub fn read_statement_prefix(
     reader: &mut ArgumentReader<'_>,
     budget: &mut Budget,
 ) -> Result<Option<CommonStatement>, QueryError> {
-    let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
+    let mut probe = reader.at(reader.position())?;
     let Ok(word) = probe.word() else {
         return Ok(None);
     };
@@ -731,8 +738,8 @@ pub fn read_function_declaration<H: ValueReaderHost, T>(
 
 /// Read common function declarations while retaining located host/nominal
 /// names. Resolve their small headers once against the current request's owner;
-/// expression trees remain reusable. Host lowering uses
-/// [`ValueReaderHost::parse_function_value`].
+/// expression trees remain reusable. Domain calls use
+/// [`ValueReaderHost::parse_domain_call`].
 ///
 /// # Errors
 /// Malformed declarations, unsupported type structure and limits are located.
@@ -742,15 +749,17 @@ pub fn read_unresolved_function_declaration<H: ValueReaderHost>(
     budget: &mut Budget,
     nesting: usize,
 ) -> Result<Option<UnresolvedFunctionDeclaration<ReadExpression<H>>>, QueryError> {
-    let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
+    let mut probe = reader.at(reader.position())?;
     if !probe.keyword("fn") || probe.word().is_err() || !probe.consume('(') {
         return Ok(None);
     }
     let mut parser = Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals: Vec::new(),
     };
     parser.reader.keyword("fn");
@@ -765,9 +774,10 @@ pub fn read_unresolved_function_declaration<H: ValueReaderHost>(
             let range = parameter.range.start..parser.reader.position();
             parser.slots::<UnresolvedFunctionParameter>(1)?;
             parser.slots::<&str>(1)?;
-            parser
-                .locals
-                .push(&parser.reader.source()[parameter.range.clone()]);
+            parser.locals.push(crate::parser::identifier_text(
+                parser.reader.source(),
+                parameter.range.clone(),
+            ));
             parameters.push(Located::new(
                 UnresolvedFunctionParameter {
                     name: parameter,
@@ -793,7 +803,7 @@ pub fn read_unresolved_function_declaration<H: ValueReaderHost>(
         value: Located::new(K::Literal(V::Absent), 0..0),
     }));
     while let Some(CommonStatement::Let(name)) = {
-        let mut probe = ArgumentReader::new(parser.reader.source(), parser.reader.position())?;
+        let mut probe = parser.reader.at(parser.reader.position())?;
         if probe.keyword("let") && probe.word().is_ok() && probe.consume('=') {
             read_statement_prefix(parser.reader, parser.budget)?
         } else {
@@ -804,9 +814,10 @@ pub fn read_unresolved_function_declaration<H: ValueReaderHost>(
         parser.reader.expect(';')?;
         parser.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(1)?;
         parser.slots::<&str>(1)?;
-        parser
-            .locals
-            .push(&parser.reader.source()[name.range.clone()]);
+        parser.locals.push(crate::parser::identifier_text(
+            parser.reader.source(),
+            name.range.clone(),
+        ));
         guard
             .0
             .as_mut()
@@ -854,15 +865,17 @@ pub fn read_unresolved_pattern_function_declaration<H: ValueReaderHost>(
     budget: &mut Budget,
     nesting: usize,
 ) -> Result<Option<UnresolvedPatternFunctionDeclaration<ReadExpression<H>>>, QueryError> {
-    let mut probe = ArgumentReader::new(reader.source(), reader.position())?;
+    let mut probe = reader.at(reader.position())?;
     if !probe.keyword("fn") || probe.word().is_err() || !probe.consume('(') {
         return Ok(None);
     }
     let mut parser = Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals: Vec::new(),
     };
     parser.reader.keyword("fn");
@@ -996,12 +1009,34 @@ pub fn read_value_expression<H: ValueReaderHost>(
     budget: &mut Budget,
     nesting: usize,
 ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+    read_value_expression_in_scope(reader, host, &[], budget, nesting)
+}
+
+/// Read a shared expression with borrowed lexical names from a host argument.
+/// Names classify values before domain stage names; returned trees own names
+/// and host payloads. The caller supplies one request budget and the remaining
+/// nesting allowance. Reentry shares the active budget depth and cannot reset
+/// an enclosing reader's allowance. Contextual effects and whole-tree admission
+/// remain host rules.
+///
+/// # Errors
+/// Malformed syntax, literals and exhausted allowances retain original byte ranges.
+pub fn read_value_expression_in_scope<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    locals: &[&str],
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+    let locals = copy_reader_locals(locals, budget, reader.position())?;
     Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
-        locals: Vec::new(),
+        locals,
     }
     .expression(0, 0)
 }
@@ -1108,8 +1143,10 @@ pub fn read_value_suffix<H: ValueReaderHost>(
     let mut parser = Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals,
     };
     parser.value_suffix(value.into_value(), 0)
@@ -1164,8 +1201,10 @@ pub fn read_predicate_argument<H: ValueReaderHost>(
     let mut parser = Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals,
     };
     parser.predicate_argument(0)
@@ -1185,8 +1224,10 @@ pub fn read_native_expression<H: ValueReaderHost>(
     Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals: Vec::new(),
     }
     .native_expression(0)
@@ -1206,8 +1247,10 @@ pub fn read_match<H: ValueReaderHost>(
     Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals: Vec::new(),
     }
     .matching(0)
@@ -1228,8 +1271,10 @@ pub fn read_paths<H: ValueReaderHost>(
     Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals: Vec::new(),
     }
     .paths(0)
@@ -1248,8 +1293,10 @@ pub fn read_projection<H: ValueReaderHost>(
     Reader {
         reader,
         host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
         budget,
-        nesting: nesting.min(crate::MAX_NESTING),
         locals: Vec::new(),
     }
     .projection(0)
@@ -1287,7 +1334,7 @@ impl PatternReader<'_, '_, '_> {
         if depth >= self.nesting {
             return Err(self.reader.error("pattern nesting limit exceeded"));
         }
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         self.slot()?;
         let kind = if self.reader.consume('(') {
@@ -1321,7 +1368,7 @@ impl PatternReader<'_, '_, '_> {
             )));
             if !self.reader.consume(']') {
                 loop {
-                    self.reader.skip_whitespace();
+                    self.reader.skip_trivia()?;
                     if self.reader.remaining().starts_with("..") {
                         self.reader.advance(2)?;
                         let P::List { ignore_rest, .. } =
@@ -1361,7 +1408,7 @@ impl PatternReader<'_, '_, '_> {
             )));
             if !self.reader.consume('}') {
                 loop {
-                    self.reader.skip_whitespace();
+                    self.reader.skip_trivia()?;
                     if self.reader.remaining().starts_with("..") {
                         self.reader.advance(2)?;
                         let P::Record { ignore_rest, .. } =
@@ -1425,21 +1472,8 @@ impl PatternReader<'_, '_, '_> {
             .next()
             .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-'))
         {
-            let mut previous = b' ';
-            while let Some(byte) = self.reader.remaining().bytes().next() {
-                if byte.is_ascii_digit()
-                    || matches!(byte, b'e' | b'E')
-                    || (byte == b'.' && !self.reader.remaining().starts_with(".."))
-                    || (matches!(byte, b'+' | b'-')
-                        && (self.reader.position() == start || matches!(previous, b'e' | b'E')))
-                {
-                    self.reader.advance(1)?;
-                    previous = byte;
-                } else {
-                    break;
-                }
-            }
-            let range = start..self.reader.position();
+            let spelling = self.reader.number_text()?;
+            let range = spelling.range;
             self.budget
                 .charge(range.len() + 1, Location::Query(range.clone()))?;
             P::Literal(number(&self.reader.source()[range.clone()], range)?)
@@ -1448,6 +1482,9 @@ impl PatternReader<'_, '_, '_> {
             self.budget
                 .charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
             match name.value {
+                _ if self.reader.source()[name.range.start..].starts_with('\'') => {
+                    P::Name(Located::new(name.value.to_owned(), name.range))
+                }
                 "_" => P::Wildcard,
                 "true" => P::Literal(V::Boolean(true)),
                 "false" => P::Literal(V::Boolean(false)),
@@ -1464,6 +1501,131 @@ impl PatternReader<'_, '_, '_> {
     }
 }
 
+fn generator_header(
+    reader: &mut ArgumentReader<'_>,
+    budget: &mut Budget,
+    nesting: usize,
+    alternate: bool,
+) -> Result<(Vec<PatternGuard>, bool), QueryError> {
+    let mut patterns = Vec::new();
+    loop {
+        patterns.push(PatternGuard(Some(read_pattern(reader, budget, nesting)?)));
+        if !reader.consume(',') {
+            break;
+        }
+    }
+    if reader.keyword("in") {
+        return Ok((patterns, false));
+    }
+    if alternate && patterns.len() == 1 && reader.consume('=') {
+        return Ok((patterns, true));
+    }
+    Err(reader.error(if alternate {
+        "expected `in` or single-pattern `=` generator"
+    } else {
+        "expected `in` after comprehension binder"
+    }))
+}
+
+fn typed_arguments_end(
+    reader: &mut ArgumentReader<'_>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<Option<usize>, QueryError> {
+    if !reader.consume('<') {
+        return Ok(None);
+    }
+    let mut depth = 1usize;
+    while let Some(ch) = reader.remaining().chars().next() {
+        let start = reader.position();
+        if !reader.protected_span()? {
+            reader.advance(ch.len_utf8())?;
+            match ch {
+                '(' | ')' | '[' | ']' | ';' | '|' => return Ok(None),
+                '<' => {
+                    depth += 1;
+                    if depth >= nesting {
+                        return Err(reader.error("value nesting limit exceeded"));
+                    }
+                }
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let end = reader.position();
+                        budget.charge(end - start, Location::Query(start..end))?;
+                        return Ok(reader.consume('(').then_some(end));
+                    }
+                }
+                _ => {}
+            }
+        }
+        budget.charge(
+            reader.position() - start,
+            Location::Query(start..reader.position()),
+        )?;
+    }
+    Ok(None)
+}
+
+fn scan_step(
+    reader: &mut ArgumentReader<'_>,
+    stack: &mut Vec<char>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<(), QueryError> {
+    let start = reader.position();
+    if reader
+        .remaining()
+        .starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+    {
+        let mut probe = reader.at(start)?;
+        let word = probe.word()?;
+        if matches!(word.value, "set" | "queue" | "identity_set")
+            && let Some(end) = typed_arguments_end(&mut probe, budget, nesting)?
+        {
+            reader.advance(end - start)?;
+            return budget.charge(end - start, Location::Query(start..end));
+        }
+        reader.advance(word.range.end - start)?;
+        return budget.charge(word.range.len(), Location::Query(word.range));
+    }
+    if !reader.protected_span()? {
+        let ch = reader
+            .remaining()
+            .chars()
+            .next()
+            .ok_or_else(|| reader.error("unterminated delimiter"))?;
+        match ch {
+            '(' | '[' | '{' => {
+                if stack.len() + 1 >= nesting {
+                    return Err(reader.error("value nesting limit exceeded"));
+                }
+                budget.charge_results(1, Location::Query(start..start + ch.len_utf8()))?;
+                stack.push(match ch {
+                    '(' => ')',
+                    '[' => ']',
+                    _ => '}',
+                });
+            }
+            ')' | ']' | '}' if stack.pop() != Some(ch) => {
+                return Err(reader.error("mismatched delimiter"));
+            }
+            _ => {}
+        }
+        reader.advance(ch.len_utf8())?;
+    }
+    budget.charge(
+        reader.position() - start,
+        Location::Query(start..reader.position()),
+    )
+}
+
+struct ComprehensionHead<'s> {
+    separator: usize,
+    alternate: bool,
+    names: Vec<&'s str>,
+}
+
 struct Reader<'a, 's, 'h, 'l, H> {
     reader: &'a mut ArgumentReader<'s>,
     host: &'h mut H,
@@ -1473,6 +1635,31 @@ struct Reader<'a, 's, 'h, 'l, H> {
 }
 
 impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
+    fn host_syntax<T>(
+        &mut self,
+        depth: usize,
+        read: impl FnOnce(
+            &mut H,
+            &mut ArgumentReader<'s>,
+            &[&str],
+            &mut Budget,
+            usize,
+        ) -> Result<T, QueryError>,
+    ) -> Result<T, QueryError> {
+        self.depth(depth)?;
+        let nesting = self.nesting;
+        self.budget
+            .within_parsing(depth + 1, nesting, self.location(), |budget| {
+                read(
+                    self.host,
+                    self.reader,
+                    &self.locals,
+                    budget,
+                    nesting.saturating_sub(depth + 1),
+                )
+            })
+    }
+
     fn function_value(&mut self) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.function_value_at(0)
     }
@@ -1481,14 +1668,6 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        if let Some(value) = self.host.parse_function_value(
-            self.reader,
-            &self.locals,
-            self.budget,
-            self.nesting.saturating_sub(depth),
-        )? {
-            return Ok(value);
-        }
         self.expression(0, depth)
     }
 
@@ -1505,13 +1684,16 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             crate::value::pattern::facts(pattern, &[crate::ValueType::Unestablished], self.budget)?
         {
             self.slots::<&str>(1)?;
-            self.locals.push(&self.reader.source()[name.range.clone()]);
+            self.locals.push(crate::parser::identifier_text(
+                self.reader.source(),
+                name.range.clone(),
+            ));
         }
         Ok(())
     }
     fn block(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         self.reader.expect('{')?;
         let locals = self.locals.len();
@@ -1602,7 +1784,10 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             };
             for (name, _) in states {
                 self.slots::<&str>(1)?;
-                self.locals.push(&self.reader.source()[name.range.clone()]);
+                self.locals.push(crate::parser::identifier_text(
+                    self.reader.source(),
+                    name.range.clone(),
+                ));
             }
             self.block(depth + 1)
         })();
@@ -1647,43 +1832,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     // A saved `queue < bound` remains a comparison. Only a complete type
     // argument followed by `(` selects an explicitly typed constructor.
     fn typed_worklist_call(&mut self) -> Result<bool, QueryError> {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let mut probe = self.reader.at(self.reader.position())?;
         probe.word()?;
-        if !probe.consume('<') {
-            return Ok(false);
-        }
-        let mut depth = 1usize;
-        let (mut quoted, mut escaped, mut comment) = (false, false, false);
-        while let Some(ch) = probe.remaining().chars().next() {
-            self.budget.charge(
-                1,
-                Location::Query(probe.position()..probe.position() + ch.len_utf8()),
-            )?;
-            probe.advance(ch.len_utf8())?;
-            if comment {
-                comment = ch != '\n';
-            } else if quoted {
-                if ch == '"' && !escaped {
-                    quoted = false;
-                }
-                escaped = ch == '\\' && !escaped;
-            } else {
-                match ch {
-                    '#' => comment = true,
-                    '"' => quoted = true,
-                    '(' | ')' | '[' | ']' | ';' | '|' => return Ok(false),
-                    '<' => depth += 1,
-                    '>' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Ok(probe.consume('('));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(false)
+        Ok(typed_arguments_end(&mut probe, self.budget, self.nesting)?.is_some())
     }
 
     fn worklist_call(
@@ -1766,7 +1917,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         &mut self,
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let mut probe = self.reader.at(self.reader.position())?;
         if probe.consume('{') {
             // A direct JSON record keeps its existing spelling in an arm.
             let mut record = probe.consume('}');
@@ -1796,7 +1947,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         self.reader.keyword("match");
         self.reader.expect('(')?;
@@ -1854,12 +2005,14 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn signature(&mut self, depth: usize) -> Result<Located<SignatureType>, QueryError> {
         use SignatureType as S;
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         let name = self.reader.word()?;
         self.budget
             .charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+        let quoted = self.reader.source()[name.range.start..].starts_with('\'');
         let ty = match name.value {
+            _ if quoted => S::Named(Located::new(name.value.to_owned(), name.range)),
             "int" => S::Integer,
             "float" => S::Float,
             "bool" => S::Boolean,
@@ -1906,7 +2059,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 let mut fields = Vec::new();
                 if !self.reader.consume('}') {
                     loop {
-                        self.reader.skip_whitespace();
+                        self.reader.skip_trivia()?;
                         let label = if self.reader.remaining().starts_with('"') {
                             self.string()?
                         } else {
@@ -1935,8 +2088,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
+        self.reader.keyword("if");
         let mut guard = ValueGuard::new(Located::new(
             K::Conditional {
                 branches: Vec::new(),
@@ -1944,12 +2098,21 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             },
             start..start,
         ));
+        let mut alternate = None;
         loop {
-            if !self.reader.keyword("if") {
-                return Err(self.reader.error("expected `if`"));
-            }
             let condition = ValueGuard::new(self.expression(0, depth + 1)?);
-            let value = ValueGuard::new(self.block(depth + 1)?);
+            let then = self.reader.keyword("then");
+            if alternate.is_some_and(|alternate| alternate != then) {
+                return Err(self
+                    .reader
+                    .error("conditional branches must use one spelling"));
+            }
+            alternate = Some(then);
+            let value = ValueGuard::new(if then {
+                self.expression(0, depth + 1)?
+            } else {
+                self.block(depth + 1)?
+            });
             self.slots::<(
                 ValueExpression<ReadExpression<H>>,
                 ValueExpression<ReadExpression<H>>,
@@ -1958,14 +2121,25 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 unreachable!()
             };
             branches.push((condition.into_value(), value.into_value()));
+            if then && self.reader.keyword("elseif") {
+                continue;
+            }
             if !self.reader.keyword("else") {
                 return Err(self.reader.error("conditional requires a final else"));
             }
-            if !self.word_is("if") {
-                break;
+            if !then && self.reader.keyword("if") {
+                continue;
             }
+            break;
         }
-        let otherwise = ValueGuard::new(self.block(depth + 1)?);
+        let otherwise = ValueGuard::new(if alternate == Some(true) {
+            self.expression(0, depth + 1)?
+        } else {
+            self.block(depth + 1)?
+        });
+        if alternate == Some(true) && !self.reader.keyword("endif") {
+            return Err(self.reader.error("expected `endif`"));
+        }
         let K::Conditional {
             otherwise: final_value,
             ..
@@ -2017,15 +2191,17 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         read_string(self.reader, self.budget)
     }
     fn word_is(&self, word: &str) -> bool {
-        let rest = self.reader.remaining().trim_start();
-        rest.starts_with(word)
-            && !rest[word.len()..]
-                .bytes()
-                .next()
-                .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+        let mut probe = self
+            .reader
+            .at(self.reader.position())
+            .expect("reader boundary");
+        probe.set_end(self.reader.end());
+        probe.keyword(word)
     }
     fn projection_call(&self) -> bool {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+        let mut probe = self
+            .reader
+            .at(self.reader.position())
             .expect("reader byte boundary");
         probe
             .word()
@@ -2033,12 +2209,14 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             && probe.consume('(')
     }
     fn native_body_call(&self, name: &str) -> bool {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+        let mut probe = self
+            .reader
+            .at(self.reader.position())
             .expect("reader byte boundary");
         probe.word().is_ok_and(|word| word.value == name) && probe.consume('(')
     }
     fn ordering_call(&mut self) -> Result<bool, QueryError> {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let mut probe = self.reader.at(self.reader.position())?;
         let Ok(name) = probe.word() else {
             return Ok(false);
         };
@@ -2052,34 +2230,20 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         if matches!(name.value, "sort" | "min" | "max") {
             return Ok(true);
         }
-        // Existing native *_by(selector) stages have one argument. Constructed
-        // helpers have a top-level comma, independent of nested value syntax.
-        let mut depth = 0usize;
-        let (mut quoted, mut escaped, mut comment) = (false, false, false);
-        for (offset, ch) in probe.remaining().char_indices() {
-            let position = probe.position() + offset;
-            self.budget
-                .charge(1, Location::Query(position..position + ch.len_utf8()))?;
-            if comment {
-                comment = ch != '\n';
-            } else if quoted {
-                if !escaped && ch == '"' {
-                    quoted = false;
+        // A top-level comma distinguishes constructed helpers from native selectors.
+        let mut stack = Vec::new();
+        while !probe.remaining().is_empty() {
+            if stack.is_empty() {
+                if probe.remaining().starts_with(')') {
+                    return Ok(false);
                 }
-                escaped = !escaped && ch == '\\';
-            } else {
-                match ch {
-                    '#' => comment = true,
-                    '"' => quoted = true,
-                    '(' | '[' | '{' => depth += 1,
-                    ')' if depth == 0 => return Ok(false),
-                    ')' | ']' | '}' => depth = depth.saturating_sub(1),
-                    ',' if depth == 0 => return Ok(true),
-                    _ => {}
+                if probe.remaining().starts_with(',') {
+                    return Ok(true);
                 }
             }
+            scan_step(&mut probe, &mut stack, self.budget, self.nesting)?;
         }
-        Ok(false)
+        Err(probe.error("unterminated ordering call"))
     }
     fn descending_option(&mut self) -> Result<bool, QueryError> {
         if !self.reader.consume(',') {
@@ -2104,54 +2268,32 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         }
     }
     fn value_match_call(&mut self) -> Result<bool, QueryError> {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let mut probe = self.reader.at(self.reader.position())?;
         if !probe.keyword("match") || !probe.consume('(') {
             return Ok(false);
         }
-        let mut depth = 1usize;
-        let mut quoted = false;
-        let mut escaped = false;
-        while let Some(ch) = probe.remaining().chars().next() {
-            self.budget.charge(
-                1,
-                Location::Query(probe.position()..probe.position() + ch.len_utf8()),
-            )?;
-            if quoted {
-                if ch == '"' && !escaped {
-                    quoted = false;
-                }
-                escaped = ch == '\\' && !escaped;
-            } else {
-                match ch {
-                    '#' => {
-                        probe.skip_whitespace();
-                        continue;
-                    }
-                    '"' => quoted = true,
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            probe.advance(1)?;
-                            return Ok(probe.consume('{'));
-                        }
-                    }
-                    _ => {}
-                }
+        let mut stack = vec![')'];
+        while !probe.remaining().is_empty() {
+            scan_step(&mut probe, &mut stack, self.budget, self.nesting)?;
+            if stack.is_empty() {
+                return Ok(probe.consume('{'));
             }
-            probe.advance(ch.len_utf8())?;
         }
-        Ok(false)
+        Err(probe.error("unterminated match subject"))
     }
     fn match_call(&self) -> bool {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+        let mut probe = self
+            .reader
+            .at(self.reader.position())
             .expect("reader byte boundary");
         probe.word().is_ok_and(|word| word.value == "match") && probe.consume('{')
     }
     // A dotted scalar name stays a scalar field access unless it feeds a native
     // pipeline. Explicit native readers always admit the same postfix chain.
     fn field_pipeline(&self) -> bool {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())
+        let mut probe = self
+            .reader
+            .at(self.reader.position())
             .expect("reader byte boundary");
         if probe.word().is_err() || !probe.consume('.') {
             return false;
@@ -2186,9 +2328,30 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let mut left = ValueGuard::new(self.atom(depth)?);
         let mut chain = 0;
         loop {
-            self.reader.skip_whitespace();
+            self.reader.skip_trivia()?;
             if minimum <= 10 && self.reader.consume('[') {
                 let index = ValueGuard::new(self.expression(0, depth + 1)?);
+                let index = if self.reader.consume(',') {
+                    let start = index.value().range.start;
+                    let mut tuple = ValueGuard::new(
+                        self.node(K::Tuple(vec![index.into_value()]), start..start)?,
+                    );
+                    loop {
+                        let part = ValueGuard::new(self.expression(0, depth + 1)?);
+                        self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                        let K::Tuple(parts) = &mut tuple.value_mut().value else {
+                            unreachable!()
+                        };
+                        parts.push(part.into_value());
+                        if !self.reader.consume(',') {
+                            break;
+                        }
+                    }
+                    tuple.value_mut().range.end = self.reader.position();
+                    tuple
+                } else {
+                    index
+                };
                 self.reader.expect(']')?;
                 let range = left.value().range.start..self.reader.position();
                 left = ValueGuard::new(self.node(
@@ -2203,7 +2366,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 && !self.reader.remaining().starts_with("..")
             {
                 self.reader.advance(1)?;
-                self.reader.skip_whitespace();
+                self.reader.skip_trivia()?;
                 let start = left.value().range.start;
                 let kind = if self
                     .reader
@@ -2251,7 +2414,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 }
                 let operator = [
                     ("or", 1, Some(B::Or)),
+                    ("\\/", 1, Some(B::Or)),
                     ("and", 2, Some(B::And)),
+                    ("/\\", 2, Some(B::And)),
                     ("==", 3, Some(B::Equal)),
                     ("!=", 3, Some(B::NotEqual)),
                     ("<=", 4, Some(B::LessEqual)),
@@ -2307,7 +2472,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         Ok(left.into_value())
     }
     fn atom(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         let first = self
             .reader
@@ -2340,7 +2505,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             let negative = first == '-';
             if matches!(first, '+' | '-') {
                 self.reader.advance(1)?;
-                self.reader.skip_whitespace();
+                self.reader.skip_trivia()?;
             }
             if !self
                 .reader
@@ -2360,19 +2525,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 );
             }
             let digits_start = self.reader.position();
-            let mut previous = b' ';
-            while let Some(byte) = self.reader.remaining().bytes().next() {
-                if byte.is_ascii_digit()
-                    || matches!(byte, b'e' | b'E')
-                    || (byte == b'.' && !self.reader.remaining().starts_with(".."))
-                    || (matches!(byte, b'+' | b'-') && matches!(previous, b'e' | b'E'))
-                {
-                    self.reader.advance(1)?;
-                    previous = byte;
-                } else {
-                    break;
-                }
-            }
+            self.reader.number_text()?;
             let digits = &self.reader.source()[digits_start..self.reader.position()];
             self.budget.charge(digits.len() + 1, self.location())?;
             let spelling = if negative {
@@ -2383,9 +2536,13 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             let value = number(&spelling, start..self.reader.position())?;
             return self.node(K::Literal(value), start..self.reader.position());
         }
-        let mut probe = ArgumentReader::new(self.reader.source(), start)?;
+        let mut probe = self.reader.at(start)?;
         let word = probe.word()?;
         probe.skip_whitespace();
+        if self.reader.source()[word.range.start..].starts_with('\'') {
+            let name = self.name()?;
+            return self.named_value(name, depth);
+        }
         if word.value == "set"
             && probe.remaining().starts_with('<')
             && self.typed_worklist_call()?
@@ -2448,7 +2605,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         if word.value == "if" {
             // A saved name keeps its postfixes/operators. An adjacent expression
             // starts the conditional form even when that name is also in scope.
-            let mut condition = ArgumentReader::new(self.reader.source(), probe.position())?;
+            let mut condition = self.reader.at(probe.position())?;
             let starts_condition = condition.remaining().starts_with(['(', '"'])
                 || condition
                     .remaining()
@@ -2501,7 +2658,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             return self.node(K::PredicateSubject, name.range);
         }
         let ordering_call = self.ordering_call()?;
-        let mut next = ArgumentReader::new(self.reader.source(), probe.position())?;
+        let mut next = self.reader.at(probe.position())?;
         let set_operand = (local || self.host.is_binding(word.value))
             && next
                 .word()
@@ -2524,6 +2681,11 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             return self.native(depth);
         }
         let name = self.name()?;
+        self.reader.skip_trivia()?;
+        if self.reader.remaining().starts_with('(') && !is_common_value_call(&name.value) {
+            return self.named_value(name, depth);
+        }
+        let name_end = name.range.end;
         let kind = match name.value.as_str() {
             "true" => K::Literal(V::Boolean(true)),
             "false" => K::Literal(V::Boolean(false)),
@@ -2534,48 +2696,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             },
             _ if self.reader.consume('(') => {
                 if !is_common_value_call(&name.value) {
-                    let mut arguments =
-                        ValueGuard::new(Located::new(K::Array(Vec::new()), start..start));
-                    if !self.reader.consume(')') {
-                        loop {
-                            let argument = ValueGuard::new(self.expression(0, depth + 1)?);
-                            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-                            let K::Array(values) = &mut arguments.value_mut().value else {
-                                unreachable!()
-                            };
-                            values.push(argument.into_value());
-                            if !self.reader.consume(',') {
-                                self.reader.expect(')')?;
-                                break;
-                            }
-                        }
-                    }
-                    let K::Array(arguments) = arguments.into_value().value else {
-                        unreachable!()
-                    };
-                    let call = self.node(
-                        K::Call {
-                            function: name,
-                            arguments,
-                        },
-                        start..self.reader.position(),
-                    )?;
-                    if self.reader.consume('|') {
-                        let range = call.range.clone();
-                        let stage = self.host.value_source(call, range.clone())?;
-                        let source = Located::new(
-                            ExpressionKind::Sequence {
-                                input: Box::new(Located::new(ExpressionKind::Input, start..start)),
-                                steps: vec![Located::new(
-                                    ExpressionStep::Stage(stage),
-                                    range.clone(),
-                                )],
-                            },
-                            range,
-                        );
-                        return self.native_tail(source, depth, true);
-                    }
-                    return Ok(call);
+                    return self.function_call(name, depth);
                 }
                 let value = ValueGuard::new(self.expression(0, depth + 1)?);
                 if matches!(name.value.as_str(), "lookup" | "has_key") {
@@ -2733,7 +2854,85 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             }
             _ => K::Name(name.value),
         };
-        self.node(kind, start..self.reader.position())
+        let end = if matches!(kind, K::Name(_)) {
+            name_end
+        } else {
+            self.reader.position()
+        };
+        self.node(kind, start..end)
+    }
+    fn named_value(
+        &mut self,
+        name: Located<String>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.reader.skip_trivia()?;
+        if !self.reader.remaining().starts_with('(') {
+            let range = name.range.clone();
+            return self.node(K::Name(name.value), range);
+        }
+        let position = self.reader.position();
+        if let Some(value) = self.host_syntax(depth, |host, reader, locals, budget, nesting| {
+            host.parse_domain_call(
+                Located::new(name.value.as_str(), name.range.clone()),
+                reader,
+                locals,
+                budget,
+                nesting,
+            )
+        })? {
+            return Ok(value);
+        }
+        if self.reader.position() != position {
+            return Err(self.reader.error("unrecognized domain call consumed input"));
+        }
+        self.reader.expect('(')?;
+        self.function_call(name, depth)
+    }
+    fn function_call(
+        &mut self,
+        name: Located<String>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let start = name.range.start;
+        let mut arguments = ValueGuard::new(Located::new(K::Array(Vec::new()), start..start));
+        if !self.reader.consume(')') {
+            loop {
+                let argument = ValueGuard::new(self.expression(0, depth + 1)?);
+                self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                let K::Array(values) = &mut arguments.value_mut().value else {
+                    unreachable!()
+                };
+                values.push(argument.into_value());
+                if !self.reader.consume(',') {
+                    self.reader.expect(')')?;
+                    break;
+                }
+            }
+        }
+        let K::Array(arguments) = arguments.into_value().value else {
+            unreachable!()
+        };
+        let call = self.node(
+            K::Call {
+                function: name,
+                arguments,
+            },
+            start..self.reader.position(),
+        )?;
+        if self.reader.consume('|') {
+            let range = call.range.clone();
+            let stage = self.host.value_source(call, range.clone())?;
+            let source = Located::new(
+                ExpressionKind::Sequence {
+                    input: Box::new(Located::new(ExpressionKind::Input, start..start)),
+                    steps: vec![Located::new(ExpressionStep::Stage(stage), range.clone())],
+                },
+                range,
+            );
+            return self.native_tail(source, depth, true);
+        }
+        Ok(call)
     }
     fn fields(
         &mut self,
@@ -2758,7 +2957,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 self.reader.expect('}')?;
                 break;
             }
-            self.reader.skip_whitespace();
+            self.reader.skip_trivia()?;
             if self.reader.remaining().starts_with('}') {
                 return Err(self.reader.error("trailing comma in record fields"));
             }
@@ -2771,6 +2970,167 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn array(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.collection(depth, false)
     }
+    fn matrix(
+        &mut self,
+        start: usize,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let mut matrix = ValueGuard::new(Located::new(
+            K::KeyedArray {
+                axes: None,
+                declared_axis_sources: None,
+                entries: Vec::new(),
+            },
+            start..start,
+        ));
+        let mut columns: Option<Vec<Range<usize>>> = None;
+        let mut width = None;
+        let mut row = 0usize;
+        while !self.reader.consume(']') {
+            let segment_start = self.reader.position();
+            let mut probe = self.reader.at(segment_start)?;
+            probe.set_end(self.reader.end());
+            let mut stack = Vec::new();
+            while !probe.remaining().is_empty()
+                && !(stack.is_empty() && probe.remaining().starts_with('|'))
+            {
+                scan_step(
+                    &mut probe,
+                    &mut stack,
+                    self.budget,
+                    self.nesting.saturating_sub(depth + 1),
+                )?;
+            }
+            if probe.remaining().is_empty() {
+                return Err(probe.error("expected matrix row delimiter `|`"));
+            }
+            let segment_end = probe.position();
+            let end = self.reader.end();
+            self.reader.set_end(segment_end);
+            let parsed = (|| {
+                self.reader.skip_trivia()?;
+                if self.reader.remaining().is_empty() {
+                    return Err(self.reader.error("empty matrix requires established axes"));
+                }
+                let first = ValueGuard::new(self.expression(0, depth + 1)?);
+                let keyed = self.reader.consume(':');
+                let first_range = first.value().range.clone();
+                let header = if keyed && row == 0 && columns.is_none() {
+                    let mut probe = self.reader.at(self.reader.position())?;
+                    probe.set_end(segment_end);
+                    let mut stack = Vec::new();
+                    let mut colon = false;
+                    while !probe.remaining().is_empty() {
+                        if stack.is_empty() && probe.remaining().starts_with(':') {
+                            colon = true;
+                        }
+                        scan_step(
+                            &mut probe,
+                            &mut stack,
+                            self.budget,
+                            self.nesting.saturating_sub(depth + 1),
+                        )?;
+                    }
+                    self.reader.skip_trivia()?;
+                    colon || self.reader.remaining().is_empty()
+                } else {
+                    false
+                };
+                if header {
+                    self.slots::<Range<usize>>(1)?;
+                    let mut keys = vec![first_range];
+                    while !self.reader.remaining().is_empty() {
+                        let key = ValueGuard::new(self.expression(0, depth + 1)?);
+                        self.reader.expect(':')?;
+                        self.slots::<Range<usize>>(1)?;
+                        keys.push(key.value().range.clone());
+                        self.reader.skip_trivia()?;
+                    }
+                    columns = Some(keys);
+                    return Ok(());
+                }
+                row += 1;
+                let row_key = keyed.then_some(first_range);
+                let mut first = if keyed { None } else { Some(first) };
+                let mut column = 0usize;
+                loop {
+                    let value = if let Some(value) = first.take() {
+                        value
+                    } else {
+                        ValueGuard::new(self.expression(0, depth + 1)?)
+                    };
+                    let range = value.value().range.clone();
+                    let row_key = if let Some(key) = &row_key {
+                        self.expression_span(key.clone(), depth + 1)?
+                    } else {
+                        self.node(
+                            K::Literal(V::Integer(
+                                i64::try_from(row)
+                                    .map_err(|_| self.reader.error("matrix row overflow"))?,
+                            )),
+                            range.clone(),
+                        )?
+                    };
+                    let row_key = ValueGuard::new(row_key);
+                    let column_key = if let Some(keys) = &columns {
+                        let key = keys.get(column).ok_or_else(|| {
+                            QueryError::query(range.clone(), "matrix has missing cells")
+                        })?;
+                        self.expression_span(key.clone(), depth + 1)?
+                    } else {
+                        self.node(
+                            K::Literal(V::Integer(
+                                i64::try_from(column + 1)
+                                    .map_err(|_| self.reader.error("matrix column overflow"))?,
+                            )),
+                            range.clone(),
+                        )?
+                    };
+                    let column_key = ValueGuard::new(column_key);
+                    self.slots::<ValueExpression<ReadExpression<H>>>(2)?;
+                    let key = ValueGuard::new(self.node(
+                        K::Tuple(vec![row_key.into_value(), column_key.into_value()]),
+                        range,
+                    )?);
+                    self.slots::<(
+                        ValueExpression<ReadExpression<H>>,
+                        ValueExpression<ReadExpression<H>>,
+                    )>(1)?;
+                    let K::KeyedArray { entries, .. } = &mut matrix.value_mut().value else {
+                        unreachable!()
+                    };
+                    entries.push((key.into_value(), value.into_value()));
+                    column += 1;
+                    if !self.reader.consume(',') {
+                        break;
+                    }
+                }
+                self.reader.skip_trivia()?;
+                if !self.reader.remaining().is_empty() {
+                    return Err(self.reader.error("unexpected matrix row syntax"));
+                }
+                let expected =
+                    *width.get_or_insert_with(|| columns.as_ref().map_or(column, Vec::len));
+                if column != expected {
+                    return Err(QueryError::query(
+                        segment_start..segment_end,
+                        "matrix has missing cells",
+                    ));
+                }
+                Ok(())
+            })();
+            self.reader.set_end(end);
+            parsed?;
+            self.reader.expect('|')?;
+        }
+        if row == 0 {
+            return Err(QueryError::query(
+                start..self.reader.position(),
+                "empty matrix requires established axes",
+            ));
+        }
+        self.collection_axes(matrix.into_value().value, start, depth)
+    }
     fn collection(
         &mut self,
         depth: usize,
@@ -2779,6 +3139,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let start = self.reader.position();
         let close = if braces { '}' } else { ']' };
         self.reader.expect(if braces { '{' } else { '[' })?;
+        if !braces && self.reader.consume('|') {
+            return self.matrix(start, depth);
+        }
         if self.reader.consume(close) {
             let kind = if braces {
                 K::Record(Vec::new())
@@ -2788,21 +3151,38 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             return self.collection_axes(kind, start, depth);
         }
         let scope = self.locals.len();
-        let binders = self.collection_binders(close)?;
-        self.slots::<&str>(binders.len())?;
-        self.locals.extend(binders);
+        let discovery = self.collection_binders(close, depth + 1)?;
+        if let Some(head) = &discovery {
+            self.slots::<&str>(head.names.len())?;
+            self.locals.extend(&head.names);
+        }
+        let end = self.reader.end();
+        if let Some(head) = &discovery {
+            self.reader.set_end(head.separator);
+        }
         let parsed = (|| {
             let first = ValueGuard::new(self.expression(0, depth + 1)?);
-            if self.reader.consume(':') {
+            let pair = if self.reader.consume(':') {
                 let head = ValueGuard::new(self.expression(0, depth + 1)?);
-                Ok((Some(first), head))
+                (Some(first), head)
             } else {
-                Ok((None, first))
+                (None, first)
+            };
+            if discovery.is_some() {
+                self.reader.skip_trivia()?;
+                if !self.reader.remaining().is_empty() {
+                    return Err(self.reader.error("unexpected comprehension head syntax"));
+                }
             }
+            Ok(pair)
         })();
+        self.reader.set_end(end);
         self.locals.truncate(scope);
         let (key, head) = parsed?;
-        if self.word_is("for") {
+        if let Some(ComprehensionHead {
+            alternate, names, ..
+        }) = discovery
+        {
             let mut comprehension = ValueGuard::new(Located::new(
                 if let Some(key) = key {
                     if braces {
@@ -2833,50 +3213,105 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 },
                 start..start,
             ));
+            let mut domains = Vec::new();
             let result = (|| {
-                while self.reader.keyword("for") {
-                    let clause_start = self.reader.position();
-                    let pattern = PatternGuard(Some(self.pattern(depth + 1)?));
-                    if !self.reader.keyword("in") {
-                        return Err(self
-                            .reader
-                            .error("expected `in` after comprehension binder"));
+                if alternate {
+                    self.reader.expect('|')?;
+                }
+                loop {
+                    if !alternate && !self.reader.keyword("for") {
+                        return Err(self.reader.error("expected `for`"));
                     }
+                    let clause_start = self.reader.position();
+                    let (mut patterns, binding) = generator_header(
+                        self.reader,
+                        self.budget,
+                        self.nesting.saturating_sub(depth + 1),
+                        alternate,
+                    )?;
+                    let source_start = self.reader.position();
                     let source = ValueGuard::new(self.expression(0, depth + 1)?);
-                    self.add_pattern_locals(pattern.pattern())?;
-                    let filter = if self.reader.keyword("if") {
+                    let source_range = source_start..self.reader.position();
+                    for pattern in &patterns {
+                        self.add_pattern_locals(pattern.pattern())?;
+                    }
+                    let filter = if self.reader.keyword(if alternate { "where" } else { "if" }) {
                         Some(ValueGuard::new(self.expression(0, depth + 1)?))
                     } else {
                         None
                     };
-                    let end = filter
-                        .as_ref()
-                        .map_or(source.value().range.end, |value| value.value().range.end);
+                    let clause_end = self.reader.position();
+                    if !binding {
+                        for pattern in &patterns {
+                            if let crate::PatternKind::Name(name) = &pattern.pattern().value {
+                                self.slots::<(&str, Range<usize>)>(1)?;
+                                domains.push((
+                                    crate::parser::identifier_text(
+                                        self.reader.source(),
+                                        name.range.clone(),
+                                    ),
+                                    source_range.clone(),
+                                ));
+                            }
+                        }
+                    }
                     self.slots::<Located<ValueGenerator<ReadExpression<H>>>>(1)?;
-                    self.slots::<crate::Pattern>(1)?;
+                    let clause = if binding {
+                        ValueGenerator::Bind {
+                            binder: patterns.pop().expect("one binding pattern").into_pattern(),
+                            value: source.into_value(),
+                            filter: filter.map(ValueGuard::into_value),
+                        }
+                    } else {
+                        ValueGenerator::In {
+                            binders: patterns
+                                .into_iter()
+                                .map(PatternGuard::into_pattern)
+                                .collect(),
+                            source: source.into_value(),
+                            filter: filter.map(ValueGuard::into_value),
+                        }
+                    };
                     let clauses = match &mut comprehension.value_mut().value {
                         K::Comprehension { clauses, .. }
                         | K::DictionaryComprehension { clauses, .. }
                         | K::KeyedComprehension { clauses, .. } => clauses,
                         _ => unreachable!("retained comprehension"),
                     };
-                    clauses.push(Located::new(
-                        ValueGenerator::In {
-                            binders: vec![pattern.into_pattern()],
-                            source: source.into_value(),
-                            filter: filter.map(ValueGuard::into_value),
-                        },
-                        clause_start..end,
-                    ));
+                    clauses.push(Located::new(clause, clause_start..clause_end));
                     self.depth(depth + clauses.len())?;
+                    if alternate {
+                        if !self.reader.consume(',') {
+                            break;
+                        }
+                    } else if !self.word_is("for") {
+                        break;
+                    }
                 }
                 self.reader.expect(close)?;
-                Ok(comprehension.into_value().value)
+                Ok(())
             })();
             self.locals.truncate(scope);
-            return self.collection_axes(result?, start, depth);
+            result?;
+            if !self.word_is("axes")
+                && let K::KeyedComprehension { key, .. } = &comprehension.value().value
+            {
+                let sources = self.empty_axis_sources(key, &domains, &names, depth + 1)?;
+                let K::KeyedComprehension {
+                    empty_axis_sources, ..
+                } = &mut comprehension.value_mut().value
+                else {
+                    unreachable!()
+                };
+                *empty_axis_sources = sources;
+            }
+            return self.collection_axes(comprehension.into_value().value, start, depth);
         }
         self.slots::<ValueExpression<ReadExpression<H>>>(if key.is_some() { 2 } else { 1 })?;
+        let mut next_key = key.as_ref().and_then(|k| match k.value().value {
+            K::Literal(V::Integer(n)) => Some(n),
+            _ => None,
+        });
         let mut collection = ValueGuard::new(Located::new(
             if let Some(key) = key {
                 let entries = vec![(key.into_value(), head.into_value())];
@@ -2900,13 +3335,27 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             let first = ValueGuard::new(self.expression(0, depth + 1)?);
             match &mut collection.value_mut().value {
                 K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
-                    self.reader.expect(':')?;
-                    let value = ValueGuard::new(self.expression(0, depth + 1)?);
+                    let (key, value) = if self.reader.consume(':') {
+                        next_key = match first.value().value {
+                            K::Literal(V::Integer(n)) => Some(n),
+                            _ => None,
+                        };
+                        (first, ValueGuard::new(self.expression(0, depth + 1)?))
+                    } else if !braces {
+                        let n = next_key.and_then(|n| n.checked_add(1)).ok_or_else(|| QueryError::query(first.value().range.clone(), "starting-key tail requires a written integer and checked successors"))?;
+                        next_key = Some(n);
+                        let key = ValueGuard::new(
+                            self.node(K::Literal(V::Integer(n)), first.value().range.clone())?,
+                        );
+                        (key, first)
+                    } else {
+                        return Err(self.reader.error("expected ':' after dictionary key"));
+                    };
                     self.slots::<(
                         ValueExpression<ReadExpression<H>>,
                         ValueExpression<ReadExpression<H>>,
                     )>(1)?;
-                    entries.push((first.into_value(), value.into_value()));
+                    entries.push((key.into_value(), value.into_value()));
                 }
                 K::Array(values) | K::Set(values) => {
                     self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
@@ -2929,18 +3378,129 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     .iter()
                     .all(|(key, _)| matches!(key.value, K::Literal(V::String(_)))) =>
             {
-                let mut fields = Vec::new();
-                for (key, value) in entries {
-                    let K::Literal(V::String(label)) = key.value else {
-                        unreachable!("static string key")
-                    };
-                    fields.push((Located::new(label, key.range), value));
-                }
-                K::Record(fields)
+                K::Record(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| {
+                            let K::Literal(V::String(label)) = key.value else {
+                                unreachable!("static string key")
+                            };
+                            (Located::new(label, key.range), value)
+                        })
+                        .collect(),
+                )
             }
             kind => kind,
         };
         self.collection_axes(kind, start, depth)
+    }
+    fn expression_span(
+        &mut self,
+        range: Range<usize>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let mut reader = self.reader.at(range.start)?;
+        reader.set_end(range.end);
+        let locals = copy_reader_locals(&self.locals, self.budget, range.start)?;
+        let mut parser = Reader {
+            reader: &mut reader,
+            host: self.host,
+            budget: self.budget,
+            nesting: self.nesting,
+            locals,
+        };
+        let value = ValueGuard::new(parser.expression(0, depth)?);
+        parser.reader.skip_trivia()?;
+        if !parser.reader.remaining().is_empty() {
+            return Err(parser.reader.error("unexpected expression syntax"));
+        }
+        Ok(value.into_value())
+    }
+    fn empty_axis_sources(
+        &mut self,
+        key: &ValueExpression<ReadExpression<H>>,
+        domains: &[(&str, Range<usize>)],
+        names: &[&str],
+        depth: usize,
+    ) -> Result<Option<Vec<ValueExpression<ReadExpression<H>>>>, QueryError> {
+        let components = match &key.value {
+            K::Tuple(parts) => parts.as_slice(),
+            _ => std::slice::from_ref(key),
+        };
+        let mut sources = ValueGuard::new(Located::new(K::Array(Vec::new()), key.range.clone()));
+        for component in components {
+            let K::Name(name) = &component.value else {
+                return Ok(None);
+            };
+            self.budget
+                .charge(domains.len(), Location::Query(component.range.clone()))?;
+            let Some((_, range)) = domains.iter().find(|(binder, _)| *binder == name) else {
+                return Ok(None);
+            };
+            let mut probe = self.reader.at(range.start)?;
+            probe.set_end(range.end);
+            let mut stack = Vec::new();
+            let mut previous = None;
+            let mut field = false;
+            while !probe.remaining().is_empty() {
+                let start = probe.position();
+                probe.skip_trivia()?;
+                self.budget.charge(
+                    probe.position() - start,
+                    Location::Query(start..probe.position()),
+                )?;
+                let start = probe.position();
+                let Some(ch) = probe.remaining().chars().next() else {
+                    break;
+                };
+                if ch == '"' {
+                    scan_step(
+                        &mut probe,
+                        &mut stack,
+                        self.budget,
+                        self.nesting.saturating_sub(depth),
+                    )?;
+                    field = false;
+                    previous = Some('v');
+                } else if ch.is_ascii_alphabetic() || ch == '_' || ch == '\'' {
+                    let word = probe.word()?;
+                    let mut next = probe.at(probe.position())?;
+                    next.skip_trivia()?;
+                    let label = stack.last() == Some(&')')
+                        && matches!(previous, Some('(' | ','))
+                        && next.remaining().starts_with(':');
+                    let call = next.remaining().starts_with('(');
+                    self.budget.charge(
+                        probe.position() - start + names.len(),
+                        Location::Query(start..probe.position()),
+                    )?;
+                    if !field && !label && !call && names.contains(&word.value) {
+                        return Ok(None);
+                    }
+                    field = false;
+                    previous = Some('v');
+                } else {
+                    scan_step(
+                        &mut probe,
+                        &mut stack,
+                        self.budget,
+                        self.nesting.saturating_sub(depth),
+                    )?;
+                    field = ch == '.' && previous != Some('.');
+                    previous = Some(ch);
+                }
+            }
+            let source = ValueGuard::new(self.expression_span(range.clone(), depth)?);
+            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+            let K::Array(values) = &mut sources.value_mut().value else {
+                unreachable!()
+            };
+            values.push(source.into_value());
+        }
+        let K::Array(values) = sources.into_value().value else {
+            unreachable!()
+        };
+        Ok(Some(values))
     }
     fn collection_axes(
         &mut self,
@@ -3013,70 +3573,93 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         }
         self.node(collection.into_value().value, start..self.reader.position())
     }
-    // The head precedes its declarations. Inspect only this collection's own level;
-    // the normal parser still owns grammar and diagnostics.
-    fn collection_binders(&mut self, close: char) -> Result<Vec<&'s str>, QueryError> {
+    // Discover only this collection's own generator separators. All pattern
+    // syntax still goes through the shared reader, and every scan spends work.
+    fn collection_binders(
+        &mut self,
+        close: char,
+        depth: usize,
+    ) -> Result<Option<ComprehensionHead<'s>>, QueryError> {
         let source = self.reader.source();
         let mut probe = ArgumentReader::new(source, self.reader.position())?;
+        probe.set_end(self.reader.end());
+        let mut stack = Vec::new();
+        let mut found: Option<(usize, bool)> = None;
         let mut names = Vec::new();
-        let mut nested = 0usize;
-        let mut quoted = false;
-        let mut escaped = false;
-        let mut comment = false;
-        while let Some(character) = probe.remaining().chars().next() {
-            let start = probe.position();
+        loop {
+            let trivia_start = probe.position();
+            probe.skip_trivia()?;
             self.budget.charge(
-                character.len_utf8(),
-                Location::Query(start..start + character.len_utf8()),
+                probe.position() - trivia_start,
+                Location::Query(trivia_start..probe.position()),
             )?;
-            if comment {
-                comment = character != '\n';
-            } else if quoted {
-                if character == '"' && !escaped {
-                    quoted = false;
+            let Some(ch) = probe.remaining().chars().next() else {
+                break;
+            };
+            if stack.is_empty() {
+                if ch == close {
+                    break;
                 }
-                escaped = character == '\\' && !escaped;
-            } else {
-                match character {
-                    '"' => quoted = true,
-                    '#' => comment = true,
-                    '(' | '[' | '{' => nested += 1,
-                    character if character == close && nested == 0 => break,
-                    ')' | ']' | '}' => nested = nested.saturating_sub(1),
-                    character
-                        if nested == 0 && (character.is_ascii_alphabetic() || character == '_') =>
-                    {
-                        let word = probe.word()?;
-                        self.budget.charge(
-                            word.range.len().saturating_sub(1),
-                            Location::Query(word.range.clone()),
-                        )?;
-                        if word.value == "for" {
-                            let mut next = ArgumentReader::new(source, probe.position())?;
-                            let pattern = PatternGuard(Some(
-                                PatternReader {
-                                    reader: &mut next,
-                                    budget: self.budget,
-                                    nesting: self.nesting,
+                let separator = probe.position();
+                let common = found.is_none_or(|(_, alternate)| !alternate) && probe.keyword("for");
+                let pipe = found.is_none() && !common && probe.consume('|');
+                let comma = found.is_some_and(|(_, alternate)| alternate) && probe.consume(',');
+                if common || pipe || comma {
+                    let alternate = found.map_or(pipe, |(_, alternate)| alternate);
+                    let mut header = ArgumentReader::new(source, probe.position())?;
+                    header.set_end(probe.end());
+                    match generator_header(
+                        &mut header,
+                        self.budget,
+                        self.nesting.saturating_sub(depth),
+                        alternate,
+                    ) {
+                        Ok((patterns, _)) => {
+                            self.budget.charge(
+                                header.position() - probe.position(),
+                                Location::Query(probe.position()..header.position()),
+                            )?;
+                            if found.is_none() {
+                                found = Some((separator, alternate));
+                            }
+                            for pattern in patterns {
+                                for name in crate::pattern_names(pattern.pattern(), self.budget)? {
+                                    self.slots::<&str>(1)?;
+                                    names.push(crate::parser::identifier_text(
+                                        source,
+                                        name.range.clone(),
+                                    ));
                                 }
-                                .pattern(0)?,
-                            ));
-                            if !next.keyword("in") {
-                                return Err(next.error("expected `in` after comprehension binder"));
                             }
-                            for name in crate::pattern_names(pattern.pattern(), self.budget)? {
-                                self.slots::<&str>(1)?;
-                                names.push(&source[name.range.clone()]);
-                            }
+                            probe.advance(header.position() - probe.position())?;
+                            continue;
                         }
-                        continue;
+                        Err(error) if error.category != crate::QueryErrorCategory::Other => {
+                            return Err(error);
+                        }
+                        Err(error) if found.is_some() && (common || comma) => return Err(error),
+                        Err(_) => {}
                     }
-                    _ => {}
+                }
+                if probe.position() != separator {
+                    continue;
                 }
             }
-            probe.advance(character.len_utf8())?;
+            scan_step(
+                &mut probe,
+                &mut stack,
+                self.budget,
+                self.nesting.saturating_sub(depth),
+            )?;
         }
-        Ok(names)
+        if !stack.is_empty() {
+            return Err(probe.error("unterminated collection delimiter"));
+        }
+        Ok(found.map(|(separator, alternate)| ComprehensionHead {
+            separator,
+            alternate,
+            names,
+        }))
     }
     fn projection(&mut self, depth: usize) -> Result<Projection<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
@@ -3105,8 +3688,8 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let mut value = ValueGuard::new(value);
         loop {
-            self.reader.skip_whitespace();
-            let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+            self.reader.skip_trivia()?;
+            let mut probe = self.reader.at(self.reader.position())?;
             let Ok(word) = probe.word() else {
                 break;
             };
@@ -3157,7 +3740,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         self.slots::<ReadExpression<H>>(2)?;
         let source = if self.match_call() {
@@ -3181,6 +3764,39 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 range,
             )
         } else if self.reader.consume('(') {
+            let mut probe = self.reader.at(self.reader.position())?;
+            probe.set_end(self.reader.end());
+            probe.skip_trivia()?;
+            let label = if probe.remaining().starts_with('"') {
+                probe.quoted_string().map(|label| label.range)
+            } else {
+                probe.word().map(|label| label.range)
+            };
+            if label.is_ok() && probe.consume(':') {
+                let mut record = ValueGuard::new(Located::new(K::Record(Vec::new()), start..start));
+                loop {
+                    self.reader.skip_trivia()?;
+                    let label = if self.reader.remaining().starts_with('"') {
+                        self.string()?
+                    } else {
+                        self.name()?
+                    };
+                    self.reader.expect(':')?;
+                    let value = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(1)?;
+                    let K::Record(fields) = &mut record.value_mut().value else {
+                        unreachable!()
+                    };
+                    fields.push((label, value.into_value()));
+                    if !self.reader.consume(',') {
+                        self.reader.expect(')')?;
+                        break;
+                    }
+                }
+                record.value_mut().range = start..self.reader.position();
+                self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                return Ok(record.into_value());
+            }
             if self.reader.consume(')') {
                 return self.node(K::Tuple(Vec::new()), start..self.reader.position());
             }
@@ -3222,7 +3838,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             };
             Located::new(ExpressionKind::Group(query), range)
         } else {
-            let mut probe = ArgumentReader::new(self.reader.source(), start)?;
+            let mut probe = self.reader.at(start)?;
             let first = probe.word()?;
             probe.skip_whitespace();
             let projection_call = self.projection_call();
@@ -3287,7 +3903,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         ) && source.0.as_ref().expect("native source").range.is_empty();
         let mut more = forced || starts_stage || self.reader.consume('|');
         while more {
-            self.reader.skip_whitespace();
+            self.reader.skip_trivia()?;
             let stage_start = self.reader.position();
             if !self.host.is_binding("one") && self.reader.keyword("one") {
                 let range = start..self.reader.position();
@@ -3310,11 +3926,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 ));
             }
             let constructed_filter = if self.word_is("filter") {
-                self.host.parse_constructed_filter_in_scope(
-                    self.reader,
-                    &self.locals,
-                    self.budget,
-                )?
+                self.host_syntax(depth, |host, reader, locals, budget, nesting| {
+                    host.parse_constructed_filter_in_scope(reader, locals, budget, nesting)
+                })?
             } else {
                 None
             };
@@ -3365,7 +3979,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         .mapping(mapping, stage_start..self.reader.position())?,
                 )
             } else if let Some((order, keyed)) = {
-                let mut probe = ArgumentReader::new(self.reader.source(), stage_start)?;
+                let mut probe = self.reader.at(stage_start)?;
                 probe.word().ok().and_then(|word| native_order(word.value))
             } {
                 self.name()?;
@@ -3395,8 +4009,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     )?
                 })
             } else {
-                self.host
-                    .parse_stage_in_scope(self.reader, &self.locals, self.budget)?
+                self.host_syntax(depth, |host, reader, locals, budget, nesting| {
+                    host.parse_stage_in_scope(reader, locals, budget, nesting)
+                })?
             };
             if self.reader.position() == stage_start {
                 return Err(self
@@ -3429,7 +4044,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     }
     fn map_value_selector(&mut self, depth: usize) -> Result<bool, QueryError> {
         let start = self.reader.position();
-        let mut probe = ArgumentReader::new(self.reader.source(), start)?;
+        let mut probe = self.reader.at(start)?;
         let mut groups = 0;
         self.depth(depth)?;
         while probe.consume('(') {
@@ -3490,7 +4105,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         depth: usize,
     ) -> Result<NativeMatch<ReadExpression<H>, H::Predicate>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         if !self.reader.keyword("match") {
             return Err(self.reader.error("expected `match`"));
@@ -3503,7 +4118,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         }));
         let result = (|| {
             while !self.reader.consume('}') {
-                self.reader.skip_whitespace();
+                self.reader.skip_trivia()?;
                 let clause_start = self.reader.position();
                 self.slots::<Located<MatchClause<ReadExpression<H>, H::Predicate>>>(1)?;
                 let word = self.reader.word()?;
@@ -3518,7 +4133,10 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                             self.reader.expect('=')?;
                         }
                         let source = self.native_expression(depth + 1)?;
-                        let local = &self.reader.source()[name.range.clone()];
+                        let local = crate::parser::identifier_text(
+                            self.reader.source(),
+                            name.range.clone(),
+                        );
                         let clause = if word.value == "from" {
                             MatchClause::From { name, source }
                         } else {
@@ -3567,7 +4185,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     }
     fn paths(&mut self, depth: usize) -> Result<NativePaths<H::Stage, H::Predicate>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         if !self.reader.keyword("paths") {
             return Err(self.reader.error("expected `paths`"));
@@ -3604,47 +4222,29 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         })
     }
     fn predicate_pattern(&mut self, depth: usize) -> Result<Option<crate::Pattern>, QueryError> {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let mut probe = self.reader.at(self.reader.position())?;
         probe.skip_whitespace();
-        let mut nested = 0usize;
-        let (mut quoted, mut escaped, mut comment) = (false, false, false);
-        while let Some(ch) = probe.remaining().chars().next() {
-            if !quoted && !comment && nested == 0 && probe.remaining().starts_with("=>") {
+        let mut stack = Vec::new();
+        while !probe.remaining().is_empty() {
+            if stack.is_empty()
+                && (probe.remaining().starts_with("=>")
+                    || probe.remaining().starts_with([')', ']', '}', ',', ';']))
+            {
                 break;
             }
-            self.budget.charge(
-                ch.len_utf8(),
-                Location::Query(probe.position()..probe.position() + ch.len_utf8()),
+            scan_step(
+                &mut probe,
+                &mut stack,
+                self.budget,
+                self.nesting.saturating_sub(depth),
             )?;
-            if comment {
-                comment = ch != '\n';
-            } else if quoted {
-                if ch == '"' && !escaped {
-                    quoted = false;
-                }
-                escaped = ch == '\\' && !escaped;
-            } else {
-                match ch {
-                    '"' => quoted = true,
-                    '#' => comment = true,
-                    '(' | '[' | '{' => {
-                        nested += 1;
-                        self.depth(depth + nested)?;
-                    }
-                    ')' | ']' | '}' if nested > 0 => nested -= 1,
-                    ')' | ']' | '}' => break,
-                    ',' | ';' if nested == 0 => break,
-                    _ => {}
-                }
-            }
-            probe.advance(ch.len_utf8())?;
         }
         probe.skip_whitespace();
         if !probe.remaining().starts_with("=>") {
             return Ok(None);
         }
         let pattern = PatternGuard(Some(self.pattern(depth + 1)?));
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         if !self.reader.remaining().starts_with("=>") {
             return Err(self.reader.error("expected `=>` after predicate pattern"));
         }
@@ -3663,18 +4263,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         if let Some(pattern) = &argument.0 {
             self.add_pattern_locals(pattern)?;
         }
-        let result = (|| {
-            if let Some(body) = self.host.parse_predicate_value(
-                self.reader,
-                &self.locals,
-                self.budget,
-                self.nesting.saturating_sub(depth),
-            )? {
-                Ok(body)
-            } else {
-                self.expression(0, depth + 1)
-            }
-        })();
+        let result = self.expression(0, depth + 1);
         self.locals.truncate(saved);
         let body = result?;
         Ok(PredicateArgument {
@@ -3766,6 +4355,15 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         }
         Ok(value.into_value())
     }
+    fn symbol(&mut self, symbol: &str) -> Result<bool, QueryError> {
+        self.reader.skip_trivia()?;
+        if self.reader.remaining().starts_with(symbol) {
+            self.reader.advance(symbol.len())?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
     fn predicate_or(
         &mut self,
         depth: usize,
@@ -3774,7 +4372,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let first = self.predicate_and(depth, argument)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
         let mut predicates = vec![first];
-        while self.reader.keyword("or") {
+        while self.reader.keyword("or") || self.symbol("\\/")? {
             self.slots::<Predicate<H::Predicate>>(1)?;
             predicates.push(self.predicate_and(depth, argument)?);
         }
@@ -3788,63 +4386,43 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let first = self.predicate_atom(depth, argument)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
         let mut predicates = vec![first];
-        while self.reader.keyword("and") {
+        while self.reader.keyword("and") || self.symbol("/\\")? {
             self.slots::<Predicate<H::Predicate>>(1)?;
             predicates.push(self.predicate_atom(depth, argument)?);
         }
         Ok(combine(predicates, PredicateKind::And))
     }
     fn predicate_group(&mut self, depth: usize) -> Result<bool, QueryError> {
-        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let mut probe = self.reader.at(self.reader.position())?;
         if !probe.consume('(') {
             return Ok(false);
         }
-        // A following value operator/postfix keeps the parentheses with its
-        // operand. A complete predicate group retains the native Boolean tree.
-        let mut groups = 1;
-        self.depth(depth + groups)?;
-        let (mut quoted, mut escaped, mut comment) = (false, false, false);
-        for (offset, ch) in probe.remaining().char_indices() {
-            let position = probe.position() + offset;
-            self.budget
-                .charge(1, Location::Query(position..position + ch.len_utf8()))?;
-            if comment {
-                comment = ch != '\n';
-            } else if quoted {
-                if !escaped && ch == '"' {
-                    quoted = false;
-                }
-                escaped = !escaped && ch == '\\';
-            } else {
-                match ch {
-                    '#' => comment = true,
-                    '"' => quoted = true,
-                    '(' => {
-                        groups += 1;
-                        self.depth(depth + groups)?;
-                    }
-                    ')' => {
-                        groups -= 1;
-                        if groups == 0 {
-                            probe.advance(offset + 1)?;
-                            let end = probe.position();
-                            probe.skip_whitespace();
-                            let grouped = probe.remaining().is_empty()
-                                || probe.remaining().starts_with([')', ']', '}', ',', ';'])
-                                || probe.keyword("and")
-                                || probe.keyword("or");
-                            self.budget.charge(
-                                probe.position() - end,
-                                Location::Query(end..probe.position()),
-                            )?;
-                            return Ok(grouped);
-                        }
-                    }
-                    _ => {}
-                }
+        // A following value operator/postfix keeps the parentheses with its operand.
+        let mut stack = vec![')'];
+        self.depth(depth + 1)?;
+        while !probe.remaining().is_empty() {
+            scan_step(
+                &mut probe,
+                &mut stack,
+                self.budget,
+                self.nesting.saturating_sub(depth),
+            )?;
+            if stack.is_empty() {
+                let end = probe.position();
+                probe.skip_trivia()?;
+                self.budget.charge(
+                    probe.position() - end,
+                    Location::Query(end..probe.position()),
+                )?;
+                return Ok(probe.remaining().is_empty()
+                    || probe.remaining().starts_with([')', ']', '}', ',', ';'])
+                    || probe.remaining().starts_with("/\\")
+                    || probe.remaining().starts_with("\\/")
+                    || probe.keyword("and")
+                    || probe.keyword("or"));
             }
         }
-        Ok(false)
+        Err(probe.error("unterminated predicate group"))
     }
     fn predicate_atom(
         &mut self,
@@ -3852,7 +4430,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         argument: Option<&crate::Pattern>,
     ) -> Result<Predicate<H::Predicate>, QueryError> {
         self.depth(depth)?;
-        self.reader.skip_whitespace();
+        self.reader.skip_trivia()?;
         let start = self.reader.position();
         let value = if self.reader.keyword("not") {
             PredicateKind::Not(Box::new(self.predicate_atom(depth + 1, argument)?))
@@ -3861,7 +4439,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             self.reader.expect(')')?;
             PredicateKind::Group(Box::new(predicate))
         } else {
-            let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+            let mut probe = self.reader.at(self.reader.position())?;
             let native_leaf = match probe.word() {
                 Ok(word) if self.host.is_predicate_leaf(word.value) => {
                     probe.consume('(')
@@ -3871,11 +4449,13 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 _ => false,
             };
             if native_leaf {
-                PredicateKind::Leaf(self.host.parse_predicate_leaf_in_argument(
-                    self.reader,
-                    argument,
-                    &self.locals,
-                    self.budget,
+                PredicateKind::Leaf(self.host_syntax(
+                    depth,
+                    |host, reader, locals, budget, nesting| {
+                        host.parse_predicate_leaf_in_argument(
+                            reader, argument, locals, budget, nesting,
+                        )
+                    },
                 )?)
             } else {
                 let body = ValueGuard::new(self.expression(3, depth + 1)?);
@@ -3931,6 +4511,39 @@ fn combine<P>(
 }
 
 fn number(text: &str, range: Range<usize>) -> Result<V, QueryError> {
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if unsigned.starts_with("0x") || unsigned.starts_with("0X") || unsigned.starts_with("0o") {
+        if unsigned.contains(['p', 'P', '.']) {
+            return Err(QueryError::query(
+                range,
+                "hexadecimal floats are unsupported",
+            ));
+        }
+        let radix = if unsigned.starts_with("0o") { 8 } else { 16 };
+        let magnitude = u64::from_str_radix(&unsigned[2..], radix).map_err(|_| {
+            QueryError::query(range.clone(), "invalid integer or signed 64-bit overflow")
+        })?;
+        let value = if text.starts_with('-') {
+            if magnitude == 1u64 << 63 {
+                i64::MIN
+            } else {
+                i64::try_from(magnitude)
+                    .ok()
+                    .and_then(i64::checked_neg)
+                    .ok_or_else(|| {
+                        QueryError::query(
+                            range.clone(),
+                            "integer literal exceeds signed 64-bit range",
+                        )
+                    })?
+            }
+        } else {
+            i64::try_from(magnitude).map_err(|_| {
+                QueryError::query(range.clone(), "integer literal exceeds signed 64-bit range")
+            })?
+        };
+        return Ok(V::Integer(value));
+    }
     if !text.contains(['.', 'e', 'E']) {
         return text
             .parse::<i64>()
@@ -4237,39 +4850,21 @@ fn read_string(
     reader: &mut ArgumentReader<'_>,
     budget: &mut Budget,
 ) -> Result<Located<String>, QueryError> {
-    reader.skip_whitespace();
-    let start = reader.position();
-    reader.expect('"')?;
-    let mut escaped = false;
-    while let Some(ch) = reader.remaining().chars().next() {
-        reader.advance(ch.len_utf8())?;
-        if ch == '"' && !escaped {
-            let range = start..reader.position();
-            let text = &reader.source()[range.clone()];
-            budget.charge(
-                text.len()
-                    .checked_mul(6)
-                    .ok_or_else(|| reader.error("value allocation size overflow"))?,
-                Location::Query(range.clone()),
-            )?;
-            let normalized = text
-                .replace('\n', "\\n")
-                .replace('\r', "\\r")
-                .replace('\t', "\\t");
-            let value = serde_json::from_str(&normalized).map_err(|_| {
-                QueryError::query(
-                    range.clone(),
-                    "invalid JSON string escape or Unicode sequence",
-                )
-            })?;
-            return Ok(Located::new(value, range));
-        }
-        escaped = ch == '\\' && !escaped;
+    let mut probe = reader.at(reader.position())?;
+    probe.set_end(reader.end());
+    probe.skip_trivia()?;
+    let start = probe.position();
+    if !probe.remaining().starts_with('"') {
+        return Err(probe.error("expected '\"'"));
     }
-    Err(QueryError::query(
-        start..reader.position(),
-        "unterminated string",
-    ))
+    probe.protected_span()?;
+    let range = start..probe.position();
+    let work = range
+        .len()
+        .checked_mul(6)
+        .ok_or_else(|| reader.error("value allocation size overflow"))?;
+    budget.charge(work, Location::Query(range))?;
+    reader.quoted_string()
 }
 
 fn dispose_signature(value: SignatureType) {

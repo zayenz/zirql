@@ -11,6 +11,11 @@ and prepares functions before evaluating a call. The common reader parses those
 declarations, but the small word executable accepts one expression and does not
 install functions.
 
+The expression spelling `if condition then value elseif condition then value
+else value endif` uses the same conditional rules as the block form below.
+Both comprehension spellings are available inside function bodies and branches;
+see [comprehensions](language-reference.md#comprehensions).
+
 ## Run a named function
 
 Zirium accepts a complete function program as its query argument. From a Zirium

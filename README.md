@@ -35,7 +35,9 @@ inputs, saved selections and reports.
 
 Constructed values include Booleans, checked signed integers, finite floats,
 strings, absence, positional arrays, tuples, insertion-ordered dictionaries and
-sets, nominal members and sparse keyed arrays. Comprehensions are eager. Sorting
+sets, nominal members and sparse keyed arrays. Both `[x*2 for x in [1,2,3] if x>1]` and
+`[x*2 | x in [1,2,3] where x>1]` return `[4,6]` through the same reader.
+Comprehensions are eager. Sorting
 is stable and retains the collection kind. Optional lookup and `default` handle
 absence without hiding arithmetic, type or resource errors.
 
@@ -50,15 +52,16 @@ and one final expression, without named function declarations.
 
 | Integration | Public entry points |
 | --- | --- |
-| Shared expressions | `ValueReaderHost`, `read_value_expression`, `ValueQueryHost`, `evaluate_query_value` |
+| Shared expressions | `ValueReaderHost`, `read_value_expression`, `read_value_expression_in_scope`, `ValueQueryHost`, `evaluate_query_value` |
 | Typed value trees | `ValueExpression`, `evaluate_value`, `evaluate_value_with_host_validation` |
 | Native pipelines and programs | `Host`, `ProgramHost`, `ProjectionHost`, `evaluate`, `evaluate_program` |
 | Typed pure functions | `FunctionHost`, `FunctionRequest`, `PreparedFunctions` |
 | Runtime contracts | `DeclaredType`, `RuntimeTypeHost`, `admit_value`, `checked_invoke` |
 | Shared native operations | Ordering, set algebra, maps, correlated existence, fixed points, capture matches and bounded paths |
 
-A host can use the common readers or lower its existing parser into the same
-located representation. Host callbacks supply domain navigation, predicates,
+Zirql owns generic query grammar; typed callers can also build the same located
+representation. A narrow domain-call hook handles signatures that need model
+facts. Host callbacks supply domain navigation, predicates,
 projections and identity. Native values need no JSON conversion, `Clone`,
 `Send`, `Sync` or `'static` bound to pass through a program.
 

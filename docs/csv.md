@@ -65,6 +65,19 @@ lets followed by one final expression; named function declarations are unsupport
 See [values and comprehensions](values.md) for expression syntax and
 [the language reference](language-reference.md) for the shared collection stages.
 
+The common and MiniZinc comprehension spellings share the same reader:
+
+```sh
+cargo run --locked --example csv -- 'let xs = [1, 2, 3]; [x * 2 for x in xs if x > 1]' examples/csv/people.csv
+cargo run --locked --example csv -- 'let xs = [1, 2, 3]; [x * 2 | x in xs where x > 1]' examples/csv/people.csv
+```
+
+Both print `[4,6]`. The same patterns and lexical rules apply to named CSV
+inputs, for example `[name | {name, active, ..} in people where active == "yes"]`.
+Records, conditionals and indexed literals use the [shared query grammar](language-reference.md).
+Malformed syntax receives its original query byte range, and failures leave
+stdout empty. CSV still accepts only ordered lets and one final expression.
+
 ## Reuse selections across named files
 
 Name each input with `name=path`. The [teams fixture](../examples/csv/teams.csv)

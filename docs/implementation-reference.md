@@ -31,7 +31,7 @@ The library has several entry points, each suited to a different integration:
 
 | Entry point | Use |
 | --- | --- |
-| `read_value_expression` and `ValueReaderHost` | Parse shared expressions and delegate domain syntax |
+| `read_value_expression`, `read_value_expression_in_scope` and `ValueReaderHost` | Parse shared expressions and delegate domain syntax |
 | `evaluate_query_value` and `ValueQueryHost` | Evaluate constructed data with explicit binding reads and native leaves |
 | `parse_pipeline` and `Host` | Embed the small filter/head/count pipeline reader |
 | `ProgramHost` and `ProjectionHost` | Execute native programs and correlated report fields |
@@ -62,9 +62,13 @@ A host supplies a string projection; Zirql groups and sorts the resulting rows.
 The [word-model extensions](language-direction.md) show how to choose these
 operations without making them part of the base language.
 
-A host with an existing parser can translate its syntax into Zirql's expression
-and program types. Those trees retain source locations, and the shared evaluator
-gives their constructs the same meaning as expressions read by Zirql's parser.
+The shared reader owns generic query grammar, including common and MiniZinc
+comprehensions, records, conditionals and indexed literals. Domain arguments
+reenter the scoped expression reader. A narrow `parse_domain_call` hook handles
+signatures that require native/model facts, such as enum member resolution.
+The [adapter call sequence](host-integration.md#shared-query-grammar-and-domain-calls)
+keeps full-AST admission and actual input-file parsing with the host. Typed
+callers can also build located Rust trees directly.
 
 ## Preserve ownership and enforce limits
 

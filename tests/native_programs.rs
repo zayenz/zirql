@@ -3543,6 +3543,362 @@ mod projection {
         })
     }
     #[test]
+    fn shared_reader_pairs_generators_scopes_and_existing_expression_forms() {
+        let bindings = Bindings::new([(
+            super::at("xs".into(), 0),
+            Value::Constructed(V::Array(vec![V::Integer(1), V::Integer(2), V::Integer(3)])),
+        )])
+        .unwrap();
+        let selected = V::Array(vec![V::Integer(4), V::Integer(6)]);
+        for (common, alternate, expected) in [
+            (
+                "[x*2 for x in xs if x>1]",
+                "[x*2 | x in xs where x>1]",
+                selected,
+            ),
+            (
+                "[(names,count,total) for names,count in [1,2] for total in [names+count] if total>2]",
+                "[(names,count,total) | names,count in [1,2], total = names+count where total>2]",
+                V::Array(vec![
+                    V::Tuple(vec![V::Integer(1), V::Integer(2), V::Integer(3)]),
+                    V::Tuple(vec![V::Integer(2), V::Integer(1), V::Integer(3)]),
+                    V::Tuple(vec![V::Integer(2), V::Integer(2), V::Integer(4)]),
+                ]),
+            ),
+            (
+                "[a+b for (a,b) in [(1,2),(3,4)]]",
+                "[a+b | [a,b,..] in [[1,2,99],[3,4]]]",
+                V::Array(vec![V::Integer(3), V::Integer(7)]),
+            ),
+            (
+                "{x mod 2 for x in xs}",
+                "{x mod 2 | x in xs}",
+                V::Set {
+                    element_type: Some(zirql::SetElementType::Integer),
+                    elements: vec![V::Integer(1), V::Integer(0)],
+                },
+            ),
+            (
+                r#"{label:n for (label,n) in [("b",2),("a",1)]}"#,
+                r#"{label:n | (label,n) in [("b",2),("a",1)]}"#,
+                V::Record(vec![
+                    ("b".into(), V::Integer(2)),
+                    ("a".into(), V::Integer(1)),
+                ]),
+            ),
+            (
+                "index_set([x:x for x in (x:set<int>()).x])",
+                "index_set([x:x | x in (x:set<int>()).x])",
+                V::Set {
+                    element_type: Some(zirql::SetElementType::Integer),
+                    elements: vec![],
+                },
+            ),
+        ] {
+            for text in [common, alternate] {
+                let mut budget = function_budget();
+                let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+                let value =
+                    zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+                assert!(reader.remaining().trim().is_empty(), "{text}");
+                let result = zirql::evaluate_native_value(
+                    &value,
+                    &Host,
+                    Value::Subjects(vec![]),
+                    &mut (),
+                    &bindings,
+                    &mut budget,
+                )
+                .unwrap_or_else(|error| panic!("{text}: {error}"));
+                assert_eq!(result, expected, "{text}");
+                zirql::dispose_native_value(value);
+            }
+        }
+        let text = r#"% quoted names retain logical identity
+            [(label: 'if', value: if x == 2 /\ true then [|2:1:|4:42,41|3:32,31|][3,1]
+              elseif false \/ false then 1 div 0 else [3:7,8][4] endif)
+             | (x,'if') in [(2,"a"),(1,"b")] /* generator trivia */] | filter(_.value > 0)"#;
+        let mut budget = function_budget();
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let value = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        assert!(reader.remaining().is_empty());
+        let result = zirql::evaluate_native_value(
+            &value,
+            &Host,
+            Value::Subjects(vec![]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            V::Array(vec![
+                V::Record(vec![
+                    ("label".into(), V::String("a".into())),
+                    ("value".into(), V::Integer(31))
+                ]),
+                V::Record(vec![
+                    ("label".into(), V::String("b".into())),
+                    ("value".into(), V::Integer(8))
+                ])
+            ])
+        );
+        zirql::dispose_native_value(value);
+        let text = "[(names | count) | names in source] | count";
+        let bindings = Bindings::new([(
+            super::at("source".into(), 0),
+            Value::Subjects(vec!["a", "b"]),
+        )])
+        .unwrap();
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let value = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        assert!(reader.remaining().is_empty());
+        let result = zirql::FunctionRequest::prepare(
+            &[],
+            &Host,
+            &mut (),
+            &mut budget,
+            zirql::FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&value, &bindings)
+        .unwrap();
+        assert_eq!(result, Value::Constructed(V::Integer(2)));
+        zirql::dispose_native_value(value);
+    }
+
+    #[test]
+    fn scoped_reader_domain_calls_keep_names_numeric_bounds_and_full_admission() {
+        use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest};
+        let text = "fn 'bump'('if': int) -> int { let 'count' = 'if' + 0o1; 'count' } 'bump'(2)";
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let mut budget = function_budget();
+        let declaration =
+            zirql::read_function_declaration(&mut reader, &mut Host, &mut budget, 64, |name, _| {
+                Err::<D<Kind>, _>(QueryError::query(name.range, "unknown type"))
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(declaration.parameters[0].value.name.value, "if");
+        assert_eq!(
+            &text[declaration.parameters[0].value.name.range.clone()],
+            "'if'"
+        );
+        let value = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        assert_eq!(
+            FunctionRequest::prepare(
+                &[declaration],
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 1 }
+            )
+            .unwrap()
+            .evaluate(&value, &Bindings::default())
+            .unwrap(),
+            Value::Constructed(V::Declared {
+                value: Box::new(V::Integer(3)),
+                declaration: D::Integer
+            })
+        );
+        zirql::dispose_native_value(value);
+        let text = r#"(low: -0x8000000000000000, high: +0X7FFFFFFFFFFFFFFF, octal: 0o17, member: enum_member(Colour,"red"), matched: match (-0x8000000000000000) { -0x8000000000000000 => true, _ => false }, arithmetic: (0x1e+2,0x1e-2,0X1E+2,0x1d+2), exponent: 1e+2+1e-2)"#;
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let value = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+        let result = zirql::evaluate_native_value(
+            &value,
+            &Host,
+            Value::Subjects(vec![]),
+            &mut (),
+            &Bindings::default(),
+            &mut budget,
+        )
+        .unwrap();
+        let V::Record(fields) = result else {
+            panic!("record")
+        };
+        assert_eq!(fields[0].1, V::Integer(i64::MIN));
+        assert_eq!(fields[1].1, V::Integer(i64::MAX));
+        assert_eq!(fields[2].1, V::Integer(15));
+        assert!(
+            matches!(&fields[3].1, V::Member(member) if member.type_id == zirql::NominalTypeId(7) && member.member_name == "red")
+        );
+        assert_eq!(fields[4].1, V::Boolean(true));
+        assert_eq!(
+            fields[5].1,
+            V::Tuple(vec![
+                V::Integer(32),
+                V::Integer(28),
+                V::Integer(32),
+                V::Integer(31)
+            ])
+        );
+        assert_eq!(fields[6].1, V::Float(100.01));
+        zirql::dispose_native_value(value);
+        // An ordinary domain argument uses the scoped reader, even when its
+        // lexical name is also a registered native stage.
+        let text = "native(names) | count";
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let value = zirql::read_value_expression_in_scope(
+            &mut reader,
+            &mut Host,
+            &["names"],
+            &mut budget,
+            64,
+        )
+        .unwrap();
+        let bindings = Bindings::new([(
+            super::at("names".into(), 0),
+            Value::Subjects(vec!["a", "b"]),
+        )])
+        .unwrap();
+        let result = FunctionRequest::prepare(
+            &[],
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&value, &bindings)
+        .unwrap();
+        assert!(matches!(
+            result,
+            Value::Count(2) | Value::Constructed(V::Integer(2))
+        ));
+        zirql::dispose_native_value(value);
+        for text in [
+            "fn unused() -> int { let hidden = edit; 1 }",
+            "fn unused() -> int { if true then 1 else edit endif }",
+        ] {
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let declaration = zirql::read_function_declaration(
+                &mut reader,
+                &mut Host,
+                &mut budget,
+                64,
+                |name, _| Err::<D<Kind>, _>(QueryError::query(name.range, "unknown type")),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(
+                FunctionRequest::prepare(
+                    &[declaration],
+                    &Host,
+                    &mut (),
+                    &mut budget,
+                    FunctionLimits { active_depth: 1 }
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn native_argument_readers_preserve_the_enclosing_nesting_allowance() {
+        let mut budget = Budget::for_program(ProgramLimits {
+            nesting: 8,
+            ..super::limits()
+        });
+        let text = "native(native(f)) | count";
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let value = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 4).unwrap();
+        assert!(reader.remaining().is_empty());
+        assert_eq!(value.range, 0..text.len());
+        zirql::dispose_native_value(value);
+
+        let text = "native(native(native(native(f)))) | count";
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let error =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 4).unwrap_err();
+        assert_eq!(error.location, Location::Query(28..29));
+        assert!(error.message.contains("nesting"));
+        let text = "f | filter(count_is(native(native(f)) | count))";
+        let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+        let error =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 4).unwrap_err();
+        assert!(
+            matches!(error.location,Location::Query(ref range) if range.start < range.end && range.end <= text.len())
+        );
+        assert!(error.message.contains("nesting"));
+        // A refused callback restores the allowance for the next reader.
+        let text = "native(native(f)) | count";
+        let value = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(text, 0).unwrap(),
+            &mut Host,
+            &mut budget,
+            4,
+        )
+        .unwrap();
+        zirql::dispose_native_value(value);
+    }
+
+    #[test]
+    fn shared_reader_refuses_scope_shape_and_malformed_alternate_syntax_with_locations() {
+        for text in [
+            "[(x,y) | x in [y], y in [1]]",
+            "[x | x in 3]",
+            "[x | x in [1], x in [2]]",
+        ] {
+            let mut budget = function_budget();
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let value =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
+            let error = zirql::evaluate_native_value(
+                &value,
+                &Host,
+                Value::Subjects(vec![]),
+                &mut (),
+                &Bindings::default(),
+                &mut budget,
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                EvaluationError::Core(QueryError {
+                    location: Location::Query(_),
+                    ..
+                })
+            ));
+            zirql::dispose_native_value(value);
+        }
+        for text in [
+            "[x for x = 1]",
+            "[x | x in [1] where ]",
+            "[|1,2|3|]",
+            "[||]",
+            "[9223372036854775807:1,2]",
+            "0x1.0p2",
+            "['bad]",
+            "[1 /* unfinished]",
+            "[(1,2]]",
+        ] {
+            let mut budget = function_budget();
+            let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
+            let error =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap_err();
+            assert!(
+                matches!(error.location, Location::Query(ref range) if range.start <= range.end && range.end <= text.len()),
+                "{text}: {error}"
+            );
+        }
+        let text = "[x*2 | x in [1,2,3] where x>1]";
+        let mut budget = Budget::for_program(ProgramLimits {
+            work: 8,
+            ..super::limits()
+        });
+        let error = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(text, 0).unwrap(),
+            &mut Host,
+            &mut budget,
+            64,
+        )
+        .unwrap_err();
+        assert_eq!(error.category, QueryErrorCategory::WorkLimit);
+    }
+
+    #[test]
     fn named_accumulators_use_prepared_native_arguments_and_refuse_impure_steps() {
         use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest, ValueBinaryOperator as B};
         let mut add = native_function(
@@ -4641,7 +4997,7 @@ mod projection {
     #[test]
     fn request_resolved_headers_borrow_host_lowered_bodies() {
         use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
-        let source = "fn saved(xs: sequence<set<Colour>>) -> sequence<set<Colour>> { let local = yield xs; yield local }";
+        let source = "fn saved(xs: sequence<set<Colour>>) -> sequence<set<Colour>> { let local = xs; local }";
         let mut budget = function_budget();
         let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
         let parsed =
@@ -5023,7 +5379,16 @@ mod projection {
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
         ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
-            Host.parse_stage_in_scope(reader, self.0, budget)
+            Host.parse_stage(reader, budget)
+        }
+        fn parse_stage_in_scope(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            _: &[&str],
+            budget: &mut Budget,
+            nesting: usize,
+        ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
+            Host.parse_stage_in_scope(reader, self.0, budget, nesting)
         }
         fn parse_predicate_leaf_in_argument(
             &mut self,
@@ -5031,6 +5396,7 @@ mod projection {
             argument: Option<&zirql::Pattern>,
             locals: &[&str],
             budget: &mut Budget,
+            nesting: usize,
         ) -> Result<Guard, QueryError> {
             let mut scope = self.0.to_vec();
             for name in locals {
@@ -5038,7 +5404,7 @@ mod projection {
                     scope.push(name);
                 }
             }
-            Host.parse_predicate_leaf_in_argument(reader, argument, &scope, budget)
+            Host.parse_predicate_leaf_in_argument(reader, argument, &scope, budget, nesting)
         }
         fn predicate_expression(
             &mut self,
@@ -5058,7 +5424,7 @@ mod projection {
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
         ) -> Result<Guard, QueryError> {
-            Host.parse_predicate_leaf_in_scope(reader, self.0, budget)
+            Host.parse_predicate_leaf(reader, budget)
         }
         fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
             unreachable!()
@@ -5082,22 +5448,38 @@ mod projection {
         type SetOperator = ();
         type Emitter = ();
         type Predicate = Guard;
-        fn parse_function_value(
+        fn parse_domain_call(
             &mut self,
+            callee: Located<&str>,
             reader: &mut zirql::ArgumentReader<'_>,
-            locals: &[&str],
+            _: &[&str],
             budget: &mut Budget,
             _: usize,
         ) -> Result<Option<zirql::ValueExpression<Query>>, QueryError> {
-            if !reader.keyword("yield") {
+            if callee.value != "enum_member" {
                 return Ok(None);
             }
-            let name = reader.word()?;
-            if !locals.contains(&name.value) {
-                return Err(QueryError::query(name.range, "unknown host local"));
+            reader.expect('(')?;
+            let ty = reader.word()?;
+            reader.expect(',')?;
+            let member = reader.quoted_string()?;
+            reader.expect(')')?;
+            let range = callee.range.start..reader.position();
+            budget.charge(range.len(), Location::Query(range.clone()))?;
+            budget.charge_results(1, Location::Query(range.clone()))?;
+            if ty.value != "Colour" || member.value != "red" {
+                return Err(QueryError::query(range, "unknown nominal member"));
             }
-            budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
-            Ok(Some(Located::new(K::Name(name.value.into()), name.range)))
+            Ok(Some(Located::new(
+                K::Literal(V::Member(zirql::NominalMember {
+                    type_id: zirql::NominalTypeId(7),
+                    member_id: zirql::NominalMemberId(1),
+                    declaration_order: 0,
+                    type_name: ty.value.into(),
+                    member_name: member.value,
+                })),
+                range,
+            )))
         }
         fn is_binding(&self, name: &str) -> bool {
             name == "f"
@@ -5113,13 +5495,15 @@ mod projection {
             reader: &mut zirql::ArgumentReader<'_>,
             locals: &[&str],
             budget: &mut Budget,
+            nesting: usize,
         ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("native") {
                 reader.word()?;
                 reader.expect('(')?;
-                let value =
-                    zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
+                let value = zirql::read_value_expression_in_scope(
+                    reader, &mut Host, locals, budget, nesting,
+                )?;
                 reader.expect(')')?;
                 return Ok(ExpressionStep::Stage(Stage::NativeArgument(Arc::new(
                     value,
@@ -5127,7 +5511,7 @@ mod projection {
             }
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("paths") {
-                return zirql::read_paths(reader, &mut ArgumentScope(locals), budget, 32)
+                return zirql::read_paths(reader, &mut ArgumentScope(locals), budget, nesting)
                     .map(|paths| ExpressionStep::Stage(Stage::Paths(Box::new(paths))));
             }
             self.parse_stage(reader, budget)
@@ -5157,13 +5541,15 @@ mod projection {
             reader: &mut zirql::ArgumentReader<'_>,
             locals: &[&str],
             budget: &mut Budget,
+            nesting: usize,
         ) -> Result<Guard, QueryError> {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("bound") {
                 reader.word()?;
                 reader.expect('(')?;
-                let value =
-                    zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
+                let value = zirql::read_value_expression_in_scope(
+                    reader, &mut Host, locals, budget, nesting,
+                )?;
                 reader.expect(')')?;
                 if matches!(value.value,K::Name(ref name) if locals.contains(&name.as_str())) {
                     return Ok(Guard::True);
@@ -5178,13 +5564,14 @@ mod projection {
             argument: Option<&zirql::Pattern>,
             locals: &[&str],
             budget: &mut Budget,
+            nesting: usize,
         ) -> Result<Guard, QueryError> {
             if !reader.keyword("count_is") {
-                return self.parse_predicate_leaf_in_scope(reader, locals, budget);
+                return self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting);
             }
             reader.expect('(')?;
             let value =
-                zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
+                zirql::read_value_expression_in_scope(reader, &mut Host, locals, budget, nesting)?;
             reader.expect(')')?;
             let range = value.range.clone();
             let subject = Located::new(
@@ -5524,8 +5911,9 @@ mod projection {
             argument: Option<&zirql::Pattern>,
             locals: &[&str],
             budget: &mut Budget,
+            nesting: usize,
         ) -> Result<Guard, QueryError> {
-            Host.parse_predicate_leaf_in_argument(reader, argument, locals, budget)
+            Host.parse_predicate_leaf_in_argument(reader, argument, locals, budget, nesting)
         }
         fn predicate_expression(
             &mut self,
@@ -7154,7 +7542,6 @@ mod projection {
             ("[1: 0] axes([1, 1])", "duplicate"),
             ("[1: 0] axes([\"x\"])", "integer"),
             ("[1: 0] axes([])", "unestablished"),
-            ("[i: i for i in set<int>()]", "unestablished"),
             ("index_set(matrix)", "rank one"),
             ("index_set(1)", "needs an array"),
             ("(1, 2).0", "missing collection position"),

@@ -53,7 +53,9 @@ Keep words beginning with `a`:
 ```
 
 The comprehension keeps input order and duplicates. String matching is exact
-and case-sensitive.
+and case-sensitive. The same comprehension can use
+`[w | w in words where starts_with(w, "a")]`; both spellings follow the
+[shared comprehension rules](language-reference.md#comprehensions).
 
 ### Distinct words
 

@@ -187,6 +187,26 @@ impl Budget {
         Ok(())
     }
 
+    pub(crate) fn remaining_nesting(&self) -> usize {
+        self.max_nesting.saturating_sub(self.depth)
+    }
+
+    // Host argument readers share the active depth and cannot widen the
+    // enclosing reader's allowance by starting another public reader.
+    pub(crate) fn within_parsing<T>(
+        &mut self,
+        depth: usize,
+        nesting: usize,
+        location: Location,
+        operation: impl FnOnce(&mut Self) -> Result<T, QueryError>,
+    ) -> Result<T, QueryError> {
+        let limit = self.max_nesting;
+        self.max_nesting = limit.min(self.depth.saturating_add(nesting));
+        let result = self.within_evaluation(depth, location, operation);
+        self.max_nesting = limit;
+        result
+    }
+
     /// Run nested evaluation with this request's active depth and call guard.
     /// Hosts use this for recursive containers not built by a shared operation,
     /// for example legacy JSON arrays. Count each actual container once; shared

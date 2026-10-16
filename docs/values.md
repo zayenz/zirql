@@ -13,13 +13,13 @@ operations that need additional host support. For the Rust representations, see
 | Value | Example | Notes |
 | --- | --- | --- |
 | Boolean | `true`, `false` | Conditions require a known Boolean |
-| Integer | `42`, `-3` | Signed 64-bit, with checked arithmetic |
+| Integer | `42`, `-3`, `0x2a`, `0o52` | Signed 64-bit, with checked arithmetic |
 | Float | `1.5`, `2.0e3` | Finite binary64 values |
 | String | `"apple"` | Double-quoted text |
 | Absence | `null`, `<>` | One absent value with two accepted spellings |
 | Array | `["ash", "apple"]` | Ordered; duplicates and different element types are allowed |
 | Tuple | `("ash", 3)` | Fixed positions; distinct from an array |
-| Dictionary | `{"word": "ash", "count": 1}` | String keys in insertion order |
+| Dictionary | `{"word": "ash", "count": 1}`, `(word: "ash", count: 1)` | String keys in insertion order |
 | Set | `{3, 1, 3}` | Homogeneous values; first occurrence wins |
 
 Use a field label or a one-based position to select a value:
@@ -45,7 +45,7 @@ The common reader applies these precedence levels, strongest first:
 
 | Level | Operations |
 | --- | --- |
-| Access | `a[i]`, `tuple.1`, `row.field` |
+| Access | `a[i]`, `a[i, j]`, `tuple.1`, `row.field` |
 | Optional fallback | `default` |
 | Prefix | `not`, unary `+` and `-` |
 | Multiplication and division | `*`, `/`, `div`, `mod` |
@@ -54,15 +54,20 @@ The common reader applies these precedence levels, strongest first:
 | String concatenation | `++` |
 | Ordering | `<`, `<=`, `>`, `>=` |
 | Equality | `==` (also `=`), `!=` |
-| Boolean conjunction | `and` |
-| Boolean disjunction | `or` |
+| Boolean conjunction | `and`, `/\` |
+| Boolean disjunction | `or`, `\/` |
 
 Binary operators at the same level associate to the left. Use parentheses to
 make a fallback boundary clear: `(lookup(row, "count") default 0) + 1`.
 Parentheses also group expressions; a comma makes a tuple.
 
-Whitespace separates tokens, and `#` starts a line comment outside a string.
-A host may use other surface syntax while preserving the shared value rules.
+Whitespace, `#`/`%` line comments and nonnested `/* ... */` comments separate
+tokens. Strings use double quotes and JSON escapes, including Unicode escapes;
+literal newlines, carriage returns and tabs are retained. Single quotes surround
+nonempty identifiers: `'row count'` names one binding, and `'if'` remains a name.
+Names compare without their quotes; source ranges include them. Integer literals
+also accept `0x`/`0X` hexadecimal and `0o` octal digits, including the signed minimum
+`-0x8000000000000000`. Hexadecimal floats and integer overflow are refused.
 
 ## Checked arithmetic and conditions
 
@@ -80,7 +85,9 @@ the selected branch:
 if length(words) > 0 { words[1] } else { "no words" }
 ```
 
-This returns `"ash"`. With empty input it returns `"no words"` without trying
+The same expression can use `if length(words) > 0 then words[1] else "no words" endif`.
+Additional branches use `elseif condition then value`; both spellings require a
+final `else`. This returns `"ash"`. With empty input it returns `"no words"` without trying
 to access position 1. Every branch still receives scope and known-type checks.
 See [functions and control flow](functions-and-control-flow.md) for local
 bindings, pattern matching and recursion.
@@ -150,6 +157,29 @@ result for each selected element:
 
 It returns records for `ash`, `apple`, `apple`, in that order. The `++` operator
 concatenates strings. Duplicate input values produce duplicate records.
+
+The MiniZinc spelling has the same meaning:
+
+```zirql
+[(word: w, label: "word:" ++ w)
+ | w in words where starts_with(w, "a")]
+```
+
+The head can use all binders. Sources and guards are read in written order.
+Grouped `x, y in source` binders traverse the same source as a Cartesian product.
+In the MiniZinc form, commas separate generators and `name = value` binds one
+value once per preceding combination:
+
+```zirql
+[(x, y, total) | x, y in [1, 2], total = x + y where total > 2]
+```
+
+This returns `[(1, 2, 3), (2, 1, 3), (2, 2, 4)]`. The common form uses repeated
+`for ... in ...` clauses; it has no `for pattern = value` spelling. Both forms
+accept shared destructuring patterns. A generator pipe belongs to its collection;
+group native pipelines inside a head or source, and place collection suffixes
+after its closing bracket.
+
 
 Later generators can use earlier names. Each source is evaluated before its
 own pattern names become available; its filter can use those names. For example,
@@ -375,6 +405,16 @@ supplies one source per dimension. Sources are integer/member arrays or typed
 sets. They run once, left to right, in surrounding scope before any cells or
 generators. `axes` is contextual construction syntax, not a built-in function.
 
+A written integer key can start a positional tail: `[3: 7, 8]` supplies cells
+`3: 7` and `4: 8`. Every omitted key needs a checked successor of the preceding
+written integer key. Nominal or computed keys require explicit following keys.
+
+Matrices use `[| 1, 2 | 3, 4 |]`, with one-based row and column keys. Explicit
+columns end each key with a colon, followed by a pipe; a row key precedes its
+cells. For example, `[| 2: 1: | 4: 42, 41 | 3: 32, 31 |][3, 1]` returns `31`.
+Rows must be rectangular, and empty matrices without established axes fail.
+`a[i, j]` and `a[(i, j)]` use the same tuple index.
+
 A tuple supplies row and column keys for a two-dimensional value:
 
 ```zirql
@@ -403,7 +443,11 @@ A host can supply a typed empty nominal set without losing its identity.
 A host may require contiguous domains or complete rectangular coverage, as
 Zincite does for constructed data. Those checks do not fill or compact cells.
 See [value evaluation](value-runtime.md#keyed-construction) for the Rust fields
-and the separate lazy fallback used by existing host lowerings.
+and the separate lazy empty fallback. Without explicit axes, a direct key binder
+can recover an independent generator domain when no cells are emitted:
+`[i: i | i in set<int>()]` retains an empty integer axis. A tuple of direct
+key binders can recover each independent domain. Dependent or unestablished
+domains do not invent a shape. Explicit `axes(...)` always takes precedence.
 
 `index_set(a)` returns a typed set of one-dimensional array keys. For a
 positional array this is `1..length(a)`, including a typed empty integer set

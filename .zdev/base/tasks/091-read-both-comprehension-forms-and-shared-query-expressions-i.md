@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-091"
 key = "one-shared-query-reader"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "high"
@@ -27,15 +27,25 @@ Read One shared query reader and Shared destructuring patterns in the brief. Con
 
 ## Done when
 
-- [ ] The public shared reader accepts common for/in/if and MiniZinc pipe/where comprehensions for existing positional, set, dictionary and indexed constructors. Existing grouped in generators, dependent sources, single-value binding generators, guards and base-090 patterns lower to the same existing clauses and ordering/evaluation rules. Do not invent a new common for-pattern-equals syntax.
-- [ ] Head binder discovery and sequential source/guard scope work in both forms, including patterns and names colliding with host stage names. Generator pipes are distinguished from grouped native/query pipes and outer suffix pipes; all lookahead and nesting remain bounded with original source ranges.
-- [ ] Existing domain-independent MiniZinc query expression forms needed for sole-reader adoption are handled in Zirql: natural records, then/elseif/endif conditionals, Boolean spellings, multidimensional access, supported matrix/starting-key literal forms and quoted-name/string/trivia spellings. Lower them into existing nodes and preserve their established semantics rather than routing whole expressions to a host parser. Unsupported forms receive located refusals.
-- [ ] Scoped public expression readers and any narrowly necessary domain atom/call hook let native argument, function, predicate and Data callers use the shared grammar with lexical names. No generic-expression CST parser is required by the documented adapter call sequence; host contextual AST admission and native/nominal/keyed evidence remain explicit.
-- [ ] A few focused public reader programs show paired spellings returning [4,6], grouped/dependent/binding order, one destructured binder per notation, a natural record/conditional/indexed head with a collection suffix, and located scope/type/budget refusal. Packaged CSV runs both spellings through one reader; preserve its let-plus-result and output limits.
-- [ ] Required stable/MSRV Rust, docs, package and site/link checks pass. Reader/API/language/release guides describe current supported forms and the small domain boundary; Root independently verifies, commits and pushes the actual source for both host integrations.
+- [x] The public shared reader accepts common for/in/if and MiniZinc pipe/where comprehensions for existing positional, set, dictionary and indexed constructors. Existing grouped in generators, dependent sources, single-value binding generators, guards and base-090 patterns lower to the same existing clauses and ordering/evaluation rules. Do not invent a new common for-pattern-equals syntax.
+- [x] Head binder discovery and sequential source/guard scope work in both forms, including patterns and names colliding with host stage names. Generator pipes are distinguished from grouped native/query pipes and outer suffix pipes; all lookahead and nesting remain bounded with original source ranges.
+- [x] Existing domain-independent MiniZinc query expression forms needed for sole-reader adoption are handled in Zirql: natural records, then/elseif/endif conditionals, Boolean spellings, multidimensional access, supported matrix/starting-key literal forms and quoted-name/string/trivia spellings. Lower them into existing nodes and preserve their established semantics rather than routing whole expressions to a host parser. Unsupported forms receive located refusals.
+- [x] Scoped public expression readers and any narrowly necessary domain atom/call hook let native argument, function, predicate and Data callers use the shared grammar with lexical names. No generic-expression CST parser is required by the documented adapter call sequence; host contextual AST admission and native/nominal/keyed evidence remain explicit.
+- [x] A few focused public reader programs show paired spellings returning [4,6], grouped/dependent/binding order, one destructured binder per notation, a natural record/conditional/indexed head with a collection suffix, and located scope/type/budget refusal. Packaged CSV runs both spellings through one reader; preserve its let-plus-result and output limits.
+- [x] Required stable/MSRV Rust, docs, package and site/link checks pass. Reader/API/language/release guides describe current supported forms and the small domain boundary; Root independently verifies, commits and pushes the actual source for both host integrations.
 
 ## Validation
 
 - Run required fmt, fatal workspace/all-target Clippy, workspace tests, Rust 1.88 tests and warning-fatal docs/doctests. Use focused existing-style public grammar/behavior controls; no form-by-position matrix or full MiniZinc conformance campaign.
 - Compare paired public-reader programs, generator order and lexical head/source classification, including existing skipped-runtime-error, expansion and empty-keyed-shape contracts. Inspect the concrete Zincite/Zirium call sequences to ensure no generic parser escape hatch is required; consumer tests run in their integration tasks.
 - Verify the source package and a few extracted CSV programs in both notations with located refusal and empty stdout. Run affected site check/build/links and Root desktop/mobile/search review. Keep real registry publication separate.
+
+## Result
+
+Both comprehension spellings and the supported generic query forms use one located Zirql reader, with scoped domain arguments and cumulative parsing limits.
+
+Validation:
+
+- Independent stable and Rust 1.88 default-stack workspace tests, fatal Clippy/rustdoc/doctests, fmt, diff and zdev checks pass.
+- Fresh 60-file draft package, extracted words/CSV examples and external scoped/native API controls pass; located refusals leave stdout empty.
+- Documentation site build, 20 pages and 1255 local references pass; original and corrected desktop/mobile/navigation/search review matches all guide hashes.

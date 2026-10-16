@@ -8,6 +8,11 @@ execution in Zirium, Zincite and smaller application hosts.
 - Common readers and located Rust builders support expressions, immutable
   bindings, comprehensions, dictionaries, insertion-ordered sets and sparse
   keyed arrays with retained index domains.
+- One reader accepts common `for/in/if` and MiniZinc `pipe/where`
+  comprehensions, grouped and binding generators, natural records, MiniZinc
+  conditionals, Boolean spellings, multidimensional indexing, matrices,
+  starting-key tails and quoted identifiers/comments. Scoped expression readers
+  and a narrow domain-call hook keep generic query parsing in Zirql.
 - Scoped filters accept named and unnamed arguments, Boolean expressions,
   lexical captures and permitted pure calls. Native predicate adapters use the
   same expression scopes while retaining their existing subjects and leaves.

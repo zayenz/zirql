@@ -191,12 +191,15 @@ Ordinary calls accept zero or more positional arguments. Conditionals use
 preflight checks; only the selected result executes. Branch-local names stay
 inside their block. Ordinary JSON records remain value expressions.
 
-Hosts with their own expression parser can implement
-`ValueReaderHost::parse_function_value`. It receives the original cursor and
-the function's current parameter/local names. Lower one initializer or final
-expression and leave its `;` or closing `}` to the common declaration reader.
-Returning `None` keeps the common expression grammar. The shared reader still
-owns function headers, local binding order and declaration boundaries.
+Function initializers and results use the shared expression reader. Both
+`if ... { ... } else { ... }` and `if ... then ... elseif ... else ... endif`
+lower to the same conditional nodes. Native operation arguments call
+`read_value_expression_in_scope` with their borrowed lexical names, the same
+budget and the remaining allowance received by their scoped reader hook.
+Nested reader entry cannot widen the enclosing request allowance. A recognized domain signature can use
+`ValueReaderHost::parse_domain_call`; see [domain calls](host-integration.md#shared-query-grammar-and-domain-calls).
+The shared reader owns generic grammar and declaration boundaries. The host
+admits every written branch and retains its native and effect rules.
 
 If parsing precedes model loading, use `read_unresolved_function_declaration`.
 It retains located `SignatureType` names, including names nested in `set<T>`.

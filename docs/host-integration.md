@@ -60,14 +60,57 @@ Items need not implement `Clone`, `Send`, `Sync` or `'static`. A string slice ma
 borrow source text; an operation handle may refer to a document retained by the
 context. Keep that owner alive for as long as callers can use the results.
 
+## Shared query grammar and domain calls
+
+Start an `ArgumentReader` at the query's original byte offset and pass one
+request `Budget` to `read_value_expression`. Functions, blocks, predicates and
+both comprehension spellings use that reader. A domain argument that contains
+an ordinary expression calls
+`read_value_expression_in_scope(reader, host, locals, budget, nesting)`. Pass the
+received lexical names and the remaining nesting allowance. These names take
+precedence over stage names; they expose no caller values. Returned trees own
+their names and native payloads, so the input text and name slices need live
+only while reading.
+
+The scoped stage, predicate-leaf, predicate-argument and constructed-filter
+hooks receive `nesting` after their budget argument. Forward that allowance to
+nested readers instead of supplying a fresh limit. `parse_domain_call` uses the
+same contract. Zirql also caps each nested reader against the active request
+allowance, so a new reader cannot reset it. Zirql restores the enclosing
+allowance when the callback returns, on success or error. Work and result
+charges remain spent.
+
+`ValueReaderHost::parse_domain_call(callee, reader, locals, budget, nesting)`
+handles a recognized domain signature after the shared reader consumes its
+semantic callee. The cursor is at `(`. Return `None` without moving the cursor
+for an ordinary shared function call. For example, a Zincite adapter can read
+`enum_member(TypeIdentifier, "member")` with `word()` and `quoted_string()`, then
+resolve the type and member against its model and return a located nominal
+literal. The hook does not read an entire generic expression. Native stage and
+predicate hooks still read their own operation arguments; ordinary value
+arguments reenter the scoped reader.
+
+After reading, the host admits the entire AST for its context, resolves native
+and nominal facts, then prepares and executes through Zirql. Finally it renders
+results or validates an edit candidate. A closed Data context must visit unused
+bindings, every conditional/match arm, generators, declared/fallback axes and
+expressions inside opaque native arguments before execution. Grammar acceptance
+does not grant report helpers, functions, effects or edit capabilities.
+
+The host keeps its input-file CST and literal-source decoding for actual model
+and input syntax. Zirql reads query records, conditionals, indexing, matrices,
+comprehensions and lexical forms. Zincite retains its Data admission policy and
+model facts; Zirium retains MLIR/diff meanings and native ownership. Both use
+the same expression grammar without a whole-expression CST hook.
+
 ## Scoped predicates
 
 `read_predicate_argument(reader, host, locals, budget, nesting)` reads an optional
 `pattern =>` followed by a shared value expression. The reader binds `_` only for
-that argument. `ValueReaderHost::parse_predicate_value` can lower a host's natural
-expression syntax; the supplied lexical names include the unnamed argument and
+that argument. Predicate bodies use the shared expression reader, including both
+comprehension spellings. The lexical names include the unnamed argument and
 every pattern name. `_` retains the whole subject, including with a destructured
-argument. A hook returning `None` must leave the cursor unchanged.
+argument. Domain leaves keep their narrow argument signatures.
 
 For native Boolean trees, `is_predicate_leaf` recognizes domain leaves without
 consuming syntax or budget. `parse_predicate_leaf_in_argument` receives the
@@ -138,13 +181,13 @@ Comprehension-local names take precedence over native stage names in value
 expressions. The head sees every binder; each source sees earlier binders, and
 each filter also sees its current binder.
 
-A host with its own value grammar can lower a completed prefix, then call
-`read_value_suffix` with its host, enclosing lexical names and cursor at the first outer pipe. The shared reader
+A caller holding a constructed prefix can call `read_value_suffix` with its
+host, enclosing lexical names and cursor at the first outer pipe. The shared reader
 wraps that value in the existing `Filter`, `Sort`, `Unique` and `Tally` nodes, keeping
 stage locations and rejecting any stage after `tally`. Pass the active parsing
-budget and the nesting allowance remaining for suffix wrappers. Zincite uses
-this path after lowering a MiniZinc array or comprehension; the generator pipe
-inside brackets remains part of its MiniZinc prefix. A host with known
+budget and the nesting allowance remaining for suffix wrappers. The shared
+expression reader already owns both collection spellings and their generator
+pipes. A host with known
 constructed bindings implements `ValueReaderHost::is_constructed_binding` so
 `rows | sort | unique` takes the same route as `(rows) | sort | unique`.
 The default is conservative for native or unknown bindings. This fact does not
@@ -155,8 +198,9 @@ value nodes as the text reader. Native sources retain their host stage routing.
 ordering argument shapes or declared function names.
 
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
-quoted-string helpers that skip whitespace and `#` line comments. Quoted strings
-retain literal `#` characters. `remaining` and `advance` let a predicate callback read
+quoted-string helpers that skip whitespace, `#`/`%` line comments and nonnested
+block comments. `word()` returns single-quoted names without their quotes while
+retaining the complete byte range. Quoted strings retain literal comment markers. `remaining` and `advance` let a predicate callback read
 other argument forms. The callback must consume and validate the whole leaf.
 
 The core validates the structure it can see. The frontend must validate references

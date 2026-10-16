@@ -3,11 +3,12 @@ use crate::{
 };
 
 /// The host reads its leaf name and arguments from the original query text.
-/// Common helpers skip whitespace and `#` line comments, returning original UTF-8 byte ranges.
+/// Common helpers skip whitespace and comments, returning original UTF-8 byte ranges.
 /// `source`, `remaining`, `position` and `advance` support host-specific forms.
 pub struct ArgumentReader<'a> {
     source: &'a str,
     position: usize,
+    end: usize,
 }
 
 impl<'a> ArgumentReader<'a> {
@@ -19,7 +20,11 @@ impl<'a> ArgumentReader<'a> {
                 "reader position must be an in-bounds UTF-8 boundary",
             ));
         }
-        Ok(Self { source, position })
+        Ok(Self {
+            source,
+            position,
+            end: source.len(),
+        })
     }
 
     pub fn source(&self) -> &'a str {
@@ -27,7 +32,7 @@ impl<'a> ArgumentReader<'a> {
     }
 
     pub fn remaining(&self) -> &'a str {
-        &self.source[self.position..]
+        &self.source[self.position..self.end]
     }
 
     pub fn position(&self) -> usize {
@@ -40,39 +45,80 @@ impl<'a> ArgumentReader<'a> {
         let Some(end) = self.position.checked_add(bytes) else {
             return Err(self.error("argument extends beyond query"));
         };
-        if !self.source.is_char_boundary(end) {
+        if end > self.end || !self.source.is_char_boundary(end) {
             return Err(self.error("argument must end at a UTF-8 byte boundary"));
         }
         self.position = end;
         Ok(())
     }
 
-    /// Skip whitespace and unquoted `#` comments through newline or end of input.
+    /// Skip whitespace, `#`/`%` line comments and nonnested block comments.
+    /// A malformed block comment remains at the cursor for a checked read.
     pub fn skip_whitespace(&mut self) {
-        while let Some(character) = self.remaining().chars().next() {
-            match character {
-                character if character.is_whitespace() => self.position += character.len_utf8(),
-                '#' => {
-                    self.position += self
-                        .remaining()
-                        .find('\n')
-                        .unwrap_or(self.remaining().len());
-                }
-                _ => break,
+        let _ = self.skip_trivia();
+    }
+
+    pub(crate) fn skip_trivia(&mut self) -> Result<(), QueryError> {
+        loop {
+            let rest = self.remaining();
+            let Some(ch) = rest.chars().next() else {
+                return Ok(());
+            };
+            if ch.is_whitespace() {
+                self.position += ch.len_utf8();
+            } else if matches!(ch, '#' | '%') {
+                self.position += rest.find('\n').unwrap_or(rest.len());
+            } else if let Some(comment) = rest.strip_prefix("/*") {
+                let Some(end) = comment.find("*/") else {
+                    return Err(QueryError::query(
+                        self.position..self.end,
+                        "unterminated block comment",
+                    ));
+                };
+                self.position += end + 4;
+            } else {
+                return Ok(());
             }
         }
     }
 
-    /// Read an ASCII identifier: a letter or underscore, then letters, digits
-    /// or underscores. A host may read other names through `remaining/advance`.
+    /// Read an ASCII identifier or a nonempty single-quoted identifier.
+    /// Quoted names return their logical identity without the quotes; the range
+    /// includes the complete original spelling. Quoted keywords remain names.
     pub fn word(&mut self) -> Result<Located<&'a str>, QueryError> {
-        self.skip_whitespace();
+        self.skip_trivia()?;
         let start = self.position;
+        if self.remaining().starts_with('\'') {
+            self.advance(1)?;
+            let Some(end) = self.remaining().find('\'') else {
+                return Err(QueryError::query(
+                    start..self.end,
+                    "unterminated quoted identifier",
+                ));
+            };
+            if self.remaining()[..end].contains(['\r', '\n', '\0']) {
+                return Err(QueryError::query(
+                    start..self.position + end,
+                    "invalid quoted identifier",
+                ));
+            }
+            if end == 0 {
+                return Err(QueryError::query(
+                    start..self.position + 1,
+                    "expected a nonempty quoted identifier",
+                ));
+            }
+            self.advance(end + 1)?;
+            return Ok(Located::new(
+                &self.source[start + 1..self.position - 1],
+                start..self.position,
+            ));
+        }
         if !self
             .remaining()
             .bytes()
             .next()
-            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         {
             return Err(self.error("expected an identifier"));
         }
@@ -80,9 +126,89 @@ impl<'a> ArgumentReader<'a> {
             .remaining()
             .bytes()
             .next()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
         {
             self.position += 1;
+        }
+        Ok(Located::new(
+            &self.source[start..self.position],
+            start..self.position,
+        ))
+    }
+
+    pub(crate) fn at(&self, position: usize) -> Result<Self, QueryError> {
+        let mut reader = Self::new(self.source, position)?;
+        if position > self.end {
+            return Err(self.error("reader position exceeds expression boundary"));
+        }
+        reader.end = self.end;
+        Ok(reader)
+    }
+    pub(crate) fn end(&self) -> usize {
+        self.end
+    }
+    pub(crate) fn set_end(&mut self, end: usize) {
+        debug_assert!(self.position <= end && self.source.is_char_boundary(end));
+        self.end = end;
+    }
+
+    /// Skip a quote or comment while inspecting delimiters. No source is rewritten.
+    pub(crate) fn protected_span(&mut self) -> Result<bool, QueryError> {
+        let start = self.position;
+        if self.remaining().starts_with(['#', '%']) || self.remaining().starts_with("/*") {
+            self.skip_trivia()?;
+            return Ok(true);
+        }
+        let Some(quote @ ('\'' | '"')) = self.remaining().chars().next() else {
+            return Ok(false);
+        };
+        self.advance(1)?;
+        let mut escaped = false;
+        while let Some(ch) = self.remaining().chars().next() {
+            self.advance(ch.len_utf8())?;
+            if quote == '\'' && matches!(ch, '\r' | '\n' | '\0') {
+                return Err(QueryError::query(
+                    start..self.position,
+                    "invalid quoted identifier",
+                ));
+            }
+            if ch == quote && !escaped {
+                return Ok(true);
+            }
+            escaped = quote == '"' && ch == '\\' && !escaped;
+        }
+        Err(QueryError::query(
+            start..self.position,
+            if quote == '"' {
+                "unterminated string"
+            } else {
+                "unterminated quoted identifier"
+            },
+        ))
+    }
+
+    pub(crate) fn number_text(&mut self) -> Result<Located<&'a str>, QueryError> {
+        self.skip_trivia()?;
+        let start = self.position;
+        if self.remaining().starts_with(['+', '-']) {
+            self.advance(1)?;
+        }
+        let radix = self.remaining().starts_with("0x")
+            || self.remaining().starts_with("0X")
+            || self.remaining().starts_with("0o");
+        let mut previous = b' ';
+        while let Some(byte) = self.remaining().bytes().next() {
+            if byte.is_ascii_digit()
+                || (radix && byte.is_ascii_alphabetic())
+                || matches!(byte, b'e' | b'E')
+                || (byte == b'.' && !self.remaining().starts_with(".."))
+                || (!radix && matches!(byte, b'+' | b'-') && matches!(previous, b'e' | b'E'))
+            {
+                self.advance(1)?;
+                previous = byte;
+            } else {
+                break;
+            }
         }
         Ok(Located::new(
             &self.source[start..self.position],
@@ -111,43 +237,27 @@ impl<'a> ArgumentReader<'a> {
         Ok(Located::new(value, range))
     }
 
-    /// Read a double-quoted UTF-8 string with \" \\ \n \r and \t escapes.
+    /// Read a double-quoted UTF-8 string with JSON escapes, including Unicode.
+    /// Literal newline, carriage return and tab characters are also retained.
     pub fn quoted_string(&mut self) -> Result<Located<String>, QueryError> {
-        self.skip_whitespace();
+        self.skip_trivia()?;
         let start = self.position;
-        self.expect('"')?;
-        let mut value = String::new();
-        while let Some(character) = self.remaining().chars().next() {
-            self.position += character.len_utf8();
-            match character {
-                '"' => return Ok(Located::new(value, start..self.position)),
-                '\\' => {
-                    let escape_start = self.position - 1;
-                    let Some(escape) = self.remaining().chars().next() else {
-                        break;
-                    };
-                    self.position += escape.len_utf8();
-                    value.push(match escape {
-                        '"' => '"',
-                        '\\' => '\\',
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        _ => {
-                            return Err(QueryError::query(
-                                escape_start..self.position,
-                                "unsupported string escape",
-                            ));
-                        }
-                    });
-                }
-                _ => value.push(character),
-            }
+        if !self.remaining().starts_with('"') {
+            return Err(self.error("expected '\"'"));
         }
-        Err(QueryError::query(
-            start..self.position,
-            "unterminated string",
-        ))
+        self.protected_span()?;
+        let range = start..self.position;
+        let text = self.source[range.clone()]
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t");
+        let value = serde_json::from_str(&text).map_err(|_| {
+            QueryError::query(
+                range.clone(),
+                "invalid JSON string escape or Unicode sequence",
+            )
+        })?;
+        Ok(Located::new(value, range))
     }
 
     pub fn expect(&mut self, character: char) -> Result<(), QueryError> {
@@ -187,6 +297,13 @@ impl<'a> ArgumentReader<'a> {
     }
 }
 
+pub(crate) fn identifier_text(source: &str, range: std::ops::Range<usize>) -> &str {
+    let text = &source[range];
+    text.strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(text)
+}
+
 /// Parse filter(predicate), head(nonnegative integer), unique, tally and count,
 /// separated by pipes. Precedence is not, and, or. Parentheses group predicates. The host
 /// parser consumes one whole leaf and validates its arguments; it must be
@@ -200,6 +317,7 @@ pub fn parse_pipeline<L>(
         reader: ArgumentReader {
             source,
             position: 0,
+            end: source.len(),
         },
         parse_leaf: &mut parse_leaf,
         nesting_limit: nesting_limit.min(MAX_NESTING),
@@ -279,9 +397,20 @@ impl<L, F> Parser<'_, F>
 where
     F: FnMut(&mut ArgumentReader<'_>) -> Result<L, QueryError>,
 {
+    fn consume_operator(&mut self, operator: &str) -> bool {
+        self.reader.skip_whitespace();
+        if self.reader.remaining().starts_with(operator) {
+            self.reader
+                .advance(operator.len())
+                .expect("operator is in input");
+            true
+        } else {
+            false
+        }
+    }
     fn or(&mut self, depth: usize) -> Result<Predicate<L>, QueryError> {
         let mut children = vec![self.and(depth)?];
-        while self.reader.keyword("or") {
+        while self.reader.keyword("or") || self.consume_operator("\\/") {
             children.push(self.and(depth)?);
         }
         Ok(combine(children, PredicateKind::Or))
@@ -289,7 +418,7 @@ where
 
     fn and(&mut self, depth: usize) -> Result<Predicate<L>, QueryError> {
         let mut children = vec![self.unary(depth)?];
-        while self.reader.keyword("and") {
+        while self.reader.keyword("and") || self.consume_operator("/\\") {
             children.push(self.unary(depth)?);
         }
         Ok(combine(children, PredicateKind::And))

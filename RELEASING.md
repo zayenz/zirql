@@ -36,18 +36,23 @@ Extract the archive into a new directory outside the checkout and run from its
 
 ```sh
 cargo run --locked --example words
+cargo run --locked --example words -- '[x*2 | x in [1,2,3] where x>1]'
+cargo run --locked --example csv -- 'let xs = [1,2,3]; [x*2 for x in xs if x>1]' examples/csv/people.csv
+cargo run --locked --example csv -- 'let xs = [1,2,3]; [x*2 | x in xs where x>1]' examples/csv/people.csv
 cargo run --locked --example csv -- 'let [first, ..] = rows | filter({active: status, ..} => status == "yes" and _.active == status); let {name, ..} = first; name' examples/csv/people.csv
 cargo run --locked --example csv -- 'let selected = people | filter(p => p.active == "yes"); [{"team": t.label, "count": length([p for p in selected if p.team == t.id])} for t in teams]' people=examples/csv/people.csv teams=examples/csv/teams.csv
 ```
 
-Expected results are the three adjacent word pairs, `"Grace Hopper"`, and team counts
+Expected results are the three adjacent word pairs, then `[4,6]` from each
+comprehension control, `"Grace Hopper"`, and team counts
 `1, 2, 0` in fixture order. Check a missing CSV column fails with a query location
 and empty stdout. Also refuse `let [a,b,..] = [1]; [a,b]` at the list pattern
 with empty stdout. Repeat the destructured row query with a named `people` input.
 Compare named and unnamed row filters with the corresponding
 comprehension, including a captured string and header-only CSV input. Keep the
 CSV example's named-function declaration limit explicit. Build a small external Rust consumer against the extracted
-crate using the public reader/evaluator, checked host validation and native
+crate using `read_value_expression_in_scope` and a narrow `parse_domain_call`
+implementation, the public evaluator, checked host validation and native
 program/function APIs required by the adapters.
 
 For a local combined release check, Cargo 1.99's native multi-package packaging

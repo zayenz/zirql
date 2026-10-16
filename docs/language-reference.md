@@ -39,15 +39,31 @@ missing key.
 
 Arithmetic is checked. Integer overflow and division by zero fail, and strings
 are not coerced to numbers. `++` concatenates strings. Boolean `and` and `or`
-short-circuit. A conditional evaluates only the chosen branch:
+short-circuit. `/\` and `\/` spell the same Boolean operators. A conditional
+evaluates only the chosen branch:
 
 ```zirql
 if length(words) > 0 { words[1] } else { "no words" }
 ```
 
-All branches still receive scope and known-type checks. See
+The same conditional can use `if length(words) > 0 then words[1] else "no words" endif`,
+with `elseif condition then value` for additional branches. All branches still
+receive scope and known-type checks. See
 [values and comprehensions](values.md) for exact arithmetic, collection,
 absence and access rules.
+
+Names may be single-quoted, such as `'row count'`. Quotes are omitted from
+name identity while diagnostics retain the original bytes; `'if'` reads a name.
+Strings use double quotes and JSON escapes. Whitespace and `#`/`%` line comments
+or nonnested `/* ... */` comments separate tokens. Integers also accept `0x`/`0X`
+hexadecimal and `0o` octal forms within signed 64-bit bounds. Hexadecimal floats
+are unsupported.
+
+Natural records such as `(word: "apple", count: 2)` have the same ordered string
+fields as the dictionary example above. Indexed values accept `a[i, j]` as
+`a[(i, j)]`; `[| 1, 2 | 3, 4 |]` constructs a rank-two indexed matrix, and
+`[3: 7, 8]` gives its cells keys `3` and `4`. See [keyed arrays](values.md#keyed-arrays)
+for explicit keys and empty shapes.
 
 ## Save intermediate results
 
@@ -99,6 +115,24 @@ The head constructs each result. The generator binds `w`, and the condition
 selects which words reach the head. Arrays preserve generation order and
 repeated values. Multiple `for` clauses form a nested traversal; later sources
 can use earlier binders.
+
+The MiniZinc spelling uses a generator pipe and `where`:
+
+```zirql
+[{"word": w} | w in words where starts_with(w, "a")]
+```
+
+Both forms use the same patterns, scope and evaluator. The head sees every
+binder. Each source sees only earlier generators; its filter also sees the
+current generator's names. Grouped binders such as `x, y in [1, 2]` form a
+Cartesian product, with the rightmost binder varying fastest. Commas separate
+MiniZinc generators. That spelling also supports a single-value binding:
+`[total | x in [1, 2], total = x * 2 where total > 2]` returns `[4]`.
+The common spelling requires `for pattern in source`.
+
+Parentheses protect a native pipeline in a head or source. A pipe after the
+closing collection starts its suffix, as in `[x * 2 | x in [1, 2, 3] where x > 1] | count`.
+
 
 Bare braces construct a set without an outer colon, or a string dictionary
 with one:

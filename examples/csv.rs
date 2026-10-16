@@ -748,6 +748,27 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
     #[test]
     fn fixture_queries_keep_decoded_strings_saved_values_and_written_order() {
         assert_eq!(
+            text("let xs = [1,2,3]; [x*2 for x in xs if x>1]", &people()),
+            "[4,6]\n"
+        );
+        assert_eq!(
+            text("let xs = [1,2,3]; [x*2 | x in xs where x>1]", &people()),
+            "[4,6]\n"
+        );
+        assert_eq!(
+            text(
+                r#"let 'yes' = "yes"; [name | {name,active,..} in people where active == 'yes']"#,
+                &named()
+            ),
+            text(r#"[p.name for p in people if p.active == "yes"]"#, &named())
+        );
+        let malformed = "let xs = [1]; [x | x in xs where ]";
+        let error = refusal(malformed, &people(), "expected");
+        assert_eq!(
+            error.error.location,
+            Location::Query(malformed.len() - 1..malformed.len())
+        );
+        assert_eq!(
             text(
                 r#"[{"name": p.name, "note": p.note} for p in rows if p.active == "yes"]"#,
                 &people()
