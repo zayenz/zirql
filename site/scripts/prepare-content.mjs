@@ -37,10 +37,12 @@ hero:
   actions:
     - text: Language reference
       link: ./guides/language-reference/
-      variant: minimal
+      variant: secondary
+      icon: right-arrow
     - text: Implementation reference
       link: ./guides/implementation-reference/
-      variant: minimal
+      variant: secondary
+      icon: right-arrow
 ` : '';
   if (name === 'index') {
     // Keep the repository Markdown readable; use Starlight's accessible tabs on the site.
@@ -57,5 +59,5 @@ hero:
     await rm(resolve(output, 'index.md'), { force: true });
   }
   await writeFile(resolve(output, name === 'index' ? 'index.mdx' : `guides/${name}.md`),
-    `---\ntitle: ${JSON.stringify(title[1])}\neditUrl: https://github.com/zayenz/zirql/edit/main/docs/${name}.md\n${landing}---\n${body}`);
+    `---\ntitle: ${JSON.stringify(title[1])}\neditUrl: false\n${landing}---\n${body}`);
 }

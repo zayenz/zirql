@@ -12,8 +12,12 @@ queries follow their relationships.
 
 ## Analyse a list of words
 
-Input: `words = ["ash", "apple", "birch", "apple"]`. Choose an analysis below.
-Results are shown as JSON.
+Start with a short piece of text, split into the array
+`words = ["ash", "apple", "birch", "apple"]`. We can use Zirql to find neighbouring word
+pairs, select words by their spelling, or build a summary of the list.
+
+Each tab below shows one of these analyses. The queries all use the same input,
+and their results are shown as JSON.
 
 <!-- examples:start -->
 ### Adjacent word pairs
@@ -62,20 +66,21 @@ Sort the selection and keep each spelling once:
 
 `unique` retains each first occurrence. Sorting first gives alphabetical output.
 
-### Count spellings
+### Word frequencies
 
-Count each selected spelling with a terminal tally:
+Count how often each word occurs in the input:
 
 ```zirql
-[w for w in words if starts_with(w, "a")] | tally
+(words) | tally
 ```
 
 ```json
-{"ash": 1, "apple": 2}
+{"ash": 1, "apple": 2, "birch": 1}
 ```
 
-Tally returns a record in first-seen key order. All three stages belong to Zirql;
-the application supplies the string array.
+The result has one field per word, with its frequency as the value. Both
+occurrences of `apple` contribute to its count. Fields follow the first
+occurrence of each word.
 
 ### Build a summary
 

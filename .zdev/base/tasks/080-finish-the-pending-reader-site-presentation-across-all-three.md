@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-080"
 key = "finish-pending-reader-sites"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -26,11 +26,19 @@ Existing pending tracked edits are Zirql docs/index.md, site/scripts/prepare-con
 
 ## Done when
 
-- [ ] The word-frequency homepage example runs and matches its displayed result; introductory prose describes the current input and queries.
-- [ ] All three site checks/builds and local links pass. Root checks the changed homepage in light/dark desktop/mobile, tab switching, navigation and search, plus consumer guide edit-link removal.
-- [ ] The five exact tracked inputs are independently accepted and committed in separately attributable project commits; unrelated bytes remain preserved.
+- [x] The word-frequency homepage example runs and matches its displayed result; introductory prose describes the current input and queries.
+- [x] All three site checks/builds and local links pass. Root checks the changed homepage in light/dark desktop/mobile, tab switching, navigation and search, plus consumer guide edit-link removal.
+- [x] The five exact tracked inputs are independently accepted and committed in separately attributable project commits; unrelated bytes remain preserved.
 
 ## Validation
 
 - Run actual word example, npm check/build and changed-page link checks; Root records desktop/mobile interaction proof. No product tests.
 - Run diff/zdev record checks; no Rust matrix rerun for unchanged product code.
+
+## Result
+
+Accepted the existing homepage explanation, navigation/tab layout and removal of reader-guide edit links across all three sites without repairs.
+
+Validation:
+
+- Independent PASS; actual word-frequency output, all three site checks/builds, 2,957 links/fragments across 59 pages, and desktop/mobile theme/navigation/search/tab proof; five exact input hashes and all unrelated bytes preserved. Existing optional 404/i18n build warnings recorded.
