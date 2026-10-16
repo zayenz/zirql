@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-096"
 key = "zirium-final-core-alignment"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "high"
@@ -26,11 +26,20 @@ Base-089 is complete at Zirium75c7e1b with actual core6529b0b. The scalar prepar
 
 ## Done when
 
-- [ ] Manifest and lock resolve the actual accepted shared core revision, with the released registry requirement retained, and any required exhaustive metadata matches preserve current native semantics.
-- [ ] Relevant existing Rust tests, required lint/MSRV/docs checks and the existing Python binding check pass against the selected core. Root records exact hosted CI proof or a precise external limitation for release acceptance; no duplicate shared-language campaign is required.
-- [ ] Any materially changed reader guidance is accurate and checked. Base-084 can use the accepted Zirium commit and matching core identity for final package and artifact preparation.
+- [x] Manifest and lock resolve the actual accepted shared core revision, with the released registry requirement retained, and any required exhaustive metadata matches preserve current native semantics.
+- [x] Relevant existing Rust tests, required lint/MSRV/docs checks and the existing Python binding check pass against the selected core. Root records exact hosted CI proof or a precise external limitation for release acceptance; no duplicate shared-language campaign is required.
+- [x] Any materially changed reader guidance is accurate and checked. Base-084 can use the accepted Zirium commit and matching core identity for final package and artifact preparation.
 
 ## Validation
 
 - Run repository-required fmt, warning-fatal all-target/all-feature Clippy/tests, Rust1.88 checks and warning-fatal docs/doctests. Reuse unchanged base-089 Python/platform evidence; rebuild/check the supported local Python binding when the core dependency changes.
 - Inspect actual cargo metadata --locked and lock revision, run git diff --check and Root canonical zdev check; attempt exact-commit hosted Quality after acceptance. If prose changes, run affected site/link and proportional Root UI checks.
+
+## Result
+
+Accepted Ziriume84664a73bf561400905f278bbf4bb5d5f3b7c60 on the same reviewed core860247d as Zincite. Only pin, lock and release-guide revision changed; no Rust compatibility edit was needed.
+
+Validation:
+
+- Independent actual metadata/dependency checkout and3CLI normal/diff/scalar controls plus rebuilt CPython3.14 semantic query passed; exact guide desktop/mobile hashes match.
+- Retained current author stable/MSRV663tests/fatal checks,175Python tests/Ruff/ty and17page799link proof plus accepted089/095 conclusions for unchanged code under impact-based brief. Exact hosted CI and rebuilt release artifacts remain084.
