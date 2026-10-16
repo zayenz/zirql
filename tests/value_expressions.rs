@@ -1133,6 +1133,7 @@ fn integer_axis(keys: &[i64]) -> KeyAxis {
 }
 fn empty_keyed(sources: Option<Vec<E>>) -> E {
     e(K::KeyedComprehension {
+        declared_axis_sources: None,
         clauses: vec![
             clause(G::In {
                 binders: vec![binder("i")],
@@ -1196,6 +1197,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
     );
 
     let expression = e(K::KeyedComprehension {
+        declared_axis_sources: None,
         clauses: vec![
             clause(G::In {
                 binders: vec![binder("i")],
@@ -1341,6 +1343,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
     );
 
     let supplied = e(K::KeyedArray {
+        declared_axis_sources: None,
         axes: Some(vec![
             integer_axis(&[9, 3]),
             KeyAxis {
@@ -1384,6 +1387,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         V::Tuple(vec![V::Integer(92), V::Integer(92)])
     );
     let one = e(K::KeyedArray {
+        declared_axis_sources: None,
         axes: Some(vec![KeyAxis {
             key_type: ValueKeyType::Member(NominalTypeId(7)),
             keys: vec![
@@ -1498,6 +1502,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
             upper: Box::new(int(1)),
         }),
         e(K::KeyedArray {
+            declared_axis_sources: None,
             axes: None,
             entries: vec![(int(9), member_expression(22, 4))],
         }),
@@ -1535,6 +1540,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         Location::Query(120..130)
     );
     let skipped_key = e(K::KeyedComprehension {
+        declared_axis_sources: None,
         clauses: vec![clause(G::In {
             binders: vec![binder("i")],
             source: e(K::Array(vec![int(1)])),
@@ -1802,6 +1808,7 @@ fn keyed_helpers_keep_sparse_coordinates_types_and_exact_alignment() {
 #[test]
 fn nominal_keyed_duplicate_incompatible_empty_and_budget_refusals_are_located() {
     let duplicate = e(K::KeyedArray {
+        declared_axis_sources: None,
         axes: None,
         entries: vec![
             (int(3), int(1)),
@@ -1825,6 +1832,7 @@ fn nominal_keyed_duplicate_incompatible_empty_and_budget_refusals_are_located() 
             right: Box::new(int(1)),
         },
         K::KeyedArray {
+            declared_axis_sources: None,
             axes: None,
             entries: vec![
                 (int(3), int(1)),
@@ -1958,6 +1966,7 @@ fn nominal_keyed_duplicate_incompatible_empty_and_budget_refusals_are_located() 
     assert!(comparison_refusal.message.contains("work limit"));
     let analysis = Located::new(
         K::KeyedArray {
+            declared_axis_sources: None,
             axes: Some(vec![integer_axis(&[1, 2, 3])]),
             entries: vec![],
         },
@@ -2017,6 +2026,7 @@ fn host_value_policy_refuses_inline_sparse_sources_and_keeps_skipped_branches() 
     let sparse = || {
         Located::new(
             K::KeyedArray {
+                declared_axis_sources: None,
                 axes: None,
                 entries: vec![
                     (e(K::Tuple(vec![int(2), int(1)])), int(21)),
@@ -5320,6 +5330,7 @@ fn named_accumulators_preflight_steps_and_check_every_actual_state() {
         .is_err()
     );
     let keyed = e(K::KeyedArray {
+        declared_axis_sources: None,
         axes: Some(vec![KeyAxis {
             key_type: ValueKeyType::Integer,
             keys: vec![],
@@ -5981,4 +5992,322 @@ fn rejected_literal_payloads_have_stack_safe_cleanup() {
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn declared_domains_keep_sparse_order_unused_keys_and_typed_empty_identity() {
+    let guests = V::Array(vec![
+        V::Member(member(22, 4)),
+        V::Member(member(11, 1)),
+        V::Member(member(33, 7)),
+    ]);
+    let guest_axis = || KeyAxis {
+        key_type: ValueKeyType::Member(NominalTypeId(7)),
+        keys: vec![
+            ValueKey::Member(member(22, 4)),
+            ValueKey::Member(member(11, 1)),
+            ValueKey::Member(member(33, 7)),
+        ],
+    };
+    let sources = || vec![name("guests"), e(K::Array(vec![int(8), int(1), int(4)]))];
+    let indexed = e(K::KeyedArray {
+        axes: None,
+        declared_axis_sources: Some(sources()),
+        entries: vec![
+            (e(K::Tuple(vec![member_expression(11, 1), int(1)])), int(1)),
+            (e(K::Tuple(vec![member_expression(22, 4), int(8)])), int(8)),
+            (e(K::Tuple(vec![member_expression(11, 1), int(8)])), int(8)),
+        ],
+    });
+    let comprehension = e(K::KeyedComprehension {
+        clauses: vec![
+            clause(G::In {
+                binders: vec![binder("g")],
+                source: name("guests"),
+                filter: Some(binary(B::NotEqual, name("g"), member_expression(33, 7))),
+            }),
+            clause(G::In {
+                binders: vec![binder("j")],
+                source: e(K::Array(vec![int(1), int(8)])),
+                filter: Some(binary(
+                    B::Or,
+                    binary(B::Equal, name("j"), int(8)),
+                    binary(B::Equal, name("g"), member_expression(11, 1)),
+                )),
+            }),
+        ],
+        key: Box::new(e(K::Tuple(vec![name("g"), name("j")]))),
+        head: Box::new(name("j")),
+        declared_axis_sources: Some(sources()),
+        empty_axis_sources: None,
+    });
+    let expected = V::KeyedArray {
+        axes: vec![guest_axis(), integer_axis(&[8, 1, 4])],
+        entries: vec![
+            KeyedEntry {
+                key: vec![ValueKey::Member(member(22, 4)), ValueKey::Integer(8)],
+                value: V::Integer(8),
+            },
+            KeyedEntry {
+                key: vec![ValueKey::Member(member(11, 1)), ValueKey::Integer(8)],
+                value: V::Integer(8),
+            },
+            KeyedEntry {
+                key: vec![ValueKey::Member(member(11, 1)), ValueKey::Integer(1)],
+                value: V::Integer(1),
+            },
+        ],
+    };
+    let types = BTreeMap::from([(
+        "guests".into(),
+        constructed_value_type(&guests, &mut ample(), Location::Source(0..1)).unwrap(),
+    )]);
+    let bindings = Bindings::new([(Located::new("guests".into(), 0..1), guests)]).unwrap();
+    for expression in [&indexed, &comprehension] {
+        assert_eq!(
+            free_value_names(expression, &types, &mut ample()).unwrap(),
+            vec![Located::new("guests".into(), 0..1)]
+        );
+        validate_value_expression(expression, &types, &mut ample()).unwrap();
+        let discovered = value_expression_types(expression, &types, &mut ample()).unwrap();
+        let [ValueType::KeyedArray(discovered)] = discovered.as_slice() else {
+            panic!("keyed type")
+        };
+        assert_eq!(
+            discovered.axes,
+            Some(vec![
+                ValueKeyType::Member(NominalTypeId(7)),
+                ValueKeyType::Integer
+            ])
+        );
+        assert!(
+            !discovered.elements.is_empty()
+                && discovered
+                    .elements
+                    .iter()
+                    .all(|ty| *ty == ValueType::Integer)
+        );
+        let result = evaluate_value(expression, &bindings, &mut ample()).unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(
+            copy_constructed_value(&result, &mut ample(), Location::Source(3..9)).unwrap(),
+            expected
+        );
+        assert_eq!(
+            copy_constructed_value(&result, &mut budget(100_000, 5, 64), Location::Source(3..9))
+                .unwrap_err()
+                .location,
+            Location::Source(3..9)
+        );
+        assert!(
+            evaluate_value(expression, &bindings, &mut budget(100_000, 5, 64))
+                .unwrap_err()
+                .message
+                .contains("result limit")
+        );
+    }
+
+    for (domains, expected_axes) in [
+        (
+            vec![
+                literal(V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![],
+                }),
+                e(K::Array(vec![int(8), int(1)])),
+            ],
+            vec![integer_axis(&[]), integer_axis(&[8, 1])],
+        ),
+        (
+            vec![literal_member_set(), e(K::Array(vec![int(8), int(1)]))],
+            vec![
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![],
+                },
+                integer_axis(&[8, 1]),
+            ],
+        ),
+        (
+            vec![
+                typed_empty_array(D::Integer),
+                e(K::Array(vec![int(8), int(1)])),
+            ],
+            vec![integer_axis(&[]), integer_axis(&[8, 1])],
+        ),
+        (
+            vec![
+                typed_empty_array(D::Member(NominalTypeId(7))),
+                e(K::Array(vec![int(8), int(1)])),
+            ],
+            vec![
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![],
+                },
+                integer_axis(&[8, 1]),
+            ],
+        ),
+        (sources(), vec![guest_axis(), integer_axis(&[8, 1, 4])]),
+    ] {
+        let empty = e(K::KeyedArray {
+            axes: None,
+            declared_axis_sources: Some(domains),
+            entries: vec![],
+        });
+        let result = evaluate_value(&empty, &bindings, &mut ample()).unwrap();
+        assert_eq!(
+            result,
+            V::KeyedArray {
+                axes: expected_axes,
+                entries: vec![]
+            }
+        );
+        assert_eq!(
+            copy_constructed_value(&result, &mut ample(), Location::Source(3..9)).unwrap(),
+            result
+        );
+    }
+
+    fn typed_empty_array(element: D<()>) -> E {
+        literal(
+            zirql::declare_constructed(
+                V::Array(vec![]),
+                D::Sequence(Box::new(element)),
+                &mut ample(),
+                Location::Query(0..1),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn literal_member_set() -> E {
+        literal(V::Set {
+            element_type: Some(SetElementType::Member(NominalTypeId(7))),
+            elements: vec![],
+        })
+    }
+}
+
+#[test]
+fn declared_sources_fail_before_cells_and_generators_with_original_locations() {
+    let failing_source = |range| {
+        Located::new(
+            K::Range {
+                lower: Box::new(Located::new(
+                    K::Binary {
+                        operator: B::IntegerDivide,
+                        left: Box::new(int(1)),
+                        right: Box::new(int(0)),
+                    },
+                    range,
+                )),
+                upper: Box::new(int(1)),
+            },
+            20..40,
+        )
+    };
+    let failing_cell = || {
+        Located::new(
+            K::Binary {
+                operator: B::IntegerDivide,
+                left: Box::new(int(2)),
+                right: Box::new(int(0)),
+            },
+            80..90,
+        )
+    };
+    let domains = || vec![failing_source(21..26), failing_source(31..36)];
+    let indexed = e(K::KeyedArray {
+        axes: None,
+        declared_axis_sources: Some(domains()),
+        entries: vec![(e(K::Tuple(vec![int(2), int(1)])), failing_cell())],
+    });
+    let comprehension = e(K::KeyedComprehension {
+        clauses: vec![clause(G::In {
+            binders: vec![binder("i")],
+            source: e(K::Array(vec![failing_cell()])),
+            filter: None,
+        })],
+        key: Box::new(e(K::Tuple(vec![name("i"), int(1)]))),
+        head: Box::new(int(0)),
+        declared_axis_sources: Some(domains()),
+        empty_axis_sources: None,
+    });
+    let other_member = NominalMember {
+        type_id: NominalTypeId(8),
+        ..member(11, 1)
+    };
+    let wrong_identity = e(K::KeyedArray {
+        axes: None,
+        declared_axis_sources: Some(vec![literal(V::Set {
+            element_type: Some(SetElementType::Member(NominalTypeId(8))),
+            elements: vec![V::Member(other_member)],
+        })]),
+        entries: vec![(
+            Located::new(K::Literal(V::Member(member(11, 1))), 71..72),
+            int(1),
+        )],
+    });
+    assert_eq!(
+        evaluate(&wrong_identity).unwrap_err().location,
+        Location::Query(71..72)
+    );
+    for expression in [&indexed, &comprehension] {
+        assert_eq!(
+            evaluate(expression).unwrap_err().location,
+            Location::Query(21..26)
+        );
+    }
+    let later = e(K::KeyedArray {
+        axes: None,
+        declared_axis_sources: Some(vec![
+            literal(V::Set {
+                element_type: Some(SetElementType::Integer),
+                elements: vec![],
+            }),
+            failing_source(31..36),
+        ]),
+        entries: vec![],
+    });
+    assert_eq!(
+        evaluate(&later).unwrap_err().location,
+        Location::Query(31..36)
+    );
+    let own_name = e(K::KeyedComprehension {
+        clauses: vec![clause(G::In {
+            binders: vec![binder("i")],
+            source: e(K::Array(vec![int(1)])),
+            filter: None,
+        })],
+        key: Box::new(name("i")),
+        head: Box::new(int(0)),
+        declared_axis_sources: Some(vec![Located::new(K::Name("i".into()), 12..13)]),
+        empty_axis_sources: None,
+    });
+    assert_eq!(
+        evaluate(&own_name).unwrap_err().location,
+        Location::Query(12..13)
+    );
+    for expression in [
+        e(K::KeyedArray {
+            axes: Some(vec![integer_axis(&[1])]),
+            declared_axis_sources: Some(vec![e(K::Array(vec![int(1)]))]),
+            entries: vec![],
+        }),
+        e(K::KeyedComprehension {
+            clauses: vec![],
+            key: Box::new(int(1)),
+            head: Box::new(int(0)),
+            declared_axis_sources: Some(vec![e(K::Array(vec![int(1)]))]),
+            empty_axis_sources: Some(vec![e(K::Array(vec![int(1)]))]),
+        }),
+    ] {
+        assert!(
+            evaluate(&expression)
+                .unwrap_err()
+                .message
+                .contains("conflicting")
+        );
+    }
 }

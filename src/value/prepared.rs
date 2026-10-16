@@ -85,14 +85,15 @@ pub(crate) enum PreparedKind<'a, Q> {
     /// Empty literals require explicit typed axes; generic sparse data is valid.
     KeyedArray {
         axes: Option<&'a [KeyAxis]>,
+        declared_axis_sources: Option<Vec<PreparedValue<'a, Q>>>,
         entries: Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>,
     },
-    /// Fallback sources establish axes only after zero entries. They run in the
-    /// surrounding scope, outside this comprehension's own generator binders.
+    /// Both source modes resolve outside this comprehension's own binders.
     KeyedComprehension {
         clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
         key: Box<PreparedValue<'a, Q>>,
         head: Box<PreparedValue<'a, Q>>,
+        declared_axis_sources: Option<Vec<PreparedValue<'a, Q>>>,
         empty_axis_sources: Option<Vec<PreparedValue<'a, Q>>>,
     },
     Unary {
@@ -427,7 +428,17 @@ impl<'a> Preparation<'a> {
                     self.locals.truncate(saved);
                     PreparedKind::DictionaryComprehension { clauses, key, head }
                 }
-                ValueExpressionKind::KeyedArray { axes, entries } => {
+                ValueExpressionKind::KeyedArray {
+                    axes,
+                    declared_axis_sources,
+                    entries,
+                } => {
+                    let sources = self.axis_sources(
+                        declared_axis_sources.as_deref(),
+                        queries,
+                        budget,
+                        &location,
+                    )?;
                     let mut children = metadata_vec(entries.len(), budget, &location)?;
                     for (key, value) in entries {
                         children.push((
@@ -437,6 +448,7 @@ impl<'a> Preparation<'a> {
                     }
                     PreparedKind::KeyedArray {
                         axes: axes.as_deref(),
+                        declared_axis_sources: sources,
                         entries: children,
                     }
                 }
@@ -619,18 +631,21 @@ impl<'a> Preparation<'a> {
                     clauses,
                     key,
                     head,
+                    declared_axis_sources,
                     empty_axis_sources,
                 } => {
-                    let sources = match empty_axis_sources {
-                        Some(sources) => {
-                            let mut children = metadata_vec(sources.len(), budget, &location)?;
-                            for source in sources {
-                                children.push(self.resolve(source, queries, budget)?);
-                            }
-                            Some(children)
-                        }
-                        None => None,
-                    };
+                    let declared = self.axis_sources(
+                        declared_axis_sources.as_deref(),
+                        queries,
+                        budget,
+                        &location,
+                    )?;
+                    let sources = self.axis_sources(
+                        empty_axis_sources.as_deref(),
+                        queries,
+                        budget,
+                        &location,
+                    )?;
                     let saved = self.locals.len();
                     let clauses = self.clauses(clauses, queries, budget, &location)?;
                     let key = Box::new(self.resolve(key, queries, budget)?);
@@ -640,12 +655,31 @@ impl<'a> Preparation<'a> {
                         clauses,
                         key,
                         head,
+                        declared_axis_sources: declared,
                         empty_axis_sources: sources,
                     }
                 }
             };
             Ok(Located::new(kind, expression.range.clone()))
         })
+    }
+
+    fn axis_sources<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        sources: Option<&'a [ValueExpression<Q>]>,
+        queries: &mut H,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Option<Vec<PreparedValue<'a, Q>>>, QueryError> {
+        sources
+            .map(|sources| {
+                let mut children = metadata_vec(sources.len(), budget, location)?;
+                for source in sources {
+                    children.push(self.resolve(source, queries, budget)?);
+                }
+                Ok(children)
+            })
+            .transpose()
     }
 
     fn clauses<Q, H: ValueQueryHost<Q> + ?Sized>(

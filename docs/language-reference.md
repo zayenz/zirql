@@ -75,6 +75,19 @@ Keys are expressions and must produce present strings. Duplicate keys fail
 before their values run. Empty `{}` is a dictionary. Empty scalar sets use
 `set<int>()`, `set<bool>()` or `set<float>()`.
 
+Indexed brackets retain integer or nominal row and column keys:
+
+```zirql
+[2: 20, 5: 50] axes([5, 2, 9])
+[(i, j): j for i in [2, 5] for j in [8, 1]] axes([5, 2, 9], [8, 1, 4])
+[] axes(set<int>(), [8, 1])
+```
+
+The optional `axes(...)` suffix declares complete ordered key domains, including
+keys without cells. Its sources run in surrounding scope before the contents.
+Without it, nonempty keys establish their dimensions. Empty `[]` is positional;
+a keyed empty result needs established domains. See [keyed arrays](values.md#keyed-arrays).
+
 Comprehensions are eager. A reducer such as `length` or `sum` receives the
 completed array, and rejected candidates still cost work. See
 [positional comprehensions](values.md#positional-comprehensions) and

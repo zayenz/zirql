@@ -4,8 +4,8 @@
 
 - Total: 76
 - Ready: 2
-- Blocked: 1
-- Done: 73
+- Blocked: 0
+- Done: 74
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -74,7 +74,7 @@
 | [base-063](tasks/063-use-direct-zincite-expressions-and-shared-constructed-suffix.md) | Use direct Zincite expressions and shared constructed suffixes | done | — |
 | [base-064](tasks/064-adopt-ordered-dictionaries-and-operand-order-sets-in-zirium.md) | Adopt ordered dictionaries and operand-order sets in Zirium | done | base-062 |
 | [base-065](tasks/065-read-bare-brace-sets-and-computed-dictionaries.md) | Read bare-brace sets and computed dictionaries | done | base-062, base-064, base-068 |
-| [base-066](tasks/066-read-indexed-arrays-with-optional-declared-index-sets.md) | Read indexed arrays with optional declared index sets | ready | base-065 |
+| [base-066](tasks/066-read-indexed-arrays-with-optional-declared-index-sets.md) | Read indexed arrays with optional declared index sets | done | base-065 |
 | [base-067](tasks/067-adopt-typed-native-ordering-and-stable-sets-in-zincite.md) | Adopt typed native ordering and stable sets in Zincite | done | base-062 |
 | [base-068](tasks/068-expose-retained-sortable-dictionaries-in-zincite.md) | Expose retained sortable dictionaries in Zincite | done | base-067 |
 | [base-069](tasks/069-read-correlated-existence-and-adopt-zincite-fixed-points.md) | Read correlated existence and adopt Zincite fixed points | done | base-067, base-064 |
@@ -84,4 +84,4 @@
 | [base-073](tasks/073-retain-csv-header-schemas-in-runtime-rows.md) | Retain CSV header schemas in runtime rows | done | base-070 |
 | [base-074](tasks/074-use-shared-value-calls-and-saved-collection-pipelines-consis.md) | Use shared value calls and saved collection pipelines consistently | done | base-065 |
 | [base-075](tasks/075-accept-shared-scalar-expressions-as-zirium-query-results.md) | Accept shared scalar expressions as Zirium query results | done | base-074 |
-| [base-076](tasks/076-use-shared-projection-execution-with-prepared-functions.md) | Use shared projection execution with prepared functions | blocked | base-066 |
+| [base-076](tasks/076-use-shared-projection-execution-with-prepared-functions.md) | Use shared projection execution with prepared functions | ready | base-066 |

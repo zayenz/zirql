@@ -6349,6 +6349,7 @@ mod projection {
             KeyAxis, NominalMember, NominalMemberId, NominalTypeId, SetElementType, ValueKey,
             ValueKeyType,
         };
+        assert!(!zirql::is_common_value_call("axes"));
         let member_type = NominalTypeId(7);
         let member = |id, order| NominalMember {
             type_id: member_type,
@@ -6371,6 +6372,20 @@ mod projection {
             })
         };
         let bindings = Bindings::new([
+            (
+                Located::new("guests".into(), 0..0),
+                Value::Constructed(V::Array(vec![
+                    V::Member(member(22, 4)),
+                    V::Member(member(11, 1)),
+                ])),
+            ),
+            (
+                Located::new("empty_guests".into(), 0..0),
+                Value::Constructed(V::Set {
+                    element_type: Some(SetElementType::Member(member_type)),
+                    elements: vec![],
+                }),
+            ),
             (Located::new("keyed".into(), 0..0), keyed(vec![axis()])),
             (
                 Located::new("empty".into(), 0..0),
@@ -6385,7 +6400,88 @@ mod projection {
             ),
         ])
         .unwrap();
+        let integer_axis = |keys: &[i64]| KeyAxis {
+            key_type: ValueKeyType::Integer,
+            keys: keys.iter().copied().map(ValueKey::Integer).collect(),
+        };
+        let sparse = || V::KeyedArray {
+            axes: vec![axis(), integer_axis(&[8, 1, 4])],
+            entries: vec![zirql::KeyedEntry {
+                key: vec![ValueKey::Member(member(11, 1)), ValueKey::Integer(8)],
+                value: V::Integer(8),
+            }],
+        };
         for (source, expected) in [
+            ("[(guests[2], 8): 8] axes(guests, [8, 1, 4])", sparse()),
+            (
+                "[(g, j): j for g in guests if g == guests[2] for j in [1, 8] if j == 8] axes(guests, [8, 1, 4])",
+                sparse(),
+            ),
+            (
+                "[] axes(empty_guests, [8, 1])",
+                V::KeyedArray {
+                    axes: vec![
+                        KeyAxis {
+                            key_type: ValueKeyType::Member(member_type),
+                            keys: vec![],
+                        },
+                        integer_axis(&[8, 1]),
+                    ],
+                    entries: vec![],
+                },
+            ),
+            (
+                "[i: i for i in [1] if false] axes([5, 2, 9])",
+                V::KeyedArray {
+                    axes: vec![integer_axis(&[5, 2, 9])],
+                    entries: vec![],
+                },
+            ),
+            (
+                "[] axes(set<int>(), [8, 1])",
+                V::KeyedArray {
+                    axes: vec![integer_axis(&[]), integer_axis(&[8, 1])],
+                    entries: vec![],
+                },
+            ),
+            (
+                "[(i, j): j for i in set<int>() for j in [8, 1]] axes(set<int>(), [8, 1])",
+                V::KeyedArray {
+                    axes: vec![integer_axis(&[]), integer_axis(&[8, 1])],
+                    entries: vec![],
+                },
+            ),
+            (
+                "index_set([2: 20, 5: 50] axes([5, 2, 9]))",
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(5), V::Integer(2), V::Integer(9)],
+                },
+            ),
+            (
+                "entries([2: 20, 5: 50] axes([5, 2, 9]))",
+                V::Array(vec![
+                    V::Record(vec![
+                        ("key".into(), V::Integer(5)),
+                        ("value".into(), V::Integer(50)),
+                    ]),
+                    V::Record(vec![
+                        ("key".into(), V::Integer(2)),
+                        ("value".into(), V::Integer(20)),
+                    ]),
+                ]),
+            ),
+            ("[2: 20, 5: 50] axes([5, 2, 9])[2]", V::Integer(20)),
+            ("entries([5: 50, 2: 20]) | count", V::Integer(2)),
+            (
+                "index_set([5: 50, 2: 20])",
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(2), V::Integer(5)],
+                },
+            ),
+            ("has_key([2: 20] axes([5, 2, 9]), 9)", V::Boolean(false)),
+            ("[]", V::Array(vec![])),
             (
                 "index_set([8, 5])",
                 V::Set {
@@ -6446,6 +6542,13 @@ mod projection {
             zirql::dispose_native_value(expression);
         }
         for (source, message) in [
+            ("[7: 0] axes([1])", "absent from"),
+            ("[2: 0, 2: 1] axes([2])", "duplicate"),
+            ("[1: 0] axes([1], [2])", "rank"),
+            ("[1: 0] axes([1, 1])", "duplicate"),
+            ("[1: 0] axes([\"x\"])", "integer"),
+            ("[1: 0] axes([])", "unestablished"),
+            ("[i: i for i in set<int>()]", "unestablished"),
             ("index_set(matrix)", "rank one"),
             ("index_set(1)", "needs an array"),
             ("(1, 2).0", "missing collection position"),
@@ -6474,7 +6577,19 @@ mod projection {
             let Location::Query(range) = error.location else {
                 panic!("query location")
             };
-            let expected = if source.starts_with("if ") {
+            let expected = if source == "[7: 0] axes([1])" {
+                "7"
+            } else if source == "[2: 0, 2: 1] axes([2])" {
+                "2"
+            } else if source == "[1: 0] axes([1], [2])" {
+                "1"
+            } else if source == "[1: 0] axes([1, 1])" {
+                "[1, 1]"
+            } else if source == "[1: 0] axes([\"x\"])" {
+                "[\"x\"]"
+            } else if source == "[1: 0] axes([])" {
+                "[]"
+            } else if source.starts_with("if ") {
                 "index_set(1)"
             } else {
                 source
@@ -6483,6 +6598,10 @@ mod projection {
             zirql::dispose_native_value(expression);
         }
         for source in [
+            "[] axes()",
+            "[] axes([1]) axes([2])",
+            "[1] axes([1])",
+            "{} axes([1])",
             "index_set()",
             "index_set([], [])",
             "(1, 2).-1",

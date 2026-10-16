@@ -2667,14 +2667,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         let close = if braces { '}' } else { ']' };
         self.reader.expect(if braces { '{' } else { '[' })?;
         if self.reader.consume(close) {
-            return self.node(
-                if braces {
-                    K::Record(Vec::new())
-                } else {
-                    K::Array(Vec::new())
-                },
-                start..self.reader.position(),
-            );
+            let kind = if braces {
+                K::Record(Vec::new())
+            } else {
+                K::Array(Vec::new())
+            };
+            return self.collection_axes(kind, start, depth);
         }
         let scope = self.locals.len();
         let binders = self.collection_binders(close)?;
@@ -2682,7 +2680,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         self.locals.extend(binders);
         let parsed = (|| {
             let first = ValueGuard::new(self.expression(0, depth + 1)?);
-            if braces && self.reader.consume(':') {
+            if self.reader.consume(':') {
                 let head = ValueGuard::new(self.expression(0, depth + 1)?);
                 Ok((Some(first), head))
             } else {
@@ -2694,10 +2692,20 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         if self.word_is("for") {
             let mut comprehension = ValueGuard::new(Located::new(
                 if let Some(key) = key {
-                    K::DictionaryComprehension {
-                        clauses: Vec::new(),
-                        key: Box::new(key.into_value()),
-                        head: Box::new(head.into_value()),
+                    if braces {
+                        K::DictionaryComprehension {
+                            clauses: Vec::new(),
+                            key: Box::new(key.into_value()),
+                            head: Box::new(head.into_value()),
+                        }
+                    } else {
+                        K::KeyedComprehension {
+                            clauses: Vec::new(),
+                            key: Box::new(key.into_value()),
+                            head: Box::new(head.into_value()),
+                            declared_axis_sources: None,
+                            empty_axis_sources: None,
+                        }
                     }
                 } else {
                     K::Comprehension {
@@ -2738,7 +2746,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     self.slots::<Located<Option<String>>>(1)?;
                     let clauses = match &mut comprehension.value_mut().value {
                         K::Comprehension { clauses, .. }
-                        | K::DictionaryComprehension { clauses, .. } => clauses,
+                        | K::DictionaryComprehension { clauses, .. }
+                        | K::KeyedComprehension { clauses, .. } => clauses,
                         _ => unreachable!("retained comprehension"),
                     };
                     clauses.push(Located::new(
@@ -2755,18 +2764,24 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     self.depth(depth + clauses.len())?;
                 }
                 self.reader.expect(close)?;
-                self.node(
-                    comprehension.into_value().value,
-                    start..self.reader.position(),
-                )
+                Ok(comprehension.into_value().value)
             })();
             self.locals.truncate(scope);
-            return result;
+            return self.collection_axes(result?, start, depth);
         }
         self.slots::<ValueExpression<ReadExpression<H>>>(if key.is_some() { 2 } else { 1 })?;
         let mut collection = ValueGuard::new(Located::new(
             if let Some(key) = key {
-                K::Dictionary(vec![(key.into_value(), head.into_value())])
+                let entries = vec![(key.into_value(), head.into_value())];
+                if braces {
+                    K::Dictionary(entries)
+                } else {
+                    K::KeyedArray {
+                        axes: None,
+                        declared_axis_sources: None,
+                        entries,
+                    }
+                }
             } else if braces {
                 K::Set(vec![head.into_value()])
             } else {
@@ -2777,7 +2792,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         while self.reader.consume(',') {
             let first = ValueGuard::new(self.expression(0, depth + 1)?);
             match &mut collection.value_mut().value {
-                K::Dictionary(entries) => {
+                K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
                     self.reader.expect(':')?;
                     let value = ValueGuard::new(self.expression(0, depth + 1)?);
                     self.slots::<(
@@ -2818,7 +2833,78 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             }
             kind => kind,
         };
-        self.node(kind, start..self.reader.position())
+        self.collection_axes(kind, start, depth)
+    }
+    fn collection_axes(
+        &mut self,
+        kind: K<ReadExpression<H>>,
+        start: usize,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let mut collection = ValueGuard::new(Located::new(kind, start..self.reader.position()));
+        if self.word_is("axes") {
+            let axis_name = self.name()?;
+            let kind = &mut collection.value_mut().value;
+            if matches!(kind, K::Array(values) if values.is_empty()) {
+                *kind = K::KeyedArray {
+                    axes: None,
+                    declared_axis_sources: None,
+                    entries: Vec::new(),
+                };
+            }
+            let sources = match kind {
+                K::KeyedArray {
+                    declared_axis_sources,
+                    ..
+                }
+                | K::KeyedComprehension {
+                    declared_axis_sources,
+                    ..
+                } => declared_axis_sources,
+                _ => {
+                    return Err(QueryError::query(
+                        axis_name.range,
+                        "axes requires an indexed bracket collection",
+                    ));
+                }
+            };
+            *sources = Some(Vec::new());
+            self.reader.expect('(')?;
+            if self.reader.consume(')') {
+                return Err(QueryError::query(
+                    axis_name.range,
+                    "axes needs at least one source",
+                ));
+            }
+            loop {
+                let source = ValueGuard::new(self.expression(0, depth + 1)?);
+                self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                let sources = match &mut collection.value_mut().value {
+                    K::KeyedArray {
+                        declared_axis_sources,
+                        ..
+                    }
+                    | K::KeyedComprehension {
+                        declared_axis_sources,
+                        ..
+                    } => declared_axis_sources.as_mut().expect("declared sources"),
+                    _ => unreachable!("indexed collection"),
+                };
+                sources.push(source.into_value());
+                if !self.reader.consume(',') {
+                    self.reader.expect(')')?;
+                    break;
+                }
+            }
+            if self.word_is("axes") {
+                let duplicate = self.name()?;
+                return Err(QueryError::query(
+                    duplicate.range,
+                    "duplicate axes declaration",
+                ));
+            }
+        }
+        self.node(collection.into_value().value, start..self.reader.position())
     }
     // The head precedes its declarations. Inspect only this collection's own level;
     // the normal parser still owns grammar and diagnostics.
@@ -3631,7 +3717,19 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 pending.extend(fields.into_iter().map(|(_, value)| value));
                 continue;
             }
-            K::Dictionary(entries) | K::KeyedArray { entries, .. } => {
+            K::KeyedArray {
+                entries,
+                declared_axis_sources,
+                ..
+            } => {
+                pending.extend(declared_axis_sources.into_iter().flatten());
+                for (key, value) in entries {
+                    pending.push(key);
+                    pending.push(value);
+                }
+                continue;
+            }
+            K::Dictionary(entries) => {
                 for (key, value) in entries {
                     pending.push(key);
                     pending.push(value);
@@ -3684,8 +3782,10 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 clauses,
                 key,
                 head,
+                declared_axis_sources,
                 empty_axis_sources,
             } => {
+                pending.extend(declared_axis_sources.into_iter().flatten());
                 pending.push(*key);
                 pending.push(*head);
                 pending.extend(empty_axis_sources.into_iter().flatten());

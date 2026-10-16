@@ -126,21 +126,34 @@ A nominal member carries `NominalTypeId`, `NominalMemberId`, names and declarati
 order from one immutable host context. Contradictory metadata and mixed nominal
 types fail. Equal printed names cannot replace those identities.
 
-Native `KeyedEntry` values require unique full keys in row-major axis order.
-A lowered `KeyedArray` expression can normalize pairs supplied in written order.
-Explicit axes retain their order; inferred axes use numeric or member declaration
-order. A keyed comprehension evaluates keys and heads only after its filters.
+Native `KeyedEntry` values require unique full keys in row-major order.
+`KeyedArray` expression pairs may arrive in written order; construction
+normalizes them. Inferred row and column keys use numeric or member declaration
+order. Explicit ordered domains are represented as `KeyAxis` values.
 
-An empty keyed comprehension still needs typed axes. Its `empty_axis_sources`
-can obtain them from integer/member arrays or typed sets, evaluated outside the
-comprehension's local binders. Nonempty output does not evaluate those fallbacks.
-Rank-one index-set extraction returns the typed axis as an ordered set.
+Both `KeyedArray` and `KeyedComprehension` accept located
+`declared_axis_sources: Option<Vec<ValueExpression<Q>>>`. Each source runs once,
+left to right, in surrounding scope before literal entries or generators.
+Integer/member arrays and typed sets establish complete domains, including
+unused keys and typed empties. The result retains those domains, their order
+and native nominal identities. A literal's concrete `axes` and declared sources
+are mutually exclusive.
 
-The common value reader accepts `index_set(a)`, `entries(a)` and
-`zip_exact(a, b)` for supplied keyed bindings, and `tuple.1` for one-based tuple
-access. Keyed literal construction needs host lowering. Pairing compares ordered axes and full keys at runtime, including
-nominal metadata. Each executed operand still receives the host value-policy
-check. Neither helper bypasses domain shape restrictions.
+`KeyedComprehension::empty_axis_sources` is a separate lazy fallback for zero
+emitted cells. Nonempty output does not execute it. It resolves outside the
+comprehension's binders too, but cannot coexist with declared sources. Existing
+host lowerings can retain that fallback without changing its timing.
+
+The common reader lowers `[key: value]`, tuple keys and indexed comprehensions
+to these nodes. Contextual `axes(source, ...)` follows the closing bracket,
+before access or pipelines. `[]` remains positional; `[] axes(...)` constructs
+an empty keyed value. See [indexed examples](values.md#keyed-arrays).
+
+`index_set(a)` extracts the ordered typed keys of a rank-one array. `entries(a)`
+exposes present cells, and `zip_exact(a, b)` compares ordered domains and full
+keys at runtime, including nominal metadata. Neither helper bypasses the host's
+shape policy. Declared-source evaluation, conversion and retained-domain copies
+use the active work, result and nesting allowances.
 
 ## Ordering, grouping and ownership
 
