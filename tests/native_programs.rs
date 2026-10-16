@@ -5513,10 +5513,47 @@ mod projection {
 
     #[test]
     fn prepared_projection_keeps_nested_slots_rows_and_fresh_inputs() {
-        let projection = parse(
-            "project(w, {\"name\": one(w | names), \"pairs\": [n ++ suffix for n in w | names for suffix in [\"!\", \"?\"]]})",
+        use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
+        let source = "project(w, {\"name\": prefix ++ one(w | names), \"pairs\": [n ++ suffix for n in w | names for suffix in [\"!\", \"?\"]]})";
+        let projection = parse(source, &mut budget());
+        let prepared_projection = parse(
+            &source.replace("[\"!\", \"?\"]", "suffixes()"),
             &mut budget(),
         );
+        let suffixes = zirql::FunctionDeclaration {
+            name: super::at("suffixes".into(), 1),
+            parameters: vec![],
+            result: super::at(D::Sequence(Box::new(D::String)), 2),
+            bindings: vec![],
+            value: function_value(K::Array(vec![
+                function_value(K::Literal(V::String("!".into()))),
+                function_value(K::Literal(V::String("?".into()))),
+            ])),
+        };
+        let mut functions = PreparedFunctions::prepare([&suffixes], &Host, &mut budget()).unwrap();
+        let scope = BTreeMap::from([
+            ("w".into(), Kind::Subjects),
+            (
+                "prefix".into(),
+                Host.constructed_kind(vec![ValueType::String]),
+            ),
+        ]);
+        let fields = prepared_projection
+            .fields
+            .iter()
+            .map(|(_, value)| {
+                functions
+                    .prepare_value(value, &scope, Some(Kind::Subjects), &mut budget())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let fields = fields.iter().collect::<Vec<_>>();
+        let bindings = Bindings::new([(
+            super::at("prefix".into(), 0),
+            Value::Constructed(V::String("row:".into())),
+        )])
+        .unwrap();
+        let limits = FunctionLimits { active_depth: 2 };
         let mut first = None;
         for subjects in [vec!["alpha", "beta", "alpha"], vec!["other"], vec![]] {
             let result = zirql::evaluate_projection_with_types(
@@ -5524,17 +5561,40 @@ mod projection {
                 &Host,
                 Value::Subjects(subjects.clone()),
                 &mut (),
-                &Bindings::default(),
+                &bindings,
                 &mut budget(),
             )
             .unwrap();
-            assert!(!result.types.is_empty());
+            let prepared = functions
+                .evaluate_projection(
+                    &prepared_projection,
+                    &fields,
+                    Value::Subjects(subjects.clone()),
+                    &bindings,
+                    &mut (),
+                    &mut budget(),
+                    limits,
+                )
+                .unwrap();
+            assert_eq!(prepared.value, result.value);
+            assert_eq!(
+                prepared.types,
+                vec![ValueType::Array(ArrayType::Elements(vec![
+                    ValueType::Record(vec![
+                        ("name".into(), ValueType::String),
+                        (
+                            "pairs".into(),
+                            ValueType::Array(ArrayType::Elements(vec![ValueType::String]))
+                        ),
+                    ])
+                ]))]
+            );
             let expected = V::Array(
                 subjects
                     .iter()
                     .map(|subject| {
                         V::Record(vec![
-                            ("name".into(), V::String((*subject).into())),
+                            ("name".into(), V::String(format!("row:{subject}"))),
                             (
                                 "pairs".into(),
                                 V::Array(vec![
@@ -5556,6 +5616,122 @@ mod projection {
         };
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0], rows[2]);
+        let reversed = [fields[1], fields[0]];
+        let other = PreparedFunctions::prepare([&suffixes], &Host, &mut budget()).unwrap();
+        for (unit, entries) in [
+            (&functions, reversed.as_slice()),
+            (&functions, &fields[..1]),
+            (&other, fields.as_slice()),
+        ] {
+            assert!(
+                unit.evaluate_projection(
+                    &prepared_projection,
+                    entries,
+                    Value::Subjects(vec![]),
+                    &bindings,
+                    &mut (),
+                    &mut budget(),
+                    limits
+                )
+                .is_err()
+            );
+        }
+        let shadowed = bindings
+            .with_local(
+                super::at("w".into(), 0),
+                Value::Subjects(vec![]),
+                &mut budget(),
+            )
+            .unwrap();
+        assert!(
+            functions
+                .evaluate_projection(
+                    &prepared_projection,
+                    &fields,
+                    Value::Subjects(vec![]),
+                    &shadowed,
+                    &mut (),
+                    &mut budget(),
+                    limits
+                )
+                .is_err()
+        );
+        for source in ["project(w, {\"a\": 1, \"a\": 2})", "project(w, {\"a\": w})"] {
+            let projection = parse(source, &mut budget());
+            let mut functions =
+                PreparedFunctions::prepare([&suffixes], &Host, &mut budget()).unwrap();
+            let entries = projection
+                .fields
+                .iter()
+                .map(|(_, value)| {
+                    functions
+                        .prepare_value(value, &scope, Some(Kind::Subjects), &mut budget())
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                functions
+                    .evaluate_projection(
+                        &projection,
+                        &entries.iter().collect::<Vec<_>>(),
+                        Value::Subjects(vec![]),
+                        &bindings,
+                        &mut (),
+                        &mut budget(),
+                        limits
+                    )
+                    .is_err()
+            );
+        }
+        let invalid = parse(
+            "project(w, {\"a\": if true {1} else {missing()}})",
+            &mut budget(),
+        );
+        assert!(
+            functions
+                .prepare_value(
+                    &invalid.fields[0].1,
+                    &scope,
+                    Some(Kind::Subjects),
+                    &mut budget()
+                )
+                .is_err()
+        );
+        let mut broken = native_function(
+            "broken",
+            fn_binary(
+                zirql::ValueBinaryOperator::IntegerDivide,
+                fn_int(1),
+                fn_int(0),
+            ),
+        );
+        broken.parameters.clear();
+        broken.result = super::at(D::Integer, 4);
+        let failure = parse("project(w, {\"a\": broken()})", &mut budget());
+        let mut functions = PreparedFunctions::prepare([&broken], &Host, &mut budget()).unwrap();
+        let entry = functions
+            .prepare_value(
+                &failure.fields[0].1,
+                &scope,
+                Some(Kind::Subjects),
+                &mut budget(),
+            )
+            .unwrap();
+        let error = functions
+            .evaluate_projection(
+                &failure,
+                &[&entry],
+                Value::Subjects(vec!["alpha"]),
+                &bindings,
+                &mut (),
+                &mut budget(),
+                limits,
+            )
+            .unwrap_err();
+        assert_eq!(error.calls[0].function, "broken");
+        assert!(
+            matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(range), .. }) if range == broken.value.range)
+        );
     }
 
     #[test]

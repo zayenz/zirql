@@ -1855,6 +1855,7 @@ pub struct PreparedFunctions<'a, 'h, C, H: FunctionHost<C>> {
 /// One written value, resolved once in its exact lexical and relative scope.
 /// Execute it through the same [`PreparedFunctions`] that prepared it.
 pub struct PreparedFunctionValue<'a, Q, K = ()> {
+    source: &'a ValueExpression<Q>,
     kind: K,
     prepared: BTreeMap<usize, Operand<K>>,
     value: crate::value::prepared::PreparedValue<'a, Q>,
@@ -2032,6 +2033,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             let value = preparation.resolve(entry, &mut self.preflight, budget)?;
             budget.charge(1, Location::Query(entry.range.clone()))?;
             Ok(PreparedFunctionValue {
+                source: entry,
                 kind,
                 value,
                 names: preparation.names,
@@ -2228,6 +2230,118 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
                 })
                 .collect(),
         }
+    }
+
+    /// Execute a projection using its already-prepared fields in written order.
+    /// Prepare each field once with the subject name in scope and its singleton
+    /// kind as relative input. Pass those entries from this unit in field order.
+    /// All fields must admit scalar projection, even when there are no subjects.
+    /// Result facts retain the record schema of an empty report.
+    ///
+    /// # Errors
+    /// Shadowing, duplicate labels, mismatched entries, scalar admission and
+    /// allowances fail before enumeration. Field failures retain their locations
+    /// and active function calls; all work uses the supplied cumulative budget.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The projection borrows existing prepared native field entries"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The bridge keeps the existing projection, prepared entries and execution borrows explicit"
+    )]
+    pub fn evaluate_projection(
+        &self,
+        projection: &crate::Projection<Query<C, H>>,
+        fields: &[&PreparedFunctionValue<'a, Query<C, H>, Kind<C, H>>],
+        input: H::Value,
+        bindings: &Bindings<H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<crate::ConstructedResult, FunctionError<EvaluationError<H::Error>>> {
+        let range = &projection.subject.range;
+        budget.within_evaluation(1, Location::Query(range.clone()), |budget| {
+            if bindings
+                .iter()
+                .any(|(name, _)| name == projection.subject.value)
+            {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "projection subject shadows an existing binding",
+                )
+                .into());
+            }
+            if fields.len() != projection.fields.len() {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "projection requires every written prepared field",
+                )
+                .into());
+            }
+            let host = self.preflight.host;
+            crate::projection::admit_slots::<Vec<ValueType>>(1, budget, range)?;
+            let mut positions = vec![Vec::new()];
+            for (index, ((_, expression), entry)) in
+                projection.fields.iter().zip(fields).enumerate()
+            {
+                crate::projection::check_projection_label(projection, index, budget)?;
+                if !std::sync::Arc::ptr_eq(&self.identity, &entry.identity) {
+                    return Err(QueryError::query(
+                        expression.range.clone(),
+                        "value belongs to a different prepared function program",
+                    )
+                    .into());
+                }
+                if !std::ptr::eq(expression, entry.source) {
+                    return Err(QueryError::query(
+                        expression.range.clone(),
+                        "prepared entry does not match the written projection field",
+                    )
+                    .into());
+                }
+                let types = host
+                    .scalar_types(entry.kind(), budget, &expression.range)?
+                    .ok_or_else(|| {
+                        QueryError::query(
+                            expression.range.clone(),
+                            "native handles require an explicit scalar projection",
+                        )
+                    })?;
+                positions = crate::value::extend_type_positions(
+                    &positions,
+                    &types,
+                    budget,
+                    &Location::Query(expression.range.clone()),
+                )?;
+            }
+            let types = crate::projection::projection_result_types(projection, positions, budget)?;
+            let subjects = host
+                .subjects(input, context, budget, range)
+                .map_err(|error| self.function_error(error, CallTrace::default()))?;
+            let value = crate::projection::projection_rows(
+                projection,
+                subjects,
+                bindings,
+                context,
+                budget,
+                |index, local, context, budget| {
+                    let expression = &projection.fields[index].1;
+                    let relative = local.get(&projection.subject.value, range.clone())?;
+                    let value = self.evaluate(
+                        fields[index],
+                        local,
+                        Some(relative),
+                        context,
+                        budget,
+                        limits,
+                    )?;
+                    host.project_value(value, context, budget, &expression.range)
+                        .map_err(|error| self.function_error(error, CallTrace::default()))
+                },
+            )?;
+            Ok(crate::ConstructedResult { value, types })
+        })
     }
 
     /// Execute a prepared value with current bindings, relative input and one

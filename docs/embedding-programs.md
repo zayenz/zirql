@@ -137,9 +137,16 @@ let result = functions.evaluate(
 prepared unit borrows the immutable source trees and host. Keep it within this
 submitted request, using the current host context and the same cumulative
 budget. Prepared entries carry their unit identity; another unit refuses them.
-Each execution releases its results and frames normally. A host can execute a
-prepared projection field for each subject without preparing the function bodies
-again. `Bindings::with_local` shares the outer map when introducing its subject;
+Each execution releases its results and frames normally. For a projection,
+prepare each field with the subject name in its lexical scope and the singleton
+subject kind as relative input. Pass borrowed entries in written field order to
+`PreparedFunctions::evaluate_projection`, with the original projection, current
+input, bindings, context, budget and function limits. The shared executor binds
+each subject and constructs the rows; its `ConstructedResult` retains field types
+for empty reports. It checks that every entry belongs to this unit and matches
+its written field before enumerating subjects.
+
+`Bindings::with_local` shares the outer map when introducing a local name;
 native argument callbacks retain that sharing. Declaration inputs can be
 borrowed iterators over separately shared typed-root function trees.
 `FunctionRequest` retains the one-entry convenience API.

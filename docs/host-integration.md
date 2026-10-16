@@ -577,6 +577,15 @@ checks duplicate/conflicting names and resolves their signatures together.
 The native argument bridge shares the program's outer binding map and overlays
 only the active lexical locals. Prepared native indices look up their selected
 binding directly, without rebuilding a vector for every caller binding per row.
+For native record projections, prepare the fields once with their subject name
+in scope and its singleton kind as relative input. Pass references to those
+entries in written order to `PreparedFunctions::evaluate_projection`. It checks
+unit and field association, duplicate labels, shadowing and scalar projection
+before obtaining subjects, including for empty input. The ordinary and prepared
+paths share subject binding, field order and row construction. Both return a
+`ConstructedResult` with every admitted record alternative, so an empty report
+retains its field schema. Hosts supply subject selection and scalar conversion;
+field execution keeps the current context, relative subject and cumulative budget.
 `FunctionRequest` preserves the one-shot context/budget-borrowing facade.
 Normal return and failure release live slots and continuations. Use
 `dispose_functions` for iterative cleanup of lowered native function trees,
