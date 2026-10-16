@@ -170,6 +170,48 @@ outside that exact contract remain attended.
 
 ## Architectural direction
 
+### Coherent first releases
+
+The user requested release preparation for Zirql 0.1.0, Zincite 0.1.0 and
+Zirium 0.5.0 on 2026-10-16. Finish the current integration and independently
+check ordinary shared-language usage in both consumers and the CSV example.
+Repair concrete gaps that make those programs fail or contradict the supported
+language contract before treating the features as release-ready. A completed
+task queue alone does not establish release readiness. Keep domain adaptations
+with their hosts, and defer optional language and distribution extensions.
+
+This request authorizes in-scope task creation, import, implementation and
+independent verification across all three repositories. Continue using isolated
+source worktrees, at most two delegated roles, serial destination integration
+and separately attributable commits. Preserve unrelated local edits and do not
+message completed or quiescent chats. Use the agreed coding and writing guidance.
+
+Release preparation includes public API and language contracts, registry and
+sibling dependency metadata, package contents, clean installation, CI, release
+artifacts, version consistency and release notes. Replace development Git pins
+with the actual release dependency contracts when preparing distributable
+packages. Distinguish checks of staged local artifacts from checks of published
+registry resolution. Publication order must make each dependency available
+before its consumers are published or installed from the registry.
+
+Prepare the repository changes and reviewable artifacts before asking about
+external actions that still need authorization. Registry publication, release
+tag pushes and live site deployment are separate from local preparation; do not
+claim those outcomes from a successful build or package dry run. The earlier
+development policy remains applicable outside this selected release milestone.
+
+All three documentation sites belong to this release. Installation commands,
+examples, API references and support limits must describe the selected released
+versions. Write for readers using the tools, keep examples runnable from the
+documented package or checkout, and verify links and desktop/mobile presentation.
+
+Use a few meaningful end-to-end programs and clean-install checks alongside
+the affected repositories' required checks. Package and documentation changes
+need no new product tests. Reuse existing behavioral controls; add focused
+coverage only for concrete release-blocking defects. Do not expand a compiler,
+platform or syntax matrix solely because this is release work. Retain honest
+evidence of unavailable external checks and unrelated baseline failures.
+
 ### Language coherence, documentation and a CSV host
 
 Zirql owns the domain-independent language used by Zirium and Zincite. Someone

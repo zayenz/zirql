@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 78
-- Ready: 0
-- Blocked: 0
+- Total: 85
+- Ready: 2
+- Blocked: 5
 - Done: 78
 
 | ID | Task | State | Blocked by |
@@ -87,3 +87,10 @@
 | [base-076](tasks/076-use-shared-projection-execution-with-prepared-functions.md) | Use shared projection execution with prepared functions | done | base-066 |
 | [base-077](tasks/077-execute-native-projections-inside-prepared-values-and-functi.md) | Execute native projections inside prepared values and functions | done | base-076 |
 | [base-078](tasks/078-keep-zincite-projection-scope-consistent-in-prepared-program.md) | Keep Zincite projection scope consistent in prepared programs | done | base-077 |
+| [base-079](tasks/079-finish-the-pending-documented-formatter-layout-for-zincite-0.md) | Finish the pending documented formatter layout for Zincite 0.1.0 | ready | — |
+| [base-080](tasks/080-finish-the-pending-reader-site-presentation-across-all-three.md) | Finish the pending reader-site presentation across all three projects | ready | — |
+| [base-081](tasks/081-prepare-the-self-contained-zirql-0-1-0-release-candidate.md) | Prepare the self-contained Zirql 0.1.0 release candidate | blocked | base-080 |
+| [base-082](tasks/082-prepare-the-zincite-0-1-0-package-graph-and-reader-documenta.md) | Prepare the Zincite 0.1.0 package graph and reader documentation | blocked | base-079, base-081 |
+| [base-083](tasks/083-prepare-zirium-0-5-0-rust-and-python-release-candidates.md) | Prepare Zirium 0.5.0 Rust and Python release candidates | blocked | base-081 |
+| [base-084](tasks/084-verify-the-three-release-candidates-and-prepare-the-publicat.md) | Verify the three release candidates and prepare the publication handoff | blocked | base-082, base-083 |
+| [base-085](tasks/085-publish-and-check-the-authorized-release-versions-and-docume.md) | Publish and check the authorized release versions and documentation | blocked | base-084 |
