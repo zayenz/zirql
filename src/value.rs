@@ -2326,16 +2326,30 @@ fn source_axis(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<KeyAxis, QueryError> {
+    let empty = match value.data() {
+        ConstructedValue::Array(values)
+        | ConstructedValue::Set {
+            elements: values, ..
+        } => values.is_empty(),
+        ConstructedValue::KeyedArray { entries, .. } => entries.is_empty(),
+        _ => false,
+    };
+    let declared = if empty && let Some(declaration) = declaration(&value) {
+        let facts = declared_facts(declaration, budget, location)?;
+        source_key_type(std::slice::from_ref(&facts), budget, location)?
+    } else {
+        None
+    };
     let value = expose(value, budget, location)?;
     let (declared, values) = match value {
-        ConstructedValue::Array(values) => (None, values),
+        ConstructedValue::Array(values) => (declared, values),
         ConstructedValue::KeyedArray { entries, .. } => {
             let mut values = metadata_vec(entries.len(), budget, location)?;
             for entry in entries {
                 budget.charge(1, location.clone())?;
                 values.push(entry.value);
             }
-            (None, values)
+            (declared, values)
         }
         ConstructedValue::Set {
             element_type,
@@ -2346,7 +2360,7 @@ fn source_axis(
                 Some(SetElementType::Member(id)) => Some(ValueKeyType::Member(id)),
                 _ => None,
             };
-            (ty, elements)
+            (ty.or(declared), elements)
         }
         _ => {
             return Err(error(

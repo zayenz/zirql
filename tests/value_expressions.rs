@@ -6128,6 +6128,26 @@ fn declared_domains_keep_sparse_order_unused_keys_and_typed_empty_identity() {
                 integer_axis(&[8, 1]),
             ],
         ),
+        (
+            vec![
+                typed_empty_array(D::Integer),
+                e(K::Array(vec![int(8), int(1)])),
+            ],
+            vec![integer_axis(&[]), integer_axis(&[8, 1])],
+        ),
+        (
+            vec![
+                typed_empty_array(D::Member(NominalTypeId(7))),
+                e(K::Array(vec![int(8), int(1)])),
+            ],
+            vec![
+                KeyAxis {
+                    key_type: ValueKeyType::Member(NominalTypeId(7)),
+                    keys: vec![],
+                },
+                integer_axis(&[8, 1]),
+            ],
+        ),
         (sources(), vec![guest_axis(), integer_axis(&[8, 1, 4])]),
     ] {
         let empty = e(K::KeyedArray {
@@ -6147,6 +6167,18 @@ fn declared_domains_keep_sparse_order_unused_keys_and_typed_empty_identity() {
             copy_constructed_value(&result, &mut ample(), Location::Source(3..9)).unwrap(),
             result
         );
+    }
+
+    fn typed_empty_array(element: D<()>) -> E {
+        literal(
+            zirql::declare_constructed(
+                V::Array(vec![]),
+                D::Sequence(Box::new(element)),
+                &mut ample(),
+                Location::Query(0..1),
+            )
+            .unwrap(),
+        )
     }
 
     fn literal_member_set() -> E {
