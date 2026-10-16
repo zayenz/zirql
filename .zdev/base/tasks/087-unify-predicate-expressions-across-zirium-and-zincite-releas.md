@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-087"
 key = "integrate-general-filter-consumers"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "high"
@@ -32,15 +32,24 @@ Consume the actual independently reviewed Zirql 0.1.0 scoped-predicate and share
 
 ## Done when
 
-- [ ] Common for/in/if and MiniZinc pipe/where comprehensions use the shared reader in existing CLI/library, native and function contexts, including admitted Data construction where applicable. Patterns, sequential scope, ordering, types and cumulative limits agree; generic query parsing has no broad host-owned fallback. Lead guides with the common form and explain the alternate spelling. Preserve actual domain parsing and admission policy.
-- [ ] Shared exact tuple/list and discarded-prefix list patterns work consistently in existing let bindings, function/predicate arguments, comprehension binders and value-match arms. Pattern mismatch errors and match fallback agree with core; predicate _ still reads the whole subject. Preserve native views and Data limits without inventing structure.
-- [ ] Constructed/native filter, paths target, native match where and scalar filter_elements accept named and implicit _ forms using shared Boolean/type/purity/call/scope/budget rules. Public Query, legacy Program and shared-reader routes agree. Match guards retain original input plus separate named captures; path predicates receive the candidate declaration.
-- [ ] Saved/nested/declared-function contexts where supported retain calls and lexical captures. Nested predicates rebind _, explicit outer names remain usable, wildcard patterns remain unchanged, typed-empty invalid predicates are refused and failures retain source locations. Host domain leaves remain usable; Data contexts still refuse report-only calls and effects.
-- [ ] A few existing-style library/CLI controls demonstrate filter-comprehension equivalence and order, prepared capture/function scope, representative path/match and scalar edit behavior, empty/type/purity/budget refusal and later-error empty stdout. Source-preserving scalar edits keep their existing candidate/write safeguards. No form-by-position matrix.
-- [ ] Manifests/lock pin the actual reviewed core with registry 0.1.0 requirements. Guides/reference/release notes describe the current forms and limits with runnable examples. Required Rust/docs/site/link/desktop/mobile checks pass; old pre-predicate artifacts are superseded for base-084.
+- [x] Common for/in/if and MiniZinc pipe/where comprehensions use the shared reader in existing CLI/library, native and function contexts, including admitted Data construction where applicable. Patterns, sequential scope, ordering, types and cumulative limits agree; generic query parsing has no broad host-owned fallback. Lead guides with the common form and explain the alternate spelling. Preserve actual domain parsing and admission policy.
+- [x] Shared exact tuple/list and discarded-prefix list patterns work consistently in existing let bindings, function/predicate arguments, comprehension binders and value-match arms. Pattern mismatch errors and match fallback agree with core; predicate _ still reads the whole subject. Preserve native views and Data limits without inventing structure.
+- [x] Constructed/native filter, paths target, native match where and scalar filter_elements accept named and implicit _ forms using shared Boolean/type/purity/call/scope/budget rules. Public Query, legacy Program and shared-reader routes agree. Match guards retain original input plus separate named captures; path predicates receive the candidate declaration.
+- [x] Saved/nested/declared-function contexts where supported retain calls and lexical captures. Nested predicates rebind _, explicit outer names remain usable, wildcard patterns remain unchanged, typed-empty invalid predicates are refused and failures retain source locations. Host domain leaves remain usable; Data contexts still refuse report-only calls and effects.
+- [x] A few existing-style library/CLI controls demonstrate filter-comprehension equivalence and order, prepared capture/function scope, representative path/match and scalar edit behavior, empty/type/purity/budget refusal and later-error empty stdout. Source-preserving scalar edits keep their existing candidate/write safeguards. No form-by-position matrix.
+- [x] Manifests/lock pin the actual reviewed core with registry 0.1.0 requirements. Guides/reference/release notes describe the current forms and limits with runnable examples. Required Rust/docs/site/link/desktop/mobile checks pass; old pre-predicate artifacts are superseded for base-084.
 
 ## Validation
 
 - Run required fmt, fatal all-target workspace Clippy, workspace tests and warning-fatal docs. Add only focused public-behavior coverage of the exhibited defect, using existing query/CLI and source-edit controls.
 - Replay a compact shared-pattern program through inline/file/library paths, including a short-list refusal with empty stdout; avoid a form-by-position matrix. Replay a few inline/file/library programs and later-error buffering, including an actual scalar edit candidate with preserved source and one refused body. Inspect every call site and exhaustive walker against the brief inventory.
 - Run affected site check/build/link checks and Root desktop/mobile/search review. Inspect dependency identities and package requirements; base-084 owns final graph/artifacts/hosted acceptance. Do not claim source installs as public registry proof.
+
+## Result
+
+Integrated shared query reading, patterns and scoped predicates in Zincite 3021d8f7df741cf6c72c096fb3ac8352abbfb0fa, using reviewed core860247d. All three whole-review findings were corrected and focused review accepted; brief-only admission drift was reconciled without repeating product review.
+
+Validation:
+
+- 502 workspace tests across51 suites,81query tests,fatal Clippy/docs,formatting,bothCLIs and18 focused nominal/scalar/write controls passed on actual core860.
+- All27 task paths independently reviewed; original and corrected shared-language/native/output conclusions retained. Exactguide/site1373link/desktop/mobile/search proof unchanged.
