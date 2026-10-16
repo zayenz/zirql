@@ -212,6 +212,14 @@ coverage only for concrete release-blocking defects. Do not expand a compiler,
 platform or syntax matrix solely because this is release work. Retain honest
 evidence of unavailable external checks and unrelated baseline failures.
 
+For release integration acceptance, Zincite and Zirium building against the
+same reviewed Zirql Git revision with their relevant existing tests passing is
+sufficient shared-language evidence. Keep the CSV example runnable as the third
+consumer. Do not add a separate cross-consumer replay campaign or duplicate
+Zirql's language tests in each host. Add a focused check only when a concrete
+adapter defect or uncovered behavior warrants it. This threshold does not
+replace package, clean-install, CI or documentation checks.
+
 ### Scoped predicate expressions
 
 The user requires general predicate expressions and an unnamed argument across

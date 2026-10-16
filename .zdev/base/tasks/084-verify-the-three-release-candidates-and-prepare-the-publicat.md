@@ -17,7 +17,7 @@ The exact three candidate releases have independently checked source packages, r
 
 ## Context
 
-Prerequisites prepare versions and all source/docs/CI. The scoped-predicate integration and hosted Linux CI correction are required release blockers; use their refreshed core and consumer commits and supersede all pre-filter candidate artifacts. Native Cargo+1.99.0 can package unpublished dependent members with its temporary registry; Root verified a disposable two-crate example at /private/tmp/zirql-release-20261016-workspace-package-probe.json. Use a simple disposable combined workspace over copies of the exact candidate sources to verify normalized registry dependency archives before public upload, not a custom registry or release framework. Real public registry availability and final unpatched registry installation remain distinct external checks. Read the accepted per-project candidate results and release instructions. Language discovery supplies current bounded cross-host probes to replay against candidates.
+Prerequisites prepare versions and all source/docs/CI. The scoped-predicate integration and hosted Linux CI correction are required release blockers; use their refreshed core and consumer commits and supersede all pre-filter candidate artifacts. Native Cargo+1.99.0 can package unpublished dependent members with its temporary registry; Root verified a disposable two-crate example at /private/tmp/zirql-release-20261016-workspace-package-probe.json. Use a simple disposable combined workspace over copies of the exact candidate sources to verify normalized registry dependency archives before public upload, not a custom registry or release framework. Real public registry availability and final unpatched registry installation remain distinct external checks. Read the accepted per-project candidate results and release instructions. Use existing passing core and host tests as language evidence; language-discovery probes are optional diagnostics for concrete uncovered behavior, not another release gate.
 
 ## Boundaries
 
@@ -28,7 +28,7 @@ Prerequisites prepare versions and all source/docs/CI. The scoped-predicate inte
 ## Done when
 
 - [ ] All seven Rust candidate packages (Zirql, five Zincite crates, Zirium) have reviewed normalized dependency contracts, useful contents and local package verification with exact version/source/archive hashes. The two documented Zirql examples run from the archive.
-- [ ] A few ordinary cross-host/CSV report/function/empty/refusal/buffering checks succeed; the documented first-use formatter/linter/query and MLIR/Python examples run on candidate artifacts or clean installs. Keep CSV function declaration limits explicit.
+- [ ] Zincite and Zirium build against the same reviewed Zirql Git revision with their relevant existing tests passing, and the CSV example runs. This is sufficient shared-language integration evidence; no separate cross-consumer replay campaign is required. The documented first-use formatter/linter/query and MLIR/Python examples run on candidate artifacts or clean installs. Keep CSV function declaration limits explicit.
 - [ ] Attempt required configured CI and existing supported artifact jobs at exact candidate commits. Record successful hosted proof or identify the precise unavailable external prerequisites for the attended publication gate. Local wheel/sdist/CLI archive checks, version agreement and three site build/link/desktop/mobile/search proof are complete.
 - [ ] A concise reviewable release handoff identifies exact commits, artifacts/checksums, dependency publication order, supported platforms, pending real-registry install checks and the exact external actions requiring authorization. Root retains those gates without claiming the releases published.
 
@@ -36,4 +36,5 @@ Prerequisites prepare versions and all source/docs/CI. The scoped-predicate inte
 
 - Use native Cargo 1.99 multi-package verification and inspect/exercise extracted archives; verify unchanged code content if temporary workspace metadata is adapted. Don’t retain probe-only scaffolding as product code.
 - Reuse passing prerequisite full suites where source is unchanged; rerun only materially changed checks and a few actual end-to-end candidate examples.
+- Do not duplicate Zirql language coverage in each consumer or replay cross-host report/function/empty/refusal/buffering cases already covered by passing suites. Add a focused integration check only for a concrete adapter defect or uncovered behavior. Keep package, clean-install, CI and documentation checks.
 - Root reviews all three site installation/start/reference pages at desktop/mobile, navigation/search/themes/assets/links, and independently accepts the complete candidate handoff.
