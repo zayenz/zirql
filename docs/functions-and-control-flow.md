@@ -95,6 +95,25 @@ A one-element tuple is written `(value,)`; `(value)` groups an expression.
 Literal patterns require the same kind, so an integer pattern does not match a
 float with the same numeric magnitude.
 
+List patterns match positional arrays or exposed native lists. `[a, b]` requires
+exactly two elements; `[a, b, ..]` requires at least two and discards the rest.
+`[]` requires an empty list, and `[..]` accepts any positional list. The remainder
+has no name or copied value. Lists do not match tuples, sets or keyed arrays.
+
+Lets, typed parameters, predicate arguments, comprehension binders and value
+matches use the same patterns. For example:
+
+```zirql
+[[a, b] for [a, b, ..] in [[1, 3, 99], [0, 2]] if a > 0]
+[[1, 3, 99], [0, 2]] | filter([a, b, ..] => length(_) >= 2 and a + b > 3)
+```
+
+These return `[[1, 3]]` and `[[1, 3, 99]]`. A predicate's `_` reads its whole
+subject even when the pattern binds parts. Nested predicates rebind `_`; written
+outer names remain lexical captures. A wildcard inside a pattern discards only
+that component. A short list is a located error in a binding, parameter,
+predicate or generator. Only a value-match arm tries the next pattern.
+
 Local `let` bindings can use these patterns too:
 
 ```zirql

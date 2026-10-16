@@ -1,4 +1,4 @@
-//! The same closed patterns bind lets, typed parameters and selected match arms.
+//! Shared patterns for lets, parameters, predicates, generators and value matches.
 use super::execution::{Data, Host, NativeStep, Value};
 use super::*;
 
@@ -6,13 +6,19 @@ pub type Pattern = Located<PatternKind>;
 type BindingFacts<'a> = Vec<(&'a Located<String>, Vec<ValueType>)>;
 type PatternBindings<'a, N, K> = Vec<(&'a str, Value<'a, N, K>)>;
 
-/// Records inspect stored fields. `ignore_rest` explicitly permits other labels;
+/// Tuples require exact arity. Lists require exact length unless `ignore_rest`
+/// discards a final remainder. Records inspect stored fields. `ignore_rest` permits other labels;
 /// it never creates a rest value. Native structure requires an explicit host view.
 #[derive(Debug, PartialEq)]
 pub enum PatternKind {
     Name(Located<String>),
     Wildcard,
     Tuple(Vec<Pattern>),
+    /// Positional list; a final discarded remainder accepts a longer list.
+    List {
+        elements: Vec<Pattern>,
+        ignore_rest: bool,
+    },
     Record {
         fields: Vec<(Located<String>, Pattern)>,
         ignore_rest: bool,
@@ -118,6 +124,48 @@ pub(crate) fn facts<'a>(
             PatternKind::Tuple(children) => {
                 for (position, child) in children.iter().enumerate() {
                     let child_types = child_facts(types, Some(position), None, budget, &location)?;
+                    for binding in facts(child, &child_types, budget)? {
+                        push_metadata(&mut result, binding, budget, &location)?;
+                    }
+                }
+            }
+            PatternKind::List { elements, .. } => {
+                for (position, child) in elements.iter().enumerate() {
+                    let mut child_types = Vec::new();
+                    for ty in types {
+                        let ty = shape_type(copy_type(ty, budget, &location)?, budget, &location)?;
+                        match ty {
+                            ValueType::Array(ArrayType::Positions(children)) => {
+                                push_metadata(
+                                    &mut child_types,
+                                    children
+                                        .into_iter()
+                                        .nth(position)
+                                        .unwrap_or(ValueType::Unestablished),
+                                    budget,
+                                    &location,
+                                )?;
+                            }
+                            ValueType::Array(ArrayType::Elements(children))
+                            | ValueType::ArrayKind(children) => {
+                                append_types(&mut child_types, children, budget, &location)?;
+                            }
+                            _ => push_metadata(
+                                &mut child_types,
+                                ValueType::Unestablished,
+                                budget,
+                                &location,
+                            )?,
+                        }
+                    }
+                    if child_types.is_empty() {
+                        push_metadata(
+                            &mut child_types,
+                            ValueType::Unestablished,
+                            budget,
+                            &location,
+                        )?;
+                    }
                     for binding in facts(child, &child_types, budget)? {
                         push_metadata(&mut result, binding, budget, &location)?;
                     }
@@ -229,7 +277,7 @@ fn child_facts(
     clippy::type_complexity,
     reason = "Staged bindings retain the adapter native value, contract kind and error types"
 )]
-pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
+pub(crate) fn bind<'a, Q, H: Host<'a, Q> + ?Sized>(
     pattern: PatternRef<'a>,
     value: Value<'a, H::Native, H::Kind>,
     host: &mut H,
@@ -357,6 +405,38 @@ pub(crate) fn bind<'a, Q, H: Host<'a, Q>>(
                     )?;
                 }
             }
+            PatternKind::List {
+                elements,
+                ignore_rest,
+            } => {
+                let len = match host.constructed(&value, budget, &location)? {
+                    Some(data) => match data.value.data() {
+                        ConstructedValue::Array(values) => Some(values.len()),
+                        _ => None,
+                    },
+                    None => {
+                        let Data::Native(view) = &value.data else {
+                            unreachable!()
+                        };
+                        host.native_list(host.native_data(view, budget, &location)?)
+                            .map(<[_]>::len)
+                    }
+                };
+                let Some(len) = len else { return Ok(None) };
+                if len < elements.len() || (!ignore_rest && len != elements.len()) {
+                    return Ok(None);
+                }
+                for (index, child) in elements.iter().enumerate().rev() {
+                    let child_value =
+                        select(&mut value, NativeStep::List(index), host, budget, &location)?;
+                    push_metadata(
+                        &mut pending,
+                        (PatternRef::Pattern(child), child_value),
+                        budget,
+                        &location,
+                    )?;
+                }
+            }
             PatternKind::Record {
                 fields,
                 ignore_rest,
@@ -448,6 +528,9 @@ pub(crate) fn select<'a, Q, H: Host<'a, Q> + ?Sized>(
     }
     let contract = match (contract, &step) {
         (Some(DeclaredType::Tuple(children)), NativeStep::Tuple(index)) => children.get(*index),
+        (Some(DeclaredType::Array(child) | DeclaredType::Sequence(child)), NativeStep::List(_)) => {
+            Some(child.as_ref())
+        }
         (Some(DeclaredType::Record(fields)), NativeStep::Record(index)) => {
             let label = match host.constructed(value, budget, location)? {
                 Some(data) => {
@@ -540,6 +623,19 @@ pub fn copy_pattern(pattern: &Pattern, budget: &mut Budget) -> Result<Pattern, Q
                 }
                 PatternKind::Tuple(copied)
             }
+            PatternKind::List {
+                elements,
+                ignore_rest,
+            } => {
+                let mut copied = metadata_vec(elements.len(), budget, &location)?;
+                for child in elements {
+                    copied.push(copy_pattern(child, budget)?);
+                }
+                PatternKind::List {
+                    elements: copied,
+                    ignore_rest: *ignore_rest,
+                }
+            }
             PatternKind::Record {
                 fields,
                 ignore_rest,
@@ -564,7 +660,10 @@ pub fn dispose_pattern(pattern: Pattern) {
     let mut pending = vec![pattern];
     while let Some(pattern) = pending.pop() {
         match pattern.value {
-            PatternKind::Tuple(children) => pending.extend(children),
+            PatternKind::Tuple(children)
+            | PatternKind::List {
+                elements: children, ..
+            } => pending.extend(children),
             PatternKind::Record { fields, .. } => {
                 pending.extend(fields.into_iter().map(|(_, p)| p))
             }

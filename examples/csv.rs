@@ -8,11 +8,11 @@ use std::{
     path::PathBuf,
 };
 use zirql::{
-    ArgumentReader, ArrayType, Budget, CommonStatement, ConstructedValue as V, DeclaredType,
-    ExpressionStep, Located, Location, PatternKind, Predicate, ProgramLimits, Projection,
-    QueryError, ReadExpression, ValueExpression, ValueExpressionKind as K, ValueQueryHost,
-    ValueReaderHost, ValueType, copy_constructed_value, declare_constructed, dispose_native_value,
-    evaluate_query_value, read_statement_prefix, read_value_expression,
+    ArgumentReader, ArrayType, Budget, ConstructedValue as V, DeclaredType, ExpressionStep,
+    Located, Location, Predicate, ProgramLimits, Projection, QueryError, ReadExpression,
+    ValueExpression, ValueExpressionKind as K, ValueQueryHost, ValueReaderHost, ValueType,
+    copy_constructed_value, declare_constructed, dispose_native_value, dispose_pattern,
+    evaluate_query_value, pattern_names, read_pattern_let, read_value_expression,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -532,27 +532,33 @@ fn read_program(
     let mut reader = ArgumentReader::new(query, 0)?;
     let mut bindings = Vec::new();
     let result = (|| {
-        loop {
-            let start = reader.position();
-            let Some(prefix) = read_statement_prefix(&mut reader, budget)? else {
-                break;
+        while let Some(pattern) = read_pattern_let(&mut reader, budget, nesting)? {
+            let value = match read_value_expression(&mut reader, host, budget, nesting) {
+                Ok(value) => value,
+                Err(error) => {
+                    dispose_pattern(pattern);
+                    return Err(error);
+                }
             };
-            let CommonStatement::Let(name) = prefix else {
-                return Err(QueryError::query(
-                    start..reader.position(),
-                    "this CSV example accepts let bindings followed by one expression",
-                ));
+            let names = match pattern_names(&pattern, budget) {
+                Ok(names) => names,
+                Err(error) => {
+                    dispose_pattern(pattern);
+                    dispose_native_value(value);
+                    return Err(error);
+                }
             };
-            let value = read_value_expression(&mut reader, host, budget, nesting)?;
-            if let Err(error) =
-                budget.charge(name.value.len() + 2, Location::Query(name.range.clone()))
-            {
-                dispose_native_value(value);
-                return Err(error);
+            for name in names {
+                if let Err(error) =
+                    budget.charge(name.value.len() + 2, Location::Query(name.range.clone()))
+                {
+                    dispose_pattern(pattern);
+                    dispose_native_value(value);
+                    return Err(error);
+                }
+                host.let_names.push(name.value.clone());
             }
-            host.let_names.push(name.value.clone());
-            let range = name.range.clone();
-            bindings.push((Located::new(PatternKind::Name(name), range), value));
+            bindings.push((pattern, value));
             if !reader.consume(';') {
                 return Err(reader.error("expected ';' after a let binding"));
             }
@@ -575,7 +581,8 @@ fn read_program(
             0..query.len(),
         )),
         Err(error) => {
-            for (_, value) in bindings {
+            for (pattern, value) in bindings {
+                dispose_pattern(pattern);
                 dispose_native_value(value);
             }
             Err(error)
@@ -788,6 +795,24 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
                 &named()
             )
         );
+        assert_eq!(
+            text(
+                r#"let [first, ..] = rows | filter({active: status, ..} => status == "yes" and _.active == status); let {name, ..} = first; name"#,
+                &people()
+            ),
+            "\"Grace Hopper\"\n"
+        );
+        assert_eq!(
+            text(
+                r#"let [first, ..] = people | filter({active: status, ..} => status == "yes"); let {name, ..} = first; name"#,
+                &named()
+            ),
+            "\"Grace Hopper\"\n"
+        );
+        let short = "let [a,b,..] = [1]; [a,b]";
+        let error = refusal(short, &people(), "pattern did not match");
+        assert_eq!(error.error.location, Location::Query(4..12));
+        refusal("fn f(x: int) -> int { x } f(1)", &people(), "expected");
         let error = refusal("rows | unique", &people(), "unique");
         assert_eq!(error.error.location, Location::Query(7..13));
         refusal(

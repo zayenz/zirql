@@ -4,8 +4,8 @@
 
 - Total: 91
 - Ready: 1
-- Blocked: 5
-- Done: 85
+- Blocked: 4
+- Done: 86
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -98,5 +98,5 @@
 | [base-087](tasks/087-unify-predicate-expressions-across-zirium-and-zincite-releas.md) | Integrate shared predicates into Zincite | blocked | base-091, base-082 |
 | [base-088](tasks/088-handle-early-stdin-closure-in-zincite-cli-test-helpers.md) | Handle early stdin closure in Zincite CLI test helpers | done | — |
 | [base-089](tasks/089-integrate-shared-predicates-into-zirium-and-its-diff-languag.md) | Integrate shared predicates into Zirium and its diff language | blocked | base-091, base-083 |
-| [base-090](tasks/090-share-destructuring-across-bindings-and-predicate-arguments.md) | Share destructuring across bindings and predicate arguments | ready | base-086 |
-| [base-091](tasks/091-read-both-comprehension-forms-and-shared-query-expressions-i.md) | Read both comprehension forms and shared query expressions in Zirql | blocked | base-090 |
+| [base-090](tasks/090-share-destructuring-across-bindings-and-predicate-arguments.md) | Share destructuring across bindings and predicate arguments | done | base-086 |
+| [base-091](tasks/091-read-both-comprehension-forms-and-shared-query-expressions-i.md) | Read both comprehension forms and shared query expressions in Zirql | ready | base-090 |

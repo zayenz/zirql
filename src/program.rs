@@ -601,6 +601,13 @@ pub trait ProgramHost<C> {
         None
     }
 
+    /// Borrow an explicitly exposed positional list. Keyed arrays, sets and
+    /// tuples must not use this view. Children stay beneath the retained owner;
+    /// a discarded pattern remainder never enumerates or copies them.
+    fn positional_view<'v>(&self, _value: &'v Self::Value) -> Option<&'v [Self::Value]> {
+        None
+    }
+
     /// Observe a native value at this written position. Hosts charge retained
     /// snapshots/rendered bytes and own library buffering and effect semantics.
     fn emit(

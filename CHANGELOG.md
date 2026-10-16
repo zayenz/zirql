@@ -11,6 +11,10 @@ execution in Zirium, Zincite and smaller application hosts.
 - Scoped filters accept named and unnamed arguments, Boolean expressions,
   lexical captures and permitted pure calls. Native predicate adapters use the
   same expression scopes while retaining their existing subjects and leaves.
+- Shared destructuring covers lets, typed parameters, predicate arguments,
+  comprehensions and value matches. Positional lists accept exact patterns or
+  a final discarded `..`; predicate `_` retains its whole subject. Mismatches
+  fail with locations except that value-match arms try the next pattern.
 - Checked scalar operations, absence/defaults, stable ordering, grouping,
   reducers and requirements compose with native projections and pipelines.
 - Typed pure functions support destructuring, guarded matches, state loops,

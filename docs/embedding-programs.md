@@ -240,10 +240,12 @@ binding metadata spend the continuing request allowance before growth.
 
 ## Destructure values and select match arms
 
-`Pattern` is a located `PatternKind`: a name, wildcard, fixed tuple, record,
-scalar literal, `Present(child)` or `Absent`. A record contains located static
+`Pattern` is a located `PatternKind`: a name, wildcard, fixed tuple, positional
+list, record, scalar literal, `Present(child)` or `Absent`. A record contains located static
 labels paired with child patterns. Use `ignore_rest: true` to ignore additional
-stored fields. Renaming is the label/name pair; no rest value is allocated.
+stored fields. `List { elements, ignore_rest }` requires exact list length unless
+`ignore_rest` discards a final remainder. It never binds or copies that remainder.
+Renaming is the label/name pair; no rest value is allocated.
 
 `ValueExpressionKind::Block { bindings, value }` contains ordered pattern/value
 pairs and a final expression. Each initializer sees earlier bindings and the
@@ -270,7 +272,10 @@ calls after pattern and guard work finishes.
 
 Native records use `ProgramHost::capture_record` and
 `ProjectionHost::capture_record_kind`. Native tuples can opt into `tuple_view`
-and `tuple_view_kind`; their defaults expose no tuple. These views borrow an
+and `tuple_view_kind`; their defaults expose no tuple. Positional lists use
+`positional_view` and `positional_view_kind`, with the element kind retained for
+empty input. Ordinary predicate helpers can inspect constructed wrappers through
+`ProjectionHost::pattern_constructed`. These views borrow an
 immutable layout containing actual native children. They must remain stable
 while the owner is retained. Hosts keep handle validity and source coordinates;
 view access does not reflect Rust fields. Child selections retain the original
@@ -282,9 +287,9 @@ The common reader exposes these forms through `read_value_expression`,
 The pattern function reader accepts the complete parameter's type and lowers
 local lets to the existing `Block`. Its name-only counterparts retain their
 original signatures and representation. Names such as `if`, `match`, `let`,
-`fn`, `param` and `report` remain contextual binding names. A bare `absent` or
-`present` in a let or parameter position is a name; `present(pattern)` is an
-explicit presence pattern, and nested/match `absent` is an absence pattern.
+`fn`, `param` and `report` remain contextual binding names. In every pattern
+position, `absent` tests absence and `present(pattern)` tests presence. A bare
+`present` remains an ordinary name.
 
 ```zirql
 fn add_cost((label, {cost: (_, cost), ..}):

@@ -1196,6 +1196,30 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         self.pattern_kind(PatternRef::Pattern(child), k, d, budget)?;
                     }
                 }
+                crate::PatternKind::List { elements, .. } => {
+                    let declaration = declaration.map(|mut d| {
+                        while let DeclaredType::Optional(child) = d {
+                            d = child;
+                        }
+                        d
+                    });
+                    for child in elements {
+                        let d = match declaration {
+                            Some(DeclaredType::Array(d) | DeclaredType::Sequence(d)) => {
+                                Some(d.as_ref())
+                            }
+                            _ => None,
+                        };
+                        let k = match d {
+                            Some(d) => Some(self.host.declaration_kind(d, budget, range)?),
+                            None => match kind.as_ref() {
+                                Some(k) => self.host.positional_view_kind(k, budget, range)?,
+                                None => None,
+                            },
+                        };
+                        self.pattern_kind(PatternRef::Pattern(child), k, d, budget)?;
+                    }
+                }
                 crate::PatternKind::Record { fields, .. } => {
                     let declaration = declaration.map(|mut d| {
                         while let DeclaredType::Optional(child) = d {
@@ -1833,35 +1857,43 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
     }
     fn prepare_generator(
         &mut self,
-        binder: &Located<Option<String>>,
+        binder: &Pattern,
         source: &ValueExpression<Query<C, H>>,
         types: &[ValueType],
+        element: bool,
         budget: &mut Budget,
     ) -> Result<(), QueryError> {
-        if let Some(name) = &binder.value {
-            let kind = match self.local_kind(source, budget)? {
-                Some(kind)
-                    if self
+        let kind = match self.local_kind(source, budget)? {
+            Some(kind)
+                if element
+                    && self
                         .host
                         .scalar_types(&kind, budget, &source.range)?
                         .is_none() =>
-                {
-                    self.host.subject_kind(&kind, budget, &source.range)?
-                }
-                _ => self.host.constructed_kind(copy_value_types(
-                    types,
-                    budget,
-                    Location::Query(binder.range.clone()),
-                )?),
-            };
-            budget_name(name, budget, &binder.range)?;
-            self.generator_kinds.insert(name.clone(), kind);
+            {
+                self.host.subject_kind(&kind, budget, &source.range)?
+            }
+            Some(kind) if !element => kind,
+            _ => self.host.constructed_kind(copy_value_types(
+                types,
+                budget,
+                Location::Query(binder.range.clone()),
+            )?),
+        };
+        for name in crate::pattern_names(binder, budget)? {
+            self.generator_kinds.remove(&name.value);
+        }
+        self.pattern_kind(PatternRef::Pattern(binder), Some(kind), None, budget)?;
+        for name in crate::pattern_names(binder, budget)? {
+            if let Some(kind) = self.scope.remove(&name.value) {
+                self.generator_kinds.insert(name.value.clone(), kind);
+            }
         }
         Ok(())
     }
     fn prepare_predicate(
         &mut self,
-        argument: Option<&Located<String>>,
+        argument: Option<&Pattern>,
         source: &ValueExpression<Query<C, H>>,
         types: &[ValueType],
         element: bool,
@@ -1892,10 +1924,8 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         self.scope.insert(internal.to_owned(), kind.clone());
         self.generator_kinds
             .insert(internal.to_owned(), kind.clone());
-        if let Some(name) = argument {
-            budget_name(&name.value, budget, &name.range)?;
-            self.scope.insert(name.value.clone(), kind.clone());
-            self.generator_kinds.insert(name.value.clone(), kind);
+        if let Some(pattern) = argument {
+            self.pattern_kind(PatternRef::Pattern(pattern), Some(kind), None, budget)?;
         }
         Ok(())
     }
@@ -3179,6 +3209,9 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     fn native_tuple<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
         self.host.tuple_view(value)
     }
+    fn native_list<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
+        self.host.positional_view(value)
+    }
     fn check_native_context(
         &mut self,
         value: &H::Value,
@@ -3472,7 +3505,11 @@ fn native_view<'v, C, H: ProgramHost<C>>(
     value: &'v NativeView<H::Value>,
     host: &H,
 ) -> &'v H::Value {
-    value.native(|v| host.capture_record(v), |v| host.tuple_view(v))
+    value.native(
+        |v| host.capture_record(v),
+        |v| host.tuple_view(v),
+        |v| host.positional_view(v),
+    )
 }
 
 struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
@@ -3580,6 +3617,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
                         |v| self.host.constructed_value(v),
                         |v| self.host.capture_record(v),
                         |v| self.host.tuple_view(v),
+                        |v| self.host.positional_view(v),
                         budget,
                         &location,
                     )?
@@ -3752,6 +3790,7 @@ impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {
                     |v| self.host.constructed_value(v),
                     |v| self.host.capture_record(v),
                     |v| self.host.tuple_view(v),
+                    |v| self.host.positional_view(v),
                     budget,
                     &location,
                 )? {

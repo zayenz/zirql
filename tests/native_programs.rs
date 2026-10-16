@@ -726,6 +726,12 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
         }
     }
 
+    fn positional_view<'v>(&self, value: &'v SourceValue<'a>) -> Option<&'v [SourceValue<'a>]> {
+        match value {
+            SourceValue::Sequence { values, .. } => Some(values),
+            _ => None,
+        }
+    }
     fn emit(
         &self,
         emitter: &&'static str,
@@ -987,6 +993,26 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
             SourceKind::Tuple(v) => Some(v),
             _ => None,
         }
+    }
+    fn positional_view_kind(
+        &self,
+        kind: &SourceKind,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Option<SourceKind>, QueryError> {
+        match kind {
+            SourceKind::Sequence(element) => {
+                <Self as zirql::FunctionHost<_>>::declaration_kind(self, element, budget, range)
+                    .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+    fn pattern_constructed<'v>(
+        &self,
+        value: &'v SourceValue<'a>,
+    ) -> Option<&'v zirql::ConstructedValue> {
+        <Self as zirql::RuntimeTypeHost<_>>::constructed_value(self, value)
     }
     fn constructed_kind(&self, types: Vec<zirql::ValueType>) -> SourceKind {
         SourceKind::Constructed(std::sync::Arc::new(types))
@@ -4353,6 +4379,9 @@ mod projection {
                 if cost > 0 { let answer = cost + 1; {"label": label, "total": answer} }
                 else { {"label": label, "total": 0} }
             }
+            fn pair_sum([left,right,..]: sequence<int>) -> int { left + right }
+            fn positive((left,right): tuple<int,int>) -> bool { left + right > 0 }
+            fn absent_only(absent: opt int) -> int { 1 }
             fn classify(value: opt int) -> int {
                 match (value) {
                     absent => 0,
@@ -4410,6 +4439,12 @@ mod projection {
                     ("total".into(), V::Integer(5)),
                 ]),
             ),
+            ("pair_sum([3,4,99])", V::Integer(7)),
+            (
+                "pair_sum([length([(1,2),(0,0)] | filter((a,b) => positive((a,b)) and _.1 == a)),0])",
+                V::Integer(1),
+            ),
+            ("absent_only(null)", V::Integer(1)),
             ("classify(null)", V::Integer(0)),
             ("classify(4)", V::Integer(5)),
             ("tally((100, 0))", V::Integer(5050)),
@@ -4445,6 +4480,41 @@ mod projection {
             };
             assert_eq!(*value, expected);
         }
+        let text = "absent_only(1)";
+        let entry = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(text, 0).unwrap(),
+            &mut Host,
+            &mut budget,
+            64,
+        )
+        .unwrap();
+        let mut functions = PreparedFunctions::prepare_patterns_borrowed(
+            parsed
+                .iter()
+                .zip(&headers)
+                .map(|(body, header)| body.with_signature(header)),
+            &Host,
+            &mut budget,
+        )
+        .unwrap();
+        let prepared = functions
+            .prepare_value(&entry, &BTreeMap::new(), None, &mut budget)
+            .unwrap();
+        let error = functions
+            .evaluate(
+                &prepared,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut budget,
+                limits,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(ref range), .. }) if &source[range.clone()] == "absent")
+        );
+        drop(functions);
+        zirql::dispose_native_value(entry);
         let text = r#"match (2) { 1 => {"kind": 0}, _ => {"kind": 2} }"#;
         let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
         let entry = zirql::read_value_expression(&mut reader, &mut Host, &mut budget, 64).unwrap();
@@ -4482,7 +4552,7 @@ mod projection {
     fn parsed_patterns_preserve_contextual_names_and_preflight_refusals() {
         use zirql::{FunctionLimits, PreparedFunctions};
         let mut budget = function_budget();
-        let mut reader = zirql::ArgumentReader::new("fn contextual(if: int, match: int, absent: int, present: int) -> int { let let = if; let fn = match; let param = absent; let report = present; let + fn + param + report }", 0).unwrap();
+        let mut reader = zirql::ArgumentReader::new("fn contextual(if: int, match: int, value: int, present: int) -> int { let let = if; let fn = match; let param = value; let report = present; let + fn + param + report }", 0).unwrap();
         let function = zirql::read_pattern_function_declaration(
             &mut reader,
             &mut Host,
@@ -4691,7 +4761,10 @@ mod projection {
                 constructor: zirql::ValueConstructor::Array,
                 clauses: vec![super::at(
                     zirql::ValueGenerator::In {
-                        binders: vec![super::at(Some("row".into()), 21)],
+                        binders: vec![super::at(
+                            zirql::PatternKind::Name(super::at("row".into(), 21)),
+                            21,
+                        )],
                         source,
                         filter: None,
                     },
@@ -4955,7 +5028,7 @@ mod projection {
         fn parse_predicate_leaf_in_argument(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
-            argument: Option<&Located<String>>,
+            argument: Option<&zirql::Pattern>,
             locals: &[&str],
             budget: &mut Budget,
         ) -> Result<Guard, QueryError> {
@@ -5102,7 +5175,7 @@ mod projection {
         fn parse_predicate_leaf_in_argument(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
-            argument: Option<&Located<String>>,
+            argument: Option<&zirql::Pattern>,
             locals: &[&str],
             budget: &mut Budget,
         ) -> Result<Guard, QueryError> {
@@ -5120,7 +5193,9 @@ mod projection {
             );
             Ok(Guard::Count(Arc::new(
                 zirql::PredicateArgument {
-                    argument: argument.cloned(),
+                    argument: argument
+                        .map(|p| zirql::copy_pattern(p, budget))
+                        .transpose()?,
                     body: Box::new(value),
                 }
                 .bind_value(subject),
@@ -5446,7 +5521,7 @@ mod projection {
         fn parse_predicate_leaf_in_argument(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
-            argument: Option<&Located<String>>,
+            argument: Option<&zirql::Pattern>,
             locals: &[&str],
             budget: &mut Budget,
         ) -> Result<Guard, QueryError> {
@@ -5615,7 +5690,10 @@ mod projection {
             constructor: ValueConstructor::Array,
             clauses: vec![Located::new(
                 ValueGenerator::In {
-                    binders: vec![Located::new(Some("m".into()), 0..1)],
+                    binders: vec![Located::new(
+                        zirql::PatternKind::Name(Located::new("m".into(), 0..1)),
+                        0..1,
+                    )],
                     source: scalar(K::Array(vec![
                         scalar(K::Name("n".into())),
                         scalar(K::Literal(V::Integer(3))),
@@ -5630,7 +5708,10 @@ mod projection {
             constructor: ValueConstructor::Array,
             clauses: vec![Located::new(
                 ValueGenerator::In {
-                    binders: vec![Located::new(Some("n".into()), 0..1)],
+                    binders: vec![Located::new(
+                        zirql::PatternKind::Name(Located::new("n".into(), 0..1)),
+                        0..1,
+                    )],
                     source: scalar(K::Array(vec![
                         scalar(K::Literal(V::Integer(1))),
                         scalar(K::Literal(V::Integer(2))),
@@ -7732,6 +7813,73 @@ mod projection {
             .is_err()
         );
     }
+    #[test]
+    fn native_predicate_headers_are_admitted_before_bare_boolean_leaves() {
+        use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest};
+        let run = |source: &str| {
+            let mut allowance = function_budget();
+            let declaration = zirql::read_function_declaration(
+                &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+                &mut Host,
+                &mut allowance,
+                64,
+                |name, _| match name.value {
+                    "Subjects" => Ok(D::Native(Kind::Subjects)),
+                    _ => Err(QueryError::query(name.range, "unknown native type")),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            let entry = function_call(
+                "select",
+                vec![function_value(K::NativeValue(Box::new(Located::new(
+                    ExpressionKind::Binding("original".into()),
+                    0..1,
+                ))))],
+            );
+            let bindings = Bindings::new([(
+                super::at("original".into(), 0),
+                Value::Subjects(vec!["alpha", "beta"]),
+            )])
+            .unwrap();
+            let declarations = [declaration];
+            let result = FunctionRequest::prepare(
+                &declarations,
+                &Host,
+                &mut (),
+                &mut allowance,
+                FunctionLimits { active_depth: 1 },
+            )
+            .and_then(|request| request.evaluate(&entry, &bindings));
+            zirql::dispose_functions(Vec::from(declarations));
+            zirql::dispose_native_value(entry);
+            result
+        };
+        for body in ["true", "false", "unknown"] {
+            let source = format!(
+                "fn select(xs: Subjects) -> int {{ (xs | match {{ from row in input; where [a,b] => {body}; }} | count) }}"
+            );
+            let error = run(&source).unwrap_err();
+            assert!(
+                matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(ref range), ref message, .. }) if &source[range.clone()] == "[a,b]" && message.contains("pattern does not match")),
+                "{error:?}"
+            );
+        }
+        let source = "fn select(xs: Subjects) -> int { (xs | match { from row in input; where row => true; } | count) }";
+        let error = run(source).unwrap_err();
+        assert!(
+            matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(ref range), .. }) if &source[range.clone()] == "row")
+        );
+        for (header, expected) in [("whole => true", 2), ("_ => false and unknown", 0)] {
+            let source = format!(
+                "fn select(xs: Subjects) -> int {{ (xs | match {{ from row in input; where {header}; }} | count) }}"
+            );
+            assert!(
+                matches!(run(&source).unwrap(), Value::Constructed(value) if value.data() == &V::Integer(expected))
+            );
+        }
+    }
+
     #[test]
     fn scoped_match_predicates_keep_original_input_captures_and_active_functions() {
         use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest};
@@ -10661,4 +10809,170 @@ fn native_set_kind_admission_reaches_unused_value_branches() {
         matches!(&error, EvaluationError::Core(QueryError { location: Location::Query(range), message, .. }) if range == &(21..38) && message == "sets require word identities"),
         "{error:?}"
     );
+}
+
+#[test]
+fn native_list_patterns_share_selected_owners_with_ordinary_predicates() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, PatternKind as P,
+        PredicateArgument, ValueExpressionKind as K,
+    };
+    let source = String::from("alpha beta");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(worklist_limits());
+    let subject = || SourceValue::Sequence {
+        values: vec![word_at(&source, 0..5, 0), word_at(&source, 6..10, 0)],
+        element: DeclaredType::Native(SourceKind::Words),
+    };
+    let prefix = || {
+        at(
+            P::List {
+                elements: vec![at(P::Name(at("candidate".into(), 71)), 70)],
+                ignore_rest: true,
+            },
+            70,
+        )
+    };
+    let same = || {
+        at(
+            K::NativeQuery(Box::new(sequence(
+                at(ExpressionKind::Binding("candidate".into()), 72),
+                vec![at(ExpressionStep::Stage(SourceStage::Same), 72)],
+            ))),
+            72,
+        )
+    };
+    let predicate = PredicateArgument {
+        argument: Some(prefix()),
+        body: Box::new(same()),
+    };
+    zirql::native_predicate_types(
+        &predicate,
+        &SourceHost,
+        SourceKind::Sequence(Box::new(DeclaredType::Native(SourceKind::Words))),
+        std::collections::BTreeMap::from([("target".into(), SourceKind::Words)]),
+        &mut budget,
+    )
+    .unwrap();
+    let captures = Bindings::new([(at("target".into(), 2), word_at(&source, 0..5, 0))]).unwrap();
+    assert!(
+        zirql::evaluate_native_predicate(
+            &predicate,
+            &SourceHost,
+            subject(),
+            &mut context,
+            &captures,
+            &mut budget
+        )
+        .unwrap()
+    );
+    let scalar = PredicateArgument {
+        argument: Some(prefix()),
+        body: Box::new(at(K::Name("candidate".into()), 72)),
+    };
+    assert_eq!(
+        zirql::evaluate_native_predicate_value(
+            &scalar,
+            &SourceHost,
+            SourceValue::Sequence {
+                values: vec![SourceValue::Constructed(V::Integer(4))],
+                element: DeclaredType::Integer
+            },
+            &mut context,
+            &Bindings::default(),
+            &mut budget
+        )
+        .unwrap()
+        .value,
+        V::Integer(4)
+    );
+    let bindings = Bindings::new([
+        (at("input".into(), 1), subject()),
+        (at("target".into(), 2), word_at(&source, 0..5, 0)),
+    ])
+    .unwrap();
+    let entry = predicate.bind(at(
+        K::NativeValue(Box::new(at(ExpressionKind::Binding("input".into()), 2))),
+        2,
+    ));
+    let result = FunctionRequest::prepare_patterns(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    assert!(matches!(result, SourceValue::Constructed(v) if v.data() == &V::Boolean(true)));
+    let function = zirql::PatternFunctionDeclaration {
+        name: at("head".into(), 1),
+        parameters: vec![at(
+            zirql::PatternParameter {
+                pattern: prefix(),
+                declaration: DeclaredType::Sequence(Box::new(DeclaredType::Native(
+                    SourceKind::Words,
+                ))),
+            },
+            3,
+        )],
+        result: at(DeclaredType::Native(SourceKind::Words), 4),
+        value: at(K::Name("candidate".into()), 5),
+    };
+    let call = at(
+        K::Call {
+            function: at("head".into(), 6),
+            arguments: vec![at(
+                K::NativeValue(Box::new(at(ExpressionKind::Binding("input".into()), 7))),
+                7,
+            )],
+        },
+        6,
+    );
+    let result = FunctionRequest::prepare_patterns(
+        &[function],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&call, &bindings)
+    .unwrap();
+    assert!(
+        matches!(result, SourceValue::Words(ref values) if values == &[Word { side: 0, text: "alpha", range: 0..5 }] && values[0].text.as_ptr() == source.as_ptr())
+    );
+    let mismatch = PredicateArgument {
+        argument: Some(at(
+            P::List {
+                elements: vec![
+                    at(P::Wildcard, 81),
+                    at(P::Wildcard, 82),
+                    at(P::Wildcard, 83),
+                ],
+                ignore_rest: false,
+            },
+            80,
+        )),
+        body: Box::new(at(K::Literal(V::Boolean(true)), 81)),
+    };
+    let error = zirql::evaluate_native_predicate(
+        &mismatch,
+        &SourceHost,
+        subject(),
+        &mut context,
+        &Bindings::default(),
+        &mut budget,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EvaluationError::Core(QueryError { location: Location::Query(range), .. }) if range == (80..81))
+    );
+    zirql::dispose_native_value(entry);
+    zirql::dispose_native_value(call);
 }

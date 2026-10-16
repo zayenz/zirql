@@ -25,6 +25,7 @@ pub(crate) struct Body<'a, Q, K> {
 pub(crate) enum NativeStep {
     Record(usize),
     Tuple(usize),
+    List(usize),
     // Constructed steps form a suffix after the last native wrapper. The owner
     // stays native; matching and scalar reads borrow this selected subtree.
     Constructed(usize),
@@ -33,7 +34,7 @@ pub(crate) enum NativeStep {
 impl NativeStep {
     pub fn index(&self) -> usize {
         match self {
-            Self::Record(i) | Self::Tuple(i) | Self::Constructed(i) => *i,
+            Self::Record(i) | Self::Tuple(i) | Self::List(i) | Self::Constructed(i) => *i,
             Self::Declaration(_) => unreachable!("declaration is not a child selector"),
         }
     }
@@ -97,6 +98,7 @@ impl<N> NativeView<N> {
         &'v self,
         record: impl Fn(&'v N) -> Option<&'v crate::NativeCapture<N>>,
         tuple: impl Fn(&'v N) -> Option<&'v [N]>,
+        list: impl Fn(&'v N) -> Option<&'v [N]>,
     ) -> &'v N {
         let mut native = self.owner.as_ref();
         for step in &self.path {
@@ -105,6 +107,7 @@ impl<N> NativeView<N> {
                     &record(native).expect("retained record view").fields[*i].1
                 }
                 NativeStep::Tuple(i) => &tuple(native).expect("retained tuple view")[*i],
+                NativeStep::List(i) => &list(native).expect("retained list view")[*i],
                 _ => break,
             };
         }
@@ -115,11 +118,12 @@ impl<N> NativeView<N> {
         constructed: impl Fn(&'v N) -> Option<&'v ConstructedValue>,
         record: impl Fn(&'v N) -> Option<&'v crate::NativeCapture<N>>,
         tuple: impl Fn(&'v N) -> Option<&'v [N]>,
+        list: impl Fn(&'v N) -> Option<&'v [N]>,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Option<ConstructedRef<'v>>, QueryError> {
         budget.charge(self.path.len(), location.clone())?;
-        let native = self.native(record, tuple);
+        let native = self.native(record, tuple, list);
         let Some(value) = constructed(native) else {
             return Ok(None);
         };
@@ -296,6 +300,7 @@ pub(crate) trait Host<'a, Q> {
                 |v| self.native_constructed(v),
                 |v| self.native_record(v),
                 |v| self.native_tuple(v),
+                |v| self.native_list(v),
                 budget,
                 location,
             ),
@@ -362,6 +367,9 @@ pub(crate) trait Host<'a, Q> {
     fn native_tuple<'v>(&self, _value: &'v Self::Native) -> Option<&'v [Self::Native]> {
         None
     }
+    fn native_list<'v>(&self, _value: &'v Self::Native) -> Option<&'v [Self::Native]> {
+        None
+    }
     fn native_data<'v>(
         &self,
         value: &'v NativeView<Self::Native>,
@@ -369,7 +377,11 @@ pub(crate) trait Host<'a, Q> {
         location: &Location,
     ) -> Result<&'v Self::Native, QueryError> {
         budget.charge(value.path.len(), location.clone())?;
-        let data = value.native(|v| self.native_record(v), |v| self.native_tuple(v));
+        let data = value.native(
+            |v| self.native_record(v),
+            |v| self.native_tuple(v),
+            |v| self.native_list(v),
+        );
         Ok(data)
     }
     fn inspect_pattern(
@@ -1722,14 +1734,13 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 match &clause.value {
                                     PreparedGenerator::Bind { binder, filter, .. } => {
                                         budget.charge(1, cl.clone())?;
-                                        if let Some(name) = &binder.value {
-                                            push_metadata(
-                                                &mut frame.locals,
-                                                (name, value),
-                                                budget,
-                                                &cl,
-                                            )?;
-                                        }
+                                        install_pattern(
+                                            &mut frame.locals,
+                                            binder,
+                                            value,
+                                            host,
+                                            budget,
+                                        )?;
                                         push!(Pending::Restore(saved));
                                         if let Some(filter) = filter {
                                             push!(Pending::Filter(
@@ -1791,13 +1802,15 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 };
                                 let cl = Location::Query(clause.range.clone());
                                 let len = source.len();
-                                for (binder, position) in binders.iter().zip(&positions) {
-                                    budget.charge(1, Location::Query(binder.range.clone()))?;
-                                    if let Some(name) = &binder.value {
-                                        let v = source.child(*position, budget, &cl)?;
-                                        push_metadata(&mut frame.locals, (*name, v), budget, &cl)?;
-                                    }
-                                }
+                                install_candidate(
+                                    &mut frame.locals,
+                                    binders,
+                                    &mut source,
+                                    &positions,
+                                    host,
+                                    budget,
+                                    &cl,
+                                )?;
                                 for position in positions.iter_mut().rev() {
                                     budget.charge(1, cl.clone())?;
                                     *position += 1;
@@ -1852,6 +1865,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     &mut frame.locals,
                                     result.take().expect("predicate subject"),
                                     *argument,
+                                    host,
                                     budget,
                                     &location,
                                 )?;
@@ -2887,24 +2901,94 @@ fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
     })
 }
 
-fn install_predicate<'a, N, K>(
-    locals: &mut Vec<(&'a str, Value<'a, N, K>)>,
-    mut subject: Value<'a, N, K>,
-    argument: Option<&'a str>,
+fn install_pattern<'a, Q, H: Host<'a, Q> + ?Sized>(
+    locals: &mut Vec<(&'a str, ResultValue<'a, H, Q>)>,
+    pattern: &'a super::Pattern,
+    value: Value<'a, H::Native, H::Kind>,
+    host: &mut H,
+    budget: &mut Budget,
+) -> Result<(), H::Error> {
+    let location = Location::Query(pattern.range.clone());
+    if !matches!(
+        pattern.value,
+        super::PatternKind::Name(_) | super::PatternKind::Wildcard
+    ) {
+        host.inspect_pattern(&value, budget, &location)?;
+    }
+    let bindings = super::pattern::bind(
+        super::pattern::PatternRef::Pattern(pattern),
+        value,
+        host,
+        budget,
+    )?
+    .ok_or_else(|| error(&location, "generator pattern does not match its value"))?;
+    for binding in bindings {
+        push_metadata(locals, binding, budget, &location)?;
+    }
+    Ok(())
+}
+fn install_candidate<'a, Q, H: Host<'a, Q> + ?Sized>(
+    locals: &mut Vec<(&'a str, ResultValue<'a, H, Q>)>,
+    binders: &[Option<&'a super::Pattern>],
+    source: &mut GeneratorSource<'a, H::Native, H::Kind>,
+    positions: &[usize],
+    host: &mut H,
     budget: &mut Budget,
     location: &Location,
-) -> Result<(), QueryError> {
-    let alias = argument
-        .map(|_| subject.share(budget, location))
-        .transpose()?;
+) -> Result<(), H::Error> {
+    for (binder, position) in binders.iter().zip(positions) {
+        let value = source.child(*position, budget, location)?;
+        if let Some(pattern) = binder {
+            install_pattern(locals, pattern, value, host, budget)?;
+        } else {
+            push_metadata(locals, (super::PREDICATE_SUBJECT, value), budget, location)?;
+        }
+    }
+    Ok(())
+}
+
+fn install_predicate<'a, Q, H: Host<'a, Q> + ?Sized>(
+    locals: &mut Vec<(&'a str, ResultValue<'a, H, Q>)>,
+    mut subject: Value<'a, H::Native, H::Kind>,
+    argument: Option<&'a super::Pattern>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), H::Error> {
+    if argument.is_some_and(|p| {
+        !matches!(
+            p.value,
+            super::PatternKind::Name(_) | super::PatternKind::Wildcard
+        )
+    }) {
+        host.inspect_pattern(&subject, budget, location)?;
+    }
+    let bindings = match argument {
+        Some(pattern) => {
+            let shared = subject.share(budget, location)?;
+            super::pattern::bind(
+                super::pattern::PatternRef::Pattern(pattern),
+                shared,
+                host,
+                budget,
+            )?
+            .ok_or_else(|| {
+                error(
+                    &Location::Query(pattern.range.clone()),
+                    "predicate pattern does not match its subject",
+                )
+            })?
+        }
+        None => Vec::new(),
+    };
     push_metadata(
         locals,
         (super::PREDICATE_SUBJECT, subject),
         budget,
         location,
     )?;
-    if let Some((name, value)) = argument.zip(alias) {
-        push_metadata(locals, (name, value), budget, location)?;
+    for binding in bindings {
+        push_metadata(locals, binding, budget, location)?;
     }
     Ok(())
 }

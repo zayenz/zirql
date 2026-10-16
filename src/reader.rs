@@ -63,12 +63,12 @@ pub trait ValueReaderHost {
         self.parse_predicate_leaf(reader, budget)
     }
     /// Parse an existing domain leaf inside a predicate argument. The optional
-    /// alias identifies the same current subject as `_`. Hosts with dynamic
+    /// pattern selects names while `_` retains the whole subject. Hosts with dynamic
     /// value arguments can retain each through `PredicateArgument::bind_value`.
     fn parse_predicate_leaf_in_argument(
         &mut self,
         reader: &mut ArgumentReader<'_>,
-        _argument: Option<&Located<String>>,
+        _argument: Option<&crate::Pattern>,
         locals: &[&str],
         budget: &mut Budget,
     ) -> Result<Self::Predicate, QueryError> {
@@ -92,6 +92,8 @@ pub trait ValueReaderHost {
     }
     /// Retain a shared scoped Boolean body as one native predicate leaf.
     /// Expose its bound expression through the host's value-argument hooks.
+    /// Explicit native predicate headers also use this hook for their mandatory
+    /// pattern check before any Boolean body leaf runs.
     fn predicate_expression(
         &mut self,
         predicate: PredicateArgument<ReadExpression<Self>>,
@@ -100,6 +102,9 @@ pub trait ValueReaderHost {
     where
         Self: Sized,
     {
+        if let Some(pattern) = predicate.argument {
+            crate::dispose_pattern(pattern);
+        }
         dispose_native_value(*predicate.body);
         Err(QueryError::query(
             range,
@@ -108,7 +113,7 @@ pub trait ValueReaderHost {
     }
     /// Lower one predicate body in the host's expression syntax. `None` leaves
     /// the cursor unchanged and selects the shared grammar. The names include
-    /// `_` and the optional alias, alongside enclosing lexical names.
+    /// `_` and every pattern name, alongside enclosing lexical names.
     fn parse_predicate_value(
         &mut self,
         reader: &mut ArgumentReader<'_>,
@@ -285,7 +290,7 @@ pub enum CommonStatement {
     Param(ParameterDeclaration),
 }
 
-/// Read one located pattern in a match or nested-pattern position.
+/// Read one located pattern for any shared binding or value-match position.
 /// Native structure is inspected only later through explicit host views.
 ///
 /// # Errors
@@ -300,12 +305,12 @@ pub fn read_pattern(
         budget,
         nesting: nesting.min(crate::MAX_NESTING),
     }
-    .pattern(0, true)
+    .pattern(0)
 }
 
 /// Read contextual `let pattern =`, leaving the initializer to the frontend.
-/// A bare `absent` or `present` remains an ordinary binding name; optional
-/// constructors are recognized in nested patterns and explicit `present(...)`.
+/// `absent` tests absence, and `present(pattern)` tests a present value, just
+/// as in parameters, predicates, generators and value matches.
 /// Non-declarations leave the cursor and allowance unchanged.
 ///
 /// # Errors
@@ -365,7 +370,7 @@ pub fn read_pattern_let(
             budget,
             nesting: nesting.min(crate::MAX_NESTING),
         }
-        .pattern(0, false)?,
+        .pattern(0)?,
     ));
     reader.expect('=')?;
     Ok(Some(pattern.into_pattern()))
@@ -871,7 +876,7 @@ pub fn read_unresolved_pattern_function_declaration<H: ValueReaderHost>(
     }));
     if !parser.reader.consume(')') {
         loop {
-            let pattern = PatternGuard(Some(parser.pattern(0, false)?));
+            let pattern = PatternGuard(Some(parser.pattern(0)?));
             parser.reader.expect(':')?;
             let declaration = parser.signature(0)?;
             parser.add_pattern_locals(pattern.pattern())?;
@@ -1055,6 +1060,9 @@ pub fn lower_value_suffix<S, O, E>(
     if matches!(value.value, K::Tally(_)) {
         dispose_native_value(value);
         if let ValueSuffix::Filter(predicate) = stage.value {
+            if let Some(pattern) = predicate.argument {
+                crate::dispose_pattern(pattern);
+            }
             dispose_native_value(*predicate.body);
         }
         return Err(QueryError::query(
@@ -1138,7 +1146,7 @@ pub fn read_constructed_filter<H: ValueReaderHost>(
     Ok(predicate.0.take().expect("retained predicate argument"))
 }
 
-/// Read `name => expression` or an expression using the implicit `_` subject.
+/// Read `pattern => expression` or an expression using the implicit `_` subject.
 /// The caller supplies its closing delimiter and the subject used at execution.
 /// Root/ancestor tests, path targets, match guards, diff subjects and scalar
 /// element edits can use this same boundary without constructing a filter stage.
@@ -1274,7 +1282,7 @@ impl PatternReader<'_, '_, '_> {
         self.budget.charge(1, location.clone())?;
         self.budget.charge_results(1, location)
     }
-    fn pattern(&mut self, depth: usize, optional: bool) -> Result<crate::Pattern, QueryError> {
+    fn pattern(&mut self, depth: usize) -> Result<crate::Pattern, QueryError> {
         use crate::PatternKind as P;
         if depth >= self.nesting {
             return Err(self.reader.error("pattern nesting limit exceeded"));
@@ -1286,7 +1294,7 @@ impl PatternReader<'_, '_, '_> {
             let mut guard = PatternGuard(Some(Located::new(P::Tuple(Vec::new()), start..start)));
             if !self.reader.consume(')') {
                 loop {
-                    let child = PatternGuard(Some(self.pattern(depth + 1, true)?));
+                    let child = PatternGuard(Some(self.pattern(depth + 1)?));
                     self.slot()?;
                     let P::Tuple(children) = &mut guard.0.as_mut().expect("retained tuple").value
                     else {
@@ -1298,6 +1306,46 @@ impl PatternReader<'_, '_, '_> {
                         break;
                     }
                     if self.reader.consume(')') {
+                        break;
+                    }
+                }
+            }
+            guard.into_pattern().value
+        } else if self.reader.consume('[') {
+            let mut guard = PatternGuard(Some(Located::new(
+                P::List {
+                    elements: Vec::new(),
+                    ignore_rest: false,
+                },
+                start..start,
+            )));
+            if !self.reader.consume(']') {
+                loop {
+                    self.reader.skip_whitespace();
+                    if self.reader.remaining().starts_with("..") {
+                        self.reader.advance(2)?;
+                        let P::List { ignore_rest, .. } =
+                            &mut guard.0.as_mut().expect("retained list").value
+                        else {
+                            unreachable!()
+                        };
+                        *ignore_rest = true;
+                        self.reader.expect(']')?;
+                        break;
+                    }
+                    let child = PatternGuard(Some(self.pattern(depth + 1)?));
+                    self.slot()?;
+                    let P::List { elements, .. } =
+                        &mut guard.0.as_mut().expect("retained list").value
+                    else {
+                        unreachable!()
+                    };
+                    elements.push(child.into_pattern());
+                    if !self.reader.consume(',') {
+                        self.reader.expect(']')?;
+                        break;
+                    }
+                    if self.reader.consume(']') {
                         break;
                     }
                 }
@@ -1335,7 +1383,7 @@ impl PatternReader<'_, '_, '_> {
                         Located::new(name.value.to_owned(), name.range)
                     };
                     let child = if self.reader.consume(':') {
-                        self.pattern(depth + 1, true)?
+                        self.pattern(depth + 1)?
                     } else {
                         if quoted {
                             return Err(self
@@ -1403,9 +1451,9 @@ impl PatternReader<'_, '_, '_> {
                 "_" => P::Wildcard,
                 "true" => P::Literal(V::Boolean(true)),
                 "false" => P::Literal(V::Boolean(false)),
-                "absent" if optional => P::Absent,
+                "absent" => P::Absent,
                 "present" if self.reader.consume('(') => {
-                    let child = PatternGuard(Some(self.pattern(depth + 1, true)?));
+                    let child = PatternGuard(Some(self.pattern(depth + 1)?));
                     self.reader.expect(')')?;
                     P::Present(Box::new(child.into_pattern()))
                 }
@@ -1444,13 +1492,13 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         self.expression(0, depth)
     }
 
-    fn pattern(&mut self, depth: usize, optional: bool) -> Result<crate::Pattern, QueryError> {
+    fn pattern(&mut self, depth: usize) -> Result<crate::Pattern, QueryError> {
         PatternReader {
             reader: self.reader,
             budget: self.budget,
             nesting: self.nesting,
         }
-        .pattern(depth, optional)
+        .pattern(depth)
     }
     fn add_pattern_locals(&mut self, pattern: &crate::Pattern) -> Result<(), QueryError> {
         for (name, _) in
@@ -1764,7 +1812,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         ));
         if !self.reader.consume('}') {
             loop {
-                let pattern = PatternGuard(Some(self.pattern(depth + 1, true)?));
+                let pattern = PatternGuard(Some(self.pattern(depth + 1)?));
                 let locals = self.locals.len();
                 let result = (|| {
                     self.add_pattern_locals(pattern.pattern())?;
@@ -2788,17 +2836,14 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             let result = (|| {
                 while self.reader.keyword("for") {
                     let clause_start = self.reader.position();
-                    let name = self.name()?;
+                    let pattern = PatternGuard(Some(self.pattern(depth + 1)?));
                     if !self.reader.keyword("in") {
                         return Err(self
                             .reader
                             .error("expected `in` after comprehension binder"));
                     }
                     let source = ValueGuard::new(self.expression(0, depth + 1)?);
-                    if name.value != "_" {
-                        self.slots::<&str>(1)?;
-                        self.locals.push(&self.reader.source()[name.range.clone()]);
-                    }
+                    self.add_pattern_locals(pattern.pattern())?;
                     let filter = if self.reader.keyword("if") {
                         Some(ValueGuard::new(self.expression(0, depth + 1)?))
                     } else {
@@ -2808,7 +2853,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         .as_ref()
                         .map_or(source.value().range.end, |value| value.value().range.end);
                     self.slots::<Located<ValueGenerator<ReadExpression<H>>>>(1)?;
-                    self.slots::<Located<Option<String>>>(1)?;
+                    self.slots::<crate::Pattern>(1)?;
                     let clauses = match &mut comprehension.value_mut().value {
                         K::Comprehension { clauses, .. }
                         | K::DictionaryComprehension { clauses, .. }
@@ -2817,10 +2862,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     };
                     clauses.push(Located::new(
                         ValueGenerator::In {
-                            binders: vec![Located::new(
-                                (name.value != "_").then_some(name.value),
-                                name.range,
-                            )],
+                            binders: vec![pattern.into_pattern()],
                             source: source.into_value(),
                             filter: filter.map(ValueGuard::into_value),
                         },
@@ -3011,15 +3053,20 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         )?;
                         if word.value == "for" {
                             let mut next = ArgumentReader::new(source, probe.position())?;
-                            let name = next.word().ok();
-                            let generator = next.keyword("in");
-                            self.budget.charge(
-                                next.position() - probe.position(),
-                                Location::Query(probe.position()..next.position()),
-                            )?;
-                            if let Some(name) = name.filter(|name| generator && name.value != "_") {
+                            let pattern = PatternGuard(Some(
+                                PatternReader {
+                                    reader: &mut next,
+                                    budget: self.budget,
+                                    nesting: self.nesting,
+                                }
+                                .pattern(0)?,
+                            ));
+                            if !next.keyword("in") {
+                                return Err(next.error("expected `in` after comprehension binder"));
+                            }
+                            for name in crate::pattern_names(pattern.pattern(), self.budget)? {
                                 self.slots::<&str>(1)?;
-                                names.push(name.value);
+                                names.push(&source[name.range.clone()]);
                             }
                         }
                         continue;
@@ -3556,39 +3603,65 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             range: start..self.reader.position(),
         })
     }
-    fn predicate_name(&mut self) -> Result<Option<Located<String>>, QueryError> {
+    fn predicate_pattern(&mut self, depth: usize) -> Result<Option<crate::Pattern>, QueryError> {
         let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
-        let Ok(name) = probe.word() else {
-            return Ok(None);
-        };
+        probe.skip_whitespace();
+        let mut nested = 0usize;
+        let (mut quoted, mut escaped, mut comment) = (false, false, false);
+        while let Some(ch) = probe.remaining().chars().next() {
+            if !quoted && !comment && nested == 0 && probe.remaining().starts_with("=>") {
+                break;
+            }
+            self.budget.charge(
+                ch.len_utf8(),
+                Location::Query(probe.position()..probe.position() + ch.len_utf8()),
+            )?;
+            if comment {
+                comment = ch != '\n';
+            } else if quoted {
+                if ch == '"' && !escaped {
+                    quoted = false;
+                }
+                escaped = ch == '\\' && !escaped;
+            } else {
+                match ch {
+                    '"' => quoted = true,
+                    '#' => comment = true,
+                    '(' | '[' | '{' => {
+                        nested += 1;
+                        self.depth(depth + nested)?;
+                    }
+                    ')' | ']' | '}' if nested > 0 => nested -= 1,
+                    ')' | ']' | '}' => break,
+                    ',' | ';' if nested == 0 => break,
+                    _ => {}
+                }
+            }
+            probe.advance(ch.len_utf8())?;
+        }
         probe.skip_whitespace();
         if !probe.remaining().starts_with("=>") {
             return Ok(None);
         }
-        probe.advance(2)?;
-        self.reader
-            .advance(probe.position() - self.reader.position())?;
-        self.budget
-            .charge(name.value.len() + 2, Location::Query(name.range.clone()))?;
-        if name.value == "_" {
-            return Err(QueryError::query(
-                name.range,
-                "use the implicit unnamed argument without =>",
-            ));
+        let pattern = PatternGuard(Some(self.pattern(depth + 1)?));
+        self.reader.skip_whitespace();
+        if !self.reader.remaining().starts_with("=>") {
+            return Err(self.reader.error("expected `=>` after predicate pattern"));
         }
-        Ok(Some(Located::new(name.value.to_owned(), name.range)))
+        self.reader.advance(2)?;
+        Ok(Some(pattern.into_pattern()))
     }
     fn predicate_argument(
         &mut self,
         depth: usize,
     ) -> Result<PredicateArgument<ReadExpression<H>>, QueryError> {
         self.depth(depth)?;
-        let argument = self.predicate_name()?;
+        let mut argument = PatternGuard(self.predicate_pattern(depth)?);
         let saved = self.locals.len();
-        self.slots::<&str>(1 + usize::from(argument.is_some()))?;
+        self.slots::<&str>(1)?;
         self.locals.push("_");
-        if let Some(name) = &argument {
-            self.locals.push(&self.reader.source()[name.range.clone()]);
+        if let Some(pattern) = &argument.0 {
+            self.add_pattern_locals(pattern)?;
         }
         let result = (|| {
             if let Some(body) = self.host.parse_predicate_value(
@@ -3603,23 +3676,48 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             }
         })();
         self.locals.truncate(saved);
+        let body = result?;
         Ok(PredicateArgument {
-            argument,
-            body: Box::new(result?),
+            argument: argument.0.take(),
+            body: Box::new(body),
         })
     }
     fn native_predicate_argument(
         &mut self,
         depth: usize,
     ) -> Result<Predicate<H::Predicate>, QueryError> {
-        let argument = self.predicate_name()?;
+        let mut argument = PatternGuard(self.predicate_pattern(depth)?);
         let saved = self.locals.len();
-        self.slots::<&str>(1 + usize::from(argument.is_some()))?;
+        self.slots::<&str>(1)?;
         self.locals.push("_");
-        if let Some(name) = &argument {
-            self.locals.push(&self.reader.source()[name.range.clone()]);
+        if let Some(pattern) = &argument.0 {
+            self.add_pattern_locals(pattern)?;
         }
-        let result = self.predicate_or(depth, argument.as_ref());
+        let result = (|| {
+            let mut body = PredicateGuard(Some(self.predicate_or(depth, argument.0.as_ref())?));
+            let Some(pattern) = &argument.0 else {
+                return Ok(body.0.take().expect("retained predicate"));
+            };
+            let range = pattern.range.clone();
+            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+            self.slots::<Predicate<H::Predicate>>(3)?;
+            // Admit the header before any native Boolean leaf, including leaves
+            // that retain no value argument or bound name of their own.
+            let admission = self.host.predicate_expression(
+                PredicateArgument {
+                    argument: argument.0.take(),
+                    body: Box::new(Located::new(K::Literal(V::Boolean(true)), range.clone())),
+                },
+                range.clone(),
+            )?;
+            Ok(combine(
+                vec![
+                    Located::new(PredicateKind::Leaf(admission), range),
+                    body.0.take().expect("retained predicate"),
+                ],
+                PredicateKind::And,
+            ))
+        })();
         self.locals.truncate(saved);
         result
     }
@@ -3671,7 +3769,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn predicate_or(
         &mut self,
         depth: usize,
-        argument: Option<&Located<String>>,
+        argument: Option<&crate::Pattern>,
     ) -> Result<Predicate<H::Predicate>, QueryError> {
         let first = self.predicate_and(depth, argument)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
@@ -3685,7 +3783,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn predicate_and(
         &mut self,
         depth: usize,
-        argument: Option<&Located<String>>,
+        argument: Option<&crate::Pattern>,
     ) -> Result<Predicate<H::Predicate>, QueryError> {
         let first = self.predicate_atom(depth, argument)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
@@ -3751,7 +3849,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn predicate_atom(
         &mut self,
         depth: usize,
-        argument: Option<&Located<String>>,
+        argument: Option<&crate::Pattern>,
     ) -> Result<Predicate<H::Predicate>, QueryError> {
         self.depth(depth)?;
         self.reader.skip_whitespace();
@@ -3780,15 +3878,19 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     self.budget,
                 )?)
             } else {
-                let body = self.expression(3, depth + 1)?;
-                let range = body.range.clone();
-                PredicateKind::Leaf(self.host.predicate_expression(
-                    PredicateArgument {
-                        argument: argument.cloned(),
-                        body: Box::new(body),
-                    },
-                    range,
-                )?)
+                let body = ValueGuard::new(self.expression(3, depth + 1)?);
+                let range = body.value().range.clone();
+                PredicateKind::Leaf(
+                    self.host.predicate_expression(
+                        PredicateArgument {
+                            argument: argument
+                                .map(|p| crate::copy_pattern(p, self.budget))
+                                .transpose()?,
+                            body: Box::new(body.into_value()),
+                        },
+                        range,
+                    )?,
+                )
             }
         };
         self.slots::<Predicate<H::Predicate>>(1)?;
@@ -3800,6 +3902,9 @@ struct PredicateArgumentGuard<S, O, E>(Option<PredicateArgument<Expression<S, O,
 impl<S, O, E> Drop for PredicateArgumentGuard<S, O, E> {
     fn drop(&mut self) {
         if let Some(predicate) = self.0.take() {
+            if let Some(pattern) = predicate.argument {
+                crate::dispose_pattern(pattern);
+            }
             dispose_native_value(*predicate.body);
         }
     }
@@ -3956,6 +4061,9 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 argument: predicate,
             } => {
                 pending.push(*array);
+                if let Some(pattern) = predicate.argument {
+                    crate::dispose_pattern(pattern);
+                }
                 pending.push(*predicate.body);
                 continue;
             }
@@ -4091,12 +4199,24 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
         };
         for clause in clauses {
             let (source, filter) = match clause.value {
-                ValueGenerator::In { source, filter, .. }
-                | ValueGenerator::Bind {
-                    value: source,
+                ValueGenerator::In {
+                    binders,
+                    source,
                     filter,
-                    ..
-                } => (source, filter),
+                } => {
+                    for pattern in binders {
+                        crate::dispose_pattern(pattern);
+                    }
+                    (source, filter)
+                }
+                ValueGenerator::Bind {
+                    binder,
+                    value,
+                    filter,
+                } => {
+                    crate::dispose_pattern(binder);
+                    (value, filter)
+                }
             };
             pending.push(source);
             pending.extend(filter);

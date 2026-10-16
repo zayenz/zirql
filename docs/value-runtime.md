@@ -38,8 +38,10 @@ explicit parameters and do not capture caller input.
 
 The common reader lowers `filter(_.active == "yes")` to
 `Filter { array: CurrentInput, predicate }`. `PredicateArgument<Q>` contains an
-optional located name and a located value body. `PredicateSubject` reads the
-nearest predicate frame, independently of ordinary bindings. Filter preparation
+optional `Pattern` and a located value body. The matcher stages names in written
+order and installs them together; a mismatch is a located error. The implicit
+`_` retains the whole subject regardless of its argument pattern.
+`PredicateSubject` reads the nearest predicate frame, independently of ordinary bindings. Filter preparation
 uses the same Boolean/type/scope rules and the same iteration runner as a
 comprehension. Typed-empty element facts survive selection.
 

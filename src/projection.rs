@@ -309,6 +309,21 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
     fn tuple_view_kind<'k>(&self, _kind: &'k Self::Kind) -> Option<&'k [Self::Kind]> {
         None
     }
+    /// Borrow a native wrapper's existing constructed data for pattern matching.
+    /// Opaque handles return `None`; this exposes no reflected host fields.
+    fn pattern_constructed<'v>(&self, _value: &'v Self::Value) -> Option<&'v ConstructedValue> {
+        None
+    }
+    /// Declared element contract of an explicit positional view, including an
+    /// empty list. The contract must agree with every exposed child.
+    fn positional_view_kind(
+        &self,
+        _kind: &Self::Kind,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Option<Self::Kind>, QueryError> {
+        Ok(None)
+    }
     fn project_value(
         &self,
         value: Self::Value,
@@ -1456,6 +1471,163 @@ pub fn evaluate_native_value_with_types<C, H: ProjectionHost<C>>(
     })
 }
 
+// Ordinary native helpers use the same matcher as the prepared runner. This
+// adapter only exposes immutable views; it does not execute values or functions.
+struct PredicatePatternHost<'h, C, H> {
+    host: &'h H,
+    marker: std::marker::PhantomData<fn(C)>,
+}
+impl<'a, C, H: ProjectionHost<C>> crate::value::execution::Host<'a, ()>
+    for PredicatePatternHost<'_, C, H>
+{
+    type Native = H::Value;
+    type Kind = H::Kind;
+    type Error = EvaluationError<H::Error>;
+    fn native_constructed<'v>(&self, value: &'v H::Value) -> Option<&'v ConstructedValue> {
+        self.host.pattern_constructed(value)
+    }
+    fn native_record<'v>(&self, value: &'v H::Value) -> Option<&'v crate::NativeCapture<H::Value>> {
+        self.host.capture_record(value)
+    }
+    fn native_tuple<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
+        self.host.tuple_view(value)
+    }
+    fn native_list<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
+        self.host.positional_view(value)
+    }
+    fn outer(
+        &mut self,
+        _: usize,
+        _: &str,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<crate::value::execution::Value<'a, H::Value, H::Kind>, Self::Error> {
+        unreachable!("pattern matching has no outer reads")
+    }
+    fn native(
+        &mut self,
+        _: &'a (),
+        _: &'a [crate::value::prepared::PreparedArgument<'a, ()>],
+        _: &mut [(
+            &'a str,
+            crate::value::execution::Value<'a, H::Value, H::Kind>,
+        )],
+        _: &'a [crate::value::execution::Body<'a, (), H::Kind>],
+        _: usize,
+        _: Option<usize>,
+        _: bool,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<crate::value::execution::Value<'a, H::Value, H::Kind>, Self::Error> {
+        unreachable!("pattern matching executes no native expression")
+    }
+    fn admit_native(
+        &mut self,
+        _: &H::Value,
+        _: &crate::DeclaredType<H::Kind>,
+        _: &mut Budget,
+        _: Location,
+    ) -> Result<(), Self::Error> {
+        unreachable!("pattern matching has no function arguments")
+    }
+    fn check(
+        &mut self,
+        value: &ConstructedValue,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<(), QueryError> {
+        crate::constructed_value_type(value, budget, location.clone()).map(|_| ())
+    }
+}
+
+fn predicate_pattern_scope<C, H: ProjectionHost<C>>(
+    pattern: &crate::Pattern,
+    host: &H,
+    kind: H::Kind,
+    scope: &mut BTreeMap<String, H::Kind>,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    for name in crate::pattern_names(pattern, budget)? {
+        if scope.contains_key(&name.value) {
+            return Err(QueryError::query(
+                name.range.clone(),
+                "predicate argument shadows an existing binding",
+            ));
+        }
+        budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+        // Reserving each name also checks duplicates within the pattern.
+        scope.insert(name.value.clone(), kind.clone());
+    }
+    predicate_pattern_kinds(pattern, host, kind, scope, budget)
+}
+fn predicate_pattern_kinds<C, H: ProjectionHost<C>>(
+    pattern: &crate::Pattern,
+    host: &H,
+    kind: H::Kind,
+    scope: &mut BTreeMap<String, H::Kind>,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let range = &pattern.range;
+    let location = Location::Query(range.clone());
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        if let Some(types) = host.scalar_types(&kind, budget, range)? {
+            for (name, types) in crate::value::pattern::facts(pattern, &types, budget)? {
+                scope.insert(name.value.clone(), host.constructed_kind(types));
+            }
+            return Ok(());
+        }
+        match &pattern.value {
+            crate::PatternKind::Name(name) => {
+                scope.insert(name.value.clone(), kind);
+            }
+            crate::PatternKind::Tuple(children) => {
+                for (i, child) in children.iter().enumerate() {
+                    let child_kind = host
+                        .tuple_view_kind(&kind)
+                        .and_then(|k| k.get(i))
+                        .cloned()
+                        .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished]));
+                    predicate_pattern_kinds(child, host, child_kind, scope, budget)?;
+                }
+            }
+            crate::PatternKind::List { elements, .. } => {
+                for child in elements {
+                    let child_kind = host
+                        .positional_view_kind(&kind, budget, range)?
+                        .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished]));
+                    predicate_pattern_kinds(child, host, child_kind, scope, budget)?;
+                }
+            }
+            crate::PatternKind::Record { fields, .. } => {
+                for (label, child) in fields {
+                    let mut found = None;
+                    if let Some(fields) = host.capture_record_kind(&kind) {
+                        for (name, child) in &fields.fields {
+                            budget
+                                .charge(1 + name.len().min(label.value.len()), location.clone())?;
+                            if name == &label.value {
+                                found = Some(child.clone());
+                                break;
+                            }
+                        }
+                    }
+                    let child_kind = found
+                        .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished]));
+                    predicate_pattern_kinds(child, host, child_kind, scope, budget)?;
+                }
+            }
+            crate::PatternKind::Present(child) => {
+                predicate_pattern_kinds(child, host, kind, scope, budget)?
+            }
+            crate::PatternKind::Wildcard
+            | crate::PatternKind::Literal(_)
+            | crate::PatternKind::Absent => {}
+        }
+        Ok(())
+    })
+}
+
 /// Check an ordinary native predicate without a function session. The subject
 /// kind is the exact value tested by this position, including a match's original
 /// collection input. Capture names remain separate entries in `scope`.
@@ -1486,16 +1658,10 @@ pub fn native_predicate_value_types<C, H: ProjectionHost<C>>(
     budget: &mut Budget,
 ) -> Result<Vec<ValueType>, QueryError> {
     let range = &predicate.body.range;
-    if let Some(name) = &predicate.argument {
-        if name.value == "_" || scope.contains_key(&name.value) {
-            return Err(QueryError::query(
-                name.range.clone(),
-                "predicate argument shadows an existing binding",
-            ));
-        }
-        budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
-        scope.insert(name.value.clone(), subject.clone());
+    if let Some(pattern) = &predicate.argument {
+        predicate_pattern_scope(pattern, host, subject.clone(), &mut scope, budget)?;
     }
+
     budget.charge(
         crate::value::PREDICATE_SUBJECT.len() + 1,
         Location::Query(range.clone()),
@@ -1570,17 +1736,10 @@ fn evaluate_predicate_value<C, H: ProjectionHost<C>>(
     let range = &predicate.body.range;
     let kind = host.kind(&subject, budget, range)?;
     let mut scope = scope_kinds(host, bindings, budget, range)?;
-    if let Some(name) = &predicate.argument {
-        if name.value == "_" || scope.contains_key(&name.value) {
-            return Err(QueryError::query(
-                name.range.clone(),
-                "predicate argument shadows an existing binding",
-            )
-            .into());
-        }
-        budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
-        scope.insert(name.value.clone(), kind.clone());
+    if let Some(pattern) = &predicate.argument {
+        predicate_pattern_scope(pattern, host, kind.clone(), &mut scope, budget)?;
     }
+
     budget.charge(
         crate::value::PREDICATE_SUBJECT.len() + 1,
         Location::Query(range.clone()),
@@ -1588,13 +1747,66 @@ fn evaluate_predicate_value<C, H: ProjectionHost<C>>(
     scope.insert(crate::value::PREDICATE_SUBJECT.into(), kind.clone());
     let facts = value_facts(host, &scope, budget, range)?;
     let mut locals = BTreeMap::new();
-    let retained = std::sync::Arc::new(host.copy_value(&subject, context, budget, range)?);
+    let retained = std::sync::Arc::new(subject);
     locals.insert(
         crate::value::PREDICATE_SUBJECT.into(),
         std::sync::Arc::clone(&retained),
     );
-    if let Some(name) = &predicate.argument {
-        locals.insert(name.value.clone(), retained);
+    if let Some(pattern) = &predicate.argument {
+        use crate::value::execution::{Data, NativeView, Value};
+        let value = Value {
+            data: Data::Native(NativeView::new(std::sync::Arc::clone(&retained))),
+            contract: None,
+        };
+        let mut matcher = PredicatePatternHost::<C, H> {
+            host,
+            marker: std::marker::PhantomData,
+        };
+        let selected = crate::value::pattern::bind::<(), _>(
+            crate::value::pattern::PatternRef::Pattern(pattern),
+            value,
+            &mut matcher,
+            budget,
+        )?
+        .ok_or_else(|| {
+            QueryError::query(
+                pattern.range.clone(),
+                "predicate pattern does not match its subject",
+            )
+        })?;
+        for (name, value) in selected {
+            let Data::Native(view) = value.data else {
+                unreachable!("native pattern owner")
+            };
+            budget.charge(view.path.len(), Location::Query(range.clone()))?;
+            let selected = if view.path.is_empty() {
+                std::sync::Arc::clone(&view.owner)
+            } else if let Some(data) = view.constructed(
+                |v| host.pattern_constructed(v),
+                |v| host.capture_record(v),
+                |v| host.tuple_view(v),
+                |v| host.positional_view(v),
+                budget,
+                &Location::Query(range.clone()),
+            )? {
+                let data = data.materialize(budget, &Location::Query(range.clone()))?;
+                let types = vec![crate::constructed_value_type(
+                    &data,
+                    budget,
+                    Location::Query(range.clone()),
+                )?];
+                std::sync::Arc::new(host.lift_constructed(data, types, context, budget, range)?)
+            } else {
+                let data = view.native(
+                    |v| host.capture_record(v),
+                    |v| host.tuple_view(v),
+                    |v| host.positional_view(v),
+                );
+                std::sync::Arc::new(host.copy_value(data, context, budget, range)?)
+            };
+            budget.charge(name.len() + 1, Location::Query(range.clone()))?;
+            locals.insert(name.to_owned(), selected);
+        }
     }
     let bindings = bindings.with_shared_values(locals, budget, range)?;
     admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, range)?;
@@ -1623,7 +1835,7 @@ fn evaluate_predicate_value<C, H: ProjectionHost<C>>(
     let mut queries = NativeValues {
         host,
         input_kind: kind,
-        input: Some(&subject),
+        input: Some(&retained),
         context: Some(context),
         bindings: Some(&bindings),
         scope: &scope,

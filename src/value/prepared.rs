@@ -136,7 +136,7 @@ pub(crate) enum PreparedKind<'a, Q> {
     SubjectScope {
         subject: Box<PreparedValue<'a, Q>>,
         predicate: bool,
-        argument: Option<&'a str>,
+        argument: Option<&'a Pattern>,
         body: Box<PreparedValue<'a, Q>>,
     },
     Sort {
@@ -204,16 +204,17 @@ pub(crate) struct PreparedArm<'a, Q> {
     pub value: PreparedValue<'a, Q>,
 }
 
-/// Ordered generator clauses. None discards a value without installing a name.
+/// Ordered generator clauses. A missing `In` pattern is the private subject slot
+/// used to lower constructed filtering; user discards are wildcard patterns.
 /// Grouped `In` evaluates its source once and varies the last binder fastest.
 pub(crate) enum PreparedGenerator<'a, Q> {
     In {
-        binders: Vec<Located<Option<&'a str>>>,
+        binders: Vec<Option<&'a Pattern>>,
         source: PreparedValue<'a, Q>,
         filter: Option<PreparedValue<'a, Q>>,
     },
     Bind {
-        binder: &'a Located<Option<String>>,
+        binder: &'a Pattern,
         value: PreparedValue<'a, Q>,
         filter: Option<PreparedValue<'a, Q>>,
     },
@@ -359,7 +360,7 @@ impl<'a> Preparation<'a> {
                             ValueExpressionKind::PredicateScope { .. }
                         ),
                         subject,
-                        argument: predicate.argument.as_ref().map(|name| name.value.as_str()),
+                        argument: predicate.argument.as_ref(),
                         body: Box::new(body),
                     }
                 }
@@ -527,14 +528,14 @@ impl<'a> Preparation<'a> {
                         PreparedKind::SubjectScope {
                             predicate: true,
                             subject: Box::new(subject),
-                            argument: predicate.argument.as_ref().map(|name| name.value.as_str()),
+                            argument: predicate.argument.as_ref(),
                             body: Box::new(body),
                         },
                         predicate.body.range.clone(),
                     );
                     self.locals.truncate(saved);
                     let mut binders = metadata_vec(1, budget, &location)?;
-                    binders.push(Located::new(Some(PREDICATE_SUBJECT), array.range.clone()));
+                    binders.push(None);
                     let mut clauses = metadata_vec(1, budget, &location)?;
                     clauses.push(Located::new(
                         PreparedGenerator::In {
@@ -758,8 +759,8 @@ impl<'a> Preparation<'a> {
         location: &Location,
     ) -> Result<PreparedValue<'a, Q>, QueryError> {
         push_metadata(&mut self.locals, PREDICATE_SUBJECT, budget, location)?;
-        if let Some(name) = &predicate.argument {
-            push_metadata(&mut self.locals, name.value.as_str(), budget, location)?;
+        if let Some(pattern) = &predicate.argument {
+            pattern::names(pattern, &mut self.locals, budget)?;
         }
         self.resolve(&predicate.body, queries, budget)
     }
@@ -782,10 +783,8 @@ impl<'a> Preparation<'a> {
                     let source = self.resolve(source, queries, budget)?;
                     let mut names = metadata_vec(binders.len(), budget, location)?;
                     for binder in binders {
-                        names.push(Located::new(binder.value.as_deref(), binder.range.clone()));
-                        if let Some(name) = &binder.value {
-                            push_metadata(&mut self.locals, name.as_str(), budget, location)?;
-                        }
+                        names.push(Some(binder));
+                        pattern::names(binder, &mut self.locals, budget)?;
                     }
                     let filter = filter
                         .as_ref()
@@ -803,9 +802,7 @@ impl<'a> Preparation<'a> {
                     filter,
                 } => {
                     let value = self.resolve(value, queries, budget)?;
-                    if let Some(name) = &binder.value {
-                        push_metadata(&mut self.locals, name.as_str(), budget, location)?;
-                    }
+                    pattern::names(binder, &mut self.locals, budget)?;
                     let filter = filter
                         .as_ref()
                         .map(|value| self.resolve(value, queries, budget))
@@ -1033,6 +1030,10 @@ impl RuntimeValue {
             (Some(DeclaredType::Tuple(children)), ConstructedValue::Tuple(_)) => {
                 children.get(index)
             }
+            (
+                Some(DeclaredType::Array(child) | DeclaredType::Sequence(child)),
+                ConstructedValue::Array(_),
+            ) => Some(child.as_ref()),
             (Some(DeclaredType::Record(fields)), ConstructedValue::Record(values)) => Some(
                 record_declaration(fields, &values[index].0, budget, location)?,
             ),

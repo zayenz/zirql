@@ -30,8 +30,11 @@ fn binary(operator: B, left: E, right: E) -> E {
         right: Box::new(right),
     })
 }
-fn binder(value: &str) -> Located<Option<String>> {
-    Located::new(Some(value.into()), 10..11)
+fn binder(value: &str) -> zirql::Pattern {
+    Located::new(
+        zirql::PatternKind::Name(Located::new(value.into(), 10..11)),
+        10..11,
+    )
 }
 fn clause(value: G) -> Located<G> {
     Located::new(value, 10..30)
@@ -457,8 +460,20 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
                 filter: None,
             }),
             clause(G::In {
-                binders: vec![binder("i"), binder("j")],
-                source: e(K::Array(vec![int(2), int(1)])),
+                binders: vec![
+                    pattern(zirql::PatternKind::Tuple(vec![
+                        pattern_name("i"),
+                        pattern(zirql::PatternKind::Wildcard),
+                    ])),
+                    pattern(zirql::PatternKind::Tuple(vec![
+                        pattern_name("j"),
+                        pattern(zirql::PatternKind::Wildcard),
+                    ])),
+                ],
+                source: e(K::Array(vec![
+                    e(K::Tuple(vec![int(2), int(20)])),
+                    e(K::Tuple(vec![int(1), int(10)])),
+                ])),
                 filter: Some(binary(B::NotEqual, name("i"), name("j"))),
             }),
             clause(G::In {
@@ -470,7 +485,13 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
                 filter: Some(binary(B::Equal, name("k"), name("p"))),
             }),
             clause(G::Bind {
-                binder: binder("row"),
+                binder: record_pattern(
+                    vec![
+                        ("label", pattern_name("row_label")),
+                        ("triple", pattern_name("triple")),
+                    ],
+                    false,
+                ),
                 value: record(vec![
                     ("label", access(name("labels"), name("p"))),
                     ("triple", e(K::Tuple(vec![name("i"), name("j"), name("k")]))),
@@ -478,21 +499,21 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
                 filter: Some(binary(B::GreaterEqual, name("p"), int(1))),
             }),
             clause(G::In {
-                binders: vec![Located::new(None, 12..13)],
+                binders: vec![Located::new(zirql::PatternKind::Wildcard, 12..13)],
                 source: e(K::Array(vec![literal(V::Boolean(true))])),
                 filter: None,
             }),
         ],
         head: Box::new(record(vec![
-            ("name", field(name("row"), "label")),
+            ("name", name("row_label")),
             (
                 "pair",
                 e(K::Tuple(vec![
-                    tuple_access(field(name("row"), "triple"), 1),
-                    tuple_access(field(name("row"), "triple"), 2),
+                    tuple_access(name("triple"), 1),
+                    tuple_access(name("triple"), 2),
                 ])),
             ),
-            ("position", tuple_access(field(name("row"), "triple"), 3)),
+            ("position", tuple_access(name("triple"), 3)),
         ])),
     });
     let declared = BTreeMap::from([(
@@ -592,7 +613,10 @@ fn scope_refusals_are_located_before_generator_execution() {
     let shadow = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
-            binders: vec![Located::new(Some("existing".into()), 11..19)],
+            binders: vec![Located::new(
+                zirql::PatternKind::Name(Located::new("existing".into(), 11..19)),
+                11..19,
+            )],
             source: e(K::Array(vec![])),
             filter: None,
         })],
@@ -624,7 +648,10 @@ fn scope_refusals_are_located_before_generator_execution() {
     let long_binder = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::Bind {
-            binder: Located::new(Some("x".repeat(256)), 37..38),
+            binder: Located::new(
+                zirql::PatternKind::Name(Located::new("x".repeat(256), 37..38)),
+                37..38,
+            ),
             value: int(1),
             filter: None,
         })],
@@ -6371,6 +6398,113 @@ fn scoped_filters_match_comprehensions_and_rebind_only_the_unnamed_subject() {
             expected
         );
     }
+    assert!(run("[1 for absent in [1]]", V::Array(vec![]), &mut ample()).is_err());
+    assert!(
+        run(
+            "filter(absent => true)",
+            V::Array(vec![V::Integer(1)]),
+            &mut ample()
+        )
+        .is_err()
+    );
+    assert_eq!(
+        run(
+            "filter(absent => true)",
+            V::Array(vec![V::Absent]),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![V::Absent])
+    );
+    assert_eq!(
+        run(
+            "if true { let absent = null; 1 } else { 0 }",
+            V::Array(vec![]),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Integer(1)
+    );
+    assert!(
+        run(
+            "if true { let absent = 1; true } else { false }",
+            V::Array(vec![]),
+            &mut ample()
+        )
+        .is_err()
+    );
+    let lists = || {
+        V::Array(vec![
+            V::Array(vec![V::Integer(1), V::Integer(3), V::Integer(99)]),
+            V::Array(vec![V::Integer(0), V::Integer(2)]),
+        ])
+    };
+    let projected = run(
+        "[[a,b] for [a,b,..] in words if a > 0]",
+        lists(),
+        &mut ample(),
+    )
+    .unwrap();
+    assert_eq!(
+        projected,
+        V::Array(vec![V::Array(vec![V::Integer(1), V::Integer(3)])])
+    );
+    let selected = run(
+        "filter([a,b,..] => length(_) >= 2 and length([a] | filter(_ == a)) == 1 and a + b > 3)",
+        lists(),
+        &mut ample(),
+    )
+    .unwrap();
+    assert_eq!(
+        selected,
+        V::Array(vec![V::Array(vec![
+            V::Integer(1),
+            V::Integer(3),
+            V::Integer(99)
+        ])])
+    );
+    assert_eq!(
+        run(
+            "filter((a,_) => _.1 == a and _.2 > 0)",
+            V::Array(vec![V::Tuple(vec![V::Integer(1), V::Integer(2)])]),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![V::Tuple(vec![V::Integer(1), V::Integer(2)])])
+    );
+    assert_eq!(
+        run(
+            "match ([1]) { [a,b,..] => a + b, [x] => x, _ => 0 }",
+            lists(),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Integer(1)
+    );
+    let short = "filter([a,b,..] => true)";
+    let error = run(
+        short,
+        V::Array(vec![V::Array(vec![V::Integer(1)])]),
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error.location, Location::Query(ref range) if &short[range.clone()] == "[a,b,..]")
+    );
+    for source in [
+        "filter([a,a] => true)",
+        "filter([a,..tail] => true)",
+        "filter([..,a] => true)",
+        "[a for [a] in a]",
+        "filter([a,..] => a + 1)",
+    ] {
+        assert!(run(source, lists(), &mut ample()).is_err(), "{source}");
+    }
+    let empty_lists = declared(
+        V::Array(vec![]),
+        D::Sequence(Box::new(D::Sequence(Box::new(D::String)))),
+    );
+    assert!(run("filter([first,..] => first > 0)", empty_lists, &mut ample()).is_err());
     let typed_empty = declared(
         V::Array(vec![]),
         D::Sequence(Box::new(D::Record(vec![("active".into(), D::String)]))),

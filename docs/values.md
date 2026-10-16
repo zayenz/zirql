@@ -152,7 +152,9 @@ It returns records for `ash`, `apple`, `apple`, in that order. The `++` operator
 concatenates strings. Duplicate input values produce duplicate records.
 
 Later generators can use earlier names. Each source is evaluated before its
-own binder becomes available; its filter can use that binder. The rightmost
+own pattern names become available; its filter can use those names. For example,
+`[a + b for [a, b, ..] in [[1, 2, 3], [4, 5]]]` returns `[3, 9]`. A
+pattern mismatch is an error even when a later filter would be false. The rightmost
 generator varies fastest:
 
 ```zirql

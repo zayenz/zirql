@@ -51,6 +51,17 @@ uses the unnamed row argument. Both agree with
 `[p for p in rows if p.active == "yes"]`. Predicates can capture earlier bindings,
 such as `let wanted = "yes"; rows | filter(_.active == wanted)`.
 
+CSV lets and predicates also use shared destructuring:
+
+```sh
+cargo run --locked --example csv -- 'let [first, ..] = rows | filter({active: status, ..} => status == "yes" and _.active == status); let {name, ..} = first; name' examples/csv/people.csv
+```
+
+This returns `"Grace Hopper"`. The list prefix requires at least one selected row;
+if none exists, the let fails at `[first, ..]` and stdout remains empty. A record
+pattern can select stored CSV columns and ignore the rest. CSV still accepts only
+lets followed by one final expression; named function declarations are unsupported.
+
 See [values and comprehensions](values.md) for expression syntax and
 [the language reference](language-reference.md) for the shared collection stages.
 

@@ -63,22 +63,30 @@ context. Keep that owner alive for as long as callers can use the results.
 ## Scoped predicates
 
 `read_predicate_argument(reader, host, locals, budget, nesting)` reads an optional
-`name =>` followed by a shared value expression. The reader binds `_` only for
+`pattern =>` followed by a shared value expression. The reader binds `_` only for
 that argument. `ValueReaderHost::parse_predicate_value` can lower a host's natural
 expression syntax; the supplied lexical names include the unnamed argument and
-optional alias. A hook returning `None` must leave the cursor unchanged.
+every pattern name. `_` retains the whole subject, including with a destructured
+argument. A hook returning `None` must leave the cursor unchanged.
 
 For native Boolean trees, `is_predicate_leaf` recognizes domain leaves without
 consuming syntax or budget. `parse_predicate_leaf_in_argument` receives the
-optional alias and lexical names. Its default delegates to
+optional borrowed `Pattern` and lexical names. Copy a retained pattern with
+`copy_pattern` under the active budget; release owned patterns with
+`dispose_pattern` when discarding a parsed expression. The hook's default delegates to
 `parse_predicate_leaf_in_scope`, preserving existing leaf parsing. For a dynamic
 leaf argument such as `op(p | names | one)`, retain that value through
 `PredicateArgument { argument, body }.bind_value(native_input_expression)`.
-`SubjectScope` binds the same unnamed subject and alias while the domain leaf
-checks its argument's existing string/scalar contract. `PredicateScope` checks
+`SubjectScope` matches the same pattern and binds the whole unnamed subject. The
+domain leaf checks its argument's existing string/scalar contract. `PredicateScope` checks
 a shared Boolean body. Both use the same value runner and frame restoration. Other leaves pass through `predicate_expression`, which receives a
 `PredicateArgument`. Bind its subject with `PredicateArgument::bind`, using the
 native input expression, and retain that expression in the host predicate leaf.
+Explicit native headers also use `predicate_expression` for a mandatory pattern
+check before the Boolean tree runs, even when a bare domain leaf uses none of
+the header's names. This includes name and wildcard headers. A host that cannot
+lower the shared check refuses the header. After admission, native short-circuit
+and Truth behavior remain unchanged.
 Shared predicates add no reflected native fields or new domain projections.
 
 Expose every retained expression through `ProjectionHost::value_arguments` and
@@ -688,6 +696,33 @@ retains its native owner; the eager shared continuation runner supplies candidat
 order, filters, reducers and finite allowances. The host charges its enumeration
 before allocation and checks current ownership. The core charges retained item
 owners and grouped candidate expansion.
+
+## Pattern adapter contracts
+
+`PredicateArgument::argument` is `Option<Pattern>`. `ValueGenerator::In::binders`
+is `Vec<Pattern>`, and `ValueGenerator::Bind::binder` is one `Pattern`. A name uses
+`PatternKind::Name(Located<String>)`; a discard uses `Wildcard`. Update builders,
+free-name/scope walkers and iterative cleanup for the owned patterns. Preparation
+and execution use their names in written order. `ValueQueryHost::prepare_predicate`
+and `prepare_generator` receive pattern references. The latter's `element` flag
+selects an `In` source element or the whole `Bind` initializer.
+
+Native lists opt into `ProgramHost::positional_view`, which borrows only actual
+positional storage. `ProjectionHost::positional_view_kind` supplies its admitted
+element kind even when empty. Tuple and capture-record views keep their existing
+hooks. A keyed array, tuple, set or opaque handle must not expose a positional
+list view. Views retain their native owner and coordinates; matching selects only
+the written prefix and never calls `FunctionHost::sequence_items` for a discarded
+tail. Complete argument admission and current-context checks still belong to the
+host's existing boundaries.
+
+The ordinary `native_predicate_*` helpers need no `FunctionHost`. They share the
+same pattern matcher over those native views. `ProjectionHost::pattern_constructed`
+optionally borrows a native wrapper's existing constructed data, so nested scalar,
+list and record patterns can inspect it without a projection copy. Exposed children
+must retain coherent declared type evidence, including typed empty containers.
+`_` remains the original subject, and native match captures stay separate bindings.
+Inside an active function request, keep using its declared argument runner.
 
 ## Native computational values
 

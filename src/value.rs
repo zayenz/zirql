@@ -260,13 +260,15 @@ pub type ValueExpression<Q = ()> = Located<ValueExpressionKind<Q>>;
 // This slot cannot be written as an ordinary language identifier.
 pub(crate) const PREDICATE_SUBJECT: &str = "\0predicate";
 
-/// One scoped body with an optional name for the current predicate subject.
+/// One scoped body with an optional pattern for the current predicate subject.
 /// Predicates require a Boolean; existing domain leaf arguments retain their
 /// own scalar contract through `bind_value`. `_` reads the nearest subject frame,
 /// including inside ordinary guards.
 #[derive(Debug, PartialEq)]
 pub struct PredicateArgument<Q = ()> {
-    pub argument: Option<Located<String>>,
+    /// Match the subject once and install all successful names together.
+    /// `None` keeps only the implicit whole-subject `_` argument.
+    pub argument: Option<Pattern>,
     pub body: Box<ValueExpression<Q>>,
 }
 impl<Q> PredicateArgument<Q> {
@@ -596,17 +598,17 @@ pub struct ValueMatchArm<Q = ()> {
     pub value: ValueExpression<Q>,
 }
 
-/// Ordered generator clauses. None discards a value without installing a name.
+/// Ordered generator clauses with atomic pattern bindings.
 /// Grouped `In` evaluates its source once and varies the last binder fastest.
 #[derive(Debug, PartialEq)]
 pub enum ValueGenerator<Q = ()> {
     In {
-        binders: Vec<Located<Option<String>>>,
+        binders: Vec<Pattern>,
         source: ValueExpression<Q>,
         filter: Option<ValueExpression<Q>>,
     },
     Bind {
-        binder: Located<Option<String>>,
+        binder: Pattern,
         value: ValueExpression<Q>,
         filter: Option<ValueExpression<Q>>,
     },
@@ -828,12 +830,14 @@ pub trait ValueQueryHost<Q> {
     }
     /// Preserve a native sequence's declared singleton kind in lexical binders,
     /// including when runtime enumeration is empty. Ordinary value hosts need
-    /// no extra metadata beyond constructed element facts.
+    /// no extra metadata beyond constructed element facts. `element` selects an
+    /// `In` source element; `false` binds the whole `Bind` initializer.
     fn prepare_generator(
         &mut self,
-        _binder: &Located<Option<String>>,
+        _binder: &Pattern,
         _source: &ValueExpression<Q>,
         _types: &[ValueType],
+        _element: bool,
         _budget: &mut Budget,
     ) -> Result<(), QueryError> {
         Ok(())
@@ -842,7 +846,7 @@ pub trait ValueQueryHost<Q> {
     /// `element` selects a source collection element for constructed filtering.
     fn prepare_predicate(
         &mut self,
-        _argument: Option<&Located<String>>,
+        _argument: Option<&Pattern>,
         _source: &ValueExpression<Q>,
         _types: &[ValueType],
         _element: bool,
@@ -3007,39 +3011,6 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         Ok(types)
     }
 
-    fn bind(
-        &mut self,
-        binder: &'a Located<Option<String>>,
-        types: &[ValueType],
-        budget: &mut Budget,
-    ) -> Result<(), QueryError> {
-        budget.charge(1, Location::Query(binder.range.clone()))?;
-        let Some(name) = binder.value.as_deref() else {
-            return Ok(());
-        };
-        let location = Location::Query(binder.range.clone());
-        if name == "_" {
-            return Err(error(&location, "use None for a discard binder"));
-        }
-        if self.global_exists(name, binder.range.clone(), budget)? {
-            return Err(error(
-                &location,
-                "binding shadows an existing source or let",
-            ));
-        }
-        for (previous, _) in &self.locals {
-            budget.charge(
-                sum(1, name.len().min(previous.len()), &location)?,
-                location.clone(),
-            )?;
-            if name == *previous {
-                return Err(error(&location, "binding is already defined"));
-            }
-        }
-        let types = copy_types(types, budget, &location)?;
-        push_metadata(&mut self.locals, (name, types), budget, &location)
-    }
-
     fn walk(
         &mut self,
         expression: &'a ValueExpression<Q>,
@@ -4122,28 +4093,14 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         let saved = self.locals.len();
         self.queries.enter_scope(budget, range)?;
         let result = (|| {
-            if let Some(name) = &predicate.argument {
-                function_local(name, &self.locals, budget)?;
-                if self.global_exists(&name.value, name.range.clone(), budget)? {
-                    return Err(error(
-                        &Location::Query(name.range.clone()),
-                        "predicate argument shadows an existing binding",
-                    ));
-                }
-            }
             push_metadata(
                 &mut self.locals,
                 (PREDICATE_SUBJECT, copy_types(types, budget, &location)?),
                 budget,
                 &location,
             )?;
-            if let Some(name) = &predicate.argument {
-                push_metadata(
-                    &mut self.locals,
-                    (&name.value, copy_types(types, budget, &location)?),
-                    budget,
-                    &location,
-                )?;
+            if let Some(pattern) = &predicate.argument {
+                self.pattern(pattern, types, budget)?;
             }
             self.queries.prepare_predicate(
                 predicate.argument.as_ref(),
@@ -4247,9 +4204,9 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         )?;
                     }
                     for binder in binders {
-                        self.bind(binder, &elements, budget)?;
+                        self.pattern(binder, &elements, budget)?;
                         self.queries
-                            .prepare_generator(binder, source, &elements, budget)?;
+                            .prepare_generator(binder, source, &elements, true, budget)?;
                     }
                     if let Some(filter) = filter {
                         self.condition(filter, budget)?;
@@ -4261,7 +4218,9 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     filter,
                 } => {
                     let types = self.walk(value, budget)?;
-                    self.bind(binder, &types, budget)?;
+                    self.pattern(binder, &types, budget)?;
+                    self.queries
+                        .prepare_generator(binder, value, &types, false, budget)?;
                     if let Some(filter) = filter {
                         self.condition(filter, budget)?;
                     }

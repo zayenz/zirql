@@ -170,12 +170,15 @@ The common reader accepts constructed filter/count and collection stages:
 
 The first two return `{"beginning_with_a": 3, "total": 4}` and `2` with the
 word host. Bare filter/count use the same constructed input independently in
-each dictionary field; an explicit source supplies its own stages. The filter accepts `name => Boolean_expression` or an expression using `_`.
+each dictionary field; an explicit source supplies its own stages. The filter
+accepts `pattern => Boolean_expression` or an expression using `_`.
 The subject is one positional element; named and unnamed forms agree with
 comprehension selection. For example, `people | filter(_.active == "yes")` and
 `people | filter(p => p.active == "yes")` retain the same rows. Nested predicates
-rebind `_`; explicit outer names retain lexical captures. `_` is unavailable
-outside a predicate argument and keeps its wildcard meaning in patterns. Empty and no-match inputs count as zero. Count returns a scalar, so a
+rebind `_`; explicit outer names retain lexical captures. Destructured arguments
+still give `_` the whole subject. `_` is unavailable outside a predicate argument
+and keeps its wildcard meaning in patterns. Empty and no-match inputs count as
+zero. Count returns a scalar, so a
 later collection stage is invalid. Missing input and incompatible types receive
 located errors. The last two return `["apple", "ash"]` and
 `{"ash": 1, "apple": 2}`. Pipes apply
@@ -250,9 +253,14 @@ match (length(words)) {
 }
 ```
 
-Patterns can destructure tuples and records, bind names and test optional
-presence. A native capture match enumerates correlated domain objects; a value
-match selects one result. Their forms and results are different.
+Patterns destructure tuples, positional lists and records, bind names and test
+optional presence. `[a, b]` requires exactly two list elements; `[a, b, ..]`
+discards a remainder after at least two. `[]` requires empty and `[..]` accepts
+any positional list. Tuples keep exact tuple arity; keyed arrays and sets do not
+match list patterns. Lets, typed parameters, predicate arguments and comprehension
+binders use these same patterns. Their mismatches are located errors; value-match
+arms try the next pattern. A native capture match enumerates correlated domain
+objects; a value match selects one result. Their forms and results are different.
 
 The [functions and control flow chapter](functions-and-control-flow.md)
 describes matching, guarded arms, local bindings, loops and named reducers.

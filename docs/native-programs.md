@@ -215,6 +215,13 @@ necessarily undo output already emitted. See [diagnostics and limits](diagnostic
 <span id="named-pure-functions"></span>
 <span id="execution-costs"></span>
 
+Predicate headers can destructure exposed tuples, records and positional lists,
+for example `[first, second, ..] => body`. The host must establish those views;
+Zirql adds no native fields or implicit collection conversions. A mismatch is a
+located error, and `_` keeps the whole subject. Nested predicates bind `_` anew
+while explicit outer names retain their captures. The [adapter pattern contract](host-integration.md#pattern-adapter-contracts)
+describes the required view and type hooks.
+
 Named declarations, recursion and patterns have their own
 [language chapter](functions-and-control-flow.md). Rust copying, preparation
 and output contracts are covered by [host integration](host-integration.md),
