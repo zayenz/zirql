@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 94
-- Ready: 1
-- Blocked: 2
+- Total: 96
+- Ready: 2
+- Blocked: 3
 - Done: 91
 
 | ID | Task | State | Blocked by |
@@ -103,3 +103,5 @@
 | [base-092](tasks/092-expose-the-shared-native-predicate-argument-reader.md) | Expose the shared native predicate argument reader | done | base-091 |
 | [base-093](tasks/093-compose-field-access-with-shared-pipeline-suffixes-consisten.md) | Compose field access with shared pipeline suffixes consistently | done | base-092 |
 | [base-094](tasks/094-preserve-native-operand-kinds-through-shared-predicate-scope.md) | Preserve native operand kinds through shared predicate scopes | done | base-092 |
+| [base-095](tasks/095-preserve-known-scalar-shape-during-shared-predicate-preparat.md) | Preserve known scalar shape during shared predicate preparation | ready | base-094 |
+| [base-096](tasks/096-align-zirium-with-the-final-reviewed-scalar-preparation-api.md) | Align Zirium with the final reviewed scalar preparation API | blocked | base-095, base-089 |
