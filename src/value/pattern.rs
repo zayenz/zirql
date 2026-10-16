@@ -86,9 +86,56 @@ pub(crate) fn facts<'a>(
     types: &[ValueType],
     budget: &mut Budget,
 ) -> Result<BindingFacts<'a>, QueryError> {
+    binding_facts(pattern, types, false, budget)
+}
+
+pub(crate) fn required_facts<'a>(
+    pattern: &'a Pattern,
+    types: &[ValueType],
+    budget: &mut Budget,
+) -> Result<BindingFacts<'a>, QueryError> {
+    binding_facts(pattern, types, true, budget)
+}
+
+fn binding_facts<'a>(
+    pattern: &'a Pattern,
+    types: &[ValueType],
+    required: bool,
+    budget: &mut Budget,
+) -> Result<BindingFacts<'a>, QueryError> {
     let location = Location::Query(pattern.range.clone());
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
+        if required
+            && matches!(
+                pattern.value,
+                PatternKind::Tuple(_) | PatternKind::List { .. } | PatternKind::Record { .. }
+            )
+        {
+            for ty in types {
+                let ty = shape_type(copy_type(ty, budget, &location)?, budget, &location)?;
+                let compatible = matches!(ty, ValueType::Unestablished)
+                    || matches!(
+                        (&pattern.value, &ty),
+                        (
+                            PatternKind::Tuple(_),
+                            ValueType::Tuple(_) | ValueType::TupleKind
+                        ) | (
+                            PatternKind::List { .. },
+                            ValueType::Array(_) | ValueType::ArrayKind(_)
+                        ) | (
+                            PatternKind::Record { .. },
+                            ValueType::Record(_) | ValueType::RecordKind
+                        )
+                    );
+                if !compatible {
+                    return Err(error(
+                        &location,
+                        "required pattern has an incompatible subject shape",
+                    ));
+                }
+            }
+        }
         let mut result = Vec::new();
         match &pattern.value {
             PatternKind::Name(name) => {
@@ -119,12 +166,12 @@ pub(crate) fn facts<'a>(
             }
             PatternKind::Present(child) => {
                 let present = present_types(types, budget, &location)?;
-                result = facts(child, &present, budget)?;
+                result = binding_facts(child, &present, required, budget)?;
             }
             PatternKind::Tuple(children) => {
                 for (position, child) in children.iter().enumerate() {
                     let child_types = child_facts(types, Some(position), None, budget, &location)?;
-                    for binding in facts(child, &child_types, budget)? {
+                    for binding in binding_facts(child, &child_types, required, budget)? {
                         push_metadata(&mut result, binding, budget, &location)?;
                     }
                 }
@@ -166,7 +213,7 @@ pub(crate) fn facts<'a>(
                             &location,
                         )?;
                     }
-                    for binding in facts(child, &child_types, budget)? {
+                    for binding in binding_facts(child, &child_types, required, budget)? {
                         push_metadata(&mut result, binding, budget, &location)?;
                     }
                 }
@@ -188,7 +235,7 @@ pub(crate) fn facts<'a>(
                     }
                     let child_types =
                         child_facts(types, None, Some(&label.value), budget, &location)?;
-                    for binding in facts(child, &child_types, budget)? {
+                    for binding in binding_facts(child, &child_types, required, budget)? {
                         push_metadata(&mut result, binding, budget, &location)?;
                     }
                 }

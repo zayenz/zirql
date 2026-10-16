@@ -170,6 +170,20 @@ For an ordinary domain leaf's dynamic value, use
 argument. Those helpers retain the same subject frame while the host checks its
 existing string/scalar contract. A scalar host can instead bind its value and
 use the ordinary value evaluator.
+
+When an empty source still guarantees present primitive scalar elements, supply
+`ValueType::ScalarKind` during preparation. It represents a Boolean, integer,
+float or string with its exact kind unknown. Supply the actual primitive fact
+when an element establishes it. Numeric, Boolean and string operands can defer
+that exact kind; field, tuple and array access still reject a scalar. The marker
+is preparation metadata and has no runtime value or declared type.
+
+Shared predicate preparation checks required list, tuple and record headers
+against established subject shapes before the host's `prepare_predicate` hook
+and body preparation. Nested headers use the same check. Unknown shapes defer to
+runtime matching. Value-match arms remain optional matches, so a structural arm
+can fall through when its subject is scalar. These checks use the active budget.
+
 Keep a scalar edit host's closed operator/effect policy and legacy comparator
 or member leaves. Handles, diff sides, coordinates, source masks and validated
 edit candidates remain host-owned. Existing native `Truth::Unknown` and Boolean

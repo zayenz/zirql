@@ -170,6 +170,9 @@ pub enum ValueType {
         actual: Box<Self>,
         declaration: DeclaredType<()>,
     },
+    /// A present Boolean, integer, float or string whose primitive kind is unknown.
+    /// Preparation metadata only; actual values retain their precise primitive facts.
+    ScalarKind,
     Boolean,
     Integer,
     Float,
@@ -1478,6 +1481,17 @@ fn shape_type(
     };
     let actual = match *actual {
         ValueType::Unestablished => return declared_facts(&declaration, budget, location),
+        ValueType::ScalarKind
+            if matches!(
+                underlying(&declaration),
+                DeclaredType::Boolean
+                    | DeclaredType::Integer
+                    | DeclaredType::Float
+                    | DeclaredType::String
+            ) =>
+        {
+            return declared_facts(&declaration, budget, location);
+        }
         actual => shape_type(actual, budget, location)?,
     };
     Ok(match (actual, underlying(&declaration)) {
@@ -1673,7 +1687,10 @@ fn access_type(
         record @ (ValueType::RecordKind | ValueType::Record(_)) => {
             for key in keys {
                 let key = shape_type(copy_type(key, budget, location)?, budget, location)?;
-                if !matches!(key, ValueType::String | ValueType::Unestablished) {
+                if !matches!(
+                    key,
+                    ValueType::String | ValueType::ScalarKind | ValueType::Unestablished
+                ) {
                     return Err(error(location, "record lookup needs a string label"));
                 }
             }
@@ -2752,6 +2769,7 @@ fn copy_type(
                 actual: Box::new(copy_type(actual, budget, location)?),
                 declaration: copy_declaration(declaration, budget, location)?,
             },
+            ValueType::ScalarKind => ValueType::ScalarKind,
             ValueType::Boolean => ValueType::Boolean,
             ValueType::Integer => ValueType::Integer,
             ValueType::Float => ValueType::Float,
@@ -4005,7 +4023,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let result = (|| {
                     for (pattern, value) in bindings {
                         let types = self.walk(value, budget)?;
-                        self.pattern(pattern, &types, budget)?;
+                        self.pattern(pattern, &types, false, budget)?;
                         self.queries.prepare_pattern(pattern, value, budget)?;
                     }
                     self.walk_control(value, budget, transfer)
@@ -4041,7 +4059,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     let saved = self.locals.len();
                     self.queries.enter_scope(budget, &arm.pattern.range)?;
                     let result = (|| {
-                        self.pattern(&arm.pattern, &facts, budget)?;
+                        self.pattern(&arm.pattern, &facts, false, budget)?;
                         self.queries
                             .prepare_pattern(&arm.pattern, subject, budget)?;
                         if let Some(guard) = &arm.guard {
@@ -4100,7 +4118,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 &location,
             )?;
             if let Some(pattern) = &predicate.argument {
-                self.pattern(pattern, types, budget)?;
+                self.pattern(pattern, types, true, budget)?;
             }
             self.queries.prepare_predicate(
                 predicate.argument.as_ref(),
@@ -4120,9 +4138,14 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         &mut self,
         pattern: &'a Pattern,
         facts: &[ValueType],
+        required: bool,
         budget: &mut Budget,
     ) -> Result<(), QueryError> {
-        let names = pattern::facts(pattern, facts, budget)?;
+        let names = if required {
+            pattern::required_facts(pattern, facts, budget)?
+        } else {
+            pattern::facts(pattern, facts, budget)?
+        };
         for (name, facts) in names {
             let location = Location::Query(name.range.clone());
             function_local(name, &self.locals, budget)?;
@@ -4204,7 +4227,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         )?;
                     }
                     for binder in binders {
-                        self.pattern(binder, &elements, budget)?;
+                        self.pattern(binder, &elements, false, budget)?;
                         self.queries
                             .prepare_generator(binder, source, &elements, true, budget)?;
                     }
@@ -4218,7 +4241,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     filter,
                 } => {
                     let types = self.walk(value, budget)?;
-                    self.pattern(binder, &types, budget)?;
+                    self.pattern(binder, &types, false, budget)?;
                     self.queries
                         .prepare_generator(binder, value, &types, false, budget)?;
                     if let Some(filter) = filter {
@@ -4338,16 +4361,23 @@ fn key_component_type(
             actual,
             declaration,
         } => {
-            if !matches!(actual.as_ref(), ValueType::Unestablished) {
+            if !matches!(
+                actual.as_ref(),
+                ValueType::Unestablished | ValueType::ScalarKind
+            ) {
                 return key_component_type(actual, location);
             }
             match underlying(declaration) {
                 DeclaredType::Integer => Ok(Some(ValueKeyType::Integer)),
-                DeclaredType::Member(id) => Ok(Some(ValueKeyType::Member(*id))),
+                DeclaredType::Member(id) if !matches!(actual.as_ref(), ValueType::ScalarKind) => {
+                    Ok(Some(ValueKeyType::Member(*id)))
+                }
                 _ => Err(error(location, "key components need integers or members")),
             }
         }
-        ValueType::Integer => Ok(Some(ValueKeyType::Integer)),
+        // A successful primitive key must be integer. Keep that family and
+        // rank established while its actual primitive kind remains deferred.
+        ValueType::Integer | ValueType::ScalarKind => Ok(Some(ValueKeyType::Integer)),
         ValueType::Member(id) => Ok(Some(ValueKeyType::Member(*id))),
         ValueType::Unestablished => Ok(None),
         _ => Err(error(location, "key components need integers or members")),
@@ -4382,7 +4412,7 @@ fn merge_key_facts(
                 }
                 result
             }
-            ValueType::Integer | ValueType::Member(_) => {
+            ValueType::Integer | ValueType::ScalarKind | ValueType::Member(_) => {
                 let mut result = metadata_vec(1, budget, location)?;
                 result.push(key_component_type(ty, location)?);
                 result
@@ -4561,7 +4591,10 @@ fn require_type(
         declaration,
     } = ty
     {
-        if !matches!(actual.as_ref(), ValueType::Unestablished) {
+        if !matches!(
+            actual.as_ref(),
+            ValueType::Unestablished | ValueType::ScalarKind
+        ) {
             return require_type(actual, requirement, location);
         }
         let expected = underlying(declaration);
@@ -4578,7 +4611,7 @@ fn require_type(
         }
         return Err(error(location, "incompatible declared operand type"));
     }
-    let accepted = matches!(ty, ValueType::Unestablished)
+    let accepted = matches!(ty, ValueType::Unestablished | ValueType::ScalarKind)
         || match requirement {
             ScalarRequirement::String => matches!(ty, ValueType::String),
             ScalarRequirement::Boolean => matches!(ty, ValueType::Boolean),
@@ -4681,6 +4714,18 @@ fn compatible_types(
         Ok(match (left, right) {
             (ValueType::Absent, _) | (_, ValueType::Absent) => true,
             (ValueType::Unestablished, _) | (_, ValueType::Unestablished) => true,
+            (
+                ValueType::ScalarKind,
+                ValueType::ScalarKind
+                | ValueType::Boolean
+                | ValueType::Integer
+                | ValueType::Float
+                | ValueType::String,
+            )
+            | (
+                ValueType::Boolean | ValueType::Integer | ValueType::Float | ValueType::String,
+                ValueType::ScalarKind,
+            ) => true,
             (ValueType::Boolean, ValueType::Boolean)
             | (ValueType::Integer, ValueType::Integer)
             | (ValueType::Float, ValueType::Float)
@@ -4844,6 +4889,11 @@ fn binary_type(
                 _ if matches!(left, ValueType::Float) || matches!(right, ValueType::Float) => {
                     ValueType::Float
                 }
+                _ if matches!(left, ValueType::ScalarKind)
+                    || matches!(right, ValueType::ScalarKind) =>
+                {
+                    ValueType::ScalarKind
+                }
                 _ if matches!(left, ValueType::Unestablished)
                     || matches!(right, ValueType::Unestablished) =>
                 {
@@ -4860,9 +4910,13 @@ fn binary_type(
         ValueBinaryOperator::Contains
         | ValueBinaryOperator::StartsWith
         | ValueBinaryOperator::EndsWith => {
-            if !matches!(left, ValueType::String | ValueType::Unestablished)
-                || !matches!(right, ValueType::String | ValueType::Unestablished)
-            {
+            if !matches!(
+                left,
+                ValueType::String | ValueType::ScalarKind | ValueType::Unestablished
+            ) || !matches!(
+                right,
+                ValueType::String | ValueType::ScalarKind | ValueType::Unestablished
+            ) {
                 return Err(string_operand_error(budget, location));
             }
             Ok(ValueType::Boolean)
@@ -4880,12 +4934,28 @@ fn binary_type(
         }
         ValueBinaryOperator::In => {
             let mut element_type = None;
-            merge_set_types(
-                &mut element_type,
-                std::slice::from_ref(left),
-                budget,
-                location,
-            )?;
+            let deferred_primitive = matches!(left, ValueType::ScalarKind)
+                && matches!(
+                    right,
+                    ValueType::Unestablished
+                        | ValueType::Set(
+                            None | Some(
+                                SetElementType::Boolean
+                                    | SetElementType::Integer
+                                    | SetElementType::Float
+                            )
+                        )
+                );
+            if deferred_primitive {
+                budget.charge(1, location.clone())?;
+            } else {
+                merge_set_types(
+                    &mut element_type,
+                    std::slice::from_ref(left),
+                    budget,
+                    location,
+                )?;
+            }
             match right {
                 ValueType::Set(ty)
                     if ty.is_none() || element_type.is_none() || ty == &element_type =>
@@ -4900,7 +4970,14 @@ fn binary_type(
             }
         }
         ValueBinaryOperator::Concatenate => match (left, right) {
-            (ValueType::String, ValueType::String) => Ok(ValueType::String),
+            (ValueType::String, ValueType::String)
+            | (
+                ValueType::ScalarKind,
+                ValueType::String | ValueType::ScalarKind | ValueType::Unestablished,
+            )
+            | (ValueType::String | ValueType::Unestablished, ValueType::ScalarKind) => {
+                Ok(ValueType::String)
+            }
             (ValueType::Array(a), ValueType::Array(b)) => {
                 let (ArrayType::Positions(a_entries) | ArrayType::Elements(a_entries)) = a;
                 let (ArrayType::Positions(b_entries) | ArrayType::Elements(b_entries)) = b;
@@ -6489,7 +6566,7 @@ pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
                 )?;
             }
             pattern::PatternRef::Pattern(pattern) => {
-                analysis.pattern(pattern, &types, budget)?;
+                analysis.pattern(pattern, &types, false, budget)?;
                 pattern::names(pattern, &mut preparation.locals, budget)?;
             }
         }

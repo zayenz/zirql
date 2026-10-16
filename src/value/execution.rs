@@ -2524,7 +2524,7 @@ fn infer_state_type(
             T::KeyedArray(array) => {
                 DeclaredType::Keyed(Box::new(infer_state_element(array.elements, budget, location)?))
             }
-            T::Absent | T::Unestablished | T::ArrayKind(_) | T::TupleKind | T::RecordKind | T::Set(None) => {
+            T::Absent | T::Unestablished | T::ScalarKind | T::ArrayKind(_) | T::TupleKind | T::RecordKind | T::Set(None) => {
                 return Err(error(location,
                     "loop state needs an established type; use an explicit contract for absent or empty values"));
             }

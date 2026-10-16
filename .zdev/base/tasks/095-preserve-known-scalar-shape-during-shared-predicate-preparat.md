@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-095"
 key = "scalar-predicate-shape"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "high"
@@ -27,13 +27,23 @@ During base-087 correction1, filter_elements([a] => true) on a=[] and head(0) | 
 
 ## Done when
 
-- [ ] A host can provide known primitive scalar shape without inventing an actual primitive kind. Required list/tuple/record predicate headers and scalar field/index access reject that fact before enumeration; actual primitive facts also reject impossible required structural headers.
-- [ ] Valid scalar numeric predicate bodies remain preparable on empty unknown-kind sources, while incompatible established primitive kinds still fail. Existing runtime matching remains responsible for values not established by preparation; scalar metadata never becomes a runtime value.
-- [ ] ValueMatch may still try a structural arm against a scalar and fall through to a later wildcard. Existing valid destructuring/native scopes, locations and cumulative limits remain coherent. A few nearby public behavior controls cover these boundaries without a syntax/position matrix.
-- [ ] Required Rust/MSRV/docs checks pass; adapter documentation states the metadata and required-pattern boundary. Read-only inspection of the Zincite087 seams confirms sufficiency, and both consumers plus CSV compile against the source API without broad adapter changes. Consumer final pins and release artifacts remain separate tasks.
+- [x] A host can provide known primitive scalar shape without inventing an actual primitive kind. Required list/tuple/record predicate headers and scalar field/index access reject that fact before enumeration; actual primitive facts also reject impossible required structural headers.
+- [x] Valid scalar numeric predicate bodies remain preparable on empty unknown-kind sources, while incompatible established primitive kinds still fail. Existing runtime matching remains responsible for values not established by preparation; scalar metadata never becomes a runtime value.
+- [x] ValueMatch may still try a structural arm against a scalar and fall through to a later wildcard. Existing valid destructuring/native scopes, locations and cumulative limits remain coherent. A few nearby public behavior controls cover these boundaries without a syntax/position matrix.
+- [x] Required Rust/MSRV/docs checks pass; adapter documentation states the metadata and required-pattern boundary. Read-only inspection of the Zincite087 seams confirms sufficiency, and both consumers plus CSV compile against the source API without broad adapter changes. Consumer final pins and release artifacts remain separate tasks.
 
 ## Validation
 
 - Run fmt, warning-fatal workspace all-target Clippy, workspace tests, Rust1.88 tests, warning-fatal docs/doctests, git diff --check and Root canonical zdev check.
 - Use existing tests for scalar/actual-primitive required header refusal, scalar structural access refusal, valid unknown-kind numeric preparation, incompatible actual String, and ordinary ValueMatch fallback; keep coverage proportional to the exhibited defect.
 - Compile the two consumers and CSV against a disposable local copy/path adaptation without claiming final Git or registry resolution; preserve product sources and consumer work. If reader prose changes, run affected site build/link checks and Root proportional desktop/mobile review.
+
+## Result
+
+Added preparation-only scalar shape facts and required predicate structural admission; independent whole review and focused recheck accepted the complete correction.
+
+Validation:
+
+- Stable/MSRV workspace tests, fatal Clippy/docs/doctests, CSV and both disposable consumer library builds passed.
+- Compatible membership/dictionary/keyed operands pass; actual-kind, key-rank, nominal and scalar structural refusals and ValueMatch fallback are preserved.
+- Site checks and 20 guide links passed; exact desktop/mobile guide hashes verified by Root. Final Git pins, packages and registry checks remain consumer/release tasks.

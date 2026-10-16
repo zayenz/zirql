@@ -6579,3 +6579,190 @@ fn scoped_filters_match_comprehensions_and_rebind_only_the_unnamed_subject() {
     };
     assert_eq!(evaluate(&predicate.bind(int(4))).unwrap(), V::Boolean(true));
 }
+
+#[test]
+fn scalar_predicate_facts_reject_required_structure_before_values_exist() {
+    use zirql::PatternKind as P;
+    let prepare = |argument, body, ty| {
+        let expression = zirql::PredicateArgument {
+            argument,
+            body: Box::new(body),
+        }
+        .bind(name("scalar"));
+        value_expression_types(
+            &expression,
+            &BTreeMap::from([("scalar".into(), ty)]),
+            &mut ample(),
+        )
+    };
+    let list = || {
+        pattern(P::List {
+            elements: vec![pattern_name("first")],
+            ignore_rest: false,
+        })
+    };
+    for header in [
+        list(),
+        pattern(P::Tuple(vec![pattern_name("first")])),
+        record_pattern(vec![("first", pattern_name("first"))], false),
+    ] {
+        let error = prepare(
+            Some(header),
+            literal(V::Boolean(true)),
+            ValueType::ScalarKind,
+        )
+        .unwrap_err();
+        assert_eq!(error.location, Location::Query(70..80));
+    }
+    assert!(prepare(Some(list()), literal(V::Boolean(true)), ValueType::Integer).is_err());
+    // Required admission follows the same recursion through established children.
+    assert!(
+        prepare(
+            Some(pattern(P::Tuple(vec![list()]))),
+            literal(V::Boolean(true)),
+            ValueType::Tuple(vec![ValueType::ScalarKind]),
+        )
+        .is_err()
+    );
+    for body in [
+        field(e(K::PredicateSubject), "field"),
+        field(name("scalar_name"), "field"),
+        access(e(K::PredicateSubject), int(1)),
+        tuple_access(e(K::PredicateSubject), 1),
+        field(binary(B::Add, e(K::PredicateSubject), int(1)), "field"),
+        binary(B::Concatenate, e(K::PredicateSubject), e(K::Array(vec![]))),
+    ] {
+        assert!(
+            prepare(
+                Some(pattern_name("scalar_name")),
+                body,
+                ValueType::ScalarKind
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(
+        value_expression_types(
+            &binary(B::Add, name("scalar"), int(1)),
+            &BTreeMap::from([("scalar".into(), ValueType::ScalarKind)]),
+            &mut ample(),
+        )
+        .unwrap(),
+        vec![ValueType::ScalarKind],
+    );
+    let numeric = || binary(B::Greater, binary(B::Add, name("n"), int(1)), int(0));
+    assert_eq!(
+        prepare(Some(pattern_name("n")), numeric(), ValueType::ScalarKind).unwrap(),
+        vec![ValueType::Boolean],
+    );
+    assert!(prepare(Some(pattern_name("n")), numeric(), ValueType::String).is_err());
+    assert!(
+        prepare(
+            Some(pattern_name("n")),
+            numeric(),
+            ValueType::Declared {
+                actual: Box::new(ValueType::ScalarKind),
+                declaration: D::String,
+            },
+        )
+        .is_err()
+    );
+    let matched = value_match(int(3), vec![arm(list(), None, int(0)), fallback(int(7))]);
+    assert_eq!(evaluate(&matched).unwrap(), V::Integer(7));
+}
+
+#[test]
+fn scalar_predicate_operands_defer_compatible_kinds_and_keep_container_constraints() {
+    let prepare = |body, scalar, container| {
+        let expression = zirql::PredicateArgument {
+            argument: None,
+            body: Box::new(body),
+        }
+        .bind(name("scalar"));
+        value_expression_types(
+            &expression,
+            &BTreeMap::from([("scalar".into(), scalar), ("container".into(), container)]),
+            &mut ample(),
+        )
+    };
+    let membership = || binary(B::In, e(K::PredicateSubject), name("container"));
+    assert_eq!(
+        prepare(
+            membership(),
+            ValueType::ScalarKind,
+            ValueType::Set(Some(SetElementType::Integer))
+        )
+        .unwrap(),
+        vec![ValueType::Boolean]
+    );
+    assert!(
+        prepare(
+            membership(),
+            ValueType::String,
+            ValueType::Set(Some(SetElementType::Integer))
+        )
+        .is_err()
+    );
+    assert!(
+        prepare(
+            membership(),
+            ValueType::ScalarKind,
+            ValueType::Set(Some(SetElementType::Member(NominalTypeId(1))))
+        )
+        .is_err()
+    );
+
+    let lookup = || {
+        binary(
+            B::Greater,
+            access(name("container"), e(K::PredicateSubject)),
+            int(0),
+        )
+    };
+    let dictionary = || ValueType::Record(vec![("foo".into(), ValueType::Integer)]);
+    assert_eq!(
+        prepare(lookup(), ValueType::ScalarKind, dictionary()).unwrap(),
+        vec![ValueType::Boolean]
+    );
+    assert!(prepare(lookup(), ValueType::Integer, dictionary()).is_err());
+
+    let keyed = |axes| {
+        ValueType::KeyedArray(KeyedArrayType {
+            axes: Some(axes),
+            elements: vec![ValueType::Integer],
+        })
+    };
+    assert_eq!(
+        prepare(
+            lookup(),
+            ValueType::ScalarKind,
+            keyed(vec![ValueKeyType::Integer])
+        )
+        .unwrap(),
+        vec![ValueType::Boolean]
+    );
+    assert!(
+        prepare(
+            lookup(),
+            ValueType::String,
+            keyed(vec![ValueKeyType::Integer])
+        )
+        .is_err()
+    );
+    assert!(
+        prepare(
+            lookup(),
+            ValueType::ScalarKind,
+            keyed(vec![ValueKeyType::Member(NominalTypeId(1))])
+        )
+        .is_err()
+    );
+    assert!(
+        prepare(
+            lookup(),
+            ValueType::ScalarKind,
+            keyed(vec![ValueKeyType::Integer, ValueKeyType::Integer])
+        )
+        .is_err()
+    );
+}

@@ -512,6 +512,13 @@ fn check_type_facts<K>(
         budget.charge(1, location.clone())?;
         match (actual, expected) {
             (ValueType::Unestablished, _) if deferred => Ok(()),
+            (
+                ValueType::ScalarKind,
+                DeclaredType::Boolean
+                | DeclaredType::Integer
+                | DeclaredType::Float
+                | DeclaredType::String,
+            ) if deferred => Ok(()),
             (ValueType::RecordKind, DeclaredType::Record(_))
             | (ValueType::TupleKind, DeclaredType::Tuple(_))
             | (ValueType::Set(None), DeclaredType::Set(_))
