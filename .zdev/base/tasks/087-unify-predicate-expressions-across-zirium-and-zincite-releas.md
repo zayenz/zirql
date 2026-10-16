@@ -7,32 +7,33 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "high"
-blocked_by = ["base-086", "base-082", "base-083"]
+blocked_by = ["base-086", "base-082"]
 +++
-# Unify predicate expressions across Zirium and Zincite release candidates
+# Integrate shared predicates into Zincite
 
 ## Outcome
 
-Both consumers use the shared named and unnamed predicate language consistently at their existing predicate positions, with refreshed reviewed-core pins and release evidence.
+Zincite uses the reviewed shared named and unnamed predicate language in all its existing predicate positions, with updated core dependency contracts and reader examples.
 
 ## Context
 
-Consume the preceding task's reviewed Zirql0.1.0 Git revision and shared predicate contract. Read the brief's predicate inventory/subject/scope rules. Zirium query/parser.rs has separate native predicate parsing and constructed-filter routing; comprehension.rs constructed_filter_call, report.rs walkers/validation and program/functions routing determine value/native/function contexts. Native filter/root, paths targets and native match where must use the shared expression contract with existing operation subjects and domain predicates. Zincite program/composition.rs currently calls hostless read_value_suffix and separately parses native predicate leaves; function/value walkers in functions.rs and matching/path callbacks retain validation/evaluation scope. Also inspect Zirium query/diff_text.rs and diff_program.rs filter/root, and Zincite public Query/legacy Program parsing plus language.rs FilterElements and structured.rs scalar comparison/edit masks. General scalar predicates must obey the existing Data operator/effect policy, preserve direct scalar/member identity and keep keyed/matrix/comment/directive/atomic-write validation. Adapt all these boundaries without reimplementing a predicate grammar/evaluator. Accepted packaging candidates082/083 pin6b6184f; refreshed candidates must replace that pre-filter source and supersede its artifacts.
+Consume the actual independently reviewed Zirql 0.1.0 source and API from base-086 and the packaging contracts from base-082. Read the brief's complete predicate inventory and scope rules. Zincite program/composition.rs currently calls the hostless suffix reader and separately parses native predicates. functions.rs and program/builder.rs/free-name walkers prepare calls and captures. Public Query and legacy Program readers remain distinct entry paths and must use the same predicate rules. filter_elements currently stores a fixed Comparison in language.rs and makes scalar decisions in structured.rs; general scalar bodies must use shared execution under the existing Data expression policy. The read-only inventory at /private/tmp/zirql-predicate-zincite-inventory.json records these current seams; inspect source as authority. Zirium's separate integration task owns its adapter, and final acceptance checks all three hosts together.
 
 ## Boundaries
 
-- Allow shared named/unnamed expression predicates alongside host domain leaves at every inventoried predicate position. Keep existing MLIR/MiniZinc subject meaning, projections/facts, native identity/ownership, effects, edits, completeness and whole-request buffering. No independent predicate evaluator, arbitrary new native fields, first-class functions, selector/relation overloads or support-matrix expansion.
-- Use isolated sources and separately attributable serial commits. Root owns Git transport/pins/locks, zdev records and candidate bookkeeping. No publication/tag push/release assets/live site import.
+- Keep native MiniZinc facts, subject identity/ownership, source coordinates, nominal values, effects, completeness and whole-request buffering. Preserve Data's existing operator/effect limits, direct scalar/member semantics, retained edit masks, keyed/matrix shape and comment/directive/atomic-write validation.
+- Use Zirql's scoped predicate parser, preparation and evaluator. Add no independent expression grammar/evaluator, first-class functions, optional selector/relation overloads, domain fields or support matrix.
+- Root owns source transport, real dependency pins/locks, zdev state and separate commits. No registry upload, release tag, release assets or site deployment.
 
 ## Done when
 
-- [ ] Both consumers accept p => predicate and implicit _ expressions using shared scope/type/purity/call/budget rules at every brief-inventoried position: constructed/native filter, native root, paths targets, match guards, Zirium diff filter/root and Zincite filter_elements, with their existing subjects and host expression/effect policies. Field comparisons, Boolean composition, lexical captures, pure calls and existing domain predicates compose naturally. Saved/nested/declared-function contexts where supported use the same rules.
-- [ ] A few public library/CLI programs across both hosts and CSV demonstrate named/unnamed filter-comprehension equivalence, stable order, nested _ rebinding with named outer capture, typed-empty validation and located predicate failures. Representative non-filter positions are exercised without a generic matrix. A later predicate failure after earlier output leaves stdout empty.
-- [ ] Manifests/locks pin the actual reviewed core and keep registry0.1.0 contracts. Reader guides/reference/release notes explain the common predicate forms and host subject/operation limits with runnable examples. Old draft artifacts are superseded; final artifact acceptance remains084.
-- [ ] Required affected host Rust/MSRV/Python and site/link/desktop/mobile checks pass, reusing unchanged packaging proof where applicable. Root independently verifies and records separate commits and refreshed candidates.
+- [ ] Constructed/native filter, paths target, native match where and scalar filter_elements accept named and implicit _ forms using shared Boolean/type/purity/call/scope/budget rules. Public Query, legacy Program and shared-reader routes agree. Match guards retain original input plus separate named captures; path predicates receive the candidate declaration.
+- [ ] Saved/nested/declared-function contexts where supported retain calls and lexical captures. Nested predicates rebind _, explicit outer names remain usable, wildcard patterns remain unchanged, typed-empty invalid predicates are refused and failures retain source locations. Host domain leaves remain usable; Data contexts still refuse report-only calls and effects.
+- [ ] A few existing-style library/CLI controls demonstrate filter-comprehension equivalence and order, prepared capture/function scope, representative path/match and scalar edit behavior, empty/type/purity/budget refusal and later-error empty stdout. Source-preserving scalar edits keep their existing candidate/write safeguards. No form-by-position matrix.
+- [ ] Manifests/lock pin the actual reviewed core with registry 0.1.0 requirements. Guides/reference/release notes describe the current forms and limits with runnable examples. Required Rust/docs/site/link/desktop/mobile checks pass; old pre-predicate artifacts are superseded for base-084.
 
 ## Validation
 
-- Use a few focused existing-style public controls for named/unnamed constructed and native predicates, representative path target/match guard, native ancestor root, diff and scalar-edit predicate controls, nested scopes and later-error buffering. These are distinct execution boundaries rather than a form-by-position matrix. Inventory all call sites against the shared contract; do not expand into a syntax matrix. Replay existing domain-leaf predicate controls.
-- Run both affected hosts' required Rust checks, Zirium's existing 1.88 and Python rebuild/identity/suite/lint/type checks, warning-fatal docs and affected site builds/links/UI. No new compiler/platform matrix.
-- Inspect current locked dependency identities and normalized release requirements. Refresh local install/artifact proof only where the source change invalidates prior evidence; base-084 checks final seven-package graph, exact artifacts and hosted jobs before publication handoff.
+- Run required fmt, fatal all-target workspace Clippy, workspace tests and warning-fatal docs. Add only focused public-behavior coverage of the exhibited defect, using existing query/CLI and source-edit controls.
+- Replay a few inline/file/library programs and later-error buffering, including an actual scalar edit candidate with preserved source and one refused body. Inspect every call site and exhaustive walker against the brief inventory.
+- Run affected site check/build/link checks and Root desktop/mobile/search review. Inspect dependency identities and package requirements; base-084 owns final graph/artifacts/hosted acceptance. Do not claim source installs as public registry proof.

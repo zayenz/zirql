@@ -7,7 +7,7 @@ status = "open"
 complexity = "standard"
 afk = true
 priority = "normal"
-blocked_by = ["base-082", "base-083", "base-087", "base-088"]
+blocked_by = ["base-082", "base-083", "base-087", "base-088", "base-089"]
 +++
 # Verify the three release candidates and prepare the publication handoff
 
