@@ -7,7 +7,7 @@ status = "open"
 complexity = "standard"
 afk = true
 priority = "normal"
-blocked_by = ["base-082", "base-083"]
+blocked_by = ["base-082", "base-083", "base-087"]
 +++
 # Verify the three release candidates and prepare the publication handoff
 
@@ -17,7 +17,7 @@ The exact three candidate releases have independently checked source packages, r
 
 ## Context
 
-Prerequisites prepare versions and all source/docs/CI. Native Cargo+1.99.0 can package unpublished dependent members with its temporary registry; Root verified a disposable two-crate example at /private/tmp/zirql-release-20261016-workspace-package-probe.json. Use a simple disposable combined workspace over copies of the exact candidate sources to verify normalized registry dependency archives before public upload, not a custom registry or release framework. Real public registry availability and final unpatched registry installation remain distinct external checks. Read the accepted per-project candidate results and release instructions. Language discovery supplies current bounded cross-host probes to replay against candidates.
+Prerequisites prepare versions and all source/docs/CI. The scoped-predicate integration is a required release blocker; use its refreshed core and consumer commits and supersede all pre-filter candidate artifacts. Native Cargo+1.99.0 can package unpublished dependent members with its temporary registry; Root verified a disposable two-crate example at /private/tmp/zirql-release-20261016-workspace-package-probe.json. Use a simple disposable combined workspace over copies of the exact candidate sources to verify normalized registry dependency archives before public upload, not a custom registry or release framework. Real public registry availability and final unpatched registry installation remain distinct external checks. Read the accepted per-project candidate results and release instructions. Language discovery supplies current bounded cross-host probes to replay against candidates.
 
 ## Boundaries
 
