@@ -36,13 +36,15 @@ Extract the archive into a new directory outside the checkout and run from its
 
 ```sh
 cargo run --locked --example words
-cargo run --locked --example csv -- 'let selected = [p for p in rows if p.active == "yes"]; selected | count' examples/csv/people.csv
-cargo run --locked --example csv -- 'let selected = [p for p in people if p.active == "yes"]; [{"team": t.label, "count": length([p for p in selected if p.team == t.id])} for t in teams]' people=examples/csv/people.csv teams=examples/csv/teams.csv
+cargo run --locked --example csv -- 'let selected = rows | filter(_.active == "yes"); selected | count' examples/csv/people.csv
+cargo run --locked --example csv -- 'let selected = people | filter(p => p.active == "yes"); [{"team": t.label, "count": length([p for p in selected if p.team == t.id])} for t in teams]' people=examples/csv/people.csv teams=examples/csv/teams.csv
 ```
 
 Expected results are the three adjacent word pairs, `3`, and team counts
 `1, 2, 0` in fixture order. Check a missing CSV column fails with a query location
-and empty stdout. Build a small external Rust consumer against the extracted
+and empty stdout. Compare named and unnamed row filters with the corresponding
+comprehension, including a captured string and header-only CSV input. Keep the
+CSV example's named-function declaration limit explicit. Build a small external Rust consumer against the extracted
 crate using the public reader/evaluator, checked host validation and native
 program/function APIs required by the adapters.
 

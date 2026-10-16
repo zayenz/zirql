@@ -6,11 +6,11 @@ use super::{
     QueryError, RuntimeValue, SetElementType, ValueBinaryOperator, ValueConstructor, ValueKey,
     ValueQueryHost, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
     constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
-    equal_keys, error, expose, extremum_position, filter_starts_with, finish_keyed, group_by,
-    insert_set, integer, integer_range, key_positions, key_set_type, key_value, metadata_vec,
-    optional_access, push_metadata, record_declaration, reduce_ref, scalar, sort_value,
-    source_axis, string_match_ref, sum, take_one, take_position, tally_value, unary, underlying,
-    unique_value, value_keys, zip_exact,
+    equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
+    integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
+    push_metadata, record_declaration, reduce_ref, scalar, sort_value, source_axis,
+    string_match_ref, sum, take_one, take_position, tally_value, unary, underlying, unique_value,
+    value_keys, zip_exact,
 };
 use crate::construction::EntryAccounting;
 use std::rc::Rc;
@@ -407,6 +407,17 @@ pub(crate) trait Host<'a, Q> {
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
         Err(QueryError::query(range.clone(), "constructed current input is unavailable").into())
     }
+    fn predicate_subject(
+        &mut self,
+        _budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        Err(QueryError::query(
+            range.clone(),
+            "unnamed argument is only available in a predicate",
+        )
+        .into())
+    }
     fn outer(
         &mut self,
         slot: usize,
@@ -589,6 +600,8 @@ enum Pending<'a, Q, N, K> {
     ),
     Let(usize, usize),
     Return(usize),
+    Predicate(&'a PreparedValue<'a, Q>, usize, usize),
+    PredicateResult(&'a PreparedValue<'a, Q>, usize),
     Clauses(Rc<Comprehension<'a, Q>>, usize, usize),
     Source(Rc<Comprehension<'a, Q>>, usize, usize),
     Candidate(
@@ -667,6 +680,7 @@ struct Comprehension<'a, Q> {
     empty: Option<&'a [PreparedValue<'a, Q>]>,
     depth: usize,
     output: std::cell::RefCell<Output>,
+    declaration: std::cell::RefCell<Option<DeclaredType<()>>>,
 }
 enum Output {
     Array(Vec<ConstructedValue>),
@@ -737,6 +751,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Initialize(_, depth, ..)
                     | Pending::Break(_, depth)
                     | Pending::Next(_, depth, ..)
+                    | Pending::Predicate(_, depth, ..)
                     | Pending::Block(_, depth, ..)
                     | Pending::Match(_, depth, ..)
                     | Pending::Guard(_, depth, ..)
@@ -766,6 +781,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     Pending::Let(..)
                     | Pending::Return(_)
                     | Pending::Restore(_)
+                    | Pending::PredicateResult(_, _)
                     | Pending::Invoke { .. } => 0,
                 };
                 budget.within_evaluation(
@@ -793,6 +809,11 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     PreparedKind::Literal(value) => {
                                         result =
                                             owned!(copy_constructed_value(value, budget, location)?)
+                                    }
+                                    PreparedKind::PredicateSubject => {
+                                        result = Some(
+                                            host.predicate_subject(budget, &expression.range)?,
+                                        );
                                     }
                                     PreparedKind::CurrentInput => {
                                         result =
@@ -826,6 +847,14 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             budget,
                                             &expression.range,
                                         )?);
+                                    }
+                                    PreparedKind::SubjectScope { subject, .. } => {
+                                        push!(Pending::Predicate(
+                                            expression,
+                                            depth,
+                                            frame.locals.len()
+                                        ));
+                                        push!(Pending::Eval(subject, depth + 1, false));
                                     }
                                     PreparedKind::IdentitySet { .. } => {
                                         result =
@@ -941,6 +970,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         constructor,
                                         clauses,
                                         head,
+                                        ..
                                     } => {
                                         let output = match constructor {
                                             ValueConstructor::Array => Output::Array(
@@ -959,6 +989,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             empty: None,
                                             depth,
                                             output: std::cell::RefCell::new(output),
+                                            declaration: std::cell::RefCell::new(None),
                                         });
                                         push!(Pending::FinishComprehension(Rc::clone(&c)));
                                         push!(Pending::Clauses(c, 0, frame.locals.len()));
@@ -1672,9 +1703,22 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 }
                             }
                             Pending::Source(c, index, saved) => {
-                                let mut value = result.take().expect("generator source");
+                                let value = result.take().expect("generator source");
                                 let clause = &c.clauses[index];
                                 let cl = Location::Query(clause.range.clone());
+                                if matches!(
+                                    c.expression.value,
+                                    PreparedKind::Comprehension {
+                                        retain_declaration: true,
+                                        ..
+                                    }
+                                ) && let Some(data) = host.constructed(&value, budget, &cl)?
+                                {
+                                    *c.declaration.borrow_mut() = data
+                                        .declaration
+                                        .map(|d| copy_declaration(d, budget, &cl))
+                                        .transpose()?;
+                                }
                                 match &clause.value {
                                     PreparedGenerator::Bind { binder, filter, .. } => {
                                         budget.charge(1, cl.clone())?;
@@ -1707,77 +1751,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         }
                                     }
                                     PreparedGenerator::In { binders, .. } => {
-                                        host.normalize_in_place(&mut value, budget, &cl)?;
-                                        let contract = value.contract;
-                                        let value = match value.data {
-                                            Data::Native(owner) => {
-                                                let values = host.subjects(owner, budget, &cl)?;
-                                                budget.check_items(values.len(), cl.clone())?;
-                                                let mut items =
-                                                    metadata_vec(values.len(), budget, &cl)?;
-                                                let element =
-                                                    contract.and_then(|contract| match contract {
-                                                        DeclaredType::Sequence(element)
-                                                        | DeclaredType::Array(element) => {
-                                                            Some(element.as_ref())
-                                                        }
-                                                        _ => None,
-                                                    });
-                                                for value in values {
-                                                    budget.charge(1, cl.clone())?;
-                                                    budget.charge_results(1, cl.clone())?;
-                                                    items.push(Value {
-                                                        data: Data::Native(NativeView::new(
-                                                            std::sync::Arc::new(value),
-                                                        )),
-                                                        contract: element,
-                                                    });
-                                                }
-                                                GeneratorSource::Native(items)
-                                            }
-                                            Data::Constructed(data) => {
-                                                let value = Value {
-                                                    data: Data::<H::Native>::Constructed(data),
-                                                    contract,
-                                                };
-                                                let value = if contract.is_some() {
-                                                    RuntimeValue::Owned(
-                                                        value.materialize(budget, &cl)?,
-                                                    )
-                                                } else {
-                                                    let Data::Constructed(value) = value.data
-                                                    else {
-                                                        unreachable!()
-                                                    };
-                                                    value
-                                                };
-                                                let value = if matches!(
-                                                    value.as_ref(),
-                                                    ConstructedValue::Declared { .. }
-                                                ) {
-                                                    RuntimeValue::Owned(expose(
-                                                        value.materialize(budget, &cl)?,
-                                                        budget,
-                                                        &cl,
-                                                    )?)
-                                                } else {
-                                                    value
-                                                };
-                                                if !matches!(
-                                                    value.as_ref(),
-                                                    ConstructedValue::Array(_)
-                                                        | ConstructedValue::Set { .. }
-                                                        | ConstructedValue::KeyedArray { .. }
-                                                ) {
-                                                    return Err(error(
-                                                        &cl,
-                                                        "in source needs an array or supported set",
-                                                    )
-                                                    .into());
-                                                }
-                                                GeneratorSource::Constructed(value)
-                                            }
-                                        };
+                                        let value = generator_source(value, host, budget, &cl)?;
                                         let len = value.len();
                                         let mut count = 1usize;
                                         for _ in binders {
@@ -1821,7 +1795,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     budget.charge(1, Location::Query(binder.range.clone()))?;
                                     if let Some(name) = &binder.value {
                                         let v = source.child(*position, budget, &cl)?;
-                                        push_metadata(&mut frame.locals, (name, v), budget, &cl)?;
+                                        push_metadata(&mut frame.locals, (*name, v), budget, &cl)?;
                                     }
                                 }
                                 for position in positions.iter_mut().rev() {
@@ -1866,6 +1840,39 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     &Location::Query(filter.range.clone()),
                                 )? {
                                     push!(Pending::Clauses(c, index + 1, saved));
+                                }
+                            }
+                            Pending::Predicate(expression, depth, saved) => {
+                                let PreparedKind::SubjectScope { argument, body, .. } =
+                                    &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                install_predicate(
+                                    &mut frame.locals,
+                                    result.take().expect("predicate subject"),
+                                    *argument,
+                                    budget,
+                                    &location,
+                                )?;
+                                push!(Pending::PredicateResult(expression, saved));
+                                push!(Pending::Eval(body, depth + 1, false));
+                            }
+                            Pending::PredicateResult(expression, saved) => {
+                                frame.locals.truncate(saved);
+                                if matches!(
+                                    expression.value,
+                                    PreparedKind::SubjectScope {
+                                        predicate: true,
+                                        ..
+                                    }
+                                ) {
+                                    result = Some(predicate_result(
+                                        result.take().expect("predicate result"),
+                                        host,
+                                        budget,
+                                        &Location::Query(expression.range.clone()),
+                                    )?);
                                 }
                             }
                             Pending::Restore(saved) => frame.locals.truncate(saved),
@@ -1932,13 +1939,14 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     &mut *c.output.borrow_mut(),
                                     Output::Array(Vec::new()),
                                 );
-                                result = owned!(match output {
+                                let value = match output {
                                     Output::Array(values) => ConstructedValue::Array(values),
-                                    Output::Dictionary(entries) =>
-                                        ConstructedValue::Record(entries),
+                                    Output::Dictionary(entries) => {
+                                        ConstructedValue::Record(entries)
+                                    }
                                     Output::Set(elements, element_type) => ConstructedValue::Set {
                                         elements,
-                                        element_type
+                                        element_type,
                                     },
                                     Output::Keyed(None, entries) if entries.is_empty() => {
                                         *c.output.borrow_mut() = Output::Keyed(None, entries);
@@ -1954,8 +1962,14 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         }
                                         finish_keyed(Some(axes), Vec::new(), budget, &location)?
                                     }
-                                    Output::Keyed(axes, entries) =>
-                                        finish_keyed(axes, entries, budget, &location)?,
+                                    Output::Keyed(axes, entries) => {
+                                        finish_keyed(axes, entries, budget, &location)?
+                                    }
+                                };
+                                result = owned!(match c.declaration.borrow_mut().take() {
+                                    Some(declaration) =>
+                                        annotate(value, declaration, budget, &location)?,
+                                    None => value,
                                 });
                             }
                             Pending::EmptyAxes(c, index, mut axes) => {
@@ -2619,6 +2633,7 @@ fn start_dictionary<'a, Q, N, K>(
                 head,
                 empty: None,
                 depth,
+                declaration: std::cell::RefCell::new(None),
                 output: std::cell::RefCell::new(Output::Dictionary(
                     EntryAccounting::Computed.entries(budget, &location)?,
                 )),
@@ -2767,6 +2782,7 @@ fn start_keyed<'a, Q, N, K>(
                 head,
                 empty: empty_axis_sources.as_deref(),
                 depth,
+                declaration: std::cell::RefCell::new(None),
                 output: std::cell::RefCell::new(Output::Keyed(
                     axes,
                     admit_container(0, budget, &location)?,
@@ -2809,6 +2825,102 @@ fn append<Q>(
         }
     }
     Ok(())
+}
+
+fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
+    mut value: ResultValue<'a, H, Q>,
+    host: &mut H,
+    budget: &mut Budget,
+    cl: &Location,
+) -> Result<GeneratorSource<'a, H::Native, H::Kind>, H::Error> {
+    host.normalize_in_place(&mut value, budget, cl)?;
+    let contract = value.contract;
+    Ok(match value.data {
+        Data::Native(owner) => {
+            let values = host.subjects(owner, budget, cl)?;
+            budget.check_items(values.len(), cl.clone())?;
+            let mut items = metadata_vec(values.len(), budget, cl)?;
+            let element = contract.and_then(|contract| match contract {
+                DeclaredType::Sequence(element) | DeclaredType::Array(element) => {
+                    Some(element.as_ref())
+                }
+                _ => None,
+            });
+            for value in values {
+                budget.charge(1, cl.clone())?;
+                budget.charge_results(1, cl.clone())?;
+                items.push(Value {
+                    data: Data::Native(NativeView::new(std::sync::Arc::new(value))),
+                    contract: element,
+                });
+            }
+            GeneratorSource::Native(items)
+        }
+        Data::Constructed(data) => {
+            let value = Value {
+                data: Data::<H::Native>::Constructed(data),
+                contract,
+            };
+            let value = if contract.is_some() {
+                RuntimeValue::Owned(value.materialize(budget, cl)?)
+            } else {
+                let Data::Constructed(value) = value.data else {
+                    unreachable!()
+                };
+                value
+            };
+            let value = if matches!(value.as_ref(), ConstructedValue::Declared { .. }) {
+                RuntimeValue::Owned(expose(value.materialize(budget, cl)?, budget, cl)?)
+            } else {
+                value
+            };
+            if !matches!(
+                value.as_ref(),
+                ConstructedValue::Array(_)
+                    | ConstructedValue::Set { .. }
+                    | ConstructedValue::KeyedArray { .. }
+            ) {
+                return Err(error(cl, "in source needs an array or supported set").into());
+            }
+            GeneratorSource::Constructed(value)
+        }
+    })
+}
+
+fn install_predicate<'a, N, K>(
+    locals: &mut Vec<(&'a str, Value<'a, N, K>)>,
+    mut subject: Value<'a, N, K>,
+    argument: Option<&'a str>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    let alias = argument
+        .map(|_| subject.share(budget, location))
+        .transpose()?;
+    push_metadata(
+        locals,
+        (super::PREDICATE_SUBJECT, subject),
+        budget,
+        location,
+    )?;
+    if let Some((name, value)) = argument.zip(alias) {
+        push_metadata(locals, (name, value), budget, location)?;
+    }
+    Ok(())
+}
+
+fn predicate_result<'a, Q, H: Host<'a, Q> + ?Sized>(
+    value: ResultValue<'a, H, Q>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let value = boolean(value.materialize_with(host, budget, location)?, location)?;
+    Ok(Value::constructed(RuntimeValue::Owned(scalar(
+        ConstructedValue::Boolean(value),
+        budget,
+        location,
+    )?)))
 }
 
 fn operands<'a, Q>(
@@ -2862,7 +2974,6 @@ fn operands<'a, Q>(
         | PreparedKind::Unary { operand: value, .. }
         | PreparedKind::Field { value, .. }
         | PreparedKind::TupleAccess { value, .. }
-        | PreparedKind::FilterStartsWith { array: value, .. }
         | PreparedKind::Reduce { array: value, .. }
         | PreparedKind::Sort { array: value, .. }
         | PreparedKind::Extremum { array: value, .. }
@@ -2961,15 +3072,6 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             }),
             budget,
             &location,
-        )?)));
-    }
-    if let PreparedKind::FilterStartsWith { prefix, .. } = &expression.value {
-        let value = host.normalize(values.pop().expect("filter source"), budget, &location)?;
-        let Data::Constructed(array) = value.data else {
-            return Err(error(&location, "filter needs a positional string array").into());
-        };
-        return Ok(Value::constructed(RuntimeValue::Owned(filter_starts_with(
-            array, prefix, budget, &location,
         )?)));
     }
     if let PreparedKind::Reduce { operator, .. } = &expression.value {
@@ -3246,6 +3348,15 @@ where
             budget,
             range,
         )?))
+    }
+    fn predicate_subject(
+        &mut self,
+        budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Value<'a, Self::Native, ()>, Self::Error> {
+        Ok(Value::constructed(RuntimeValue::Owned(
+            self.queries.read_predicate_subject(range, budget)?,
+        )))
     }
     fn outer(
         &mut self,

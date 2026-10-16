@@ -4290,10 +4290,8 @@ fn constructed_current_input_summaries_share_the_reader_and_callable_nodes() {
     }
     host.unknown = true;
     assert_eq!(
-        zirql::evaluate_query_value(&filter, &types, &mut host, &mut ample())
-            .unwrap_err()
-            .location,
-        Location::Query(0..1)
+        zirql::evaluate_query_value(&filter, &types, &mut host, &mut ample()).unwrap(),
+        declared(V::Array(vec![]), D::Sequence(Box::new(D::Integer)))
     );
     host.value = V::Array(vec![V::String("ash".into()), V::Integer(1)]);
     assert_eq!(
@@ -4309,7 +4307,8 @@ fn constructed_current_input_summaries_share_the_reader_and_callable_nodes() {
             .category,
         zirql::QueryErrorCategory::ItemLimit
     );
-    for source in [r#"filter(contains("a"))"#, "filter(starts_with(1))"] {
+    {
+        let source = r#"filter(contains("a"))"#;
         let error = zirql::read_value_expression(
             &mut zirql::ArgumentReader::new(source, 0).unwrap(),
             &mut host,
@@ -4348,9 +4347,16 @@ fn constructed_current_input_summaries_share_the_reader_and_callable_nodes() {
 }
 
 fn prefix_filter(array: E, prefix: &str) -> E {
-    e(K::FilterStartsWith {
+    e(K::Filter {
         array: Box::new(array),
-        prefix: Located::new(prefix.into(), 8..11),
+        predicate: zirql::PredicateArgument {
+            argument: None,
+            body: Box::new(e(K::Binary {
+                operator: B::StartsWith,
+                left: Box::new(e(K::PredicateSubject)),
+                right: Box::new(e(K::Literal(V::String(prefix.into())))),
+            })),
+        },
     })
 }
 
@@ -6310,4 +6316,105 @@ fn declared_sources_fail_before_cells_and_generators_with_original_locations() {
                 .contains("conflicting")
         );
     }
+}
+
+#[test]
+fn scoped_filters_match_comprehensions_and_rebind_only_the_unnamed_subject() {
+    let rows = V::Array(vec![
+        V::Record(vec![
+            ("id".into(), V::Integer(2)),
+            ("active".into(), V::String("yes".into())),
+        ]),
+        V::Record(vec![
+            ("id".into(), V::Integer(3)),
+            ("active".into(), V::String("no".into())),
+        ]),
+        V::Record(vec![
+            ("id".into(), V::Integer(2)),
+            ("active".into(), V::String("yes".into())),
+        ]),
+    ]);
+    let run = |source: &str, value: V, allowance: &mut Budget| {
+        let mut host = WordInput {
+            value,
+            unknown: false,
+        };
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let expression = zirql::read_value_expression(&mut reader, &mut host, allowance, 64)?;
+        assert!(reader.remaining().trim().is_empty(), "{source}");
+        let types = BTreeMap::from([(
+            "words".into(),
+            vec![constructed_value_type(&host.value, allowance, Location::Query(0..1)).unwrap()],
+        )]);
+        let result = zirql::evaluate_query_value(&expression, &types, &mut host, allowance);
+        zirql::dispose_native_value(expression);
+        result
+    };
+    let expected = run(
+        r#"[p for p in words if p.active == "yes"]"#,
+        copy_constructed_value(&rows, &mut ample(), Location::Query(0..1)).unwrap(),
+        &mut ample(),
+    )
+    .unwrap();
+    for source in [
+        r#"filter(p => p.active == "yes")"#,
+        r#"filter(_.active == "yes" and _.id < 3)"#,
+        r#"[p for p in words] | filter(p => length([1,2] | filter(_ == p.id)) > 0 and if _.active == "yes" { true } else { false })"#,
+    ] {
+        assert_eq!(
+            run(
+                source,
+                copy_constructed_value(&rows, &mut ample(), Location::Query(0..1)).unwrap(),
+                &mut ample()
+            )
+            .unwrap(),
+            expected
+        );
+    }
+    let typed_empty = declared(
+        V::Array(vec![]),
+        D::Sequence(Box::new(D::Record(vec![("active".into(), D::String)]))),
+    );
+    for source in [
+        r#"filter(_.active)"#,
+        "filter(false and missing == 1)",
+        "filter(not_declared(_))",
+    ] {
+        assert!(
+            run(
+                source,
+                copy_constructed_value(&typed_empty, &mut ample(), Location::Query(0..1)).unwrap(),
+                &mut ample()
+            )
+            .is_err(),
+            "{source}"
+        );
+    }
+    let source = "filter(1 div (_.id - 2) == 0)";
+    let error = run(
+        source,
+        copy_constructed_value(&rows, &mut ample(), Location::Query(0..1)).unwrap(),
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error.location, Location::Query(ref range) if &source[range.clone()] == "1 div (_.id - 2)")
+    );
+    assert!(
+        run(
+            "filter(_ == 1)",
+            V::Array((0..100).map(|_| V::Integer(1)).collect()),
+            &mut budget(1000, 10000, 64)
+        )
+        .is_err()
+    );
+    assert!(run("_", rows, &mut ample()).is_err());
+    // A supplied ordinary binding cannot create an unnamed predicate scope.
+    let bindings = Bindings::new([(Located::new("_".into(), 0..1), V::Boolean(true))]).unwrap();
+    assert!(evaluate_value(&e(K::PredicateSubject), &bindings, &mut ample()).is_err());
+    let predicate = zirql::PredicateArgument {
+        argument: None,
+        body: Box::new(binary(B::Equal, e(K::PredicateSubject), int(4))),
+    };
+    assert_eq!(evaluate(&predicate.bind(int(4))).unwrap(), V::Boolean(true));
 }

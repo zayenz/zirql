@@ -257,6 +257,47 @@ pub enum SortSelector {
 
 pub type ValueExpression<Q = ()> = Located<ValueExpressionKind<Q>>;
 
+// This slot cannot be written as an ordinary language identifier.
+pub(crate) const PREDICATE_SUBJECT: &str = "\0predicate";
+
+/// One scoped body with an optional name for the current predicate subject.
+/// Predicates require a Boolean; existing domain leaf arguments retain their
+/// own scalar contract through `bind_value`. `_` reads the nearest subject frame,
+/// including inside ordinary guards.
+#[derive(Debug, PartialEq)]
+pub struct PredicateArgument<Q = ()> {
+    pub argument: Option<Located<String>>,
+    pub body: Box<ValueExpression<Q>>,
+}
+impl<Q> PredicateArgument<Q> {
+    /// Bind one existing domain leaf's value argument to its predicate subject.
+    /// The leaf retains its own argument type check; the surrounding predicate
+    /// retains Boolean/Truth admission. This uses the same subject frame.
+    pub fn bind_value(self, subject: ValueExpression<Q>) -> ValueExpression<Q> {
+        let range = self.body.range.clone();
+        Located::new(
+            ValueExpressionKind::SubjectScope {
+                subject: Box::new(subject),
+                argument: self,
+            },
+            range,
+        )
+    }
+    /// Bind this body to one actual subject. Native adapters supply their
+    /// existing input expression; scalar hosts may supply a literal or name.
+    /// The resulting expression uses ordinary preflight and value execution.
+    pub fn bind(self, subject: ValueExpression<Q>) -> ValueExpression<Q> {
+        let range = self.body.range.clone();
+        Located::new(
+            ValueExpressionKind::PredicateScope {
+                subject: Box::new(subject),
+                predicate: self,
+            },
+            range,
+        )
+    }
+}
+
 /// A host-lowered pure expression. Every node retains its query byte range.
 /// Hosts reject unlisted surface forms and decimal spellings that round a
 /// nonzero literal to zero before creating this representation.
@@ -338,6 +379,18 @@ pub enum ValueExpressionKind<Q = ()> {
     /// Extract exactly one positional child without copying it.
     One(Box<ValueExpression<Q>>),
     Name(String),
+    /// Read the nearest predicate subject. Ordinary bindings cannot supply it.
+    PredicateSubject,
+    /// Scope an existing native predicate leaf's non-Boolean value argument.
+    SubjectScope {
+        subject: Box<ValueExpression<Q>>,
+        argument: PredicateArgument<Q>,
+    },
+    /// Evaluate one Boolean body with a fresh unnamed subject and optional alias.
+    PredicateScope {
+        subject: Box<ValueExpression<Q>>,
+        predicate: PredicateArgument<Q>,
+    },
     Occurs(Box<ValueExpression<Q>>),
     Absent(Box<ValueExpression<Q>>),
     Lookup {
@@ -416,10 +469,10 @@ pub enum ValueExpressionKind<Q = ()> {
         operator: ValueReducer,
         array: Box<ValueExpression<Q>>,
     },
-    /// Retain positional strings beginning with one literal prefix, in order.
-    FilterStartsWith {
+    /// Retain positional elements whose scoped predicate is true, in input order.
+    Filter {
         array: Box<ValueExpression<Q>>,
-        prefix: Located<String>,
+        predicate: PredicateArgument<Q>,
     },
     /// Stably sort an array, set or string dictionary, retaining its kind.
     /// Without a selector, arrays/sets use values and dictionaries use keys.
@@ -645,6 +698,30 @@ pub trait ValueQueryHost<Q> {
         Err(QueryError::query(range.clone(), "constructed current input is unavailable").into())
     }
 
+    /// Facts for an explicit host predicate frame. Ordinary value evaluations
+    /// have no unnamed argument, even if their bindings contain `_`.
+    fn predicate_subject_types(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        _budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "unnamed argument is only available in a predicate",
+        ))
+    }
+    fn read_predicate_subject(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        _budget: &mut Budget,
+    ) -> Result<ConstructedValue, Self::Error> {
+        Err(QueryError::query(
+            range.clone(),
+            "unnamed argument is only available in a predicate",
+        )
+        .into())
+    }
+
     /// Prepare contextual contracts before visiting an expression's operands.
     /// Ordinary value hosts need no native computation metadata.
     fn prepare_computation(
@@ -757,6 +834,18 @@ pub trait ValueQueryHost<Q> {
         _binder: &Located<Option<String>>,
         _source: &ValueExpression<Q>,
         _types: &[ValueType],
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
+    /// Retain the subject's native kind while a predicate body is prepared.
+    /// `element` selects a source collection element for constructed filtering.
+    fn prepare_predicate(
+        &mut self,
+        _argument: Option<&Located<String>>,
+        _source: &ValueExpression<Q>,
+        _types: &[ValueType],
+        _element: bool,
         _budget: &mut Budget,
     ) -> Result<(), QueryError> {
         Ok(())
@@ -1761,7 +1850,7 @@ fn sum(a: usize, b: usize, location: &Location) -> Result<usize, QueryError> {
         .ok_or_else(|| error(location, "allocation size overflow"))
 }
 
-fn allocation<T>(len: usize, location: &Location) -> Result<(), QueryError> {
+pub(crate) fn allocation<T>(len: usize, location: &Location) -> Result<(), QueryError> {
     if len
         .checked_mul(size_of::<T>())
         .is_none_or(|size| size > isize::MAX as usize)
@@ -3141,6 +3230,28 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 self.queries.current_input_types(&expression.range, budget)
             }
             ValueExpressionKind::Name(name) => self.name(name, expression, budget),
+            ValueExpressionKind::PredicateSubject => {
+                if !self
+                    .locals
+                    .iter()
+                    .any(|(name, _)| *name == PREDICATE_SUBJECT)
+                {
+                    return self
+                        .queries
+                        .predicate_subject_types(&expression.range, budget);
+                }
+                self.name(PREDICATE_SUBJECT, expression, budget)
+            }
+            ValueExpressionKind::SubjectScope { subject, argument } => {
+                let types = self.walk(subject, budget)?;
+                self.scoped_types(argument, subject, &types, false, budget)
+            }
+            ValueExpressionKind::PredicateScope { subject, predicate } => {
+                let types = self.walk(subject, budget)?;
+                let result = self.scoped_types(predicate, subject, &types, false, budget)?;
+                predicate_types(&result, budget, &predicate.body.range)?;
+                one_type(ValueType::Boolean, budget, location)
+            }
             ValueExpressionKind::NativeQuery(query) => {
                 self.queries
                     .query_types(query, &self.locals, budget, &expression.range)
@@ -3672,27 +3783,26 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     location,
                 )
             }
-            ValueExpressionKind::FilterStartsWith { array, prefix } => {
-                budget.charge(prefix.value.len(), Location::Query(prefix.range.clone()))?;
-                let mut result = Vec::new();
+            ValueExpressionKind::Filter { array, predicate } => {
+                let mut elements = Vec::new();
                 for ty in self.walk(array, budget)? {
-                    let retained = match &ty {
-                        ValueType::Declared { declaration, .. } => {
-                            Some(copy_declaration(declaration, budget, location)?)
-                        }
-                        _ => None,
-                    };
-                    let elements = filter_elements(ty, budget, location)?;
-                    let mut ty = ValueType::Array(ArrayType::Elements(elements));
-                    if let Some(declaration) = retained {
-                        ty = ValueType::Declared {
-                            actual: Box::new(ty),
-                            declaration,
-                        };
-                    }
-                    push_metadata(&mut result, ty, budget, location)?;
+                    append_types(
+                        &mut elements,
+                        filter_elements(ty, budget, location)?,
+                        budget,
+                        location,
+                    )?;
                 }
-                Ok(result)
+                if elements.is_empty() {
+                    push_metadata(&mut elements, ValueType::Unestablished, budget, location)?;
+                }
+                let result = self.scoped_types(predicate, array, &elements, true, budget)?;
+                predicate_types(&result, budget, &predicate.body.range)?;
+                one_type(
+                    ValueType::Array(ArrayType::Elements(elements)),
+                    budget,
+                    location,
+                )
             }
             ValueExpressionKind::Sort {
                 array, selector, ..
@@ -3997,6 +4107,56 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 result
             }
         }
+    }
+
+    fn scoped_types(
+        &mut self,
+        predicate: &'a PredicateArgument<Q>,
+        source: &'a ValueExpression<Q>,
+        types: &[ValueType],
+        element: bool,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let range = &predicate.body.range;
+        let location = Location::Query(range.clone());
+        let saved = self.locals.len();
+        self.queries.enter_scope(budget, range)?;
+        let result = (|| {
+            if let Some(name) = &predicate.argument {
+                function_local(name, &self.locals, budget)?;
+                if self.global_exists(&name.value, name.range.clone(), budget)? {
+                    return Err(error(
+                        &Location::Query(name.range.clone()),
+                        "predicate argument shadows an existing binding",
+                    ));
+                }
+            }
+            push_metadata(
+                &mut self.locals,
+                (PREDICATE_SUBJECT, copy_types(types, budget, &location)?),
+                budget,
+                &location,
+            )?;
+            if let Some(name) = &predicate.argument {
+                push_metadata(
+                    &mut self.locals,
+                    (&name.value, copy_types(types, budget, &location)?),
+                    budget,
+                    &location,
+                )?;
+            }
+            self.queries.prepare_predicate(
+                predicate.argument.as_ref(),
+                source,
+                types,
+                element,
+                budget,
+            )?;
+            self.walk(&predicate.body, budget)
+        })();
+        self.locals.truncate(saved);
+        self.queries.leave_scope();
+        result
     }
 
     fn pattern(
@@ -4419,6 +4579,19 @@ enum ScalarRequirement {
     Numeric,
 }
 
+pub(crate) fn predicate_types(
+    types: &[ValueType],
+    budget: &mut Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<(), QueryError> {
+    let location = Location::Query(range.clone());
+    for ty in types {
+        budget.charge(1, location.clone())?;
+        require_type(ty, ScalarRequirement::Boolean, &location)?;
+    }
+    Ok(())
+}
+
 fn require_type(
     ty: &ValueType,
     requirement: ScalarRequirement,
@@ -4803,7 +4976,7 @@ fn binary_type(
     }
 }
 
-fn boolean(value: ConstructedValue, location: &Location) -> Result<bool, QueryError> {
+pub(crate) fn boolean(value: ConstructedValue, location: &Location) -> Result<bool, QueryError> {
     if let ConstructedValue::Boolean(value) = value.into_data() {
         Ok(value)
     } else {
@@ -5506,93 +5679,17 @@ fn group_by(
     Ok(ConstructedValue::Array(groups))
 }
 
-// Filtering loses positions while preserving declared string element contracts.
+// Filtering loses positions while preserving established element facts.
 fn filter_elements(
     ty: ValueType,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Vec<ValueType>, QueryError> {
-    let elements = match shape_type(ty, budget, location)? {
+    match shape_type(ty, budget, location)? {
         ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
-        | ValueType::ArrayKind(elements) => elements,
-        ValueType::Unestablished => return one_type(ValueType::Unestablished, budget, location),
-        _ => return Err(error(location, "filter needs a positional string array")),
-    };
-    for element in &elements {
-        budget.charge(1, location.clone())?;
-        let ty = shape_type(copy_type(element, budget, location)?, budget, location)?;
-        if !matches!(ty, ValueType::String | ValueType::Unestablished) {
-            return Err(error(location, "filter needs strings"));
-        }
-    }
-    Ok(elements)
-}
-
-fn filter_starts_with(
-    array: RuntimeValue,
-    prefix: &Located<String>,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<ConstructedValue, QueryError> {
-    let contract = array
-        .declaration()
-        .map(|contract| copy_declaration(contract, budget, location))
-        .transpose()?;
-    if let Some(contract) = &contract {
-        let actual = constructed_value_type(array.as_ref(), budget, location.clone())?;
-        filter_elements(
-            declared_fact(contract, actual, budget, location)?,
-            budget,
-            location,
-        )?;
-    }
-    let prefix_location = Location::Query(prefix.range.clone());
-    allocation::<u8>(prefix.value.len(), &prefix_location)?;
-    budget.charge(prefix.value.len(), prefix_location.clone())?;
-    budget.charge_results(1, prefix_location)?;
-    let prefix = ConstructedValue::String(prefix.value.clone());
-    let array = array.into_data(budget, location)?;
-    let ConstructedValue::Array(rows) = array.as_ref() else {
-        return Err(error(location, "filter needs a positional string array"));
-    };
-    budget.check_items(rows.len(), location.clone())?;
-    let mut output = admit_container(rows.len(), budget, location)?;
-    let matches_prefix = |row: &ConstructedValue, budget: &mut Budget| {
-        budget.charge(1, location.clone())?;
-        Ok::<_, QueryError>(matches!(
-            string_match_ref(
-                ValueBinaryOperator::StartsWith,
-                row,
-                &prefix,
-                budget,
-                location,
-            )?,
-            ConstructedValue::Boolean(true)
-        ))
-    };
-    match array {
-        RuntimeValue::Owned(ConstructedValue::Array(rows)) => {
-            for row in rows {
-                if matches_prefix(&row, budget)? {
-                    output.push(row);
-                }
-            }
-        }
-        shared => {
-            let ConstructedValue::Array(rows) = shared.as_ref() else {
-                unreachable!()
-            };
-            for row in rows {
-                if matches_prefix(row, budget)? {
-                    output.push(copy_constructed_value(row, budget, location.clone())?);
-                }
-            }
-        }
-    }
-    let value = ConstructedValue::Array(output);
-    match contract {
-        Some(contract) => annotate(value, contract, budget, location),
-        None => Ok(value),
+        | ValueType::ArrayKind(elements) => Ok(elements),
+        ValueType::Unestablished => one_type(ValueType::Unestablished, budget, location),
+        _ => Err(error(location, "filter needs a positional array")),
     }
 }
 

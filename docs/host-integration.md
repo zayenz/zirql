@@ -60,6 +60,59 @@ Items need not implement `Clone`, `Send`, `Sync` or `'static`. A string slice ma
 borrow source text; an operation handle may refer to a document retained by the
 context. Keep that owner alive for as long as callers can use the results.
 
+## Scoped predicates
+
+`read_predicate_argument(reader, host, locals, budget, nesting)` reads an optional
+`name =>` followed by a shared value expression. The reader binds `_` only for
+that argument. `ValueReaderHost::parse_predicate_value` can lower a host's natural
+expression syntax; the supplied lexical names include the unnamed argument and
+optional alias. A hook returning `None` must leave the cursor unchanged.
+
+For native Boolean trees, `is_predicate_leaf` recognizes domain leaves without
+consuming syntax or budget. `parse_predicate_leaf_in_argument` receives the
+optional alias and lexical names. Its default delegates to
+`parse_predicate_leaf_in_scope`, preserving existing leaf parsing. For a dynamic
+leaf argument such as `op(p | names | one)`, retain that value through
+`PredicateArgument { argument, body }.bind_value(native_input_expression)`.
+`SubjectScope` binds the same unnamed subject and alias while the domain leaf
+checks its argument's existing string/scalar contract. `PredicateScope` checks
+a shared Boolean body. Both use the same value runner and frame restoration. Other leaves pass through `predicate_expression`, which receives a
+`PredicateArgument`. Bind its subject with `PredicateArgument::bind`, using the
+native input expression, and retain that expression in the host predicate leaf.
+Shared predicates add no reflected native fields or new domain projections.
+
+Expose every retained expression through `ProjectionHost::value_arguments` and
+`scoped_value_arguments`. Declare its actual relative kind and separate lexical
+captures. Preparation checks every branch, Boolean result, free name and effect
+before enumeration. Execute selected bodies with
+`NativeArguments::evaluate_predicate(expression, subject, captures, budget)`.
+Pass `Some(clause_bindings)` for native match guards and `None` for ordinary
+subjects. This preserves active functions, lexical captures and cumulative work;
+creating another function request per candidate loses those guarantees.
+
+| Predicate position | Subject passed to the shared body |
+| --- | --- |
+| Constructed `filter` | One constructed element |
+| Native `filter` | One existing native subject |
+| Native `root`, including diff roots | Each tested operation or ancestor candidate |
+| `paths(..., to=...)` | One candidate native target |
+| Native match `where` | The original incoming query value, possibly a collection; captures remain separate names |
+| Diff `filter` | The existing change or side-owned operation subject |
+| Scalar `filter_elements` | One decoded direct scalar element under the host's Data policy |
+
+Ordinary native hosts can call `native_predicate_types` and
+`evaluate_native_predicate` with the raw argument and actual subject. These use
+shared projection/value preparation and execution without requiring functions.
+For an ordinary domain leaf's dynamic value, use
+`native_predicate_value_types` and `evaluate_native_predicate_value` with the raw
+argument. Those helpers retain the same subject frame while the host checks its
+existing string/scalar contract. A scalar host can instead bind its value and
+use the ordinary value evaluator.
+Keep a scalar edit host's closed operator/effect policy and legacy comparator
+or member leaves. Handles, diff sides, coordinates, source masks and validated
+edit candidates remain host-owned. Existing native `Truth::Unknown` and Boolean
+short-circuit rules remain unchanged; a shared value body requires a Boolean.
+
 ## Parse and lower
 
 For the common pipeline syntax, call `parse_pipeline` with a predicate-reader
@@ -78,8 +131,8 @@ expressions. The head sees every binder; each source sees earlier binders, and
 each filter also sees its current binder.
 
 A host with its own value grammar can lower a completed prefix, then call
-`read_value_suffix` with the cursor at the first outer pipe. The shared reader
-wraps that value in the existing `Sort`, `Unique` and `Tally` nodes, keeping
+`read_value_suffix` with its host, enclosing lexical names and cursor at the first outer pipe. The shared reader
+wraps that value in the existing `Filter`, `Sort`, `Unique` and `Tally` nodes, keeping
 stage locations and rejecting any stage after `tally`. Pass the active parsing
 budget and the nesting allowance remaining for suffix wrappers. Zincite uses
 this path after lowering a MiniZinc array or comprehension; the generator pipe

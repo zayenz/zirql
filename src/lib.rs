@@ -55,9 +55,10 @@ pub use program::{
 pub use projection::{
     ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeRead,
     NativeValueArguments, Projection, ProjectionFields, ProjectionHost, ScopedNativeArgument,
-    ScopedNativeValueArguments, evaluate_native_value, evaluate_native_value_with_types,
-    evaluate_projection, evaluate_projection_with_types, native_expression_kind,
-    native_value_types, projection_types,
+    ScopedNativeValueArguments, evaluate_native_predicate, evaluate_native_predicate_value,
+    evaluate_native_value, evaluate_native_value_with_types, evaluate_projection,
+    evaluate_projection_with_types, native_expression_kind, native_predicate_types,
+    native_predicate_value_types, native_value_types, projection_types,
 };
 pub use reader::{
     CommonStatement, ReadExpression, ResolvedFunctionSignature, ResolvedPatternFunctionSignature,
@@ -66,9 +67,10 @@ pub use reader::{
     ValueSuffix, dispose_native_value, dispose_unresolved_functions,
     dispose_unresolved_pattern_functions, is_common_value_call, lower_value_suffix,
     read_constructed_filter, read_function_declaration, read_match, read_native_expression,
-    read_paths, read_pattern, read_pattern_function_declaration, read_pattern_let, read_projection,
-    read_statement_prefix, read_unresolved_function_declaration,
-    read_unresolved_pattern_function_declaration, read_value_expression, read_value_suffix,
+    read_paths, read_pattern, read_pattern_function_declaration, read_pattern_let,
+    read_predicate_argument, read_projection, read_statement_prefix,
+    read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
+    read_value_expression, read_value_suffix,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
@@ -77,12 +79,12 @@ pub use runtime_types::{
 pub use sets::{NativeSetOperator, combine_native_set};
 pub use value::{
     ArrayType, ConstructedRead, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry,
-    NominalMember, NominalMemberId, NominalTypeId, Pattern, PatternKind, SetElementType,
-    SortSelector, ValueArguments, ValueBinaryOperator, ValueConstructor, ValueExpression,
-    ValueExpressionKind, ValueExtremum, ValueGenerator, ValueKey, ValueKeyType, ValueMatchArm,
-    ValueQueryHost, ValueReducer, ValueType, ValueUnaryOperator, constructed_value_type,
-    copy_constructed_value, copy_pattern, copy_value_types, count_value, dispose_pattern,
-    evaluate_query_value, evaluate_value, evaluate_value_with_host_validation,
+    NominalMember, NominalMemberId, NominalTypeId, Pattern, PatternKind, PredicateArgument,
+    SetElementType, SortSelector, ValueArguments, ValueBinaryOperator, ValueConstructor,
+    ValueExpression, ValueExpressionKind, ValueExtremum, ValueGenerator, ValueKey, ValueKeyType,
+    ValueMatchArm, ValueQueryHost, ValueReducer, ValueType, ValueUnaryOperator,
+    constructed_value_type, copy_constructed_value, copy_pattern, copy_value_types, count_value,
+    dispose_pattern, evaluate_query_value, evaluate_value, evaluate_value_with_host_validation,
     free_query_value_names, free_value_names, pattern_names, query_value_types, take_one,
     validate_value_expression, value_expression_types,
 };

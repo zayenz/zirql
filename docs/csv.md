@@ -12,7 +12,7 @@ The [people fixture](../examples/csv/people.csv) has `id`, `name`, `team`, `acti
 and `note` columns. Select the active people and keep their names and notes:
 
 ```sh
-cargo run --locked --example csv -- '[{"name": p.name, "note": p.note} for p in rows if p.active == "yes"]' examples/csv/people.csv
+cargo run --locked --example csv -- 'let selected = rows | filter(_.active == "yes"); [{"name": p.name, "note": p.note} for p in selected]' examples/csv/people.csv
 ```
 
 ```json
@@ -39,12 +39,17 @@ The shorter `count` expression uses the same table implicitly.
 A saved selection can feed a shared collection stage directly:
 
 ```sh
-cargo run --locked --example csv -- 'let selected = [p for p in rows if p.active == "yes"]; selected | count' examples/csv/people.csv
+cargo run --locked --example csv -- 'let selected = rows | filter(_.active == "yes"); selected | count' examples/csv/people.csv
 ```
 
 ```json
 3
 ```
+
+`filter(p => p.active == "yes")` names each row; `filter(_.active == "yes")`
+uses the unnamed row argument. Both agree with
+`[p for p in rows if p.active == "yes"]`. Predicates can capture earlier bindings,
+such as `let wanted = "yes"; rows | filter(_.active == wanted)`.
 
 See [values and comprehensions](values.md) for expression syntax and
 [the language reference](language-reference.md) for the shared collection stages.
@@ -57,7 +62,7 @@ people, builds a member list for each team, then uses those saved lists twice:
 
 ```sh
 cargo run --locked --example csv -- '
-let selected = [p for p in people if p.active == "yes"];
+let selected = people | filter(p => p.active == "yes");
 let groups = [{"team": t.label, "members": [p.name for p in selected if p.team == t.id]} for t in teams];
 [{"team": g.team, "members": sort(g.members), "count": length(g.members)} for g in groups]' people=examples/csv/people.csv teams=examples/csv/teams.csv
 ```
@@ -117,7 +122,7 @@ When each team needs one count, use its label as a dictionary key:
 
 ```sh
 cargo run --locked --example csv -- '
-let selected = [p for p in people if p.active == "yes"];
+let selected = people | filter(p => p.active == "yes");
 sort_by({t.label: length([p for p in selected if p.team == t.id]) for t in teams}, value, descending=true)
 ' people=examples/csv/people.csv teams=examples/csv/teams.csv
 ```
@@ -146,7 +151,7 @@ order. Brackets read the computed string key; `p.name` selects a fixed label.
 A missing column fails at its original query range:
 
 ```sh
-cargo run --locked --example csv -- '[p.missing for p in rows]' examples/csv/people.csv
+cargo run --locked --example csv -- 'rows | filter(_.missing == "yes")' examples/csv/people.csv
 ```
 
 Several named tables make an implicit request ambiguous:

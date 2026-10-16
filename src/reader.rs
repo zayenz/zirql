@@ -3,9 +3,10 @@ use std::ops::Range;
 use crate::{
     ArgumentReader, Budget, ConstructedValue as V, Expression, ExpressionKind, ExpressionStep,
     Located, Location, MatchClause, NativeMap, NativeMatch, NativeOrder, NativeOrdering,
-    NativePaths, ParameterDeclaration, ParameterType, Predicate, PredicateKind, Projection,
-    QueryError, SortSelector, ValueBinaryOperator as B, ValueConstructor, ValueExpression,
-    ValueExpressionKind as K, ValueExtremum, ValueGenerator, ValueReducer, ValueUnaryOperator as U,
+    NativePaths, ParameterDeclaration, ParameterType, Predicate, PredicateArgument, PredicateKind,
+    Projection, QueryError, SortSelector, ValueBinaryOperator as B, ValueConstructor,
+    ValueExpression, ValueExpressionKind as K, ValueExtremum, ValueGenerator, ValueReducer,
+    ValueUnaryOperator as U,
 };
 
 pub type ReadExpression<H> = Expression<
@@ -61,6 +62,18 @@ pub trait ValueReaderHost {
     ) -> Result<Self::Predicate, QueryError> {
         self.parse_predicate_leaf(reader, budget)
     }
+    /// Parse an existing domain leaf inside a predicate argument. The optional
+    /// alias identifies the same current subject as `_`. Hosts with dynamic
+    /// value arguments can retain each through `PredicateArgument::bind_value`.
+    fn parse_predicate_leaf_in_argument(
+        &mut self,
+        reader: &mut ArgumentReader<'_>,
+        _argument: Option<&Located<String>>,
+        locals: &[&str],
+        budget: &mut Budget,
+    ) -> Result<Self::Predicate, QueryError> {
+        self.parse_predicate_leaf_in_scope(reader, locals, budget)
+    }
     /// Admit a host's constructed filter spelling before native predicate parsing.
     /// Return `None` without consuming input to keep the ordinary native filter.
     fn parse_constructed_filter_in_scope(
@@ -70,6 +83,43 @@ pub trait ValueReaderHost {
         _budget: &mut Budget,
     ) -> Result<Option<Self::Stage>, QueryError> {
         Ok(None)
+    }
+    /// Recognize a domain predicate leaf without consuming syntax or budget.
+    /// Lexical names use value syntax; an explicit leaf call with `(` remains
+    /// available in the same scope. Other bodies use shared expression syntax.
+    fn is_predicate_leaf(&self, _name: &str) -> bool {
+        false
+    }
+    /// Retain a shared scoped Boolean body as one native predicate leaf.
+    /// Expose its bound expression through the host's value-argument hooks.
+    fn predicate_expression(
+        &mut self,
+        predicate: PredicateArgument<ReadExpression<Self>>,
+        range: Range<usize>,
+    ) -> Result<Self::Predicate, QueryError>
+    where
+        Self: Sized,
+    {
+        dispose_native_value(*predicate.body);
+        Err(QueryError::query(
+            range,
+            "predicate expressions are unsupported by this host",
+        ))
+    }
+    /// Lower one predicate body in the host's expression syntax. `None` leaves
+    /// the cursor unchanged and selects the shared grammar. The names include
+    /// `_` and the optional alias, alongside enclosing lexical names.
+    fn parse_predicate_value(
+        &mut self,
+        reader: &mut ArgumentReader<'_>,
+        locals: &[&str],
+        budget: &mut Budget,
+        nesting: usize,
+    ) -> Result<Option<ValueExpression<ReadExpression<Self>>>, QueryError>
+    where
+        Self: Sized,
+    {
+        self.parse_function_value(reader, locals, budget, nesting)
     }
     fn filter(&mut self, predicate: Predicate<Self::Predicate>, range: Range<usize>)
     -> Self::Stage;
@@ -984,9 +1034,9 @@ pub fn is_common_value_call(name: &str) -> bool {
 
 /// One supported constructed collection suffix. Hosts can retain this syntax
 /// until their existing type facts distinguish constructed from native input.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ValueSuffix {
-    FilterStartsWith(Located<String>),
+#[derive(Debug, PartialEq)]
+pub enum ValueSuffix<Q = ()> {
+    Filter(PredicateArgument<Q>),
     Count,
     Sort,
     Unique,
@@ -1000,18 +1050,21 @@ pub enum ValueSuffix {
 /// A suffix after a terminal tally is refused at the suffix range.
 pub fn lower_value_suffix<S, O, E>(
     value: ValueExpression<Expression<S, O, E>>,
-    stage: Located<ValueSuffix>,
+    stage: Located<ValueSuffix<Expression<S, O, E>>>,
 ) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
     if matches!(value.value, K::Tally(_)) {
         dispose_native_value(value);
+        if let ValueSuffix::Filter(predicate) = stage.value {
+            dispose_native_value(*predicate.body);
+        }
         return Err(QueryError::query(
             stage.range,
             "tally must be the terminal stage",
         ));
     }
     let kind = match stage.value {
-        ValueSuffix::FilterStartsWith(prefix) => K::FilterStartsWith {
-            prefix,
+        ValueSuffix::Filter(predicate) => K::Filter {
+            predicate,
             array: Box::new(value),
         },
         ValueSuffix::Count => K::Reduce {
@@ -1029,87 +1082,85 @@ pub fn lower_value_suffix<S, O, E>(
     Ok(Located::new(kind, stage.range))
 }
 
-/// Continue an already lowered value with `filter(starts_with("prefix"))`,
-/// `count`, `sort`, `unique` and `tally` stages at the current cursor. The prefix
-/// must already satisfy its reader's nesting checks; `nesting` is the allowance remaining for suffix wrappers.
-/// Stage ranges and parsing charges match [`read_value_expression`]. A successful
-/// tree belongs to the caller; failures release the prefix iteratively.
+/// Continue a lowered value with common constructed collection stages.
+/// Lexical names and host syntax remain available inside scoped filters.
 ///
 /// # Errors
-/// Unsupported stages, a stage after `tally`, and exhausted parsing allowances
-/// fail at original query offsets.
-pub fn read_value_suffix<S, O, E>(
+/// Invalid stages, predicate syntax and exhausted allowances retain query ranges.
+pub fn read_value_suffix<H: ValueReaderHost>(
     reader: &mut ArgumentReader<'_>,
-    value: ValueExpression<Expression<S, O, E>>,
+    host: &mut H,
+    value: ValueExpression<ReadExpression<H>>,
+    locals: &[&str],
     budget: &mut Budget,
     nesting: usize,
-) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
-    let mut value = ValueGuard::new(value);
-    let mut depth = 0usize;
-    while reader.consume('|') {
-        let stage = reader.word()?;
-        budget.charge(stage.value.len(), Location::Query(stage.range.clone()))?;
-        if matches!(value.value().value, K::Tally(_)) {
-            return Err(QueryError::query(
-                stage.range,
-                "tally must be the terminal stage",
-            ));
-        }
-        let suffix = match stage.value {
-            "filter" => ValueSuffix::FilterStartsWith(read_constructed_filter(reader, budget)?),
-            "count" => ValueSuffix::Count,
-            "sort" => ValueSuffix::Sort,
-            "unique" => ValueSuffix::Unique,
-            "tally" => ValueSuffix::Tally,
-            _ => {
-                return Err(QueryError::query(
-                    stage.range,
-                    "unsupported constructed pipeline stage",
-                ));
-            }
-        };
-        value = ValueGuard::new(lower_value_suffix(
-            value.into_value(),
-            Located::new(suffix, stage.range.start..reader.position()),
-        )?);
-        let location = Location::Query(reader.position()..reader.position());
-        budget.charge(1, location.clone())?;
-        budget.charge_results(1, location)?;
-        depth += 1;
-        if depth >= nesting.min(crate::MAX_NESTING) {
-            return Err(reader.error("value nesting limit exceeded"));
-        }
-    }
-    Ok(value.into_value())
+) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+    let value = ValueGuard::new(value);
+    let locals = copy_reader_locals(locals, budget, reader.position())?;
+    let mut parser = Reader {
+        reader,
+        host,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+        locals,
+    };
+    parser.value_suffix(value.into_value(), 0)
 }
 
-/// Read the closed `(starts_with("prefix"))` argument of a constructed filter.
-/// The cursor starts after `filter`; the literal retains its original range.
-/// Native predicate grammar remains with the host.
+fn copy_reader_locals<'l>(
+    locals: &[&'l str],
+    budget: &mut Budget,
+    position: usize,
+) -> Result<Vec<&'l str>, QueryError> {
+    let location = Location::Query(position..position);
+    crate::value::allocation::<&str>(locals.len(), &location)?;
+    budget.charge(locals.len(), location.clone())?;
+    budget.charge_results(locals.len(), location)?;
+    Ok(locals.to_vec())
+}
+
+/// Read the parenthesized scoped body after a constructed `filter` keyword.
 ///
 /// # Errors
-/// A different predicate, malformed syntax or exhausted parsing allowance is located.
-pub fn read_constructed_filter(
+/// Invalid expressions, malformed delimiters and parsing limits are located.
+pub fn read_constructed_filter<H: ValueReaderHost>(
     reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    locals: &[&str],
     budget: &mut Budget,
-) -> Result<Located<String>, QueryError> {
+    nesting: usize,
+) -> Result<PredicateArgument<ReadExpression<H>>, QueryError> {
     reader.expect('(')?;
-    let predicate = reader.word()?;
-    budget.charge(
-        predicate.value.len(),
-        Location::Query(predicate.range.clone()),
-    )?;
-    if predicate.value != "starts_with" {
-        return Err(QueryError::query(
-            predicate.range,
-            "constructed filter needs starts_with(\"prefix\")",
-        ));
-    }
-    reader.expect('(')?;
-    let prefix = read_string(reader, budget)?;
+    let mut predicate = PredicateArgumentGuard(Some(read_predicate_argument(
+        reader, host, locals, budget, nesting,
+    )?));
     reader.expect(')')?;
-    reader.expect(')')?;
-    Ok(prefix)
+    Ok(predicate.0.take().expect("retained predicate argument"))
+}
+
+/// Read `name => expression` or an expression using the implicit `_` subject.
+/// The caller supplies its closing delimiter and the subject used at execution.
+/// Root/ancestor tests, path targets, match guards, diff subjects and scalar
+/// element edits can use this same boundary without constructing a filter stage.
+///
+/// # Errors
+/// Invalid bodies and exhausted allowances retain their original query offsets.
+pub fn read_predicate_argument<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    locals: &[&str],
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<PredicateArgument<ReadExpression<H>>, QueryError> {
+    let locals = copy_reader_locals(locals, budget, reader.position())?;
+    let mut parser = Reader {
+        reader,
+        host,
+        budget,
+        nesting: nesting.min(crate::MAX_NESTING),
+        locals,
+    };
+    parser.predicate_argument(0)
 }
 
 /// Read a normalized native expression, including capture field postfixes.
@@ -1365,15 +1416,15 @@ impl PatternReader<'_, '_, '_> {
     }
 }
 
-struct Reader<'a, 's, 'h, H> {
+struct Reader<'a, 's, 'h, 'l, H> {
     reader: &'a mut ArgumentReader<'s>,
     host: &'h mut H,
     budget: &'h mut Budget,
     nesting: usize,
-    locals: Vec<&'s str>,
+    locals: Vec<&'l str>,
 }
 
-impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
+impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn function_value(&mut self) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.function_value_at(0)
     }
@@ -2203,12 +2254,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             self.depth(depth + chain)?;
         }
         if minimum == 0 {
-            return read_value_suffix(
-                self.reader,
-                left.into_value(),
-                self.budget,
-                self.nesting.saturating_sub(depth + chain),
-            );
+            return self.value_suffix(left.into_value(), depth + chain);
         }
         Ok(left.into_value())
     }
@@ -2374,13 +2420,17 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         if !local && !self.host.is_binding(word.value) && !self.host.is_stage(word.value) {
             if word.value == "filter" && probe.remaining().starts_with('(') {
                 let name = self.name()?;
-                let prefix = read_constructed_filter(self.reader, self.budget)?;
+                self.reader.expect('(')?;
+                let mut predicate =
+                    PredicateArgumentGuard(Some(self.predicate_argument(depth + 1)?));
+                self.reader.expect(')')?;
+                let predicate = predicate.0.take().expect("retained predicate argument");
                 self.depth(depth + 1)?;
                 let input = self.node(K::CurrentInput, name.range)?;
                 return self.node(
-                    K::FilterStartsWith {
+                    K::Filter {
                         array: Box::new(input),
-                        prefix,
+                        predicate,
                     },
                     start..self.reader.position(),
                 );
@@ -2397,6 +2447,10 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     name.range,
                 );
             }
+        }
+        if word.value == "_" && !self.field_pipeline() && !probe.remaining().starts_with('|') {
+            let name = self.name()?;
+            return self.node(K::PredicateSubject, name.range);
         }
         let ordering_call = self.ordering_call()?;
         let mut next = ArgumentReader::new(self.reader.source(), probe.position())?;
@@ -2495,9 +2549,20 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     name.value.as_str(),
                     "contains" | "starts_with" | "ends_with"
                 ) {
-                    self.reader.expect(',')?;
-                    let right = ValueGuard::new(self.expression(0, depth + 1)?);
-                    self.reader.expect(')')?;
+                    let compact = name.value == "starts_with"
+                        && self.locals.contains(&"_")
+                        && self.reader.consume(')');
+                    let (left, right) = if compact {
+                        (
+                            self.node(K::PredicateSubject, name.range.clone())?,
+                            value.into_value(),
+                        )
+                    } else {
+                        self.reader.expect(',')?;
+                        let right = self.expression(0, depth + 1)?;
+                        self.reader.expect(')')?;
+                        (value.into_value(), right)
+                    };
                     K::Binary {
                         operator: match name.value.as_str() {
                             "contains" => B::Contains,
@@ -2505,8 +2570,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                             "ends_with" => B::EndsWith,
                             _ => unreachable!("string matching call"),
                         },
-                        left: Box::new(value.into_value()),
-                        right: Box::new(right.into_value()),
+                        left: Box::new(left),
+                        right: Box::new(right),
                     }
                 } else if matches!(
                     name.value.as_str(),
@@ -3131,7 +3196,14 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 self.reader.advance(probe.position() - start)?;
                 self.budget
                     .charge(first.value.len(), Location::Query(first.range.clone()))?;
-                Located::new(ExpressionKind::Binding(first.value.to_owned()), first.range)
+                Located::new(
+                    ExpressionKind::Binding(if first.value == "_" {
+                        crate::value::PREDICATE_SUBJECT.to_owned()
+                    } else {
+                        first.value.to_owned()
+                    }),
+                    first.range,
+                )
             } else {
                 Located::new(ExpressionKind::Input, start..start)
             }
@@ -3203,7 +3275,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 ExpressionStep::Stage(stage)
             } else if self.reader.keyword("filter") {
                 self.reader.expect('(')?;
-                let predicate = self.predicate_or(depth + 1)?;
+                let predicate = self.native_predicate_argument(depth + 1)?;
                 self.reader.expect(')')?;
                 ExpressionStep::Stage(
                     self.host
@@ -3227,6 +3299,12 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     body.0.take().expect("fixed-point body"),
                     stage_start..self.reader.position(),
                 )?)
+            } else if self.match_call() {
+                let matching = self.matching(depth + 1)?;
+                ExpressionStep::Stage(
+                    self.host
+                        .matching(matching, stage_start..self.reader.position())?,
+                )
             } else if self.projection_call() {
                 let projection = self.projection(depth + 1)?;
                 ExpressionStep::Stage(
@@ -3406,7 +3484,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     }
                     "where" => (
                         MatchClause::Where {
-                            predicate: self.predicate_or(depth + 1)?,
+                            predicate: self.native_predicate_argument(depth + 1)?,
                         },
                         None,
                     ),
@@ -3458,7 +3536,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             return Err(self.reader.error("expected `to` target argument"));
         }
         self.reader.expect('=')?;
-        let mut target = PredicateGuard(Some(self.predicate_or(depth + 1)?));
+        let mut target = PredicateGuard(Some(self.native_predicate_argument(depth + 1)?));
         self.reader.expect(',')?;
         if !self.reader.keyword("max_depth") {
             return Err(self.reader.error("expected `max_depth` edge bound"));
@@ -3478,45 +3556,252 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
             range: start..self.reader.position(),
         })
     }
-    fn predicate_or(&mut self, depth: usize) -> Result<Predicate<H::Predicate>, QueryError> {
-        let first = self.predicate_and(depth)?;
+    fn predicate_name(&mut self) -> Result<Option<Located<String>>, QueryError> {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        let Ok(name) = probe.word() else {
+            return Ok(None);
+        };
+        probe.skip_whitespace();
+        if !probe.remaining().starts_with("=>") {
+            return Ok(None);
+        }
+        probe.advance(2)?;
+        self.reader
+            .advance(probe.position() - self.reader.position())?;
+        self.budget
+            .charge(name.value.len() + 2, Location::Query(name.range.clone()))?;
+        if name.value == "_" {
+            return Err(QueryError::query(
+                name.range,
+                "use the implicit unnamed argument without =>",
+            ));
+        }
+        Ok(Some(Located::new(name.value.to_owned(), name.range)))
+    }
+    fn predicate_argument(
+        &mut self,
+        depth: usize,
+    ) -> Result<PredicateArgument<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        let argument = self.predicate_name()?;
+        let saved = self.locals.len();
+        self.slots::<&str>(1 + usize::from(argument.is_some()))?;
+        self.locals.push("_");
+        if let Some(name) = &argument {
+            self.locals.push(&self.reader.source()[name.range.clone()]);
+        }
+        let result = (|| {
+            if let Some(body) = self.host.parse_predicate_value(
+                self.reader,
+                &self.locals,
+                self.budget,
+                self.nesting.saturating_sub(depth),
+            )? {
+                Ok(body)
+            } else {
+                self.expression(0, depth + 1)
+            }
+        })();
+        self.locals.truncate(saved);
+        Ok(PredicateArgument {
+            argument,
+            body: Box::new(result?),
+        })
+    }
+    fn native_predicate_argument(
+        &mut self,
+        depth: usize,
+    ) -> Result<Predicate<H::Predicate>, QueryError> {
+        let argument = self.predicate_name()?;
+        let saved = self.locals.len();
+        self.slots::<&str>(1 + usize::from(argument.is_some()))?;
+        self.locals.push("_");
+        if let Some(name) = &argument {
+            self.locals.push(&self.reader.source()[name.range.clone()]);
+        }
+        let result = self.predicate_or(depth, argument.as_ref());
+        self.locals.truncate(saved);
+        result
+    }
+    fn value_suffix(
+        &mut self,
+        value: ValueExpression<ReadExpression<H>>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let mut value = ValueGuard::new(value);
+        let mut wrappers = 0;
+        while self.reader.consume('|') {
+            self.depth(depth + wrappers + 1)?;
+            let stage = self.name()?;
+            if matches!(value.value().value, K::Tally(_)) {
+                return Err(QueryError::query(
+                    stage.range,
+                    "tally must be the terminal stage",
+                ));
+            }
+            let suffix = match stage.value.as_str() {
+                "filter" => {
+                    self.reader.expect('(')?;
+                    let mut predicate = PredicateArgumentGuard(Some(
+                        self.predicate_argument(depth + wrappers + 1)?,
+                    ));
+                    self.reader.expect(')')?;
+                    ValueSuffix::Filter(predicate.0.take().expect("retained predicate argument"))
+                }
+                "count" => ValueSuffix::Count,
+                "sort" => ValueSuffix::Sort,
+                "unique" => ValueSuffix::Unique,
+                "tally" => ValueSuffix::Tally,
+                _ => {
+                    return Err(QueryError::query(
+                        stage.range,
+                        "unsupported constructed pipeline stage",
+                    ));
+                }
+            };
+            value = ValueGuard::new(lower_value_suffix(
+                value.into_value(),
+                Located::new(suffix, stage.range.start..self.reader.position()),
+            )?);
+            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+            wrappers += 1;
+        }
+        Ok(value.into_value())
+    }
+    fn predicate_or(
+        &mut self,
+        depth: usize,
+        argument: Option<&Located<String>>,
+    ) -> Result<Predicate<H::Predicate>, QueryError> {
+        let first = self.predicate_and(depth, argument)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
         let mut predicates = vec![first];
         while self.reader.keyword("or") {
             self.slots::<Predicate<H::Predicate>>(1)?;
-            predicates.push(self.predicate_and(depth)?);
+            predicates.push(self.predicate_and(depth, argument)?);
         }
         Ok(combine(predicates, PredicateKind::Or))
     }
-    fn predicate_and(&mut self, depth: usize) -> Result<Predicate<H::Predicate>, QueryError> {
-        let first = self.predicate_atom(depth)?;
+    fn predicate_and(
+        &mut self,
+        depth: usize,
+        argument: Option<&Located<String>>,
+    ) -> Result<Predicate<H::Predicate>, QueryError> {
+        let first = self.predicate_atom(depth, argument)?;
         self.slots::<Predicate<H::Predicate>>(1)?;
         let mut predicates = vec![first];
         while self.reader.keyword("and") {
             self.slots::<Predicate<H::Predicate>>(1)?;
-            predicates.push(self.predicate_atom(depth)?);
+            predicates.push(self.predicate_atom(depth, argument)?);
         }
         Ok(combine(predicates, PredicateKind::And))
     }
-    fn predicate_atom(&mut self, depth: usize) -> Result<Predicate<H::Predicate>, QueryError> {
+    fn predicate_group(&mut self, depth: usize) -> Result<bool, QueryError> {
+        let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+        if !probe.consume('(') {
+            return Ok(false);
+        }
+        // A following value operator/postfix keeps the parentheses with its
+        // operand. A complete predicate group retains the native Boolean tree.
+        let mut groups = 1;
+        self.depth(depth + groups)?;
+        let (mut quoted, mut escaped, mut comment) = (false, false, false);
+        for (offset, ch) in probe.remaining().char_indices() {
+            let position = probe.position() + offset;
+            self.budget
+                .charge(1, Location::Query(position..position + ch.len_utf8()))?;
+            if comment {
+                comment = ch != '\n';
+            } else if quoted {
+                if !escaped && ch == '"' {
+                    quoted = false;
+                }
+                escaped = !escaped && ch == '\\';
+            } else {
+                match ch {
+                    '#' => comment = true,
+                    '"' => quoted = true,
+                    '(' => {
+                        groups += 1;
+                        self.depth(depth + groups)?;
+                    }
+                    ')' => {
+                        groups -= 1;
+                        if groups == 0 {
+                            probe.advance(offset + 1)?;
+                            let end = probe.position();
+                            probe.skip_whitespace();
+                            let grouped = probe.remaining().is_empty()
+                                || probe.remaining().starts_with([')', ']', '}', ',', ';'])
+                                || probe.keyword("and")
+                                || probe.keyword("or");
+                            self.budget.charge(
+                                probe.position() - end,
+                                Location::Query(end..probe.position()),
+                            )?;
+                            return Ok(grouped);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(false)
+    }
+    fn predicate_atom(
+        &mut self,
+        depth: usize,
+        argument: Option<&Located<String>>,
+    ) -> Result<Predicate<H::Predicate>, QueryError> {
         self.depth(depth)?;
         self.reader.skip_whitespace();
         let start = self.reader.position();
         let value = if self.reader.keyword("not") {
-            PredicateKind::Not(Box::new(self.predicate_atom(depth + 1)?))
-        } else if self.reader.consume('(') {
-            let predicate = self.predicate_or(depth + 1)?;
+            PredicateKind::Not(Box::new(self.predicate_atom(depth + 1, argument)?))
+        } else if self.predicate_group(depth)? && self.reader.consume('(') {
+            let predicate = self.predicate_or(depth + 1, argument)?;
             self.reader.expect(')')?;
             PredicateKind::Group(Box::new(predicate))
         } else {
-            PredicateKind::Leaf(self.host.parse_predicate_leaf_in_scope(
-                self.reader,
-                &self.locals,
-                self.budget,
-            )?)
+            let mut probe = ArgumentReader::new(self.reader.source(), self.reader.position())?;
+            let native_leaf = match probe.word() {
+                Ok(word) if self.host.is_predicate_leaf(word.value) => {
+                    probe.consume('(')
+                        || (!self.is_local(word.value, &word.range)?
+                            && !self.host.is_binding(word.value))
+                }
+                _ => false,
+            };
+            if native_leaf {
+                PredicateKind::Leaf(self.host.parse_predicate_leaf_in_argument(
+                    self.reader,
+                    argument,
+                    &self.locals,
+                    self.budget,
+                )?)
+            } else {
+                let body = self.expression(3, depth + 1)?;
+                let range = body.range.clone();
+                PredicateKind::Leaf(self.host.predicate_expression(
+                    PredicateArgument {
+                        argument: argument.cloned(),
+                        body: Box::new(body),
+                    },
+                    range,
+                )?)
+            }
         };
         self.slots::<Predicate<H::Predicate>>(1)?;
         Ok(Located::new(value, start..self.reader.position()))
+    }
+}
+
+struct PredicateArgumentGuard<S, O, E>(Option<PredicateArgument<Expression<S, O, E>>>);
+impl<S, O, E> Drop for PredicateArgumentGuard<S, O, E> {
+    fn drop(&mut self) {
+        if let Some(predicate) = self.0.take() {
+            dispose_native_value(*predicate.body);
+        }
     }
 }
 
@@ -3613,7 +3898,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 crate::value::dispose_constructed_value(value);
                 continue;
             }
-            K::Name(_) | K::CurrentInput => continue,
+            K::Name(_) | K::CurrentInput | K::PredicateSubject => continue,
             K::IdentitySet { element } => {
                 dispose_signature(element.value);
                 continue;
@@ -3655,11 +3940,23 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }
             | K::GroupBy { rows: child, .. }
-            | K::FilterStartsWith { array: child, .. }
             | K::Reduce { array: child, .. }
             | K::Sort { array: child, .. }
             | K::Extremum { array: child, .. } => {
                 pending.push(*child);
+                continue;
+            }
+            K::Filter { array, predicate }
+            | K::PredicateScope {
+                subject: array,
+                predicate,
+            }
+            | K::SubjectScope {
+                subject: array,
+                argument: predicate,
+            } => {
+                pending.push(*array);
+                pending.push(*predicate.body);
                 continue;
             }
             K::Fold {

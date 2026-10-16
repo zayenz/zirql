@@ -252,21 +252,43 @@ conversion such as `[cell.value for cell in entries(a)]` before ordering.
 
 ## Constructed collection pipelines
 
-A positional string array can pass through `filter(starts_with("prefix"))`.
-It retains matches in order, including duplicates. The prefix must be a literal
-string; matching is case-sensitive and an empty prefix matches every string.
-`count` returns the number of array entries as an integer. For example:
+A positional array can select elements with a Boolean expression:
 
 ```zirql
-{"beginning_with_a": filter(starts_with("a")) | count, "total": count}
+people | filter(p => p.active == "yes")
+people | filter(_.active == "yes")
+[p for p in people if p.active == "yes"]
 ```
 
-With the word host this returns `{"beginning_with_a": 3, "total": 4}`. Each
-field reads the same immutable constructed input. An explicit source, such as
-`["apple", "birch"] | filter(starts_with("a")) | count`, supplies only its own
-pipeline and returns `1`. Empty and no-match arrays count as zero. Missing
-input, scalar or keyed filter sources and non-string elements fail at their
-query locations. Incompatible declarations fail even for empty arrays.
+These retain the same rows in input order, including duplicates. The optional
+name and `_` denote the same element. Comparisons, Boolean composition, lexical
+captures and permitted pure calls use the ordinary expression rules. A predicate
+must produce a known Boolean. Known incompatible types, undefined names and
+forbidden operations fail before iteration, including for typed empty input.
+A keyed array needs an explicit conversion before filtering; filtering never
+silently renumbers keyed cells.
+
+Nested filters bind `_` anew. Give the outer element a name when it is needed
+inside another predicate:
+
+```zirql
+people | filter(p => length(["compiler"] | filter(_ == p.team)) > 0)
+```
+
+Ordinary comprehension filters, conditionals, requirements and value-match
+guards see the enclosing predicate scope. `_` is unavailable outside that
+scope and still means discard in patterns and generator binders.
+
+Bare `filter` and `count` read the host's immutable constructed input:
+
+```zirql
+{"beginning_with_a": filter(starts_with(_, "a")) | count, "total": count}
+```
+
+The word host returns `{"beginning_with_a": 3, "total": 4}`. An explicit source,
+such as `["apple", "birch"] | filter(w => starts_with(w, "a")) | count`, returns
+`1`. Empty and no-match arrays count as zero. The compact
+`filter(starts_with("a"))` spelling uses the same expression machinery.
 
 The `sort` suffix applies the same ascending sort to arrays, sets and
 dictionaries, retaining their kind. Positional arrays also support stable

@@ -47,7 +47,7 @@ text:
 
 ```zirql
 param prefix: string;
-let selected = [w for w in words if starts_with(w, prefix)];
+let selected = words | filter(w => starts_with(w, prefix));
 report {"words": selected, "count": length(selected)};
 ```
 
@@ -345,3 +345,15 @@ cannot prove convergence. Zincite uses complete-or-error adjacency and refuses
 saved partial selections at their responsible locations while retaining other
 report limitations. Domain closure,
 paths and specialized reachability remain separate operations.
+
+## Predicate argument subjects
+
+Native predicate bodies can use the host's permitted expressions with
+`name => body` or `_`. Native filter receives one subject; root tests each
+candidate operation or ancestor, and path `to=` tests each candidate target.
+A native match `where` body receives the original incoming input, including
+its collection shape, while earlier captures remain separate lexical names.
+Diff filters retain their existing change or side-owned operation subject.
+The host's projections, domain leaves and effect rules still determine which
+expressions are meaningful. See [scoped predicate adapters](host-integration.md#scoped-predicates)
+for reader, preparation and active-runner obligations.

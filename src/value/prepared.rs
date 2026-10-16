@@ -18,6 +18,7 @@ pub(crate) struct PreparedArgument<'a, Q> {
 pub(crate) enum PreparedKind<'a, Q> {
     Literal(&'a ConstructedValue),
     CurrentInput,
+    PredicateSubject,
     Queue {
         source: usize,
         items: Box<PreparedValue<'a, Q>>,
@@ -132,9 +133,11 @@ pub(crate) enum PreparedKind<'a, Q> {
         operator: ValueReducer,
         array: Box<PreparedValue<'a, Q>>,
     },
-    FilterStartsWith {
-        array: Box<PreparedValue<'a, Q>>,
-        prefix: &'a Located<String>,
+    SubjectScope {
+        subject: Box<PreparedValue<'a, Q>>,
+        predicate: bool,
+        argument: Option<&'a str>,
+        body: Box<PreparedValue<'a, Q>>,
     },
     Sort {
         array: Box<PreparedValue<'a, Q>>,
@@ -189,6 +192,7 @@ pub(crate) enum PreparedKind<'a, Q> {
     },
     Comprehension {
         constructor: ValueConstructor,
+        retain_declaration: bool,
         clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
         head: Box<PreparedValue<'a, Q>>,
     },
@@ -204,7 +208,7 @@ pub(crate) struct PreparedArm<'a, Q> {
 /// Grouped `In` evaluates its source once and varies the last binder fastest.
 pub(crate) enum PreparedGenerator<'a, Q> {
     In {
-        binders: Vec<&'a Located<Option<String>>>,
+        binders: Vec<Located<Option<&'a str>>>,
         source: PreparedValue<'a, Q>,
         filter: Option<PreparedValue<'a, Q>>,
     },
@@ -330,6 +334,35 @@ impl<'a> Preparation<'a> {
                         }
                     }
                 }
+                ValueExpressionKind::PredicateSubject => {
+                    match self
+                        .locals
+                        .iter()
+                        .rposition(|name| *name == PREDICATE_SUBJECT)
+                    {
+                        Some(slot) => PreparedKind::Name(ReadSlot::Local(slot)),
+                        None => PreparedKind::PredicateSubject,
+                    }
+                }
+                ValueExpressionKind::PredicateScope { subject, predicate }
+                | ValueExpressionKind::SubjectScope {
+                    subject,
+                    argument: predicate,
+                } => {
+                    let subject = Box::new(self.resolve(subject, queries, budget)?);
+                    let saved = self.locals.len();
+                    let body = self.predicate(predicate, queries, budget, &location)?;
+                    self.locals.truncate(saved);
+                    PreparedKind::SubjectScope {
+                        predicate: matches!(
+                            expression.value,
+                            ValueExpressionKind::PredicateScope { .. }
+                        ),
+                        subject,
+                        argument: predicate.argument.as_ref().map(|name| name.value.as_str()),
+                        body: Box::new(body),
+                    }
+                }
                 ValueExpressionKind::Name(name) => {
                     let work = self
                         .locals
@@ -340,7 +373,7 @@ impl<'a> Preparation<'a> {
                         })?;
                     budget.charge(work, location.clone())?;
                     let slot = if let Some(index) =
-                        self.locals.iter().position(|local| *local == name)
+                        self.locals.iter().rposition(|local| *local == name)
                     {
                         ReadSlot::Local(index)
                     } else {
@@ -481,10 +514,44 @@ impl<'a> Preparation<'a> {
                     operator: *operator,
                     array: Box::new(self.resolve(array, queries, budget)?),
                 },
-                ValueExpressionKind::FilterStartsWith { array, prefix } => {
-                    PreparedKind::FilterStartsWith {
-                        array: Box::new(self.resolve(array, queries, budget)?),
-                        prefix,
+                ValueExpressionKind::Filter { array, predicate } => {
+                    let source = self.resolve(array, queries, budget)?;
+                    let saved = self.locals.len();
+                    push_metadata(&mut self.locals, PREDICATE_SUBJECT, budget, &location)?;
+                    let subject = Located::new(
+                        PreparedKind::Name(ReadSlot::Local(saved)),
+                        array.range.clone(),
+                    );
+                    let body = self.predicate(predicate, queries, budget, &location)?;
+                    let filter = Located::new(
+                        PreparedKind::SubjectScope {
+                            predicate: true,
+                            subject: Box::new(subject),
+                            argument: predicate.argument.as_ref().map(|name| name.value.as_str()),
+                            body: Box::new(body),
+                        },
+                        predicate.body.range.clone(),
+                    );
+                    self.locals.truncate(saved);
+                    let mut binders = metadata_vec(1, budget, &location)?;
+                    binders.push(Located::new(Some(PREDICATE_SUBJECT), array.range.clone()));
+                    let mut clauses = metadata_vec(1, budget, &location)?;
+                    clauses.push(Located::new(
+                        PreparedGenerator::In {
+                            binders,
+                            source,
+                            filter: Some(filter),
+                        },
+                        expression.range.clone(),
+                    ));
+                    PreparedKind::Comprehension {
+                        constructor: ValueConstructor::Array,
+                        retain_declaration: true,
+                        clauses,
+                        head: Box::new(Located::new(
+                            PreparedKind::Name(ReadSlot::Local(saved)),
+                            array.range.clone(),
+                        )),
                     }
                 }
                 ValueExpressionKind::Sort {
@@ -623,6 +690,7 @@ impl<'a> Preparation<'a> {
                     self.locals.truncate(saved);
                     PreparedKind::Comprehension {
                         constructor: *constructor,
+                        retain_declaration: false,
                         clauses,
                         head,
                     }
@@ -682,6 +750,20 @@ impl<'a> Preparation<'a> {
             .transpose()
     }
 
+    fn predicate<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        predicate: &'a PredicateArgument<Q>,
+        queries: &mut H,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<PreparedValue<'a, Q>, QueryError> {
+        push_metadata(&mut self.locals, PREDICATE_SUBJECT, budget, location)?;
+        if let Some(name) = &predicate.argument {
+            push_metadata(&mut self.locals, name.value.as_str(), budget, location)?;
+        }
+        self.resolve(&predicate.body, queries, budget)
+    }
+
     fn clauses<Q, H: ValueQueryHost<Q> + ?Sized>(
         &mut self,
         clauses: &'a [Located<ValueGenerator<Q>>],
@@ -700,7 +782,7 @@ impl<'a> Preparation<'a> {
                     let source = self.resolve(source, queries, budget)?;
                     let mut names = metadata_vec(binders.len(), budget, location)?;
                     for binder in binders {
-                        names.push(binder);
+                        names.push(Located::new(binder.value.as_deref(), binder.range.clone()));
                         if let Some(name) = &binder.value {
                             push_metadata(&mut self.locals, name.as_str(), budget, location)?;
                         }

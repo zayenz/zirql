@@ -36,11 +36,26 @@ Explicit sources do not read or replace it. Native `ExpressionKind::Input`
 keeps its separate host-owned meaning. Pure functions receive collections as
 explicit parameters and do not capture caller input.
 
-The common reader lowers `filter(starts_with("a")) | count` to
-`FilterStartsWith { array: CurrentInput, prefix: "a" }` inside
-`Reduce { operator: Length, array: ... }`. Typed callers use the same nodes and
-`evaluate_query_value`, with the host's input facts and the same budget.
-`read_value_suffix` also accepts filter/count after an already lowered value.
+The common reader lowers `filter(_.active == "yes")` to
+`Filter { array: CurrentInput, predicate }`. `PredicateArgument<Q>` contains an
+optional located name and a located value body. `PredicateSubject` reads the
+nearest predicate frame, independently of ordinary bindings. Filter preparation
+uses the same Boolean/type/scope rules and the same iteration runner as a
+comprehension. Typed-empty element facts survive selection.
+
+`PredicateArgument::bind(subject)` creates a `PredicateScope` expression for one
+actual subject. Scalar hosts can evaluate it with `evaluate_value` or
+`evaluate_query_value`. Native adapters retain the bound expression as a declared
+argument and use the active `NativeArguments::evaluate_predicate` runner.
+For an existing domain leaf's non-Boolean argument, `bind_value(subject)` creates
+`SubjectScope` and keeps the leaf's own argument type check.
+`native_predicate_types` and `evaluate_native_predicate` support ordinary native
+bodies without a `FunctionHost` or function session. The latter accepts the raw
+predicate argument and actual host subject, retaining its native bindings.
+The `native_predicate_value_types` and `evaluate_native_predicate_value` forms
+serve an ordinary domain leaf's non-Boolean argument with the same scope.
+`read_value_suffix` takes the host and enclosing lexical names so filters after
+host-lowered prefixes retain the same name and call resolution.
 
 ## Values, facts and declarations
 
@@ -91,7 +106,8 @@ preflight still covers those branches.
 | Conditional selection | `Conditional` |
 | Computed string dictionary | `Dictionary` entry pairs or `DictionaryComprehension { clauses, key, head }` |
 | Array or set comprehension | `Comprehension` with `ValueConstructor` and `ValueGenerator` clauses |
-| Prefix selection | `FilterStartsWith { array, prefix }` |
+| Scoped element selection | `Filter { array, predicate }` |
+| One bound predicate | `PredicateScope { subject, predicate }`, `PredicateSubject` |
 | Summaries | `Reduce` with `ValueReducer::{Length, Sum, Forall, Exists}` |
 | Requirement | `Require { condition, value, message }` |
 | Grouping | `GroupBy { rows, field }` |

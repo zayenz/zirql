@@ -1048,6 +1048,12 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         &location,
                     )?)
                 }
+                ValueExpressionKind::PredicateSubject => self
+                    .scope
+                    .get(crate::value::PREDICATE_SUBJECT)
+                    .or_else(|| self.generator_kinds.get(crate::value::PREDICATE_SUBJECT))
+                    .cloned()
+                    .map(DeclaredType::Native),
                 ValueExpressionKind::Name(name) => match self.contracts.get(name) {
                     Some(d) => Some(crate::runtime_types::copy_declaration(
                         d, budget, &location,
@@ -1374,6 +1380,11 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         .kind
                         .clone(),
                 ),
+                ValueExpressionKind::PredicateSubject => self
+                    .scope
+                    .get(crate::value::PREDICATE_SUBJECT)
+                    .or_else(|| self.generator_kinds.get(crate::value::PREDICATE_SUBJECT))
+                    .cloned(),
                 ValueExpressionKind::Name(name) => self
                     .scope
                     .get(name)
@@ -1726,6 +1737,25 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
             crate::value::function_facts(state, budget, &Location::Query(step.range.clone()))?,
         ))
     }
+    fn predicate_subject_types(
+        &mut self,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let kind = self
+            .scope
+            .get(crate::value::PREDICATE_SUBJECT)
+            .ok_or_else(|| {
+                QueryError::query(
+                    range.clone(),
+                    "unnamed argument is only available in a predicate",
+                )
+            })?;
+        Ok(self
+            .host
+            .scalar_types(kind, budget, range)?
+            .unwrap_or_else(|| vec![ValueType::Unestablished]))
+    }
     fn query_types(
         &mut self,
         q: &Query<C, H>,
@@ -1826,6 +1856,46 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
             };
             budget_name(name, budget, &binder.range)?;
             self.generator_kinds.insert(name.clone(), kind);
+        }
+        Ok(())
+    }
+    fn prepare_predicate(
+        &mut self,
+        argument: Option<&Located<String>>,
+        source: &ValueExpression<Query<C, H>>,
+        types: &[ValueType],
+        element: bool,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let kind = match self.local_kind(source, budget)? {
+            Some(kind)
+                if element
+                    && self
+                        .host
+                        .scalar_types(&kind, budget, &source.range)?
+                        .is_none() =>
+            {
+                return Err(QueryError::query(
+                    source.range.clone(),
+                    "constructed filter needs a positional array; use the host's native filter for native selections",
+                ));
+            }
+            Some(kind) if !element => kind,
+            _ => self.host.constructed_kind(copy_value_types(
+                types,
+                budget,
+                Location::Query(source.range.clone()),
+            )?),
+        };
+        let internal = crate::value::PREDICATE_SUBJECT;
+        budget_name(internal, budget, &source.range)?;
+        self.scope.insert(internal.to_owned(), kind.clone());
+        self.generator_kinds
+            .insert(internal.to_owned(), kind.clone());
+        if let Some(name) = argument {
+            budget_name(&name.value, budget, &name.range)?;
+            self.scope.insert(name.value.clone(), kind.clone());
+            self.generator_kinds.insert(name.value.clone(), kind);
         }
         Ok(())
     }
@@ -3129,6 +3199,13 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     fn retains_native_admission(&self) -> bool {
         self.host.retains_native_admission()
     }
+    fn predicate_subject(
+        &mut self,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        self.outer(0, crate::value::PREDICATE_SUBJECT, budget, range)
+    }
     fn outer(
         &mut self,
         _: usize,
@@ -3516,6 +3593,27 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
             }
         };
         Ok(ConstructedRead::from_runtime(value, location, declaration))
+    }
+    fn evaluate_predicate(
+        &mut self,
+        expression: &ValueExpression<Query<C, H>>,
+        input: H::Value,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<bool, EvaluationError<H::Error>> {
+        let value = self.run(expression, &input, captures, budget)?;
+        let Data::Constructed(value) = value.data else {
+            return Err(QueryError::query(
+                expression.range.clone(),
+                "predicate needs a fixed Boolean",
+            )
+            .into());
+        };
+        crate::value::boolean(
+            value.materialize(budget, &Location::Query(expression.range.clone()))?,
+            &Location::Query(expression.range.clone()),
+        )
+        .map_err(Into::into)
     }
     fn evaluate_native(
         &mut self,

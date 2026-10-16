@@ -77,6 +77,31 @@ pub trait NativeArguments<C, H: ProjectionHost<C>> {
         relative_input: H::Value,
         budget: &mut Budget,
     ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>>;
+    /// Evaluate a declared bound predicate through this active runner. Match
+    /// guards pass their separate capture bindings; other positions pass `None`.
+    /// The relative input is the position's actual subject, never a new session.
+    ///
+    /// # Errors
+    /// Undeclared bodies, unsupported capture runners and non-Boolean results fail.
+    fn evaluate_predicate(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        relative_input: H::Value,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<bool, EvaluationError<H::Error>> {
+        if captures.is_some() {
+            return Err(QueryError::query(
+                expression.range.clone(),
+                "capture predicates require a prepared function runner",
+            )
+            .into());
+        }
+        let value = self
+            .evaluate(expression, relative_input, budget)?
+            .into_owned(budget)?;
+        crate::value::boolean(value, &Location::Query(expression.range.clone())).map_err(Into::into)
+    }
     /// Evaluate a selected declared argument while retaining native ownership.
     /// Existing scalar-only runners reject this opt-in bridge.
     ///
@@ -691,6 +716,7 @@ struct NativeValues<'a, C, H: ProjectionHost<C>> {
     outer_names: &'a [&'a str],
     outer: &'a [&'a H::Value],
     subject_name: Option<&'a str>,
+    predicate_scope: bool,
     prepared: NativePreparation<'a>,
 }
 
@@ -698,6 +724,59 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
     for NativeValues<'_, C, H>
 {
     type Error = EvaluationError<H::Error>;
+    fn predicate_subject_types(
+        &mut self,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        if !self.predicate_scope && !self.scope.contains_key(crate::value::PREDICATE_SUBJECT) {
+            return Err(QueryError::query(
+                range.clone(),
+                "unnamed argument is only available in a predicate",
+            ));
+        }
+        self.host
+            .scalar_types(
+                self.scope
+                    .get(crate::value::PREDICATE_SUBJECT)
+                    .unwrap_or(&self.input_kind),
+                budget,
+                range,
+            )?
+            .ok_or_else(|| {
+                QueryError::query(
+                    range.clone(),
+                    "native handles require an explicit scalar projection",
+                )
+            })
+    }
+    fn read_predicate_subject(
+        &mut self,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<ConstructedValue, Self::Error> {
+        if !self.predicate_scope && !self.scope.contains_key(crate::value::PREDICATE_SUBJECT) {
+            return Err(QueryError::query(
+                range.clone(),
+                "unnamed argument is only available in a predicate",
+            )
+            .into());
+        }
+        let context = self.context.as_deref_mut().expect("predicate context");
+        let value = self.host.copy_value(
+            if self.predicate_scope {
+                self.input.expect("predicate subject")
+            } else {
+                self.bindings
+                    .expect("predicate bindings")
+                    .get(crate::value::PREDICATE_SUBJECT, range.clone())?
+            },
+            context,
+            budget,
+            range,
+        )?;
+        self.host.project_value(value, context, budget, range)
+    }
     fn query_types(
         &mut self,
         query: &Expression<H::Stage, H::SetOperator, H::Emitter>,
@@ -755,6 +834,7 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
                 outer_names: &outer_names,
                 outer: &[],
                 subject_name: None,
+                predicate_scope: false,
                 prepared: NativePreparation::Checking(self.prepared.checking()),
             };
             query_value_types(argument.expression, &facts, &mut queries, budget)?;
@@ -1022,6 +1102,7 @@ impl<C, H: ProjectionHost<C>> NativeArguments<C, H> for StageArguments<'_, '_, C
             outer_names: &outer_names,
             outer: &outer,
             subject_name: None,
+            predicate_scope: false,
             prepared: NativePreparation::Running(self.prepared),
         };
         self.values.evaluate(expression, &mut queries, budget)
@@ -1065,6 +1146,7 @@ pub fn projection_types<C, H: ProjectionHost<C>>(
         outer_names: &outer_names,
         outer: &[],
         subject_name: Some(&projection.subject.value),
+        predicate_scope: false,
         host,
         input_kind: subject_kind,
         input: None,
@@ -1198,6 +1280,7 @@ pub fn evaluate_projection_with_types<C, H: ProjectionHost<C>>(
             outer_names: &outer_names,
             outer: &outer,
             subject_name: Some(&projection.subject.value),
+            predicate_scope: false,
             prepared: NativePreparation::Checking(&mut prepared_native),
         };
         admit_slots::<crate::value::PreparedQueryValue<'_, NativeExpression<C, H>>>(
@@ -1249,6 +1332,7 @@ pub fn evaluate_projection_with_types<C, H: ProjectionHost<C>>(
                     outer_names: &outer_names,
                     outer: &outer,
                     subject_name: Some(&projection.subject.value),
+                    predicate_scope: false,
                     prepared: NativePreparation::Running(&prepared_native),
                 };
                 let (frame, subject_slot) = &mut frames[index];
@@ -1347,6 +1431,7 @@ pub fn evaluate_native_value_with_types<C, H: ProjectionHost<C>>(
         outer_names: &outer_names,
         outer: &outer,
         subject_name: None,
+        predicate_scope: false,
         prepared: NativePreparation::Checking(&mut prepared_native),
     };
     let prepared = crate::value::prepare_query_value(expression, &facts, &mut queries, budget)?;
@@ -1361,7 +1446,192 @@ pub fn evaluate_native_value_with_types<C, H: ProjectionHost<C>>(
         outer_names: &outer_names,
         outer: &outer,
         subject_name: None,
+        predicate_scope: false,
         prepared: NativePreparation::Running(&prepared_native),
+    };
+    let value = prepared.evaluate(&mut queries, &mut frame, budget)?;
+    Ok(ConstructedResult {
+        value,
+        types: prepared.types,
+    })
+}
+
+/// Check an ordinary native predicate without a function session. The subject
+/// kind is the exact value tested by this position, including a match's original
+/// collection input. Capture names remain separate entries in `scope`.
+///
+/// # Errors
+/// Invalid names, non-Boolean bodies, effects and resource failures are located.
+pub fn native_predicate_types<C, H: ProjectionHost<C>>(
+    predicate: &crate::PredicateArgument<NativeExpression<C, H>>,
+    host: &H,
+    subject: H::Kind,
+    scope: BTreeMap<String, H::Kind>,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let types = native_predicate_value_types(predicate, host, subject, scope, budget)?;
+    crate::value::predicate_types(&types, budget, &predicate.body.range)
+}
+
+/// Discover an existing native predicate leaf argument's value types in its
+/// subject scope. The leaf checks its own scalar/string argument contract.
+///
+/// # Errors
+/// Invalid names, effects, native transitions and resource failures are located.
+pub fn native_predicate_value_types<C, H: ProjectionHost<C>>(
+    predicate: &crate::PredicateArgument<NativeExpression<C, H>>,
+    host: &H,
+    subject: H::Kind,
+    mut scope: BTreeMap<String, H::Kind>,
+    budget: &mut Budget,
+) -> Result<Vec<ValueType>, QueryError> {
+    let range = &predicate.body.range;
+    if let Some(name) = &predicate.argument {
+        if name.value == "_" || scope.contains_key(&name.value) {
+            return Err(QueryError::query(
+                name.range.clone(),
+                "predicate argument shadows an existing binding",
+            ));
+        }
+        budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+        scope.insert(name.value.clone(), subject.clone());
+    }
+    budget.charge(
+        crate::value::PREDICATE_SUBJECT.len() + 1,
+        Location::Query(range.clone()),
+    )?;
+    scope.insert(crate::value::PREDICATE_SUBJECT.into(), subject.clone());
+    let facts = value_facts(host, &scope, budget, range)?;
+    admit_slots::<&str>(scope.len(), budget, range)?;
+    let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
+    let mut prepared = BTreeMap::new();
+    let mut queries = NativeValues::<C, H> {
+        host,
+        input_kind: subject,
+        input: None,
+        context: None,
+        bindings: None,
+        scope: &scope,
+        outer_names: &outer_names,
+        outer: &[],
+        subject_name: None,
+        predicate_scope: true,
+        prepared: NativePreparation::Checking(&mut prepared),
+    };
+    query_value_types(&predicate.body, &facts, &mut queries, budget)
+}
+
+/// Evaluate a scoped predicate through ordinary projection/value machinery.
+/// Native handles stay in the supplied subject and bindings. This helper needs
+/// no function host; inside an active function, use its declared argument runner.
+///
+/// # Errors
+/// All-written preflight, invalid ownership, non-Boolean results and limits fail.
+pub fn evaluate_native_predicate<C, H: ProjectionHost<C>>(
+    predicate: &crate::PredicateArgument<NativeExpression<C, H>>,
+    host: &H,
+    subject: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+) -> Result<bool, EvaluationError<H::Error>> {
+    let result =
+        evaluate_predicate_value(predicate, host, subject, context, bindings, budget, true)?;
+    crate::value::boolean(result.value, &Location::Query(predicate.body.range.clone()))
+        .map_err(Into::into)
+}
+
+/// Evaluate an existing domain leaf's value argument in its native subject scope.
+/// This preserves handles without requiring a function host. Use the active
+/// declared argument runner when the enclosing request has functions.
+///
+/// # Errors
+/// All-written preflight, ownership, type and resource failures are located.
+pub fn evaluate_native_predicate_value<C, H: ProjectionHost<C>>(
+    predicate: &crate::PredicateArgument<NativeExpression<C, H>>,
+    host: &H,
+    subject: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+) -> Result<ConstructedResult, EvaluationError<H::Error>> {
+    evaluate_predicate_value(predicate, host, subject, context, bindings, budget, false)
+}
+
+fn evaluate_predicate_value<C, H: ProjectionHost<C>>(
+    predicate: &crate::PredicateArgument<NativeExpression<C, H>>,
+    host: &H,
+    subject: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+    boolean: bool,
+) -> Result<ConstructedResult, EvaluationError<H::Error>> {
+    let range = &predicate.body.range;
+    let kind = host.kind(&subject, budget, range)?;
+    let mut scope = scope_kinds(host, bindings, budget, range)?;
+    if let Some(name) = &predicate.argument {
+        if name.value == "_" || scope.contains_key(&name.value) {
+            return Err(QueryError::query(
+                name.range.clone(),
+                "predicate argument shadows an existing binding",
+            )
+            .into());
+        }
+        budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+        scope.insert(name.value.clone(), kind.clone());
+    }
+    budget.charge(
+        crate::value::PREDICATE_SUBJECT.len() + 1,
+        Location::Query(range.clone()),
+    )?;
+    scope.insert(crate::value::PREDICATE_SUBJECT.into(), kind.clone());
+    let facts = value_facts(host, &scope, budget, range)?;
+    let mut locals = BTreeMap::new();
+    let retained = std::sync::Arc::new(host.copy_value(&subject, context, budget, range)?);
+    locals.insert(
+        crate::value::PREDICATE_SUBJECT.into(),
+        std::sync::Arc::clone(&retained),
+    );
+    if let Some(name) = &predicate.argument {
+        locals.insert(name.value.clone(), retained);
+    }
+    let bindings = bindings.with_shared_values(locals, budget, range)?;
+    admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, range)?;
+    let outer_names = bindings.iter().map(|(name, _)| name).collect::<Vec<_>>();
+    let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
+    let mut native = BTreeMap::new();
+    let mut queries = NativeValues {
+        host,
+        input_kind: kind.clone(),
+        input: None,
+        context: None,
+        bindings: None,
+        scope: &scope,
+        outer_names: &outer_names,
+        outer: &outer,
+        subject_name: None,
+        predicate_scope: true,
+        prepared: NativePreparation::Checking(&mut native),
+    };
+    let prepared =
+        crate::value::prepare_query_value(&predicate.body, &facts, &mut queries, budget)?;
+    if boolean {
+        crate::value::predicate_types(&prepared.types, budget, range)?;
+    }
+    let mut frame = prepared.frame(budget)?;
+    let mut queries = NativeValues {
+        host,
+        input_kind: kind,
+        input: Some(&subject),
+        context: Some(context),
+        bindings: Some(&bindings),
+        scope: &scope,
+        outer_names: &outer_names,
+        outer: &outer,
+        subject_name: None,
+        predicate_scope: true,
+        prepared: NativePreparation::Running(&native),
     };
     let value = prepared.evaluate(&mut queries, &mut frame, budget)?;
     Ok(ConstructedResult {
@@ -1390,6 +1660,7 @@ pub fn native_value_types<C, H: ProjectionHost<C>>(
         outer_names: &outer_names,
         outer: &[],
         subject_name: None,
+        predicate_scope: false,
         host,
         input_kind,
         input: None,

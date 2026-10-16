@@ -69,7 +69,8 @@ impl PreparedNative {
                             })?;
                         budget.charge(work, Location::Query(expression.range.clone()))?;
                         Self::Binding(
-                            if let Some(index) = locals.iter().position(|(local, _)| *local == name)
+                            if let Some(index) =
+                                locals.iter().rposition(|(local, _)| *local == name)
                             {
                                 NativeRead::Local(index)
                             } else if subject == Some(name.as_str()) {

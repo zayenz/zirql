@@ -439,7 +439,7 @@ impl ValueReaderHost for CsvHost<'_> {
         reader: &mut ArgumentReader<'_>,
         _: &mut Budget,
     ) -> Result<(), QueryError> {
-        Err(reader.error("use a row expression in a comprehension filter"))
+        Err(reader.error("use a scoped row expression in filter"))
     }
     fn filter(&mut self, _: Predicate<()>, _: Range<usize>) {}
     fn projection(&mut self, _: Projection<ReadExpression<Self>>, _: Range<usize>) {}
@@ -710,7 +710,7 @@ mod tests {
     use super::*;
     use zirql::QueryErrorCategory;
 
-    const REPORT: &str = r#"let selected = [p for p in people if p.active == "yes"];
+    const REPORT: &str = r#"let selected = people | filter(p => p.active == "yes");
 let groups = [{"team": t.label, "members": [p.name for p in selected if p.team == t.id]} for t in teams];
 [{"team": g.team, "members": sort(g.members), "count": length(g.members)} for g in groups]"#;
     const REPORT_JSON: &str = "[{\"team\":\"Runtime\",\"members\":[\"Barbara Liskov\"],\"count\":1},{\"team\":\"Compiler\",\"members\":[\"Ada, Lovelace\",\"Grace Hopper\"],\"count\":2},{\"team\":\"Operations\",\"members\":[],\"count\":0}]\n";
@@ -747,6 +747,17 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
             ),
             "[{\"name\":\"Grace Hopper\",\"note\":\"Said \\\"hello\\\"\"},{\"name\":\"Ada, Lovelace\",\"note\":\"First line\\nsecond line\"},{\"name\":\"Barbara Liskov\",\"note\":\"\"}]\n"
         );
+        assert_eq!(
+            text(r#"filter(_.active == "yes")"#, &people()),
+            text(r#"[p for p in rows if p.active == "yes"]"#, &people())
+        );
+        assert_eq!(
+            text(
+                r#"let wanted = "yes"; people | filter(p => p.active == wanted)"#,
+                &named()
+            ),
+            text(r#"people | filter(_.active == "yes")"#, &named())
+        );
         assert_eq!(text("count", &people()), "4\n");
         assert_eq!(
             text("rows | count", &people()),
@@ -762,18 +773,18 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
         assert_eq!(
             text(
-                r#"let selected = [p for p in rows if p.active == "yes"]; selected | count"#,
+                r#"let selected = rows | filter(_.active == "yes"); selected | count"#,
                 &people()
             ),
             "3\n"
         );
         assert_eq!(
             text(
-                r#"let selected = [p for p in people if p.active == "yes"]; selected | count"#,
+                r#"let selected = people | filter(p => p.active == "yes"); selected | count"#,
                 &named()
             ),
             text(
-                r#"let selected = [p for p in people if p.active == "yes"]; (selected) | count"#,
+                r#"let selected = people | filter(p => p.active == "yes"); (selected) | count"#,
                 &named()
             )
         );
@@ -794,7 +805,7 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
         assert_eq!(
             text(
-                r#"let selected = [p for p in people if p.active == "yes"]; let row = selected[1]; let column = "name"; {"row": row, "name": lookup(row, column), "present": has_key(row, column)}"#,
+                r#"let selected = people | filter(p => p.active == "yes"); let row = selected[1]; let column = "name"; {"row": row, "name": lookup(row, column), "present": has_key(row, column)}"#,
                 &named()
             ),
             "{\"row\":{\"id\":\"2\",\"name\":\"Grace Hopper\",\"team\":\"compiler\",\"active\":\"yes\",\"note\":\"Said \\\"hello\\\"\"},\"name\":\"Grace Hopper\",\"present\":true}\n"
@@ -865,7 +876,7 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
                 .unwrap(),
         )]);
         let expression = read_program(
-            "[p.missing for p in rows]",
+            "rows | filter(_.missing == \"yes\")",
             &mut host,
             &mut budget,
             LIMITS.nesting,

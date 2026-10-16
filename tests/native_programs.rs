@@ -2688,12 +2688,51 @@ mod projection {
         Edit,
         Saved(String),
         Projection(Box<Projection<Query>>),
-        Match(Box<NativeMatch<Query, Truth>>),
-        Paths(Box<NativePaths<Stage, Truth>>),
+        Match(Box<NativeMatch<Query, Guard>>),
+        Paths(Box<NativePaths<Stage, Guard>>),
         Neighbors,
+    }
+    #[derive(Debug, PartialEq)]
+    enum Guard {
+        True,
+        False,
+        Unknown,
+        Expression(Arc<zirql::ValueExpression<Query>>),
+        Count(Arc<zirql::ValueExpression<Query>>),
+    }
+    impl Guard {
+        fn truth(&self) -> Truth {
+            match self {
+                Self::True => Truth::True,
+                Self::False => Truth::False,
+                Self::Unknown => Truth::Unknown,
+                Self::Expression(_) | Self::Count(_) => {
+                    unreachable!("expression guard uses the prepared runner")
+                }
+            }
+        }
     }
     struct Host;
 
+    fn guard_values(predicate: &Predicate<Guard>) -> Vec<&zirql::ValueExpression<Query>> {
+        let mut values = Vec::new();
+        let mut pending = vec![predicate];
+        while let Some(predicate) = pending.pop() {
+            match &predicate.value {
+                zirql::PredicateKind::Leaf(Guard::Expression(body) | Guard::Count(body)) => {
+                    values.push(body.as_ref())
+                }
+                zirql::PredicateKind::Leaf(_) => {}
+                zirql::PredicateKind::Not(body) | zirql::PredicateKind::Group(body) => {
+                    pending.push(body)
+                }
+                zirql::PredicateKind::And(bodies) | zirql::PredicateKind::Or(bodies) => {
+                    pending.extend(bodies)
+                }
+            }
+        }
+        values
+    }
     fn match_argument(source: &Query) -> Option<&zirql::ValueExpression<Query>> {
         if let ExpressionKind::Sequence { steps, .. } = &source.value
             && let [step] = steps.as_slice()
@@ -2868,6 +2907,7 @@ mod projection {
                     let count = match value {
                         Value::Subjects(rows) => rows.len(),
                         Value::Strings(rows) => rows.len(),
+                        Value::Captures { rows, .. } => rows.len(),
                         _ => {
                             return Err(
                                 QueryError::query(range.clone(), "count needs a stream").into()
@@ -2951,7 +2991,14 @@ mod projection {
                     let source = match &clause.value {
                         zirql::MatchClause::From { source, .. }
                         | zirql::MatchClause::Bind { value: source, .. } => source,
-                        zirql::MatchClause::Where { .. } => continue,
+                        zirql::MatchClause::Where { predicate } => {
+                            values.extend(
+                                guard_values(predicate)
+                                    .into_iter()
+                                    .map(|body| (body, Kind::Subjects)),
+                            );
+                            continue;
+                        }
                     };
                     if let Some(value) = match_argument(source) {
                         values.push((value, Kind::Subjects));
@@ -3001,7 +3048,16 @@ mod projection {
                             name,
                             value: source,
                         } => (name, source),
-                        zirql::MatchClause::Where { .. } => continue,
+                        zirql::MatchClause::Where { predicate } => {
+                            for expression in guard_values(predicate) {
+                                arguments.push(zirql::ScopedNativeArgument {
+                                    expression,
+                                    relative: Some(input.clone()),
+                                    locals: locals.clone(),
+                                });
+                            }
+                            continue;
+                        }
                     };
                     if let Some(expression) = match_argument(source) {
                         budget.charge(locals.len() + 1, Location::Query(source.range.clone()))?;
@@ -3239,7 +3295,11 @@ mod projection {
                 Stage::NativeArgument(_) => Ok(Kind::Subjects),
                 Stage::Argument { .. } => Ok(Kind::Count),
                 Stage::Names if *input == Kind::Subjects => Ok(Kind::Strings),
-                Stage::Count if matches!(input, Kind::Subjects | Kind::Strings) => Ok(Kind::Count),
+                Stage::Count
+                    if matches!(input, Kind::Subjects | Kind::Strings | Kind::Captures(_)) =>
+                {
+                    Ok(Kind::Count)
+                }
                 Stage::Fail | Stage::Edit => Ok(input.clone()),
                 _ => Err(QueryError::query(
                     range.clone(),
@@ -4125,7 +4185,7 @@ mod projection {
         let ExpressionStep::Stage(Stage::Paths(paths)) = &steps[0].value else {
             panic!("guarded paths")
         };
-        assert_eq!(paths.target.value, zirql::PredicateKind::Leaf(Truth::True));
+        assert_eq!(paths.target.value, zirql::PredicateKind::Leaf(Guard::True));
         // A typed caller may share the same source tree in two lexical scopes.
         let mut reader = zirql::ArgumentReader::new("identity(source) | count", 0).unwrap();
         let pipeline =
@@ -4688,7 +4748,7 @@ mod projection {
         .evaluate(&entry, &bindings)
         .unwrap_err();
         assert!(error.to_string().contains("active function depth"));
-        let skipped = make(Some(Truth::False), "first");
+        let skipped = make(Some(Guard::False), "first");
         let result = FunctionRequest::prepare(
             &skipped,
             &Host,
@@ -4700,7 +4760,7 @@ mod projection {
         .evaluate(&entry, &bindings)
         .unwrap();
         assert!(matches!(result,Value::Constructed(value) if value.data()==&V::Integer(0)));
-        let unknown = make(Some(Truth::Unknown), "first");
+        let unknown = make(Some(Guard::Unknown), "first");
         let error = FunctionRequest::prepare(
             &unknown,
             &Host,
@@ -4878,7 +4938,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = Truth;
+        type Predicate = Guard;
         fn is_binding(&self, name: &str) -> bool {
             self.0.contains(&name)
         }
@@ -4892,14 +4952,42 @@ mod projection {
         ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
             Host.parse_stage_in_scope(reader, self.0, budget)
         }
+        fn parse_predicate_leaf_in_argument(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            argument: Option<&Located<String>>,
+            locals: &[&str],
+            budget: &mut Budget,
+        ) -> Result<Guard, QueryError> {
+            let mut scope = self.0.to_vec();
+            for name in locals {
+                if !scope.contains(name) {
+                    scope.push(name);
+                }
+            }
+            Host.parse_predicate_leaf_in_argument(reader, argument, &scope, budget)
+        }
+        fn predicate_expression(
+            &mut self,
+            predicate: zirql::PredicateArgument<Query>,
+            range: Range<usize>,
+        ) -> Result<Guard, QueryError> {
+            Ok(Guard::Expression(Arc::new(predicate.bind(Located::new(
+                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                range,
+            )))))
+        }
+        fn is_predicate_leaf(&self, name: &str) -> bool {
+            matches!(name, "true" | "false" | "unknown" | "bound" | "count_is")
+        }
         fn parse_predicate_leaf(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
-        ) -> Result<Truth, QueryError> {
+        ) -> Result<Guard, QueryError> {
             Host.parse_predicate_leaf_in_scope(reader, self.0, budget)
         }
-        fn filter(&mut self, _: Predicate<Truth>, _: Range<usize>) -> Stage {
+        fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
             unreachable!()
         }
         fn projection(&mut self, _: Projection<Query>, _: Range<usize>) -> Stage {
@@ -4920,7 +5008,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = Truth;
+        type Predicate = Guard;
         fn parse_function_value(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
@@ -4996,7 +5084,7 @@ mod projection {
             reader: &mut zirql::ArgumentReader<'_>,
             locals: &[&str],
             budget: &mut Budget,
-        ) -> Result<Truth, QueryError> {
+        ) -> Result<Guard, QueryError> {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("bound") {
                 reader.word()?;
@@ -5005,26 +5093,66 @@ mod projection {
                     zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
                 reader.expect(')')?;
                 if matches!(value.value,K::Name(ref name) if locals.contains(&name.as_str())) {
-                    return Ok(Truth::True);
+                    return Ok(Guard::True);
                 }
                 return Err(QueryError::query(value.range, "guard needs a lexical name"));
             }
             self.parse_predicate_leaf(reader, budget)
         }
+        fn parse_predicate_leaf_in_argument(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            argument: Option<&Located<String>>,
+            locals: &[&str],
+            budget: &mut Budget,
+        ) -> Result<Guard, QueryError> {
+            if !reader.keyword("count_is") {
+                return self.parse_predicate_leaf_in_scope(reader, locals, budget);
+            }
+            reader.expect('(')?;
+            let value =
+                zirql::read_value_expression(reader, &mut ArgumentScope(locals), budget, 64)?;
+            reader.expect(')')?;
+            let range = value.range.clone();
+            let subject = Located::new(
+                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                range,
+            );
+            Ok(Guard::Count(Arc::new(
+                zirql::PredicateArgument {
+                    argument: argument.cloned(),
+                    body: Box::new(value),
+                }
+                .bind_value(subject),
+            )))
+        }
+        fn predicate_expression(
+            &mut self,
+            predicate: zirql::PredicateArgument<Query>,
+            range: Range<usize>,
+        ) -> Result<Guard, QueryError> {
+            Ok(Guard::Expression(Arc::new(predicate.bind(Located::new(
+                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                range,
+            )))))
+        }
+        fn is_predicate_leaf(&self, name: &str) -> bool {
+            matches!(name, "true" | "false" | "unknown" | "bound" | "count_is")
+        }
         fn parse_predicate_leaf(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<Truth, QueryError> {
+        ) -> Result<Guard, QueryError> {
             let word = reader.word()?;
             match word.value {
-                "true" => Ok(Truth::True),
-                "false" => Ok(Truth::False),
-                "unknown" => Ok(Truth::Unknown),
+                "true" => Ok(Guard::True),
+                "false" => Ok(Guard::False),
+                "unknown" => Ok(Guard::Unknown),
                 _ => Err(QueryError::query(word.range, "unsupported guard")),
             }
         }
-        fn filter(&mut self, _: Predicate<Truth>, _: Range<usize>) -> Stage {
+        fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
             unreachable!()
         }
         fn projection(
@@ -5036,7 +5164,7 @@ mod projection {
         }
         fn matching(
             &mut self,
-            matching: NativeMatch<ReadExpression<Self>, Truth>,
+            matching: NativeMatch<ReadExpression<Self>, Guard>,
             _: Range<usize>,
         ) -> Result<Stage, QueryError> {
             Ok(Stage::Match(Box::new(matching)))
@@ -5063,7 +5191,7 @@ mod projection {
         }
     }
     impl MatchHost<()> for Host {
-        type Guard = Truth;
+        type Guard = Guard;
         fn evaluate_match_source_with_arguments(
             &self,
             source: &Query,
@@ -5085,7 +5213,7 @@ mod projection {
         }
         fn validate_guard_leaf(
             &self,
-            _: &Truth,
+            _: &Guard,
             _: &Kind,
             _: &BTreeMap<String, Kind>,
             _: &mut Budget,
@@ -5093,20 +5221,61 @@ mod projection {
         ) -> Result<(), QueryError> {
             Ok(())
         }
+        fn evaluate_guard_leaf_with_arguments(
+            &self,
+            guard: &Guard,
+            input: &Value,
+            bindings: &Bindings<Value>,
+            arguments: &mut dyn zirql::NativeArguments<(), Self>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            if let Guard::Count(expression) = guard {
+                let relative = self.copy_value(input, arguments.parts().0, budget, range)?;
+                let value =
+                    arguments.evaluate_match_value(expression, relative, bindings, budget)?;
+                let value = self.copy_value(value.value(), arguments.parts().0, budget, range)?;
+                let value = self.project_value(value, arguments.parts().0, budget, range)?;
+                let V::Integer(expected) = value.data() else {
+                    return Err(
+                        QueryError::query(range.clone(), "count_is needs an integer").into(),
+                    );
+                };
+                let Value::Subjects(subjects) = input else {
+                    unreachable!()
+                };
+                return Ok(if *expected == i64::try_from(subjects.len()).unwrap() {
+                    Truth::True
+                } else {
+                    Truth::False
+                });
+            }
+            if let Guard::Expression(expression) = guard {
+                let input = self.copy_value(input, arguments.parts().0, budget, range)?;
+                return Ok(
+                    if arguments.evaluate_predicate(expression, input, Some(bindings), budget)? {
+                        Truth::True
+                    } else {
+                        Truth::False
+                    },
+                );
+            }
+            Ok(guard.truth())
+        }
         fn evaluate_guard_leaf(
             &self,
-            guard: &Truth,
+            guard: &Guard,
             _: &Value,
             _: &mut (),
             _: &Bindings<Value>,
             _: &mut Budget,
             _: &Range<usize>,
         ) -> Result<Truth, EvaluationError<QueryError>> {
-            Ok(*guard)
+            Ok(guard.truth())
         }
     }
     impl PathHost<()> for Host {
-        type Target = Truth;
+        type Target = Guard;
         fn validate_path_edge(
             &self,
             edge: &Stage,
@@ -5125,7 +5294,7 @@ mod projection {
         }
         fn validate_target_leaf(
             &self,
-            _: &Truth,
+            _: &Guard,
             input: &Kind,
             _: &BTreeMap<String, Kind>,
             _: &mut Budget,
@@ -5141,14 +5310,14 @@ mod projection {
         }
         fn evaluate_target_leaf(
             &self,
-            target: &Truth,
+            target: &Guard,
             _: &Value,
             _: &mut (),
             _: &Bindings<Value>,
             _: &mut Budget,
             _: &Range<usize>,
         ) -> Result<Truth, EvaluationError<QueryError>> {
-            Ok(*target)
+            Ok(target.truth())
         }
         fn path_neighbors(
             &self,
@@ -5219,7 +5388,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = Truth;
+        type Predicate = Guard;
         fn is_binding(&self, name: &str) -> bool {
             matches!(name, "f" | "one" | "project" | "if" | "words")
         }
@@ -5274,14 +5443,36 @@ mod projection {
                 Host.parse_stage(reader, budget)
             }
         }
+        fn parse_predicate_leaf_in_argument(
+            &mut self,
+            reader: &mut zirql::ArgumentReader<'_>,
+            argument: Option<&Located<String>>,
+            locals: &[&str],
+            budget: &mut Budget,
+        ) -> Result<Guard, QueryError> {
+            Host.parse_predicate_leaf_in_argument(reader, argument, locals, budget)
+        }
+        fn predicate_expression(
+            &mut self,
+            predicate: zirql::PredicateArgument<Query>,
+            range: Range<usize>,
+        ) -> Result<Guard, QueryError> {
+            Ok(Guard::Expression(Arc::new(predicate.bind(Located::new(
+                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                range,
+            )))))
+        }
+        fn is_predicate_leaf(&self, name: &str) -> bool {
+            matches!(name, "true" | "false" | "unknown" | "bound" | "count_is")
+        }
         fn parse_predicate_leaf(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
-        ) -> Result<Truth, QueryError> {
+        ) -> Result<Guard, QueryError> {
             Host.parse_predicate_leaf(reader, budget)
         }
-        fn filter(&mut self, predicate: Predicate<Truth>, range: Range<usize>) -> Stage {
+        fn filter(&mut self, predicate: Predicate<Guard>, range: Range<usize>) -> Stage {
             Host.filter(predicate, range)
         }
         fn projection(
@@ -5366,14 +5557,14 @@ mod projection {
         .unwrap()
     }
 
-    fn parse_match(source: &str) -> NativeMatch<Query, Truth> {
+    fn parse_match(source: &str) -> NativeMatch<Query, Guard> {
         let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
         let matching = zirql::read_match(&mut reader, &mut Host, &mut budget(), 32).unwrap();
         assert!(reader.remaining().is_empty());
         matching
     }
 
-    fn parse_paths(source: &str) -> NativePaths<Stage, Truth> {
+    fn parse_paths(source: &str) -> NativePaths<Stage, Guard> {
         let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
         let paths = zirql::read_paths(&mut reader, &mut Host, &mut budget(), 32).unwrap();
         assert_eq!(reader.position(), source.len());
@@ -6058,7 +6249,7 @@ mod projection {
         );
         paths.target = Located::new(
             zirql::PredicateKind::Or(vec![
-                Located::new(zirql::PredicateKind::Leaf(Truth::True), 0..1),
+                Located::new(zirql::PredicateKind::Leaf(Guard::True), 0..1),
                 Located::new(zirql::PredicateKind::And(vec![]), 2..3),
             ]),
             0..3,
@@ -6622,7 +6813,9 @@ mod projection {
                 .unwrap();
                 let value = zirql::read_value_suffix(
                     &mut zirql::ArgumentReader::new(source, pipe).unwrap(),
+                    &mut SavedNames,
                     prefix,
+                    &[],
                     &mut allowance,
                     32,
                 )
@@ -6660,7 +6853,9 @@ mod projection {
             .unwrap();
             let suffix_error = zirql::read_value_suffix(
                 &mut zirql::ArgumentReader::new(source, 2).unwrap(),
+                &mut SavedNames,
                 prefix,
+                &[],
                 &mut allowance,
                 32,
             )
@@ -7537,6 +7732,202 @@ mod projection {
             .is_err()
         );
     }
+    #[test]
+    fn scoped_match_predicates_keep_original_input_captures_and_active_functions() {
+        use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest};
+        let source = r#"fn wanted(n: int) -> bool { n == 2 }
+            fn select(xs: Subjects) -> int {
+                (xs | match { from row in input; where whole => count_is((_ | count)) and count_is((whole | count)) and count_is((row | count) + 1) and wanted((native(_) | count)) and ((whole | count) == 2 and count_is(2)) and (row | count) == 1 and (_ | count) == 2; } | count)
+            }
+            fn colliding(xs: Subjects) -> int {
+                (xs | match { from row in input; where bound => (bound | count) == 2 and bound | count == 2 and bound(row); } | count)
+            }
+            select(native(input))"#;
+        // The match executes inside select, including its call to wanted.
+        let mut allowance = function_budget();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let mut functions = Vec::new();
+        for _ in 0..3 {
+            functions.push(
+                zirql::read_function_declaration(
+                    &mut reader,
+                    &mut Host,
+                    &mut allowance,
+                    64,
+                    |name, _| {
+                        if name.value == "Subjects" {
+                            Ok(D::Native(Kind::Subjects))
+                        } else {
+                            Err(QueryError::query(name.range, "unknown type"))
+                        }
+                    },
+                )
+                .unwrap()
+                .unwrap(),
+            );
+        }
+        let entry = function_call(
+            "select",
+            vec![function_value(K::NativeValue(Box::new(Located::new(
+                ExpressionKind::Binding("original".into()),
+                0..1,
+            ))))],
+        );
+        let bindings = Bindings::new([(
+            super::at("original".into(), 0),
+            Value::Subjects(vec!["alpha", "beta"]),
+        )])
+        .unwrap();
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut allowance,
+            FunctionLimits { active_depth: 3 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings)
+        .unwrap();
+        assert!(matches!(result, Value::Constructed(value) if value.data() == &V::Integer(2)));
+        let colliding = function_call(
+            "colliding",
+            vec![function_value(K::NativeValue(Box::new(Located::new(
+                ExpressionKind::Binding("original".into()),
+                0..1,
+            ))))],
+        );
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut allowance,
+            FunctionLimits { active_depth: 3 },
+        )
+        .unwrap()
+        .evaluate(&colliding, &bindings)
+        .unwrap();
+        assert!(matches!(result, Value::Constructed(value) if value.data() == &V::Integer(2)));
+        zirql::dispose_native_value(colliding);
+        let source = r#"["aa", "b", "cc"] | filter(s => wanted(if s == "b" { 1 } else { 2 }))"#;
+        let selected = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+            &mut Host,
+            &mut allowance,
+            64,
+        )
+        .unwrap();
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut allowance,
+            FunctionLimits { active_depth: 3 },
+        )
+        .unwrap()
+        .evaluate(&selected, &Bindings::default())
+        .unwrap();
+        assert!(
+            matches!(result, Value::Constructed(value) if value.data() == &V::Array(vec![V::String("aa".into()), V::String("cc".into())]))
+        );
+        zirql::dispose_native_value(selected);
+        let native_source = function_value(K::Filter {
+            array: Box::new(function_value(K::NativeValue(Box::new(Located::new(
+                ExpressionKind::Binding("original".into()),
+                0..1,
+            ))))),
+            predicate: zirql::PredicateArgument {
+                argument: None,
+                body: Box::new(function_value(K::Literal(V::Boolean(true)))),
+            },
+        });
+        let empty =
+            Bindings::new([(super::at("original".into(), 0), Value::Subjects(vec![]))]).unwrap();
+        assert!(
+            FunctionRequest::prepare(
+                &functions,
+                &Host,
+                &mut (),
+                &mut allowance,
+                FunctionLimits { active_depth: 3 }
+            )
+            .unwrap()
+            .evaluate(&native_source, &empty)
+            .is_err()
+        );
+        zirql::dispose_native_value(native_source);
+        let source = "[] | filter(false and (edit | count) == 0)";
+        let impure = zirql::read_value_expression(
+            &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+            &mut Host,
+            &mut allowance,
+            64,
+        )
+        .unwrap();
+        assert!(
+            FunctionRequest::prepare(
+                &functions,
+                &Host,
+                &mut (),
+                &mut allowance,
+                FunctionLimits { active_depth: 3 }
+            )
+            .unwrap()
+            .evaluate(&impure, &Bindings::default())
+            .is_err()
+        );
+        zirql::dispose_native_value(impure);
+        zirql::dispose_functions(functions);
+        zirql::dispose_native_value(entry);
+
+        // Ordinary diff/scalar hosts can bind the same native subject without
+        // implementing FunctionHost or creating a function session.
+        let predicate = zirql::read_predicate_argument(
+            &mut zirql::ArgumentReader::new(
+                "candidate => (candidate | count) == 2 and (_ | count) == 2",
+                0,
+            )
+            .unwrap(),
+            &mut Host,
+            &[],
+            &mut allowance,
+            64,
+        )
+        .unwrap();
+        assert!(
+            zirql::evaluate_native_predicate(
+                &predicate,
+                &Host,
+                Value::Subjects(vec!["alpha", "beta"]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap()
+        );
+        zirql::dispose_native_value(*predicate.body);
+        let argument = zirql::read_predicate_argument(
+            &mut zirql::ArgumentReader::new("candidate => (candidate | names | one)", 0).unwrap(),
+            &mut Host,
+            &[],
+            &mut allowance,
+            64,
+        )
+        .unwrap();
+        assert_eq!(
+            zirql::evaluate_native_predicate_value(
+                &argument,
+                &Host,
+                Value::Subjects(vec!["alpha"]),
+                &mut (),
+                &Bindings::default(),
+                &mut allowance
+            )
+            .unwrap()
+            .value,
+            V::String("alpha".into())
+        );
+        zirql::dispose_native_value(*argument.body);
+    }
 }
 
 #[test]
@@ -7582,6 +7973,9 @@ fn shared_reader_releases_native_values_on_errors() {
             _: &mut Budget,
         ) -> Result<ExpressionStep<(), ()>, QueryError> {
             Err(reader.error("no domain stages"))
+        }
+        fn is_predicate_leaf(&self, _: &str) -> bool {
+            true
         }
         fn parse_predicate_leaf(
             &mut self,
@@ -9509,6 +9903,9 @@ fn common_reader_executes_loops_named_reducers_and_native_worklist_calls() {
         ) -> Result<ExpressionStep<SourceStage, &'static str>, QueryError> {
             Err(reader.error("no domain stages"))
         }
+        fn is_predicate_leaf(&self, _: &str) -> bool {
+            true
+        }
         fn parse_predicate_leaf(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
@@ -9716,6 +10113,9 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
                 word.range,
                 16,
             )?)))
+        }
+        fn is_predicate_leaf(&self, _: &str) -> bool {
+            true
         }
         fn parse_predicate_leaf(
             &mut self,
