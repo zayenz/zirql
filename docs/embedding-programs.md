@@ -137,7 +137,9 @@ let result = functions.evaluate(
 prepared unit borrows the immutable source trees and host. Keep it within this
 submitted request, using the current host context and the same cumulative
 budget. Prepared entries carry their unit identity; another unit refuses them.
-Each execution releases its results and frames normally. For a projection,
+Each execution releases its results and frames normally.
+
+For a projection,
 prepare each field with the subject name in its lexical scope and the singleton
 subject kind as relative input. Pass borrowed entries in written field order to
 `PreparedFunctions::evaluate_projection`, with the original projection, current
