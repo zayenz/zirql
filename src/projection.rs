@@ -1029,19 +1029,8 @@ pub fn projection_types<C, H: ProjectionHost<C>>(
     };
     admit_slots::<Vec<ValueType>>(1, budget, range)?;
     let mut positions = vec![Vec::new()];
-    for (index, (label, expression)) in projection.fields.iter().enumerate() {
-        for (previous, _) in &projection.fields[..index] {
-            budget.charge(
-                label.value.len().min(previous.value.len()) + 1,
-                Location::Query(label.range.clone()),
-            )?;
-            if previous.value == label.value {
-                return Err(QueryError::query(
-                    label.range.clone(),
-                    "duplicate record label",
-                ));
-            }
-        }
+    for (index, (_, expression)) in projection.fields.iter().enumerate() {
+        check_projection_label(projection, index, budget)?;
         let types = query_value_types(expression, &facts, &mut queries, budget)?;
         positions = crate::value::extend_type_positions(
             &positions,
@@ -1053,7 +1042,28 @@ pub fn projection_types<C, H: ProjectionHost<C>>(
     projection_result_types(projection, positions, budget)
 }
 
-fn projection_result_types<Q>(
+pub(crate) fn check_projection_label<Q>(
+    projection: &Projection<Q>,
+    index: usize,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let label = &projection.fields[index].0;
+    for (previous, _) in &projection.fields[..index] {
+        budget.charge(
+            label.value.len().min(previous.value.len()) + 1,
+            Location::Query(label.range.clone()),
+        )?;
+        if previous.value == label.value {
+            return Err(QueryError::query(
+                label.range.clone(),
+                "duplicate record label",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn projection_result_types<Q>(
     projection: &Projection<Q>,
     positions: Vec<Vec<ValueType>>,
     budget: &mut Budget,
@@ -1152,18 +1162,8 @@ pub fn evaluate_projection_with_types<C, H: ProjectionHost<C>>(
         )?;
         let mut fields = Vec::with_capacity(projection.fields.len());
         let mut positions = vec![Vec::new()];
-        for (index, (label, expression)) in projection.fields.iter().enumerate() {
-            for (previous, _) in &projection.fields[..index] {
-                budget.charge(
-                    label.value.len().min(previous.value.len()) + 1,
-                    Location::Query(label.range.clone()),
-                )?;
-                if previous.value == label.value {
-                    return Err(
-                        QueryError::query(label.range.clone(), "duplicate record label").into(),
-                    );
-                }
-            }
+        for (index, (_, expression)) in projection.fields.iter().enumerate() {
+            check_projection_label(projection, index, budget)?;
             let field =
                 crate::value::prepare_query_value(expression, &facts, &mut queries, budget)?;
             positions = crate::value::extend_type_positions(
@@ -1187,58 +1187,74 @@ pub fn evaluate_projection_with_types<C, H: ProjectionHost<C>>(
             frames.push((frame, subject));
         }
         let subjects = host.subjects(input, context, budget, range)?;
-        budget.charge_results(
-            subjects.len().checked_add(1).ok_or_else(|| {
-                QueryError::query(range.clone(), "result limit exceeded")
-                    .with_category(QueryErrorCategory::ResultLimit)
-            })?,
+        let value = projection_rows(
+            projection,
+            subjects,
+            bindings,
+            context,
+            budget,
+            |index, local, context, budget| {
+                let mut queries = NativeValues {
+                    host,
+                    input_kind: subject_kind.clone(),
+                    input: Some(local.get(&projection.subject.value, range.clone())?),
+                    bindings: Some(local),
+                    context: Some(context),
+                    scope: &scope,
+                    outer_names: &outer_names,
+                    outer: &outer,
+                    subject_name: Some(&projection.subject.value),
+                    prepared: NativePreparation::Running(&prepared_native),
+                };
+                let (frame, subject_slot) = &mut frames[index];
+                frame.reset(*subject_slot);
+                let result = fields[index].evaluate(&mut queries, frame, budget);
+                frame.reset(*subject_slot);
+                result
+            },
+        )?;
+        Ok(ConstructedResult { value, types })
+    })
+}
+
+pub(crate) fn projection_rows<Q, V, C, E: From<QueryError>>(
+    projection: &Projection<Q>,
+    subjects: Vec<V>,
+    bindings: &Bindings<V>,
+    context: &mut C,
+    budget: &mut Budget,
+    mut field: impl FnMut(usize, &Bindings<V>, &mut C, &mut Budget) -> Result<ConstructedValue, E>,
+) -> Result<ConstructedValue, E> {
+    let range = &projection.subject.range;
+    budget.charge_results(
+        subjects.len().checked_add(1).ok_or_else(|| {
+            QueryError::query(range.clone(), "result limit exceeded")
+                .with_category(QueryErrorCategory::ResultLimit)
+        })?,
+        Location::Query(range.clone()),
+    )?;
+    admit_slots::<ConstructedValue>(subjects.len(), budget, range)?;
+    let mut rows = Vec::with_capacity(subjects.len());
+    for subject in subjects {
+        budget.charge(
+            projection.subject.value.len(),
             Location::Query(range.clone()),
         )?;
-        admit_slots::<ConstructedValue>(subjects.len(), budget, range)?;
-        let mut rows = Vec::with_capacity(subjects.len());
-        for subject in subjects {
-            budget.charge(
-                projection.subject.value.len(),
-                Location::Query(range.clone()),
-            )?;
-            let local = bindings.with_local(
-                Located::new(projection.subject.value.clone(), range.clone()),
-                subject,
-                budget,
-            )?;
-            let mut queries = NativeValues {
-                host,
-                input_kind: subject_kind.clone(),
-                input: Some(local.get(&projection.subject.value, range.clone())?),
-                bindings: Some(&local),
-                context: Some(&mut *context),
-                scope: &scope,
-                outer_names: &outer_names,
-                outer: &outer,
-                subject_name: Some(&projection.subject.value),
-                prepared: NativePreparation::Running(&prepared_native),
-            };
-            budget.charge_results(projection.fields.len() + 1, Location::Query(range.clone()))?;
-            admit_slots::<(String, ConstructedValue)>(projection.fields.len(), budget, range)?;
-            let mut values = Vec::with_capacity(projection.fields.len());
-            for (((label, _), field), (frame, subject_slot)) in
-                projection.fields.iter().zip(&fields).zip(&mut frames)
-            {
-                frame.reset(*subject_slot);
-                budget.charge(label.value.len(), Location::Query(label.range.clone()))?;
-                values.push((
-                    label.value.clone(),
-                    field.evaluate(&mut queries, frame, budget)?,
-                ));
-                frame.reset(*subject_slot);
-            }
-            rows.push(ConstructedValue::Record(values));
+        let local = bindings.with_local(
+            Located::new(projection.subject.value.clone(), range.clone()),
+            subject,
+            budget,
+        )?;
+        budget.charge_results(projection.fields.len() + 1, Location::Query(range.clone()))?;
+        admit_slots::<(String, ConstructedValue)>(projection.fields.len(), budget, range)?;
+        let mut values = Vec::with_capacity(projection.fields.len());
+        for (index, (label, _)) in projection.fields.iter().enumerate() {
+            budget.charge(label.value.len(), Location::Query(label.range.clone()))?;
+            values.push((label.value.clone(), field(index, &local, context, budget)?));
         }
-        Ok(ConstructedResult {
-            value: ConstructedValue::Array(rows),
-            types,
-        })
-    })
+        rows.push(ConstructedValue::Record(values));
+    }
+    Ok(ConstructedValue::Array(rows))
 }
 
 /// Evaluate a constructed report with native operands and immutable outer scope.

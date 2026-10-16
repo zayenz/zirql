@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-076"
 key = "shared-prepared-projection"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 blocked_by = ["base-066"]
@@ -26,13 +26,24 @@ The brief assigns general query evaluation to Zirql. Zirium crates/zirium/src/qu
 
 ## Done when
 
-- [ ] A callable shared path executes projections whose fields use the existing prepared function request, without reparsing or preparing function bodies per subject or starting another request. Zirium uses it and removes its local subject/field iteration, scope and row-construction duplicate.
-- [ ] The existing function-bearing projection and its plain counterpart return the same intended cost report through actual library and inline/file CLI paths. Native selections and projected native fields retain their owners and original source ranges until the existing explicit rendering boundary.
-- [ ] Compact existing public controls establish ordered duplicate subjects and fields, surrounding/subject scope, empty input with required all-written validation, a located field failure and later-error empty stdout. Reuse existing preparation/function/budget controls; no callback-count tests, timing assertions or generic matrix.
-- [ ] Actual Zirium manifest, lock and locked metadata resolve the reviewed shared Git revision. Required core and Zirium checks pass, and any directly affected API guide describes current behavior without process narration. Broader reader-guide editing remains in its own task.
+- [x] A callable shared path executes projections whose fields use the existing prepared function request, without reparsing or preparing function bodies per subject or starting another request. Zirium uses it and removes its local subject/field iteration, scope and row-construction duplicate.
+- [x] The existing function-bearing projection and its plain counterpart return the same intended cost report through actual library and inline/file CLI paths. Native selections and projected native fields retain their owners and original source ranges until the existing explicit rendering boundary.
+- [x] Compact existing public controls establish ordered duplicate subjects and fields, surrounding/subject scope, empty input with required all-written validation, a located field failure and later-error empty stdout. Reuse existing preparation/function/budget controls; no callback-count tests, timing assertions or generic matrix.
+- [x] Actual Zirium manifest, lock and locked metadata resolve the reviewed shared Git revision. Required core and Zirium checks pass, and any directly affected API guide describes current behavior without process narration. Broader reader-guide editing remains in its own task.
 
 ## Validation
 
 - Run changed-repository diff/format checks, default and explicit Rust1.99 Clippy warnings denied and locked workspace tests; shared Rust1.88 tests and required Zirium stable/1.88 all-target/all-feature Clippy/tests, doctests, warning-clean rustdoc and Python query compatibility checks.
 - Run the concrete existing projection program and its plain counterpart through rebuilt library/inline/file paths. Extend a compact existing control only where it verifies the named execution boundary; no new benchmark or test framework. Run existing documentation/site checks and desktop/mobile review only for affected reader pages.
 - Root retains serial integration, unrelated-change preservation, independent whole verification and separately attributable framework/consumer commits. Use pinned Git development without registry releases.
+
+## Result
+
+Execute directly prepared report projections through shared Zirql row execution, retaining typed empty schemas and located function failures.
+
+Validation:
+
+- Independent whole review 1 and focused recheck 1 pass after the single paragraph-boundary correction; exact native snapshot and all repository guards match.
+- Core and Zirium required Rust format, default/1.99/stable/1.88 Clippy/tests, doctests and warning-clean docs pass. Rebuilt canonical Python imports pass with 175 tests and 2 existing skips.
+- Actual plain/prepared cost-3 library and inline/file reports, duplicate/order/scope/empty admission and located later-error empty-stdout controls pass. Manifest, lock and metadata resolve reviewed Git d8c7710903ae6402624e715625334f27349a2092.
+- API site check/build, 992 links and both guides on desktop/mobile pass; consumer/domain boundaries and unrelated work preserved.
