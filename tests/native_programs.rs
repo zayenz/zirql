@@ -2937,6 +2937,14 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<zirql::NativeValueArguments<'s, (), Self>, QueryError> {
+            if let Stage::Projection(projection) = stage {
+                budget.charge(projection.fields.len(), Location::Query(range.clone()))?;
+                return Ok(projection
+                    .fields
+                    .iter()
+                    .map(|(_, value)| (value, Kind::Subjects))
+                    .collect());
+            }
             if let Stage::Match(matching) = stage {
                 let mut values = Vec::new();
                 for clause in &matching.clauses {
@@ -2965,11 +2973,24 @@ mod projection {
         fn scoped_value_arguments<'s>(
             &self,
             stage: &'s Stage,
-            _: &Kind,
+            input: &Kind,
             _: &BTreeMap<String, Kind>,
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Vec<zirql::ScopedNativeArgument<'s, Query, Kind>>, QueryError> {
+            if let Stage::Projection(projection) = stage {
+                let kind = self.subject_kind(input, budget, range)?;
+                budget.charge(projection.fields.len(), Location::Query(range.clone()))?;
+                return Ok(projection
+                    .fields
+                    .iter()
+                    .map(|(_, expression)| zirql::ScopedNativeArgument {
+                        expression,
+                        relative: Some(kind.clone()),
+                        locals: vec![(projection.subject.clone(), kind.clone())],
+                    })
+                    .collect());
+            }
             if let Stage::Match(matching) = stage {
                 let mut locals: Vec<(Located<String>, Kind)> = Vec::new();
                 let mut arguments = Vec::new();
@@ -3012,6 +3033,11 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
+            if let Stage::Projection(projection) = stage {
+                return arguments
+                    .evaluate_projection(projection, input, budget)
+                    .map(|result| Value::Constructed(result.value));
+            }
             if let Stage::Match(matching) = stage {
                 let (context, bindings) = arguments.parts();
                 let input_kind = self.kind(&input, budget, range)?;
@@ -5732,6 +5758,134 @@ mod projection {
         assert!(
             matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(range), .. }) if range == broken.value.range)
         );
+    }
+
+    #[test]
+    fn function_projections_keep_active_locals_nested_rows_and_empty_types() {
+        use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
+        let projection = parse(
+            r#"project(row, {"name": one(row | names), "offset": offset, "nested": row | project(inner, {"name": one(inner | names), "n": n})})"#,
+            &mut function_budget(),
+        );
+        let value = function_value(K::NativeQuery(Box::new(native_operand(Stage::Projection(
+            Box::new(projection),
+        )))));
+        let mut make = native_function("make", value);
+        make.bindings.push((
+            super::at("offset".into(), 5),
+            fn_binary(zirql::ValueBinaryOperator::Add, fn_name("n"), fn_int(1)),
+        ));
+        let nested = D::Sequence(Box::new(D::Record(vec![
+            ("name".into(), D::String),
+            ("n".into(), D::Integer),
+        ])));
+        make.result = super::at(
+            D::Sequence(Box::new(D::Record(vec![
+                ("name".into(), D::String),
+                ("offset".into(), D::Integer),
+                ("nested".into(), nested),
+            ]))),
+            4,
+        );
+        let call = function_call("make", vec![fn_int(7), fn_name("source")]);
+        let mut functions =
+            PreparedFunctions::prepare([&make], &Host, &mut function_budget()).unwrap();
+        let entry = functions
+            .prepare_value(
+                &call,
+                &BTreeMap::from([("source".into(), Kind::Subjects)]),
+                None,
+                &mut function_budget(),
+            )
+            .unwrap();
+        for subjects in [vec!["alpha", "beta", "alpha"], vec![]] {
+            let bindings = Bindings::new([(
+                super::at("source".into(), 0),
+                Value::Subjects(subjects.clone()),
+            )])
+            .unwrap();
+            let value = functions
+                .evaluate(
+                    &entry,
+                    &bindings,
+                    None,
+                    &mut (),
+                    &mut function_budget(),
+                    FunctionLimits { active_depth: 2 },
+                )
+                .unwrap();
+            let value = Host
+                .project_value(value, &mut (), &mut function_budget(), &(0..1))
+                .unwrap();
+            assert_eq!(
+                value.data(),
+                &V::Array(
+                    subjects
+                        .iter()
+                        .map(|name| V::Record(vec![
+                            ("name".into(), V::String((*name).into())),
+                            ("offset".into(), V::Integer(8)),
+                            (
+                                "nested".into(),
+                                V::Array(vec![V::Record(vec![
+                                    ("name".into(), V::String((*name).into())),
+                                    (
+                                        "n".into(),
+                                        V::Declared {
+                                            value: Box::new(V::Integer(7)),
+                                            declaration: D::Integer,
+                                        }
+                                    ),
+                                ])])
+                            ),
+                        ]))
+                        .collect()
+                )
+            );
+        }
+        let scope = BTreeMap::from([("xs".into(), Kind::Subjects)]);
+        let projection = parse(r#"project(row, {"z": 1})"#, &mut function_budget());
+        let value = function_value(K::NativeQuery(Box::new(native_operand(Stage::Projection(
+            Box::new(projection),
+        )))));
+        let entry = functions
+            .prepare_value(&value, &scope, None, &mut function_budget())
+            .unwrap();
+        let expected = vec![ValueType::Array(ArrayType::Elements(vec![
+            ValueType::Record(vec![("z".into(), ValueType::Integer)]),
+        ]))];
+        assert_eq!(*entry.kind(), Host.constructed_kind(expected));
+        let bindings =
+            Bindings::new([(super::at("xs".into(), 0), Value::Subjects(vec![]))]).unwrap();
+        assert_eq!(
+            functions
+                .evaluate(
+                    &entry,
+                    &bindings,
+                    None,
+                    &mut (),
+                    &mut function_budget(),
+                    FunctionLimits { active_depth: 2 }
+                )
+                .unwrap(),
+            Value::Constructed(V::Array(vec![]))
+        );
+        for source in [
+            r#"project(row, {"z": row})"#,
+            r#"project(row, {"z": missing})"#,
+        ] {
+            let projection = parse(source, &mut function_budget());
+            let value = function_value(K::NativeQuery(Box::new(native_operand(
+                Stage::Projection(Box::new(projection)),
+            ))));
+            let mut functions =
+                PreparedFunctions::prepare([&make], &Host, &mut function_budget()).unwrap();
+            assert!(
+                functions
+                    .prepare_value(&value, &scope, None, &mut function_budget())
+                    .is_err()
+            );
+        }
     }
 
     #[test]

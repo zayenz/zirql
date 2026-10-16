@@ -122,6 +122,30 @@ pub trait NativeArguments<C, H: ProjectionHost<C>> {
         )
         .into())
     }
+
+    /// Project this stage's declared fields through the active prepared runner.
+    /// Declare every field with [`ProjectionHost::value_arguments`] and give it
+    /// the singleton subject's relative kind and local name through
+    /// [`ProjectionHost::scoped_value_arguments`]. The runner admits all fields
+    /// before selecting subjects, then shares its current lexical bindings and
+    /// cumulative budget with the common row executor. Hosts retain native
+    /// ownership checks and explicit scalar conversion.
+    ///
+    /// # Errors
+    /// Unsupported runners, undeclared fields, shadowing, invalid scalar types
+    /// and resource failures retain their locations and active function calls.
+    fn evaluate_projection(
+        &mut self,
+        projection: &Projection<NativeExpression<C, H>>,
+        _input: H::Value,
+        _budget: &mut Budget,
+    ) -> Result<ConstructedResult, EvaluationError<H::Error>> {
+        Err(QueryError::query(
+            projection.subject.range.clone(),
+            "projection arguments require a prepared function program",
+        )
+        .into())
+    }
 }
 
 /// Domain facts and explicit scalar conversions for shared native projection.
@@ -706,28 +730,34 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
         self.prepared
             .checking()
             .insert(query as *const _ as usize, prepared);
-        let arguments = declared_arguments::<C, H>(query, self.host, budget)?;
-        if !arguments.is_empty() {
+        let arguments =
+            scoped_arguments::<C, H>(query, self.host, &self.input_kind, &scope, budget)?;
+        for argument in arguments {
+            let mut scope = copy_scope::<C, H>(&scope, budget, &query.range)?;
+            for (name, kind) in argument.locals {
+                budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+                if scope.insert(name.value, kind).is_some() {
+                    return Err(QueryError::query(name.range, "binding is already defined"));
+                }
+            }
             let facts = value_facts(self.host, &scope, budget, &query.range)?;
             admit_slots::<&str>(scope.len(), budget, &query.range)?;
             let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
-            for (expression, input_kind) in arguments {
-                let mut queries = NativeValues {
-                    host: self.host,
-                    input_kind: input_kind.unwrap_or_else(|| {
-                        self.host.constructed_kind(vec![ValueType::Unestablished])
-                    }),
-                    input: None,
-                    context: None,
-                    bindings: None,
-                    scope: &scope,
-                    outer_names: &outer_names,
-                    outer: &[],
-                    subject_name: None,
-                    prepared: NativePreparation::Checking(self.prepared.checking()),
-                };
-                query_value_types(expression, &facts, &mut queries, budget)?;
-            }
+            let mut queries = NativeValues {
+                host: self.host,
+                input_kind: argument
+                    .relative
+                    .unwrap_or_else(|| self.host.constructed_kind(vec![ValueType::Unestablished])),
+                input: None,
+                context: None,
+                bindings: None,
+                scope: &scope,
+                outer_names: &outer_names,
+                outer: &[],
+                subject_name: None,
+                prepared: NativePreparation::Checking(self.prepared.checking()),
+            };
+            query_value_types(argument.expression, &facts, &mut queries, budget)?;
         }
         self.host
             .scalar_types(&kind, budget, &query.range)?
@@ -936,6 +966,21 @@ struct StageArguments<'a, 'v, C, H: ProjectionHost<C>> {
 impl<C, H: ProjectionHost<C>> NativeArguments<C, H> for StageArguments<'_, '_, C, H> {
     fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
         (self.context, self.bindings)
+    }
+    fn evaluate_projection(
+        &mut self,
+        projection: &Projection<NativeExpression<C, H>>,
+        input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<ConstructedResult, EvaluationError<H::Error>> {
+        evaluate_projection_with_types(
+            projection,
+            self.host,
+            input,
+            self.context,
+            self.bindings,
+            budget,
+        )
     }
     fn evaluate(
         &mut self,

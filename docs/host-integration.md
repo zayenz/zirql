@@ -598,6 +598,16 @@ paths share subject binding, field order and row construction. Both return a
 retains its field schema. Hosts supply subject selection and scalar conversion;
 field execution keeps the current context, relative subject and cumulative budget.
 
+A projection inside a native value or function body uses the active argument
+runner. Declare every field in `value_arguments`; `scoped_value_arguments` gives
+each field the subject's local name and singleton relative kind while retaining
+the incoming lexical scope. In `evaluate_stage_with_arguments`, call
+`NativeArguments::evaluate_projection` and lift its value with its returned types.
+The runner checks every written field before obtaining subjects and executes it
+with current function parameters and locals. Nested projections use the same
+runner and shared row construction; hosts do not prepare or enumerate fields
+again during execution.
+
 `FunctionRequest` preserves the one-shot context/budget-borrowing facade.
 Normal return and failure release live slots and continuations. Use
 `dispose_functions` for iterative cleanup of lowered native function trees,
