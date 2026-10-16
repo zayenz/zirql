@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "high"
-blocked_by = ["base-091", "base-082", "base-093", "base-094"]
+blocked_by = ["base-091", "base-082", "base-093", "base-094", "base-095"]
 +++
 # Integrate shared predicates into Zincite
 
@@ -16,6 +16,8 @@ blocked_by = ["base-091", "base-082", "base-093", "base-094"]
 Zincite uses the reviewed shared named and unnamed predicate language in all its existing predicate positions, with updated core dependency contracts and reader examples.
 
 ## Context
+
+Consume base-095's accepted scalar-shape metadata and required predicate-pattern admission before the final core pin and focused recheck. This prerequisite arose during correction pass 1; retain that pass and the original whole-review conclusions, with one focused recheck remaining. Scalar edit preparation must retain known scalar shape even for empty literals and zero selected targets, then use actual primitive facts when available.
 
 Consume base-093's independently accepted shared field-pipeline correction and base-094's scoped native-kind contract before final dependency pinning and destination verification. Ordinary constructed field suffixes must not require a grouping-only host workaround. Continue unrelated adapter work in the existing isolated source while that core prerequisite is prepared.
 
