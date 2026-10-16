@@ -367,14 +367,17 @@ pub enum ValueExpressionKind<Q = ()> {
     /// Empty literals require explicit typed axes; generic sparse data is valid.
     KeyedArray {
         axes: Option<Vec<KeyAxis>>,
+        /// Eager ordered sources in surrounding scope, exclusive with `axes`.
+        declared_axis_sources: Option<Vec<ValueExpression<Q>>>,
         entries: Vec<(ValueExpression<Q>, ValueExpression<Q>)>,
     },
-    /// Fallback sources establish axes only after zero entries. They run in the
-    /// surrounding scope, outside this comprehension's own generator binders.
+    /// Declared sources run before generators in the surrounding scope.
     KeyedComprehension {
         clauses: Vec<Located<ValueGenerator<Q>>>,
         key: Box<ValueExpression<Q>>,
         head: Box<ValueExpression<Q>>,
+        declared_axis_sources: Option<Vec<ValueExpression<Q>>>,
+        /// Lazy zero-cell fallback, exclusive with `declared_axis_sources`.
         empty_axis_sources: Option<Vec<ValueExpression<Q>>>,
     },
     Unary {
@@ -2348,11 +2351,11 @@ fn source_axis(
         _ => {
             return Err(error(
                 location,
-                "empty axis source needs an integer or member array/set",
+                "axis source needs an integer or member array/set",
             ));
         }
     };
-    // The fallback list admits its axis slots before allocating the axis vector.
+    // The source list admits its axis slots before allocating the axis vector.
     // This conversion admits only the new key slots; values move by ownership.
     allocation::<ValueKey>(values.len(), location)?;
     budget.charge(values.len(), location.clone())?;
@@ -2367,12 +2370,12 @@ fn source_axis(
             _ => {
                 return Err(error(
                     location,
-                    "empty axis source needs integer or member elements",
+                    "axis source needs integer or member elements",
                 ));
             }
         };
         if ty.is_some_and(|ty| ty != key_type(&key)) {
-            return Err(error(location, "incompatible empty axis source type"));
+            return Err(error(location, "incompatible axis source type"));
         }
         ty = Some(key_type(&key));
         keys.push(key);
@@ -3249,7 +3252,21 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 }
                 one_type(ValueType::Set(element_type), budget, location)
             }
-            ValueExpressionKind::KeyedArray { axes, entries } => {
+            ValueExpressionKind::KeyedArray {
+                axes,
+                declared_axis_sources,
+                entries,
+            } => {
+                if axes.is_some() && declared_axis_sources.is_some() {
+                    return Err(error(
+                        location,
+                        "conflicting concrete axes and declared axis sources",
+                    ));
+                }
+                let source_facts = declared_axis_sources
+                    .as_ref()
+                    .map(|sources| self.axis_sources(sources, budget, location))
+                    .transpose()?;
                 let mut facts = None;
                 let established = match axes {
                     Some(axes) => {
@@ -3265,13 +3282,16 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     if let Some(axes) = &established {
                         check_key_facts(&facts, axes, budget, &key_location)?;
                     }
+                    if let Some(sources) = &source_facts {
+                        check_source_facts(&facts, sources, budget, &key_location)?;
+                    }
                     append_types(&mut elements, self.walk(value, budget)?, budget, location)?;
                 }
                 let axes = match established {
                     Some(axes) => Some(axes),
-                    None => established_facts(facts, budget, location)?,
+                    None => established_facts(source_facts.or(facts), budget, location)?,
                 };
-                if entries.is_empty() && axes.is_none() {
+                if entries.is_empty() && axes.is_none() && declared_axis_sources.is_none() {
                     return Err(error(location, "unestablished empty keyed axes"));
                 }
                 one_type(
@@ -3284,24 +3304,22 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 clauses,
                 key,
                 head,
+                declared_axis_sources,
                 empty_axis_sources,
             } => {
-                // Fallbacks belong to the surrounding scope, before our binders.
-                let mut fallback = Vec::new();
-                if let Some(sources) = empty_axis_sources {
-                    if sources.is_empty() {
-                        return Err(error(location, "empty axis fallback needs nonzero rank"));
-                    }
-                    fallback = metadata_vec(sources.len(), budget, location)?;
-                    for source in sources {
-                        let types = self.walk(source, budget)?;
-                        fallback.push(source_key_type(
-                            &types,
-                            budget,
-                            &Location::Query(source.range.clone()),
-                        )?);
-                    }
+                if declared_axis_sources.is_some() && empty_axis_sources.is_some() {
+                    return Err(error(
+                        location,
+                        "conflicting declared and fallback axis sources",
+                    ));
                 }
+                // Both source lists belong to the scope before our binders.
+                let sources = declared_axis_sources
+                    .as_ref()
+                    .or(empty_axis_sources.as_ref());
+                let source_facts = sources
+                    .map(|sources| self.axis_sources(sources, budget, location))
+                    .transpose()?;
                 let saved = self.locals.len();
                 let result = (|| {
                     self.clauses(clauses, budget)?;
@@ -3313,10 +3331,19 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         &Location::Query(key.range.clone()),
                     )?;
                     let elements = self.walk(head, budget)?;
-                    if empty_axis_sources.is_some() {
-                        check_fallback_facts(&facts, &fallback, budget, location)?;
+                    if let Some(source_facts) = &source_facts {
+                        check_source_facts(
+                            &facts,
+                            source_facts,
+                            budget,
+                            &Location::Query(key.range.clone()),
+                        )?;
                     }
-                    let axes = established_facts(facts, budget, location)?;
+                    let axes = if declared_axis_sources.is_some() {
+                        established_facts(source_facts, budget, location)?
+                    } else {
+                        established_facts(facts, budget, location)?
+                    };
                     one_type(
                         ValueType::KeyedArray(KeyedArrayType { axes, elements }),
                         budget,
@@ -4083,6 +4110,27 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         Ok(())
     }
 
+    fn axis_sources(
+        &mut self,
+        sources: &'a [ValueExpression<Q>],
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<Option<ValueKeyType>>, QueryError> {
+        if sources.is_empty() {
+            return Err(error(location, "axis sources need nonzero rank"));
+        }
+        let mut facts = metadata_vec(sources.len(), budget, location)?;
+        for source in sources {
+            let types = self.walk(source, budget)?;
+            facts.push(source_key_type(
+                &types,
+                budget,
+                &Location::Query(source.range.clone()),
+            )?);
+        }
+        Ok(facts)
+    }
+
     // Tuple and record positions retain each concrete branch possibility. Admit
     // the bounded product before materializing it; no unknown slot hides a known
     // incompatible type in a later access or recursive equality.
@@ -4293,13 +4341,14 @@ fn source_key_type(
         let ty = normalized.as_ref().unwrap_or(ty);
         let keys = match ty {
             ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
+            | ValueType::ArrayKind(elements)
             | ValueType::KeyedArray(KeyedArrayType { elements, .. }) => {
                 let mut key_type = None;
                 for ty in elements {
                     budget.charge(1, location.clone())?;
                     let ty = key_component_type(ty, location)?;
                     if key_type.is_some() && ty.is_some() && key_type != ty {
-                        return Err(error(location, "incompatible empty axis source type"));
+                        return Err(error(location, "incompatible axis source type"));
                     }
                     if ty.is_some() {
                         key_type = ty;
@@ -4313,12 +4362,12 @@ fn source_key_type(
             _ => {
                 return Err(error(
                     location,
-                    "empty axis source needs an integer or member array/set",
+                    "axis source needs an integer or member array/set",
                 ));
             }
         };
         if result.is_some() && keys.is_some() && result != keys {
-            return Err(error(location, "incompatible empty axis source type"));
+            return Err(error(location, "incompatible axis source type"));
         }
         if keys.is_some() {
             result = keys;
@@ -4327,22 +4376,22 @@ fn source_key_type(
     Ok(result)
 }
 
-fn check_fallback_facts(
+fn check_source_facts(
     facts: &Option<Vec<Option<ValueKeyType>>>,
-    fallback: &[Option<ValueKeyType>],
+    sources: &[Option<ValueKeyType>],
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
     if let Some(facts) = facts {
-        if facts.len() != fallback.len() {
-            return Err(error(location, "empty axis fallback rank mismatch"));
+        if facts.len() != sources.len() {
+            return Err(error(location, "axis source rank mismatch"));
         }
-        for (fact, fallback) in facts.iter().zip(fallback) {
+        for (fact, source) in facts.iter().zip(sources) {
             budget.charge(1, location.clone())?;
-            if fact.is_some() && fallback.is_some() && *fact != *fallback {
-                return Err(error(location, "incompatible empty axis fallback type"));
+            if fact.is_some() && source.is_some() && *fact != *source {
+                return Err(error(location, "incompatible axis source type"));
             }
-            // Unknown fallback sources do not acquire identity from the key.
+            // Unknown sources do not acquire identity from the key.
         }
     }
     Ok(())

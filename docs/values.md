@@ -330,19 +330,56 @@ reader does not resolve nominal type names.
 
 ## Keyed arrays
 
-A keyed array has typed ordered axes and cells addressed by explicit keys.
-It is distinct from a positional or nested array. Keys `2` and `5` do not imply
-that cells `3` and `4` exist. A higher-rank cell has one key component per axis.
+An indexed array addresses its cells with integer or nominal keys. For example,
+row keys `2` and `5` do not imply that rows `3` and `4` exist:
 
-Zirql permits sparse arrays, where some combinations of axis keys have no cell.
-Full keys are unique and stored in axis order, with the rightmost dimension
-varying fastest. Empty results still need typed axes. Array access checks rank
-and key types. A host may impose additional rules, such as contiguous axes or
-complete rectangular coverage.
+```zirql
+[2: 20, 5: 50]
+```
 
-The host's parser supplies keyed construction syntax. The shared Rust
-representation also supports keyed comprehensions. See
-[value evaluation](value-runtime.md#keyed-construction) for those boundaries.
+The keys establish one dimension, ordered numerically. Nominal keys use the
+host's member identity and declaration order. To retain a particular order or
+keys without a cell, declare the full row keys after the bracket:
+
+```zirql
+[2: 20, 5: 50] axes([5, 2, 9])
+```
+
+The result retains keys `5, 2, 9` and stores cells `5: 50`, then `2: 20`.
+Key `9` has no cell. Each ordered set of keys is called an axis; `axes(...)`
+supplies one source per dimension. Sources are integer/member arrays or typed
+sets. They run once, left to right, in surrounding scope before any cells or
+generators. `axes` is contextual construction syntax, not a built-in function.
+
+A tuple supplies row and column keys for a two-dimensional value:
+
+```zirql
+[(i, j): i + j for i in [5, 2] for j in [8, 1] if j == 8]
+    axes([5, 2, 9], [8, 1, 4])
+```
+
+Only cells `(5, 8)` and `(2, 8)` exist. Zirql permits these sparse values.
+Cells are stored in row-major order, with the rightmost dimension varying
+fastest. A duplicate full key, duplicate axis key, wrong rank, incompatible
+nominal type or key outside its declared domain fails. String keys belong to
+[dictionaries](#literals-and-access).
+
+Empty results retain declared dimensions and key types:
+
+```zirql
+[] axes(set<int>(), [8, 1])
+[i: i for i in [2, 5] if false] axes([5, 2, 9])
+```
+
+The first has two dimensions and no rows. The second has one dimension with
+three possible keys and no present cells. `[]` by itself remains positional.
+An untyped empty source such as `[]` cannot establish a dimension's key type.
+A host can supply a typed empty nominal set without losing its identity.
+
+A host may require contiguous domains or complete rectangular coverage, as
+Zincite does for constructed data. Those checks do not fill or compact cells.
+See [value evaluation](value-runtime.md#keyed-construction) for the Rust fields
+and the separate lazy fallback used by existing host lowerings.
 
 `index_set(a)` returns a typed set of one-dimensional array keys. For a
 positional array this is `1..length(a)`, including a typed empty integer set
@@ -355,8 +392,8 @@ or nominal declaration order. Inputs of another kind or rank fail at the call.
 [words[i] for i in index_set(words)]
 ```
 
-This returns the words in positional order. The common reader accepts
-`index_set`; keyed constructors remain supplied by the host.
+This returns the words in positional order. `index_set([2: 20, 5: 50]
+axes([5, 2, 9]))` returns the ordered integer set `{5, 2, 9}`.
 
 ## Keyed entries and exact pairing
 
@@ -461,9 +498,10 @@ Sets use the callable `Set` node or set comprehensions. For example,
 ordered `3, 1, 2`; wrapping it in `Sort` yields a set ordered `1, 2, 3`.
 Typed empty sets retain their supplied element identity through sorting.
 
-The common reader does not yet accept bare-brace sets, computed-key brace
-expressions, typed-empty set text or indexed-axis grammar. Hosts can construct
-those supported values directly through the Rust API. The current keyed
-comprehension `empty_axis_sources` supplies axes only when no cell is produced.
-All construction, comparison, copies and rendering use the active budget and
-retain expression locations and native owners.
+The common reader accepts bare-brace sets, computed-key dictionaries, typed
+empty scalar sets and indexed brackets with optional `axes(...)` domains.
+The Rust API exposes the same constructors. Declared sources run before cells
+or generators and retain unused keys; `KeyedComprehension::empty_axis_sources`
+remains a lazy fallback that runs only when no cell is produced. All
+construction, comparison, copies and rendering use the active budget and retain
+expression locations and native owners.

@@ -571,6 +571,7 @@ enum Pending<'a, Q, N, K> {
         Vec<(String, ConstructedValue)>,
         String,
     ),
+    DeclaredAxes(&'a PreparedValue<'a, Q>, usize, usize, Vec<KeyAxis>),
     KeyedKey(
         &'a PreparedValue<'a, Q>,
         usize,
@@ -670,7 +671,7 @@ struct Comprehension<'a, Q> {
 enum Output {
     Array(Vec<ConstructedValue>),
     Set(Vec<ConstructedValue>, Option<SetElementType>),
-    Keyed(Vec<Located<KeyedEntry>>),
+    Keyed(Option<Vec<KeyAxis>>, Vec<Located<KeyedEntry>>),
     Dictionary(Vec<(String, ConstructedValue)>),
 }
 
@@ -723,6 +724,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Set(e, ..)
                     | Pending::DictionaryKey(e, ..)
                     | Pending::DictionaryValue(e, ..)
+                    | Pending::DeclaredAxes(e, ..)
                     | Pending::KeyedKey(e, ..)
                     | Pending::KeyedValue(e, ..) => Location::Query(e.range.clone()),
                     Pending::Loop(state) => Location::Query(state.expression.range.clone()),
@@ -749,6 +751,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Set(_, depth, ..)
                     | Pending::DictionaryKey(_, depth, ..)
                     | Pending::DictionaryValue(_, depth, ..)
+                    | Pending::DeclaredAxes(_, depth, ..)
                     | Pending::KeyedKey(_, depth, ..)
                     | Pending::KeyedValue(_, depth, ..) => *depth,
                     Pending::Clauses(c, index, _)
@@ -904,21 +907,34 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             budget,
                                         )?;
                                     }
-                                    PreparedKind::KeyedArray { axes, entries } => {
-                                        let axes = axes
-                                            .map(|axes| copy_axes(axes, budget, &location))
-                                            .transpose()?;
-                                        let values =
-                                            admit_container(entries.len(), budget, &location)?;
-                                        if let Some((key, _)) = entries.first() {
-                                            push!(Pending::KeyedKey(
-                                                expression, depth, 0, axes, values
+                                    PreparedKind::KeyedArray { .. }
+                                    | PreparedKind::KeyedComprehension { .. } => {
+                                        if let Some(sources) = declared_axis_sources(expression) {
+                                            let axes =
+                                                admit_container(sources.len(), budget, &location)?;
+                                            let source = sources.first().ok_or_else(|| {
+                                                error(&location, "axis sources need nonzero rank")
+                                            })?;
+                                            push!(Pending::DeclaredAxes(
+                                                expression, depth, 0, axes
                                             ));
-                                            push!(Pending::Eval(key, depth + 1, false));
+                                            push!(Pending::Eval(source, depth + 1, false));
                                         } else {
-                                            result = owned!(finish_keyed(
-                                                axes, values, budget, &location
-                                            )?);
+                                            let axes = match &expression.value {
+                                                PreparedKind::KeyedArray { axes, .. } => axes
+                                                    .map(|axes| copy_axes(axes, budget, &location))
+                                                    .transpose()?,
+                                                _ => None,
+                                            };
+                                            start_keyed(
+                                                expression,
+                                                depth,
+                                                frame.locals.len(),
+                                                axes,
+                                                &mut pending,
+                                                &mut result,
+                                                budget,
+                                            )?;
                                         }
                                     }
                                     PreparedKind::Comprehension {
@@ -943,26 +959,6 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             empty: None,
                                             depth,
                                             output: std::cell::RefCell::new(output),
-                                        });
-                                        push!(Pending::FinishComprehension(Rc::clone(&c)));
-                                        push!(Pending::Clauses(c, 0, frame.locals.len()));
-                                    }
-                                    PreparedKind::KeyedComprehension {
-                                        clauses,
-                                        key,
-                                        head,
-                                        empty_axis_sources,
-                                    } => {
-                                        let c = Rc::new(Comprehension {
-                                            expression,
-                                            clauses,
-                                            key: Some(key),
-                                            head,
-                                            empty: empty_axis_sources.as_deref(),
-                                            depth,
-                                            output: std::cell::RefCell::new(Output::Keyed(
-                                                admit_container(0, budget, &location)?,
-                                            )),
                                         });
                                         push!(Pending::FinishComprehension(Rc::clone(&c)));
                                         push!(Pending::Clauses(c, 0, frame.locals.len()));
@@ -1531,6 +1527,39 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                             next @ (Pending::DictionaryKey(..) | Pending::DictionaryValue(..)) => {
                                 dictionary_step(next, &mut pending, &mut result, host, budget)?;
                             }
+                            Pending::DeclaredAxes(expression, depth, index, mut axes) => {
+                                let sources =
+                                    declared_axis_sources(expression).expect("declared sources");
+                                let source_location = Location::Query(sources[index].range.clone());
+                                axes.push(source_axis(
+                                    result.take().expect("axis source").materialize_with(
+                                        host,
+                                        budget,
+                                        &source_location,
+                                    )?,
+                                    budget,
+                                    &source_location,
+                                )?);
+                                if let Some(source) = sources.get(index + 1) {
+                                    push!(Pending::DeclaredAxes(
+                                        expression,
+                                        depth,
+                                        index + 1,
+                                        axes
+                                    ));
+                                    push!(Pending::Eval(source, depth + 1, false));
+                                } else {
+                                    start_keyed(
+                                        expression,
+                                        depth,
+                                        frame.locals.len(),
+                                        Some(axes),
+                                        &mut pending,
+                                        &mut result,
+                                        budget,
+                                    )?;
+                                }
+                            }
                             Pending::KeyedKey(expression, depth, index, axes, values) => {
                                 let PreparedKind::KeyedArray { entries, .. } = &expression.value
                                 else {
@@ -1911,8 +1940,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         elements,
                                         element_type
                                     },
-                                    Output::Keyed(entries) if entries.is_empty() => {
-                                        *c.output.borrow_mut() = Output::Keyed(entries);
+                                    Output::Keyed(None, entries) if entries.is_empty() => {
+                                        *c.output.borrow_mut() = Output::Keyed(None, entries);
                                         let sources = c.empty.ok_or_else(|| {
                                             error(&location, "unestablished empty keyed axes")
                                         })?;
@@ -1925,8 +1954,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         }
                                         finish_keyed(Some(axes), Vec::new(), budget, &location)?
                                     }
-                                    Output::Keyed(entries) =>
-                                        finish_keyed(None, entries, budget, &location)?,
+                                    Output::Keyed(axes, entries) =>
+                                        finish_keyed(axes, entries, budget, &location)?,
                                 });
                             }
                             Pending::EmptyAxes(c, index, mut axes) => {
@@ -2681,6 +2710,76 @@ fn dictionary_key(
     Ok(key)
 }
 
+fn declared_axis_sources<'a, Q>(
+    expression: &'a PreparedValue<'a, Q>,
+) -> Option<&'a [PreparedValue<'a, Q>]> {
+    match &expression.value {
+        PreparedKind::KeyedArray {
+            declared_axis_sources,
+            ..
+        }
+        | PreparedKind::KeyedComprehension {
+            declared_axis_sources,
+            ..
+        } => declared_axis_sources.as_deref(),
+        _ => unreachable!("keyed construction"),
+    }
+}
+
+fn start_keyed<'a, Q, N, K>(
+    expression: &'a PreparedValue<'a, Q>,
+    depth: usize,
+    saved: usize,
+    axes: Option<Vec<KeyAxis>>,
+    pending: &mut Vec<Pending<'a, Q, N, K>>,
+    result: &mut Option<Value<'a, N, K>>,
+    budget: &mut Budget,
+) -> Result<(), QueryError> {
+    let location = Location::Query(expression.range.clone());
+    macro_rules! push {
+        ($v:expr) => {
+            push_metadata(pending, $v, budget, &location)?
+        };
+    }
+    match &expression.value {
+        PreparedKind::KeyedArray { entries, .. } => {
+            let values = admit_container(entries.len(), budget, &location)?;
+            if let Some((key, _)) = entries.first() {
+                push!(Pending::KeyedKey(expression, depth, 0, axes, values));
+                push!(Pending::Eval(key, depth + 1, false));
+            } else {
+                *result = Some(Value::constructed(RuntimeValue::Owned(finish_keyed(
+                    axes, values, budget, &location,
+                )?)));
+            }
+        }
+        PreparedKind::KeyedComprehension {
+            clauses,
+            key,
+            head,
+            empty_axis_sources,
+            ..
+        } => {
+            let c = Rc::new(Comprehension {
+                expression,
+                clauses,
+                key: Some(key),
+                head,
+                empty: empty_axis_sources.as_deref(),
+                depth,
+                output: std::cell::RefCell::new(Output::Keyed(
+                    axes,
+                    admit_container(0, budget, &location)?,
+                )),
+            });
+            push!(Pending::FinishComprehension(Rc::clone(&c)));
+            push!(Pending::Clauses(c, 0, saved));
+        }
+        _ => unreachable!("keyed construction"),
+    }
+    Ok(())
+}
+
 fn append<Q>(
     c: &Comprehension<'_, Q>,
     value: ConstructedValue,
@@ -2696,7 +2795,7 @@ fn append<Q>(
         }
         Output::Set(elements, ty) => insert_set(elements, ty, value, true, budget, &location)?,
         Output::Dictionary(_) => unreachable!("dictionary head has a string key"),
-        Output::Keyed(entries) => {
+        Output::Keyed(_, entries) => {
             let expression = c.key.expect("key expression");
             let location = Location::Query(expression.range.clone());
             let keys = key.expect("keyed value");
@@ -2720,10 +2819,6 @@ fn operands<'a, Q>(
     let count = match &expression.value {
         PreparedKind::Array(v) | PreparedKind::Tuple(v) | PreparedKind::Set(v) => v.len(),
         PreparedKind::Record(v) => v.len(),
-        PreparedKind::KeyedArray { entries, .. } => entries
-            .len()
-            .checked_mul(2)
-            .ok_or_else(|| error(location, "operand count overflow"))?,
         PreparedKind::PushBackAll { .. }
         | PreparedKind::Insert { .. }
         | PreparedKind::Binary { .. }
@@ -2738,11 +2833,6 @@ fn operands<'a, Q>(
     match &expression.value {
         PreparedKind::Array(v) | PreparedKind::Tuple(v) | PreparedKind::Set(v) => result.extend(v),
         PreparedKind::Record(v) => result.extend(v.iter().map(|(_, value)| value)),
-        PreparedKind::KeyedArray { entries, .. } => {
-            for (key, value) in entries {
-                result.extend([key, value]);
-            }
-        }
         PreparedKind::PushBackAll {
             queue: left,
             items: right,
@@ -3043,24 +3133,6 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
                 result.push((label.value.clone(), value));
             }
             ConstructedValue::Record(result)
-        }
-        PreparedKind::KeyedArray { axes, entries } => {
-            let axes = axes
-                .map(|axes| copy_axes(axes, budget, &location))
-                .transpose()?;
-            let mut values = admit_container(entries.len(), budget, &location)?;
-            for (key, _) in entries {
-                let key_location = Location::Query(key.range.clone());
-                let keys = value_keys(next(), budget, &key_location)?;
-                values.push(Located::new(
-                    KeyedEntry {
-                        key: keys,
-                        value: next(),
-                    },
-                    key.range.clone(),
-                ));
-            }
-            finish_keyed(axes, values, budget, &location)?
         }
         PreparedKind::Unary { operator, .. } => unary(*operator, next(), budget, &location)?,
         PreparedKind::Binary { operator, .. } => {

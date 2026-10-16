@@ -90,6 +90,26 @@ For a CSV with a `full name` header, use `lookup(p, "full name")`. Unknown
 header labels are outside the declared schema and fail. Header declarations
 also check strict column access when the table has no data rows.
 
+## Inspect an indexed value
+
+The same reader can construct values addressed by integer keys. The
+[saved indexed example](../examples/csv/indexed-arrays.zirql) retains keys
+`5, 2, 9`, with cells at `5` and `2`:
+
+```sh
+cargo run --locked --example csv -- "$(cat examples/csv/indexed-arrays.zirql)" examples/csv/people.csv
+```
+
+```json
+{"keys":[5,2,9],"cells":[{"key":5,"value":50},{"key":2,"value":20}],"second":20,"has_nine":false}
+```
+
+`index_set` keeps unused keys; `entries` visits only present cells. The CSV
+renderer accepts those ordinary arrays and records. Direct keyed values retain
+their shape in the library and cannot be rendered as plain JSON by this host.
+See [keyed arrays](values.md#keyed-arrays) for row and column domains, typed
+empties and sparse cells.
+
 ## Read failures
 
 A missing column fails at its original query range:
