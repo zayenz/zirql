@@ -28,6 +28,9 @@ cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")]
 cargo run --locked --example words -- '[w for w in words if starts_with(w, "a")] | tally'
 ```
 
+The three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and the dictionary
+`{"ash": 1, "apple": 2}`, respectively.
+
 The tally returns fields in first-seen order: `ash: 1`, then `apple: 2`.
 To order a dictionary explicitly, sort its keys or select its values:
 
@@ -47,7 +50,7 @@ cargo run --locked --example words -- '{"explicit": ["apple", "ash", "birch", "a
 ```
 
 The results contain counts `3`, then `3` and `4`, then `2` and `4`.
-Each record field starts from the same input. The explicit array supplies only
+Each dictionary field starts from the same input. The explicit array supplies only
 its own pipeline; it does not replace the input used by `total`.
 
 Array keys and tuple positions are also available through the common reader:
@@ -56,12 +59,10 @@ Array keys and tuple positions are also available through the common reader:
 cargo run --locked --example words -- '[{"position": i, "word": (words[i], i).1} for i in index_set(words)]'
 ```
 
-This returns one record per word, with positions `1` through `4`. The default
+This returns one dictionary per word, with positions `1` through `4`. The default
 adjacent-pair expression also uses `index_set(words)`, keeping only keys with
 a following word.
 
-The first three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and the record
-`{"apple": 2, "ash": 1}`, respectively.
 The [complete source](../examples/words.rs) is small enough to adapt directly.
 This is a repository example executable; the library itself does not install
 a standalone query command.
@@ -98,7 +99,7 @@ location.
 
 After evaluation, `dispose_native_value` releases the expression tree. The
 returned `ConstructedValue` belongs to the caller. The example prints it with
-`Debug`; an application can inspect the records or choose its own output format.
+`Debug`; an application can inspect the dictionaries or choose its own output format.
 
 The explicit limits in the example are tutorial choices. Set limits that fit
 your application's input and expected queries. Include host scanning, allocation

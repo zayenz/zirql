@@ -13,25 +13,32 @@ complete programs or native extensions shown here.
 
 ## Statements and scope
 
-For a frontend using the common statement prefixes, a small report can read:
+The [CSV example](csv.md) accepts ordered `let` bindings and a final expression:
 
-```zirql
-let selected = [w for w in words if starts_with(w, "a")];
-report {"words": selected, "count": length(selected)};
+```sh
+cargo run --locked --example csv -- '
+let selected = [p for p in rows if p.active == "yes"];
+{"names": [p.name for p in selected], "count": length(selected)}
+' examples/csv/people.csv
 ```
 
-With the word model, the report contains `ash`, `apple`, `apple` and a count of
-3. `let` installs an immutable name. Later statements can use it, but earlier
+It returns `["Grace Hopper", "Ada, Lovelace", "Barbara Liskov"]` under `names`,
+with count 3. `let` installs an immutable name. Later statements can use it, but earlier
 statements cannot refer forward to it. Duplicate definitions and shadowing of
 existing bindings fail before execution.
 
-Each statement starts with the original top-level native input. A previous
-statement does not silently replace that input. Bind its result and refer to
-the binding explicitly when a later statement should use it.
+Each statement starts with the original top-level input. A previous statement
+does not replace that input. Bind its result and refer to the binding explicitly
+when a later statement should use it.
 
-The host defines what `report` does with the result, including formatting and
-whether it produces output at all for a library call. Single expressions need
-no file or named entry point in the shared language representation.
+Larger frontends also support parameters, functions and explicit output
+statements. The host defines what `report` does with the result, including
+formatting and whether it produces output for a library call. Zirium supports
+pass-through emitters; Zincite's output stages are terminal. Their
+[Zirium](https://zayenz.se/zirium/guides/query-language/) and
+[Zincite](https://zayenz.se/zincite/guides/queries/) guides document the actual
+commands. CSV's final expression renders JSON and does not accept `report` or
+named function declarations.
 
 ## Required caller parameters
 
@@ -71,6 +78,26 @@ render it.
 A record can retain several related native values. Field selection preserves
 the selected field's native kind. A later projection decides which properties
 become scalar report data.
+
+## Project a native selection
+
+Zirium can retain MLIR operations and explicitly read their names and body sizes.
+From a Zirium checkout:
+
+```sh
+zirium 'filter(op("func.func")) | project(f, {"name": f | attr("sym_name") | one, "n": f | children | count}) | json' examples/cli/function-report.mlir
+```
+
+The result has rows `{"name":"double","n":2}`, `{"name":"mix","n":3}` and
+`{"name":"plain","n":1}`. Each `f` is one native function operation. Both
+fields read that same operation; `one` requires exactly one name, while `count`
+counts its immediate children. The host supplies the MLIR operations and
+attributes. Zirql evaluates projection fields and assembles their dictionaries.
+
+The [Zirium language guide](https://zayenz.se/zirium/guides/query-language/)
+explains its native stages. Zincite similarly projects MiniZinc items and
+declarations; its [query guide](https://zayenz.se/zincite/guides/queries/)
+distinguishes written syntax from facts that need model context.
 
 ## Construct ordered report rows
 
@@ -195,23 +222,28 @@ and output contracts are covered by [host integration](host-integration.md),
 
 ## Order native selections
 
-Hosts lower native `sort`, `min`, `max`, `min_all` and `max_all` stages through
-`ValueReaderHost::ordering`. Their `*_by(query)` forms retain a
-singleton-relative selector with the containing expression's lexical scope.
-Typed adapters construct `NativeOrdering<Q>` directly. The shared algorithm
-orders native payloads without rendering them or replacing their owner.
+Native sorting uses a key projected from each object. In Zirium, this orders
+functions by their symbol names:
 
-Sorting is stable. Single extrema keep the first equal-key item; all-ties
-extrema keep every equal-key item in input order. Selectors run once per item in
-input order before comparisons begin, including for extrema. The existing
-`NativeOrderKey::Value` shares constructed scalar admission and comparison:
-present homogeneous signed integers, finite floats, exact strings or members
-of one nominal type. Every key is admitted before comparison; inconsistent
-nominal names, member metadata or declaration order fail even in a losing key.
-Native `Count` and `Text` descriptors keep their separate domain: counts retain
-`usize` range and sort before text. They cannot mix with typed `Value` keys.
-Hosts decide their admitted kinds and empty policy; the shared algorithm itself
-returns an empty selection on empty input.
+```zirql
+filter(op("func.func")) | sort_by(attr("sym_name")) | head(10)
+```
+
+The selector runs against one operation at a time. Sorting keeps equal-key
+operations in their incoming order. Single extrema keep the first equal-key
+item; all-ties extrema keep every tied item in input order. Selectors execute
+in input order before comparisons begin, including for extrema.
+
+The host defines admissible keys and empty-result behavior. Zirium's native
+selectors return one string or count and refuse empty extrema. Zincite's native
+ordering uses present homogeneous signed integers, finite floats, exact strings
+or members of one nominal type; integer and float keys do not mix. Its empty
+extrema return an empty selection of the same kind. Missing or incompatible
+keys fail, including inconsistent nominal identity or member metadata.
+
+Constructed collection extrema instead return absence on empty input. See the
+host language guides for their stages, and [ordering adapters](host-integration.md)
+for the Rust key representations and lowering APIs.
 
 ## Correlated native dictionaries
 
@@ -222,18 +254,29 @@ Values retain their native kind and owner, including nested dictionaries and
 counts. The host checks supported kinds and pure selector policy before
 execution, even for empty input.
 
-The callable constructor returns `Vec<(String, V)>` in insertion order.
-`sort_map_by_value` reorders those entries stably; equal values keep their
-current order. `select_map` applies reverse/head/tail to the same dictionary
-kind, including an unsorted dictionary. Values remain native throughout.
+A native report can map function names to body sizes in Zirium:
 
-Its scalar projection accepts homogeneous null, Boolean, numeric or string
-values. Signed/unsigned integers and finite floats share the numeric category
-and compare exactly. Constructed dictionary selectors use the narrower
-constructed ordering contract: homogeneous signed integers, finite floats,
-strings or one nominal member type, with no integer/float mixing.
+```zirql
+filter(op("func.func"))
+| map_by(attr("sym_name"), children | count)
+| sort_by(value) | reverse | head(2) | json
+```
 
-## Accepted collection and native alignment
+On `examples/cli/function-report.mlir`, it returns `{"mix":3,"double":2}`.
+The dictionary keeps its kind through sorting, reversal and bounds. Equal values
+keep their current order during sorting; an explicit reversal also reverses ties.
+
+Supported dictionary sort keys depend on the host. Zirium accepts homogeneous
+null, Boolean, numeric or string values, with exact comparison across signed and
+unsigned integers and finite floats. Zincite uses the narrower shared contract:
+present homogeneous signed integers, finite floats, strings or one nominal type,
+with no integer/float mixing. Nested values need an explicit scalar selector.
+The [embedding guide](host-integration.md) documents the callable constructor,
+map sorting and bounds APIs.
+
+<span id="accepted-collection-and-native-alignment"></span>
+
+## Collection order in native reports
 
 The shared library keeps insertion order for scalar sets and string dictionaries.
 Set duplicates retain their first representative. Constructed sorting returns
@@ -251,7 +294,7 @@ sort_by({"z": 2, "a": 2, "m": 1}, value, descending=true)
 ```
 
 They return dictionaries ordered `a, m, z`, `m, z, a` and `z, a, m`.
-Equal keys retain their incoming order in both directions. Sorting again after
+Equal sort keys retain their incoming order in both directions. Sorting again after
 reversal keeps the reversed order within ties. Tally fields follow the first
 occurrence of each spelling. Empty dictionaries and zero bounds retain the
 dictionary kind. A dictionary never implicitly becomes a list of entry records.
@@ -265,8 +308,8 @@ Zirium retains ordered dictionaries through its library and JSON results and
 uses operand-order native set algebra. Zincite uses shared typed native ordering,
 operand-order sets and first-seen tally dictionaries through its pinned Git
 dependency. Its `map_by` dictionaries support stable value sorting and bounds;
-native and constructed dictionaries render as ordered JSON objects. Later common
-reader spellings remain separate work. Native identity, effects, completeness
+native and constructed dictionaries render as ordered JSON objects. Both support
+the shared brace and indexed-array forms. Native identity, effects, completeness
 and data-edit policies stay with each host.
 
 ## Native existence

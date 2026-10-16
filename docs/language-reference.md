@@ -1,12 +1,12 @@
 # Language reference
 
 A Zirql expression transforms data into a result. That data may be a string
-array, a record, or a selection of native objects supplied by an application.
+array, a dictionary, or a selection of native objects supplied by an application.
 The [word tutorial](examples.md) starts with an array and follows it through
 selection, adjacent pairs and grouped occurrences. This reference gives the
 rules behind those examples.
 
-The application embedding Zirql is its host. Strings, arrays and records are
+The application embedding Zirql is its host. Strings, arrays and dictionaries are
 constructed values, which Zirql can inspect directly. Native values identify
 objects kept by the host, such as words in a source document or nodes in a
 syntax tree. A projection reads properties of those objects into constructed
@@ -21,7 +21,7 @@ host support is needed. For the version used by these examples, see the
 ## Values and expressions
 
 Values include Booleans, signed integers, finite floats, strings, absence,
-arrays, tuples and records. Nominal members, typed sets and keyed arrays retain
+arrays, tuples and dictionaries. Nominal members, typed sets and keyed arrays retain
 additional type or index information. Native objects keep their host's identity.
 
 ```zirql
@@ -32,7 +32,7 @@ additional type or index information. Native objects keep their host's identity.
 ```
 
 Arrays and tuples use one-based positions. `words[1]` is `"ash"` in the word
-example; `(2, 5).2` selects the second tuple value. Record access uses a label,
+example; `(2, 5).2` selects the second tuple value. Dictionary access uses a string key,
 such as `row.word` or `row["word"]`. Ordinary access fails
 when an entry is missing; `lookup(row, "word")` returns absence for a valid
 missing key.
@@ -48,6 +48,44 @@ if length(words) > 0 { words[1] } else { "no words" }
 All branches still receive scope and known-type checks. See
 [values and comprehensions](values.md) for exact arithmetic, collection,
 absence and access rules.
+
+## Save intermediate results
+
+A `let` gives a calculated value an immutable name. Later expressions can reuse
+it. This complete report filters sample counts, then sorts a dictionary by value:
+
+```sh
+cargo run --locked --example csv -- '
+let samples = [
+  {"label": "pear", "count": 2},
+  {"label": "apple", "count": 1},
+  {"label": "ash", "count": 2},
+  {"label": "birch", "count": 3}
+];
+let selected = [row for row in samples if row.count > 1];
+sort_by({row.label: row.count for row in selected}, value, descending=true)
+' examples/csv/people.csv
+```
+
+```json
+{"birch":3,"pear":2,"ash":2}
+```
+
+`selected` contains pear, ash and birch in their input order. The dictionary uses
+their labels as string keys and their counts as values. `descending=true` puts
+the largest count first. Pear and ash both have count 2, so their incoming order
+stays pear, then ash. Sorting retains the dictionary kind.
+
+The CSV file supplies the example application's required input; this calculation
+uses only `samples`. The [CSV walkthrough](csv.md) applies the same operations to
+file contents. [Zirium](https://zayenz.se/zirium/guides/query-language/) and
+[Zincite](https://zayenz.se/zincite/guides/queries/) run the same calculation in
+their own programs, alongside operations on MLIR and MiniZinc source.
+
+Bindings are visible after their initializer. They cannot replace an existing
+name, refer forward or refer to themselves. A comprehension's iteration names
+stay inside that expression. The host decides which statement and output forms
+its frontend accepts; CSV accepts ordered lets and one final expression.
 
 ## Comprehensions
 
@@ -132,7 +170,7 @@ The common reader accepts constructed filter/count and collection stages:
 
 The first two return `{"beginning_with_a": 3, "total": 4}` and `2` with the
 word host. Bare filter/count use the same constructed input independently in
-each record field; an explicit source supplies its own stages. The filter
+each dictionary field; an explicit source supplies its own stages. The filter
 accepts only `starts_with` with a literal string prefix and requires positional
 strings. Empty and no-match inputs count as zero. Count returns a scalar, so a
 later collection stage is invalid. Missing input and incompatible types receive
@@ -163,15 +201,14 @@ terminal results and the small `parse_pipeline` reader. The broader native
 representation also supports host stages and set operations. A host can reuse
 the common readers or lower an existing parser to that representation.
 
-Callable sets and dictionaries preserve insertion order and retain their kind
-through explicit sorting. `sort(d)` orders dictionary keys; `sort_by(d, value)`
-orders values and retains current-order ties. The common reader accepts static
-string dictionaries; set construction is available through Rust nodes and
-comprehensions. See [collection order](values.md#selected-collection-syntax-and-ordering)
-for current syntax and examples. Native adapters adopt the ordered dictionary
-APIs separately; their current pinned versions retain their documented behavior.
+Sets and dictionaries preserve insertion order and retain their kind through
+explicit sorting. `sort(d)` orders dictionary keys; `sort_by(d, value)` orders
+values and retains current-order ties. Bare braces accept sets and dictionaries,
+including computed string keys. See [collection order](values.md#selected-collection-syntax-and-ordering)
+for syntax and examples. Both native hosts retain dictionary order through
+saved results and JSON rendering.
 
-Use `project(subject, {fields})` to turn native subjects into report records.
+Use `project(subject, {fields})` to turn native subjects into report dictionaries.
 Explicit projections produce constructed values; native captures and paths can
 retain the original objects. See [native programs](native-programs.md) for
 projection, `match { from ...; bind ...; where ...; }` and bounded paths.
@@ -215,9 +252,9 @@ presence. A native capture match enumerates correlated domain objects; a value
 match selects one result. Their forms and results are different.
 
 The [functions and control flow chapter](functions-and-control-flow.md)
-describes matching, guarded arms and local bindings. It also distinguishes the
-syntax accepted by the common parser from control-flow forms available through
-the Rust API.
+describes matching, guarded arms, local bindings, loops and named reducers.
+The common reader supports these forms; each host connects them to its program
+and native-type handling.
 
 ## Errors and limits
 

@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 76
-- Ready: 2
+- Ready: 1
 - Blocked: 0
-- Done: 74
+- Done: 75
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -79,7 +79,7 @@
 | [base-068](tasks/068-expose-retained-sortable-dictionaries-in-zincite.md) | Expose retained sortable dictionaries in Zincite | done | base-067 |
 | [base-069](tasks/069-read-correlated-existence-and-adopt-zincite-fixed-points.md) | Read correlated existence and adopt Zincite fixed points | done | base-067, base-064 |
 | [base-070](tasks/070-run-shared-zirql-queries-over-implicit-and-named-csv-inputs.md) | Run shared Zirql queries over implicit and named CSV inputs | done | — |
-| [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | ready | base-070 |
+| [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | done | base-070 |
 | [base-072](tasks/072-pass-current-stable-clippy-for-ordered-tally.md) | Pass current stable Clippy for ordered tally | done | — |
 | [base-073](tasks/073-retain-csv-header-schemas-in-runtime-rows.md) | Retain CSV header schemas in runtime rows | done | base-070 |
 | [base-074](tasks/074-use-shared-value-calls-and-saved-collection-pipelines-consis.md) | Use shared value calls and saved collection pipelines consistently | done | base-065 |

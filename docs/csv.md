@@ -110,6 +110,36 @@ their shape in the library and cannot be rendered as plain JSON by this host.
 See [keyed arrays](values.md#keyed-arrays) for row and column domains, typed
 empties and sparse cells.
 
+## Build a dictionary report
+
+When each team needs one count, use its label as a dictionary key:
+
+```sh
+cargo run --locked --example csv -- '
+let selected = [p for p in people if p.active == "yes"];
+sort_by({t.label: length([p for p in selected if p.team == t.id]) for t in teams}, value, descending=true)
+' people=examples/csv/people.csv teams=examples/csv/teams.csv
+```
+
+```json
+{"Compiler":2,"Runtime":1,"Operations":0}
+```
+
+The inner comprehension counts selected people in the current team. Every team
+gets an entry, including Operations with no active members. `sort_by` orders the
+counts from largest to smallest and retains the dictionary kind. Equal counts
+would keep their incoming team order. Duplicate labels fail because a
+dictionary requires distinct string keys.
+
+A column name can also come from an expression:
+
+```sh
+cargo run --locked --example csv -- 'let column = "name"; [p[column] for p in rows if p.active == "yes"]' examples/csv/people.csv
+```
+
+This returns `["Grace Hopper","Ada, Lovelace","Barbara Liskov"]`, in input
+order. Brackets read the computed string key; `p.name` selects a fixed label.
+
 ## Read failures
 
 A missing column fails at its original query range:

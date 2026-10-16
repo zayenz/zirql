@@ -340,8 +340,10 @@ with the same fields. `step` is a located function name in this closed position.
 The [compiled fold example in the API
 source](https://github.com/zayenz/zirql/blob/main/src/value.rs) adds `[2, 3]` to
 initial state `0` with one active function frame. Replacing `Fold` with `Scan`
-returns `[2, 5]`. The common reader does not parse fold or scan expressions. A
-host must supply their syntax or construct these nodes directly.
+returns `[2, 5]`. The common reader parses `fold(items, initial, step)` and
+`scan(items, initial, step)`, where `step` names a registered pure function.
+The [function guide](functions-and-control-flow.md) explains the textual forms;
+frontends still supply function registration and program handling.
 
 The request resolves the step and checks its two-parameter signature and purity
 before execution, including empty input. Its result declaration must be
@@ -369,9 +371,10 @@ unsupported. Constructed states use ordinary constructed arrays.
 
 Rust frontends construct `ValueExpressionKind::Loop { states, body }`,
 `Break(value)` and `Continue(values)`. These nodes use the same preparation and
-runner as values and functions. The common reader does not parse loop or
-transfer expressions; a host supplies their syntax or constructs these nodes
-directly.
+runner as values and functions. The common reader parses `loop (name = initial,
+...) { body }`, `break expression` and `continue (next, ...)`. Frontends connect
+those expressions to their function and native-type handling, or construct the
+same nodes directly.
 
 Each state pairs a located fresh name with an initializer. All initializers
 run left-to-right in the outer scope, before any state name becomes visible.

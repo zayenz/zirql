@@ -1,99 +1,117 @@
 # Pipelines
 
-The [word tutorial](examples.md) works with an array that Zirql can inspect
-directly. A host can also expose an ordered stream of native items, such as
-borrowed words or document nodes. A pipeline applies stages in written order.
-Constructed arrays accept `| filter(starts_with("prefix"))`, `| count`,
-`| sort`, `| unique` and terminal `| tally`. Bare constructed filter/count read
-immutable current input supplied by the host. Each sibling record field sees
-the same input; explicit sources supply their own stages. See the examples
-in the [word tutorial](examples.md#sort-and-retain-distinct-words).
+A pipeline applies stages in written order. Each stage receives the preceding
+result. Start with the [word example](getting-started.md), whose input is
+`words = ["ash", "apple", "birch", "apple"]`:
 
-The examples here use the same text, `ash apple birch apple`, through the
-[borrowed-word host](../README.md#a-borrowed-source-query). That host defines
-the `prefix` predicate. Zirql supplies filtering, stage order and Boolean
-composition. These pipelines use a different adapter from the tutorial's
-constructed-array executable.
+```sh
+cargo run --locked --example words -- 'words | filter(starts_with("a")) | sort | unique'
+```
 
-## Filter and take a prefix
+Filtering retains `ash`, `apple`, `apple`. Sorting puts apple before ash, then
+`unique` keeps the first of each equal value. The result is `["apple", "ash"]`.
+The executable prints values in Rust's `Debug` format.
+
+## Choose the source and stages
+
+An explicit source supplies its own pipeline input:
+
+```zirql
+["birch", "ash", "apple"] | filter(starts_with("a")) | count
+```
+
+This returns 2. In the word host, bare `count` instead counts its four input
+words. Each field in this dictionary starts from that same input:
+
+```zirql
+{"selected": filter(starts_with("a")) | count, "total": count}
+```
+
+It returns `{"selected": 3, "total": 4}`. Computing `selected` does not replace
+the input seen by `total`. A saved value can be a source too. The
+[CSV walkthrough](csv.md) saves a selection with `let`, then continues it with
+`selected | count`.
+
+Constructed filtering accepts positional strings and the exact, case-sensitive
+`starts_with` predicate shown above. General value conditions belong in a
+comprehension, such as `[w for w in words if ends_with(w, "h")]`.
+
+## Keep order explicit
+
+Arrays preserve input order and duplicates until an operation changes them.
+`sort` orders values; `unique` keeps first occurrences. To count spellings while
+retaining their first-seen order:
+
+```sh
+cargo run --locked --example words -- 'words | tally'
+```
+
+The dictionary contains `ash: 1`, `apple: 2`, `birch: 1`, in that order. Sorting
+before tally changes that first-seen order. A dictionary also supports explicit
+same-kind ordering with `sort(d)` by string key or `sort_by(d, value)` by value.
+Equal sort keys keep their incoming order, including with `descending=true`.
+See [collection order](values.md#selected-collection-syntax-and-ordering).
+
+A stage requires an appropriate input kind. `count` returns a scalar, so
+`words | count | unique` fails instead of treating the count as a collection.
+The constructed tally suffix also ends that pipeline. Broader native frontends
+can continue dictionaries through sorting and bounds, according to their
+supported stages. Their emitters have their own terminal or pass-through rules.
+
+## Select and project native objects
+
+Native pipelines start from objects supplied by the application. Zirium starts
+with MLIR operations, so a query can follow SSA users:
+
+```zirql
+filter(op("arith.addi")) | users | filter(has_attr("analysis.tag"))
+```
+
+Zincite starts with MiniZinc source items and can select their written calls:
+
+```zirql
+filter(kind("constraint")) | expressions | call_names | tally
+```
+
+The host defines `op`, `users`, `kind`, `expressions` and `call_names`. Zirql
+supplies shared sequencing, filtering and aggregation. Projecting names makes
+strings available for calculation. Saving a native selection retains the
+original objects and their source context until rendering.
+
+Navigation can retain duplicate objects. Stable native `unique` compares the
+identity supplied by the host, which may differ from equality of projected
+names. Two operations with the same name are still different operations.
+Set union keeps first appearance from the left operand, then the right;
+intersection and difference deduplicate in left-operand order.
+
+The [Zirium](https://zayenz.se/zirium/guides/query-language/) and
+[Zincite](https://zayenz.se/zincite/guides/queries/) guides provide complete
+commands, domain stages and output rules. [Programs and native data](native-programs.md)
+explains saved native values, projections and correlated selections.
+
+## The small embedding reader
+
+The Rust `parse_pipeline` API is a smaller entry point. It reads `filter`,
+`head`, `unique` and terminal `count` or `tally`, using a callback for predicate
+leaves. For example, the [borrowed-word host](../README.md#a-borrowed-source-query)
+registers `prefix`:
 
 ```zirql
 filter(prefix("a")) | head(3)
 ```
 
-Filtering keeps `ash`, `apple`, `apple`; `head(3)` retains all three.
-Swapping the stages changes the answer:
+It returns ash, apple, apple. Reversing those stages to
+`head(3) | filter(prefix("a"))` returns ash, apple because birch occupied the
+third input position. Neither stage sorts or deduplicates. `head(0)` returns an
+empty stream. `one(a)` has a different purpose: it requires exactly one value
+and fails on zero or several.
 
-```zirql
-head(3) | filter(prefix("a"))
-```
+Predicates support `not`, `and`, `or` and parentheses, in that precedence order.
+`and` stops when false is decisive; `or` stops when true is decisive. Hosts can
+also supply unknown facts. Negation preserves unknown, and filtering keeps only
+known true results. See [diagnostics and limits](diagnostics-and-limits.md).
 
-The first three input words are `ash`, `apple`, `birch`, so this returns
-`ash`, `apple`.
-Neither stage sorts or deduplicates. `head` accepts a nonnegative integer;
-`head(0)` returns an empty stream.
-
-## Count results
-
-```zirql
-filter(prefix("a")) | count
-```
-
-This returns 3. An empty stream counts as zero. `count` is terminal: a later
-stage is invalid and fails before evaluation. For instance, `count | head(1)`
-cannot take the head of a count.
-
-`head(1)` means "take the first". The value helper `one(a)` instead requires
-exactly one element and fails on empty or multiple results.
-
-## Combine predicates
-
-Predicates support `not`, `and`, `or` and parentheses. Precedence is `not`, then
-`and`, then `or`:
-
-```zirql
-filter(prefix("a") and not prefix("ap"))
-```
-
-The result is `ash`. `and` stops when false is decisive, and `or` stops when
-true is decisive. A host can also return unknown when it lacks a fact.
-Negation preserves unknown, and filtering keeps only known true results.
-See [diagnostics and limits](diagnostics-and-limits.md).
-
-## Additional stages
-
-The small pipeline reader also accepts bare `unique` and `tally`. Hosts opt
-into their applicability and supply native identity and tally keys. Broader
-frontends can expose these same stages together with domain operations.
-
-Stable unique keeps the first item for each native identity key, preserving
-input order. String tally counts the keys projected by the host and returns
-counts in first-seen key order. For input `ash, apple, birch, apple`, it
-produces `ash: 1`, `apple: 2`, `birch: 1`. When a host exposes tally, a frequency
-count needs no manual grouping. Tally, like count, is terminal.
-
-Identity is a host choice. Two occurrences of the same spelling can be distinct
-native objects. Projecting their spellings before comparing them answers a
-different question from comparing their source identities.
-
-## Results retain their input context
-
-A pipeline returns a native stream, count or tally with its retained context.
-A word can still borrow the source text; an operation handle can still refer to
-its document. Rendering happens at an explicit host boundary.
-
-## The common text reader
-
-The small `parse_pipeline` API reads `filter`, `head`, `unique` and terminal
-`count` or `tally`, using a callback for predicate leaves. It does not parse every
-operation in the native representation. Broader frontends register domain stages through
-the common native readers or lower their own parser output. The
-[implementation reference](host-integration.md#parse-and-lower) explains the
-entry points.
-
-## Programs and constructed data
-
-[Programs](native-programs.md) save intermediate values and combine native
-selections. Explicit projections construct scalar reports, which can use the
-same [value expressions and comprehensions](values.md) as the word tutorial.
-All nested calls share the active request budget.
+This API's terminal rules apply to its small representation. Full native
+frontends use common native readers or lower their own syntax to the broader
+program representation. [Embedding in Rust](host-integration.md#parse-and-lower)
+explains those entry points and the retained native result context.

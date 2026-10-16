@@ -37,6 +37,16 @@ pipes to these same nodes; existing prepared and function entry points use the
 same evaluator. See [value evaluation](value-runtime.md) for type discovery,
 validation and owned results.
 
+The [CSV walkthrough](csv.md) uses the same value interfaces for a complete
+application with [runnable source](../examples/csv.rs) and small
+[people](../examples/csv/people.csv) and [teams](../examples/csv/teams.csv) fixtures.
+Its adapter loads arrays of string dictionaries, supplies header type facts and
+named-table bindings, and renders the final value as JSON. It reads ordered
+`let` bindings and one final expression into a value block. Zirql evaluates
+scope, correlated comprehensions, saved values and sorting; the CSV adapter
+needs no separate implementations of those operations. Named functions need
+the larger program interface below and are outside that example's input format.
+
 The [borrowed-word example](../README.md#a-borrowed-source-query) instead
 implements `Host` for string slices, retaining their source through evaluation.
 The remaining sections explain how to add native data and operations. [Construct

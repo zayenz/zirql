@@ -11,6 +11,26 @@ and prepares functions before evaluating a call. The common reader parses those
 declarations, but the small word executable accepts one expression and does not
 install functions.
 
+## Run a named function
+
+Zirium accepts a complete function program as its query argument. From a Zirium
+checkout, run:
+
+```sh
+zirium 'fn twice(n: int) -> int { n * 2 } twice(3)' examples/cli/function-report.mlir
+```
+
+The result is `6`. The argument `3` supplies `n`; the final expression in the
+function body supplies its result. This calculation does not inspect the MLIR
+input. The [Zirium guide](https://zayenz.se/zirium/guides/query-language/#typed-recursive-functions)
+shows functions that consume native operations. Zincite also supports named
+functions in programs supplied with `--program` or `--program-file`; its
+[query guide](https://zayenz.se/zincite/guides/queries/) uses MiniZinc source
+selections and values.
+
+The word executable accepts one expression. The CSV executable adds ordered
+lets and a final expression, but does not register named functions.
+
 ## Conditions and local bindings
 
 A conditional has a required final `else`. Each branch is a block with optional

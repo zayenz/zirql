@@ -108,10 +108,10 @@ Absence is data. It is distinct from a failed operation and from an unknown
 native predicate. False, zero, an empty string and an empty collection are all
 present values.
 
-`lookup(container, key)` returns absence for a valid missing entry. Record keys
+`lookup(container, key)` returns absence for a valid missing entry. Dictionary keys
 are strings, positional keys are one-based integers, and keyed arrays retain
 their declared key types and rank. Wrong key types or incompatible containers
-fail. For a record with a declared schema, a label outside that schema also fails.
+fail. For a dictionary with a declared schema, a label outside that schema also fails.
 
 | Expression | Result |
 | --- | --- |
@@ -449,16 +449,16 @@ prepared reads and native worklist values are described in
 
 An outer colon distinguishes a dictionary from a set. Each key is an expression:
 `{"z": 2, "a": 2, "m": 1}` uses quoted strings, while `{w: 1 for w in words}`
-reads each `w` as its key. Dictionaries use `ConstructedValue::Record`;
-wholly static quoted fields retain their structural schemas. `.field` selects a static label; bracket access and `lookup`
-accept computed string keys. Empty `{}` is an empty dictionary.
+reads each `w` as its key. Static quoted fields retain their structural schemas.
+`.field` selects a static label; bracket access and `lookup` accept computed
+string keys. Empty `{}` is an empty dictionary.
 
 Dictionaries preserve entry insertion order. Each entry evaluates its key,
 requires a present string, checks for a duplicate, then evaluates its value.
-A duplicate fails before that value runs. The callable `construct_string_entries` operation
-also supports computed keys, evaluates each key before its value and returns
-`Vec<(String, V)>` in insertion order. Keys must be strings; there is no
-implicit conversion from integer, member or native-handle text.
+A duplicate fails before that value runs. Keys must be strings; there is no
+implicit conversion from integer, member or native-handle text. Rust adapters
+use the ordered `ConstructedValue::Record` representation and
+`construct_string_entries`; see [value evaluation](value-runtime.md).
 
 Repeated `for` clauses and filters use the same scope and traversal rules as
 array comprehensions:

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-071"
 key = "reader-focused-query-sites"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 blocked_by = ["base-070"]
@@ -25,14 +25,25 @@ The user requests reader-focused documentation across all three repositories and
 
 ## Done when
 
-- [ ] Zirql reader guides introduce common expressions, immutable bindings, pipelines, collections/order and functions through concrete current queries; the embedding guide explains the CSV host adapter and links its runnable source and walkthrough. Keep syntax/reference and implementation details at their appropriate reader entry points.
-- [ ] Zirium and Zincite language guides use the same names/rules for shared capabilities actually delivered by their admitted pinned revisions. Explain domain selections/projections and any justified surface/output differences with concrete examples; a reader who knows Zirql can adapt an example without relearning general evaluation rules.
-- [ ] Replace process and selected-future sections with current behavior and useful boundaries, preserving accepted design in zdev records. Update terminology, examples and expected collection/JSON order where actual verified implementations require it. Do not claim unsupported forms or route readers to temporary artifacts.
-- [ ] The CSV guide and language/embedding navigation work in the built Zirql site; corresponding cross-links on all three sites resolve. Preserve unrelated edits and keep content changes focused on query-language readers.
-- [ ] Run a few representative exact commands from the guides against actual core/example and both host entry points, checking results and diagnostic claims. Existing site check/build/link checks pass, and changed reader pages are visually readable on desktop/mobile. No new product tests are needed for prose/navigation changes.
+- [x] Zirql reader guides introduce common expressions, immutable bindings, pipelines, collections/order and functions through concrete current queries; the embedding guide explains the CSV host adapter and links its runnable source and walkthrough. Keep syntax/reference and implementation details at their appropriate reader entry points.
+- [x] Zirium and Zincite language guides use the same names/rules for shared capabilities actually delivered by their admitted pinned revisions. Explain domain selections/projections and any justified surface/output differences with concrete examples; a reader who knows Zirql can adapt an example without relearning general evaluation rules.
+- [x] Replace process and selected-future sections with current behavior and useful boundaries, preserving accepted design in zdev records. Update terminology, examples and expected collection/JSON order where actual verified implementations require it. Do not claim unsupported forms or route readers to temporary artifacts.
+- [x] The CSV guide and language/embedding navigation work in the built Zirql site; corresponding cross-links on all three sites resolve. Preserve unrelated edits and keep content changes focused on query-language readers.
+- [x] Run a few representative exact commands from the guides against actual core/example and both host entry points, checking results and diagnostic claims. Existing site check/build/link checks pass, and changed reader pages are visually readable on desktop/mobile. No new product tests are needed for prose/navigation changes.
 
 ## Validation
 
 - Run git diff --check and applicable zdev checks for changed records. Run repository-required Rust checks as applicable to changed docs/examples, using exact unchanged-source evidence where the established policy permits it; do not invent new product tests for prose.
 - Run all three sites existing check/build and link/anchor checks, and inspect changed reader/CSV pages in the actual rendered sites on desktop and mobile. Keep screenshots/logs transient and never stage foreign work.
 - Run the selected documented commands against admitted current binaries/library/example paths and verify stated outputs. Perform a factual writing pass with both required skills; no broad text replacement or new documentation framework.
+
+## Result
+
+Teach the shared language through runnable CSV, MLIR and MiniZinc reports, with current syntax, stable collection order and explicit host boundaries.
+
+Validation:
+
+- Independent whole review 1 passes without required findings; exact snapshot and all three repository guards match.
+- Actual four-sample report, CSV named-file report and computed column, native projection/function, saved pipelines and located refusal/output checks pass.
+- All three sites check/build and link audits pass; eleven canonical guides reviewed on light desktop and dark mobile.
+- Runtime, tests, manifests and pins unchanged from accepted base-066; required Rust, Python and CI evidence reused.
