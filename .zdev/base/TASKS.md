@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 92
-- Ready: 3
+- Ready: 2
 - Blocked: 2
-- Done: 87
+- Done: 88
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -100,4 +100,4 @@
 | [base-089](tasks/089-integrate-shared-predicates-into-zirium-and-its-diff-languag.md) | Integrate shared predicates into Zirium and its diff language | ready | base-091, base-083 |
 | [base-090](tasks/090-share-destructuring-across-bindings-and-predicate-arguments.md) | Share destructuring across bindings and predicate arguments | done | base-086 |
 | [base-091](tasks/091-read-both-comprehension-forms-and-shared-query-expressions-i.md) | Read both comprehension forms and shared query expressions in Zirql | done | base-090 |
-| [base-092](tasks/092-expose-the-shared-native-predicate-argument-reader.md) | Expose the shared native predicate argument reader | ready | base-091 |
+| [base-092](tasks/092-expose-the-shared-native-predicate-argument-reader.md) | Expose the shared native predicate argument reader | done | base-091 |

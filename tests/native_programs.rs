@@ -8201,6 +8201,92 @@ mod projection {
         );
     }
     #[test]
+    fn public_native_predicate_reader_keeps_scope_offsets_and_reentry_limits() {
+        let source = "root(candidate => count_is((candidate | count)) and (_ | count) == limit)";
+        let mut allowance = budget();
+        let mut reader = zirql::ArgumentReader::new(source, 5).unwrap();
+        let target = zirql::read_native_predicate_argument(
+            &mut reader,
+            &mut Host,
+            &["limit"],
+            &mut allowance,
+            32,
+        )
+        .unwrap();
+        assert_eq!(reader.remaining(), ")");
+        assert_eq!(target.range, 5..source.len() - 1);
+        let matching = NativeMatch {
+            clauses: vec![Located::new(
+                zirql::MatchClause::Where { predicate: target },
+                5..source.len() - 1,
+            )],
+            range: 0..source.len(),
+        };
+        let value = function_value(K::NativeQuery(Box::new(super::sequence(
+            native_operand(Stage::Match(Box::new(matching))),
+            vec![super::at(ExpressionStep::Stage(Stage::Count), 0)],
+        ))));
+        let bindings = Bindings::new([
+            (
+                Located::new("limit".into(), 0..0),
+                Value::Constructed(V::Integer(1)),
+            ),
+            (
+                Located::new("xs".into(), 0..0),
+                Value::Subjects(vec!["alpha"]),
+            ),
+        ])
+        .unwrap();
+        let result = zirql::FunctionRequest::prepare(
+            &[],
+            &Host,
+            &mut (),
+            &mut allowance,
+            zirql::FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&value, &bindings)
+        .unwrap();
+        assert!(matches!(result, Value::Constructed(value) if value.data() == &V::Integer(1)));
+        zirql::dispose_native_value(value);
+
+        let source = "root(count_is(1) and (_ | count) == )";
+        let error = zirql::read_native_predicate_argument(
+            &mut zirql::ArgumentReader::new(source, 5).unwrap(),
+            &mut Host,
+            &[],
+            &mut allowance,
+            32,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.location,
+            Location::Query(source.len() - 1..source.len())
+        );
+
+        let mut allowance = Budget::for_program(ProgramLimits {
+            nesting: 3,
+            ..super::limits()
+        });
+        let source = "root(count_is(native(native(f)) | count))";
+        let error = zirql::read_native_predicate_argument(
+            &mut zirql::ArgumentReader::new(source, 5).unwrap(),
+            &mut Host,
+            &[],
+            &mut allowance,
+            32,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("nesting"));
+        assert_eq!(error.location, Location::Query(27..28));
+        let mut reader = zirql::ArgumentReader::new("root(true)", 5).unwrap();
+        let predicate =
+            zirql::read_native_predicate_argument(&mut reader, &mut Host, &[], &mut allowance, 32)
+                .unwrap();
+        assert_eq!(predicate.value, zirql::PredicateKind::Leaf(Guard::True));
+    }
+
+    #[test]
     fn native_predicate_headers_are_admitted_before_bare_boolean_leaves() {
         use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest};
         let run = |source: &str| {

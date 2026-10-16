@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-092"
 key = "public-native-predicate-reader"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "high"
@@ -26,12 +26,21 @@ The base-089 read-only planner found that normal root and separate diff filter/r
 
 ## Done when
 
-- [ ] The public root re-export and reader entry accept the same original cursor, locals, Budget and remaining nesting contract as the existing value-body reader and return the existing mixed Predicate tree. Named/pattern headers, implicit _, native leaves and shared bodies retain their existing scopes and admission.
-- [ ] A focused public adapter control composes an established native leaf with a named or implicit shared body and demonstrates original located refusal and low-limit host reentry. Reuse existing fixtures; no syntax-by-position matrix.
-- [ ] Current adapter/API documentation explains which public reader consumes a mixed native predicate versus a value-only body. Required Rust/MSRV, warning-fatal docs, diff and zdev checks pass; affected site checks and Root reader presentation review pass when prose changes.
+- [x] The public root re-export and reader entry accept the same original cursor, locals, Budget and remaining nesting contract as the existing value-body reader and return the existing mixed Predicate tree. Named/pattern headers, implicit _, native leaves and shared bodies retain their existing scopes and admission.
+- [x] A focused public adapter control composes an established native leaf with a named or implicit shared body and demonstrates original located refusal and low-limit host reentry. Reuse existing fixtures; no syntax-by-position matrix.
+- [x] Current adapter/API documentation explains which public reader consumes a mixed native predicate versus a value-only body. Required Rust/MSRV, warning-fatal docs, diff and zdev checks pass; affected site checks and Root reader presentation review pass when prose changes.
 
 ## Validation
 
 - Run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace, plus existing Rust 1.88 tests and warning-fatal docs/doctests. Reuse existing fixture controls for runtime Truth/header scope; add only the direct public boundary check needed for this export.
 - Inspect the actual Zirium root/diff call sequence to confirm this export removes the missing boundary without requiring another generic parser. Check original cursor/ranges and one cumulative low-limit reentry refusal.
 - Run git diff --check and zdev check base --format json. If reader-facing prose changes, run the existing site check/build/local-link checks and Root desktop/mobile review; no package version or distribution matrix change.
+
+## Result
+
+Exposed the existing shared mixed native predicate reader for host arguments, preserving scope, locations and cumulative limits.
+
+Validation:
+
+- Independent whole review passed public adapter behavior, Rust/MSRV tests, fatal Clippy and docs, formatting and zdev checks.
+- Site check/build and local links passed; desktop/mobile reader review matches the exact guide and rendered bytes.

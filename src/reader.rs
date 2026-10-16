@@ -1185,8 +1185,8 @@ pub fn read_constructed_filter<H: ValueReaderHost>(
 
 /// Read `pattern => expression` or an expression using the implicit `_` subject.
 /// The caller supplies its closing delimiter and the subject used at execution.
-/// Root/ancestor tests, path targets, match guards, diff subjects and scalar
-/// element edits can use this same boundary without constructing a filter stage.
+/// This returns a value-only body. Use [`read_native_predicate_argument`] for
+/// Boolean trees containing host-native predicate leaves.
 ///
 /// # Errors
 /// Invalid bodies and exhausted allowances retain their original query offsets.
@@ -1208,6 +1208,35 @@ pub fn read_predicate_argument<H: ValueReaderHost>(
         locals,
     };
     parser.predicate_argument(0)
+}
+
+/// Read a native predicate tree with shared Boolean expressions and host leaves.
+/// An optional `pattern =>` header binds its names alongside the implicit `_`
+/// subject. The caller supplies the closing delimiter and execution subject.
+/// Forward the enclosing lexical names, request budget and remaining nesting
+/// allowance when reading a host argument at its original source cursor.
+///
+/// # Errors
+/// Invalid predicates, unsupported headers and exhausted allowances retain
+/// their original query offsets.
+pub fn read_native_predicate_argument<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    host: &mut H,
+    locals: &[&str],
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<Predicate<H::Predicate>, QueryError> {
+    let locals = copy_reader_locals(locals, budget, reader.position())?;
+    let mut parser = Reader {
+        reader,
+        host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
+        budget,
+        locals,
+    };
+    parser.native_predicate_argument(0)
 }
 
 /// Read a normalized native expression, including capture field postfixes.

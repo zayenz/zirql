@@ -112,6 +112,14 @@ comprehension spellings. The lexical names include the unnamed argument and
 every pattern name. `_` retains the whole subject, including with a destructured
 argument. Domain leaves keep their narrow argument signatures.
 
+`read_native_predicate_argument(reader, host, locals, budget, nesting)` reads a
+mixed native Boolean tree, returning `Predicate<H::Predicate>`. Use it for host
+arguments such as root/ancestor tests or diff predicates that combine domain
+leaves with shared expressions. `read_predicate_argument` returns a value-only
+`PredicateArgument` for constructed filters and other shared value bodies.
+Both readers start at the original argument cursor and leave the caller's
+closing delimiter unread. They share lexical scope and cumulative allowances.
+
 For native Boolean trees, `is_predicate_leaf` recognizes domain leaves without
 consuming syntax or budget. `parse_predicate_leaf_in_argument` receives the
 optional borrowed `Pattern` and lexical names. Copy a retained pattern with
