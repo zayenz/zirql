@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-075"
 key = "scalar-result-admission"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 blocked_by = ["base-074"]
@@ -26,12 +26,21 @@ The same scalar evaluator already works in bindings, but ordinary result admissi
 
 ## Done when
 
-- [ ] Zirium actual library and inline/file CLI paths accept let n=1; n+2 and bare 1+2 as scalar 3, using the same existing shared value semantics as the corresponding initializer. Direct supported string/Boolean scalar expressions also follow that value path without a function declaration or redundant binding.
-- [ ] Common scalar operators, grouping and postfix/value syntax retain existing precedence, type, checked-arithmetic and location rules. Plain native bindings/stages, saved native selectors, native argument expressions and their output kinds keep their existing routes. Unsupported expressions and incompatible operators still fail before partial CLI output.
-- [ ] Extend compact existing public controls for direct-versus-initializer agreement, a located scalar failure and later-error buffering. Reuse existing native/argument/output and parsing/preparation budget controls; no syntax matrix, callback counts or timing assertions.
-- [ ] Current Zirium guides show a directly executable scalar expression and its immutable-binding form. Replay representative CSV/Zincite counterparts as existing behavior without changing their output envelopes or adding consumer code unnecessarily.
+- [x] Zirium actual library and inline/file CLI paths accept let n=1; n+2 and bare 1+2 as scalar 3, using the same existing shared value semantics as the corresponding initializer. Direct supported string/Boolean scalar expressions also follow that value path without a function declaration or redundant binding.
+- [x] Common scalar operators, grouping and postfix/value syntax retain existing precedence, type, checked-arithmetic and location rules. Plain native bindings/stages, saved native selectors, native argument expressions and their output kinds keep their existing routes. Unsupported expressions and incompatible operators still fail before partial CLI output.
+- [x] Extend compact existing public controls for direct-versus-initializer agreement, a located scalar failure and later-error buffering. Reuse existing native/argument/output and parsing/preparation budget controls; no syntax matrix, callback counts or timing assertions.
+- [x] Current Zirium guides show a directly executable scalar expression and its immutable-binding form. Replay representative CSV/Zincite counterparts as existing behavior without changing their output envelopes or adding consumer code unnecessarily.
 
 ## Validation
 
 - Run affected repository formatting, diff checks, default and explicit Rust1.99 Clippy with warnings denied, locked workspace tests and required Zirium stable/1.88 all-target/all-feature compatibility, doctest/rustdoc and Python query checks. Use the brief focused public-behavior level.
 - Run exact changed guide commands, affected site check/build/link checks and desktop/mobile review. Root runs authoritative zdev checks and separately attributable source/record commits after independent verification.
+
+## Result
+
+Shared scalar and postfix results agree with initializers; native field pipelines preserve direct, grouped and saved output kinds.
+
+Validation:
+
+- Independent whole review, two retained corrections and focused rechecks; final pass with unchanged snapshot/all-repository guards.
+- Required core and Zirium Rust checks, stable/1.88 compatibility, Python 175 passed/2 skipped, actual inline/file CLI and counterpart probes, guide/site/link/desktop/mobile checks passed.
