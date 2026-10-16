@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-079"
 key = "finish-pending-formatter-release"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -26,11 +26,19 @@ Zincite has an existing four-file pending change: .zdev/base/brief.md records ex
 
 ## Done when
 
-- [ ] The existing forall-body and mixed-precedence examples render as documented, preserve parsed expression structure/comments/operator spelling and are idempotent.
-- [ ] The existing pending tests and affected required checks pass; a small complete MiniZinc example is accepted with instance-only checking when applicable, without a solver run.
-- [ ] Root independently verifies the exact four-file result, records the consumer commit separately and preserves all other tracked/untracked changes.
+- [x] The existing forall-body and mixed-precedence examples render as documented, preserve parsed expression structure/comments/operator spelling and are idempotent.
+- [x] The existing pending tests and affected required checks pass; a small complete MiniZinc example is accepted with instance-only checking when applicable, without a solver run.
+- [x] Root independently verifies the exact four-file result, records the consumer commit separately and preserves all other tracked/untracked changes.
 
 ## Validation
 
 - Run existing focused formatter controls, required current-stable workspace format/fatal Clippy/tests, and a few actual formatter/CLI examples. Reuse current measured formatter behavior; this task adds no performance claim.
 - Run diff and zdev checks for changed records; verify directly affected reference prose/site rendering without new product tests. No broad corpus or generic matrix.
+
+## Result
+
+Accepted the pending forall and mixed Boolean formatter layout without further changes; exact source structure, comments and spellings are preserved.
+
+Validation:
+
+- Independent PASS; stable fmt/fatal Clippy/workspace tests, existing five formatter controls, actual CLI idempotence/write/structure checks, MiniZinc instance-only checks, reference site build and desktop/mobile presentation; all repository guards unchanged.
