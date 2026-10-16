@@ -69,7 +69,7 @@ identity, completeness and host effect rules remain substantive requirements.
 These decisions supersede earlier collection-order and compatibility wording.
 
 The approved follow-up work may be split into bounded zdev tasks, imported and
-implemented without further task-bundle confirmation. Use at most two delegated
+implemented without further task-bundle confirmation. Use at most five delegated
 roles, isolated source worktrees, serial integration, independent verification
 and separate framework/consumer commits. Clean up run-owned worktrees and
 branches after verified integration, retaining Git references used by consumers.
@@ -182,7 +182,7 @@ with their hosts, and defer optional language and distribution extensions.
 
 This request authorizes in-scope task creation, import, implementation and
 independent verification across all three repositories. Continue using isolated
-source worktrees, at most two delegated roles, serial destination integration
+source worktrees, at most five delegated roles, serial destination integration
 and separately attributable commits. Preserve unrelated local edits and do not
 message completed or quiescent chats. Use the agreed coding and writing guidance.
 
@@ -221,9 +221,22 @@ comprehension. Comparisons, Boolean composition, lexical captures and permitted
 pure expressions/calls use the shared value rules. Do not require first-class
 functions or a separate predicate evaluator.
 
-Existing predicate positions are constructed filter (one constructed element),
-native filter (one native subject), `paths(..., to=...)` (one candidate native
-target), and native `match` where (its existing query input and named captures).
+Existing predicate positions include:
+
+- Constructed `filter`: one constructed element.
+- Native `filter`: one native subject.
+- Native `root`: each tested operation and ancestor candidate.
+- `paths(..., to=...)`: one candidate native target.
+- Native `match` where: its original query input and separate named captures.
+- Zirium diff `filter` and `root`: the existing change or side-owned operation
+  subject, including each tested ancestor for `root`.
+- Zincite `filter_elements`: each scalar element under the existing Data
+  expression policy, with source retention and validated edit candidates.
+
+This inventory includes the separate legacy query and diff frontends. General
+predicate bodies use the expressions and pure calls permitted by their host
+context. Zincite's closed Data policy still refuses report-only operations and
+effects; Zirium diff predicates retain change and before/after meanings.
 Each predicate argument scope binds `_` to that position's existing subject;
 an optional named argument denotes the same subject. Nested predicates bind
 `_` anew; explicit outer names retain lexical captures. `_` is unavailable
