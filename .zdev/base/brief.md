@@ -212,6 +212,33 @@ coverage only for concrete release-blocking defects. Do not expand a compiler,
 platform or syntax matrix solely because this is release work. Retain honest
 evidence of unavailable external checks and unrelated baseline failures.
 
+### Scoped predicate expressions
+
+The user requires general predicate expressions and an unnamed argument across
+Zirql and its hosts. `filter(p => p.active == "yes")` and
+`filter(_.active == "yes")` select the same rows as the corresponding filtered
+comprehension. Comparisons, Boolean composition, lexical captures and permitted
+pure expressions/calls use the shared value rules. Do not require first-class
+functions or a separate predicate evaluator.
+
+Existing predicate positions are constructed filter (one constructed element),
+native filter (one native subject), `paths(..., to=...)` (one candidate native
+target), and native `match` where (its existing query input and named captures).
+Each predicate argument scope binds `_` to that position's existing subject;
+an optional named argument denotes the same subject. Nested predicates bind
+`_` anew; explicit outer names retain lexical captures. `_` is unavailable
+outside a predicate argument scope and keeps its wildcard meaning in patterns.
+The hosts retain their existing subject types, native projections and domain
+predicate leaves; shared syntax does not invent domain fields.
+
+Ordinary comprehension `if`, conditionals, requirements and value-match guards
+already consume Boolean expressions. They keep that syntax and share the same
+expression/type/purity/scope rules, including any enclosing predicate scope.
+Relations and selectors remain their existing operations; this requirement
+does not create new predicate overloads for eager Boolean reducers or selectors.
+Empty-input validation, source locations, stable order, finite cumulative
+budgets and whole-request output buffering remain part of the contract.
+
 ### Language coherence, documentation and a CSV host
 
 Zirql owns the domain-independent language used by Zirium and Zincite. Someone
