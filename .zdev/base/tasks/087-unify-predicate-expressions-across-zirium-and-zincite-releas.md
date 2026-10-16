@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "high"
-blocked_by = ["base-091", "base-082", "base-093"]
+blocked_by = ["base-091", "base-082", "base-093", "base-094"]
 +++
 # Integrate shared predicates into Zincite
 
@@ -17,7 +17,7 @@ Zincite uses the reviewed shared named and unnamed predicate language in all its
 
 ## Context
 
-Consume base-093's independently accepted shared field-pipeline correction before final dependency pinning and destination verification. Ordinary constructed field suffixes must not require a grouping-only host workaround. Continue unrelated adapter work in the existing isolated source while that core prerequisite is prepared.
+Consume base-093's independently accepted shared field-pipeline correction and base-094's scoped native-kind contract before final dependency pinning and destination verification. Ordinary constructed field suffixes must not require a grouping-only host workaround. Continue unrelated adapter work in the existing isolated source while that core prerequisite is prepared.
 
 Consume the actual independently reviewed Zirql 0.1.0 scoped-predicate and shared-pattern API from base-086/base-090/base-091 and the packaging contracts from base-082. Read the brief's Shared destructuring patterns and One shared query reader sections. Adapt Zincite's natural expression lowering and all pattern/generator walkers so let bindings, typed parameters, predicate arguments, comprehensions and value-match arms use those same tuple/list rules, including the closed Data policy where applicable. Read the brief's complete predicate inventory and scope rules. Zincite program/composition.rs currently calls the hostless suffix reader and separately parses native predicates. functions.rs and program/builder.rs/free-name walkers prepare calls and captures. Public Query and legacy Program readers remain distinct entry paths and must use the same predicate rules. filter_elements currently stores a fixed Comparison in language.rs and makes scalar decisions in structured.rs; general scalar bodies must use shared execution under the existing Data expression policy. The read-only inventory at /private/tmp/zirql-predicate-zincite-inventory.json records these current seams; inspect source as authority. Zirium's separate integration task owns its adapter, and final acceptance checks all three hosts together.
 

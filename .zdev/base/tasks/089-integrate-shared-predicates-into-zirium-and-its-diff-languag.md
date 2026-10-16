@@ -7,7 +7,7 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "high"
-blocked_by = ["base-091", "base-083", "base-093"]
+blocked_by = ["base-091", "base-083", "base-093", "base-094"]
 +++
 # Integrate shared predicates into Zirium and its diff language
 
@@ -17,7 +17,7 @@ Zirium uses the reviewed shared named and unnamed predicate language in its norm
 
 ## Context
 
-Consume base-093's independently accepted shared field-pipeline correction before final dependency pinning and destination verification. Ordinary constructed field suffixes must not require a grouping-only host workaround. Continue unrelated adapter work in the existing isolated source while that core prerequisite is prepared.
+Consume base-093's independently accepted shared field-pipeline correction and base-094's scoped native-kind contract before final dependency pinning and destination verification. Ordinary constructed field suffixes must not require a grouping-only host workaround. Continue unrelated adapter work in the existing isolated source while that core prerequisite is prepared.
 
 Consume the actual independently reviewed Zirql 0.1.0 scoped-predicate and shared-pattern API from base-086/base-090/base-091 and the base-083 packaging contracts. Read the brief's Shared destructuring patterns and One shared query reader sections. Adapt existing normal/diff parser hooks and exhaustive pattern/generator walkers to that contract, retaining the actual structural views each domain supports. Read the brief's complete predicate inventory and subject/scope rules. Normal query/parser.rs and comprehension.rs split native and constructed filter routing; report.rs/program.rs/functions.rs walkers retain prepared bodies and active calls. query/capture.rs owns native match/path callbacks; query/pipeline.rs and query.rs root traversal evaluate each candidate operation/ancestor. Separate query/diff_text.rs and diff_program.rs parse/evaluate diff filter/root with existing change and side-owned operation meanings. They need a small shared value bridge over existing native queries/projections, not a separate predicate evaluator or synthetic record API. The read-only /private/tmp/zirql-predicate-zirium-inventory.json identifies current seams; inspect actual source. Zincite integrates independently; final acceptance checks both consumers and CSV.
 
