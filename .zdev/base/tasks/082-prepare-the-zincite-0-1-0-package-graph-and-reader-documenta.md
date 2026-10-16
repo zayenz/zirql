@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-082"
 key = "zincite-010-release-candidate"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -28,13 +28,21 @@ The current root/query Cargo package commands fail because sibling path edges om
 
 ## Done when
 
-- [ ] All five normalized manifests expose coherent 0.1.0 registry edges and package metadata/contents. Lockfiles and CLI/library versions agree; selected MSRV/support claims are demonstrated.
-- [ ] Current source remains buildable against the actual reviewed core revision. Native Cargo multi-package verification can check unpublished sibling archives; any remaining actual-registry availability gate is explicit and reserved for final release acceptance.
-- [ ] The minimal CI configuration runs required checks. Demonstrate its commands locally; hosted execution at the candidate commit belongs to final candidate acceptance when available. Release notes and installation/support guides describe 0.1.0 commands, formatter/linter/query behavior and supported limitations, with runnable ordinary examples.
-- [ ] Required affected Rust/library/CLI/docs/site/link/UI checks pass. Root independently verifies and records separate consumer/framework commits and candidate artifacts.
+- [x] All five normalized manifests expose coherent 0.1.0 registry edges and package metadata/contents. Lockfiles and CLI/library versions agree; selected MSRV/support claims are demonstrated.
+- [x] Current source remains buildable against the actual reviewed core revision. Native Cargo multi-package verification can check unpublished sibling archives; any remaining actual-registry availability gate is explicit and reserved for final release acceptance.
+- [x] The minimal CI configuration runs required checks. Demonstrate its commands locally; hosted execution at the candidate commit belongs to final candidate acceptance when available. Release notes and installation/support guides describe 0.1.0 commands, formatter/linter/query behavior and supported limitations, with runnable ordinary examples.
+- [x] Required affected Rust/library/CLI/docs/site/link/UI checks pass. Root independently verifies and records separate consumer/framework commits and candidate artifacts.
 
 ## Validation
 
 - Run focused format/lint/query and later-error controls plus required current-stable workspace fmt/fatal Clippy/tests and warning-fatal docs. Retain the existing current-stable support claim; do not introduce a Zincite MSRV or release-only compiler matrix.
 - Inspect every normalized package manifest/list and workspace Cargo dry-run semantics. No fake registry version, path-patched install represented as registry proof or new prerelease.
 - Validate CI commands/configuration locally, all relevant site check/build/links and Root desktop/mobile install/guide checks; documentation needs no new tests. Attempt hosted candidate CI during final acceptance; unavailable credentials or permissions remain an explicit late external gate.
+
+## Result
+
+Prepared Zincite 0.1.0 sibling and core dependency contracts, focused package contents/licenses, stable CI, release notes and reader installation/support guides. Independent whole review passed; this is pre-filter packaging readiness and the new required predicate integration supersedes its source pin/artifacts before final release acceptance.
+
+Validation:
+
+- Independent stable fmt/fatal all-target Clippy/500 tests/fatal docs, four isolated source installs and 27 actual CLI controls, formatter gallery, site check/build/link audit and Root desktop/mobile/search pass. Native Cargo1.99 verifies six staged archives; all five normalized Zincite manifests have registry-only0.1 edges and unchanged product bytes. Actual public-registry verification remains explicit085 gate. Snapshot W798cc53242359be7 and all3 guards unchanged, one fresh completion comparison equal.
