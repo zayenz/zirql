@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 77
-- Ready: 0
+- Total: 78
+- Ready: 1
 - Blocked: 0
 - Done: 77
 
@@ -86,3 +86,4 @@
 | [base-075](tasks/075-accept-shared-scalar-expressions-as-zirium-query-results.md) | Accept shared scalar expressions as Zirium query results | done | base-074 |
 | [base-076](tasks/076-use-shared-projection-execution-with-prepared-functions.md) | Use shared projection execution with prepared functions | done | base-066 |
 | [base-077](tasks/077-execute-native-projections-inside-prepared-values-and-functi.md) | Execute native projections inside prepared values and functions | done | base-076 |
+| [base-078](tasks/078-keep-zincite-projection-scope-consistent-in-prepared-program.md) | Keep Zincite projection scope consistent in prepared programs | ready | base-077 |
