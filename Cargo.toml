@@ -1,6 +1,6 @@
 [package]
 name = "zirql"
-version = "0.1.0-alpha.5"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -9,13 +9,21 @@ repository = "https://github.com/zayenz/zirql"
 homepage = "https://zayenz.se/zirql/"
 readme = "README.md"
 include = [
-    "src/**",
-    "tests/**",
-    "Cargo.toml",
-    "Cargo.lock",
-    "README.md",
-    "LICENSE-MIT",
-    "LICENSE-APACHE",
+    "/src/**",
+    "/tests/**",
+    "/examples/words.rs",
+    "/examples/csv.rs",
+    "/examples/csv/people.csv",
+    "/examples/csv/teams.csv",
+    "/examples/csv/indexed-arrays.zirql",
+    "/docs/*.md",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/RELEASING.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
 ]
 
 [dependencies]

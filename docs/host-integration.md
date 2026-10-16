@@ -345,8 +345,8 @@ receive no automatic rollback from Zirql. Source-edit safety and transaction
 rules belong to the host.
 
 For signatures and budget charging helpers, use [the Rust API
-reference](https://docs.rs/zirql) for your published version or `cargo doc
---open` for the pinned revision. The [budget and diagnostic
+reference](https://docs.rs/zirql/0.1.0/zirql/) or `cargo doc
+--open` for your selected dependency. The [budget and diagnostic
 reference](runtime-limits.md) explains how to translate errors and account for
 host work.
 

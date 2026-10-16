@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-081"
 key = "zirql-010-release-candidate"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -27,13 +27,21 @@ The checked packaging audit found unanchored Cargo include patterns collect igno
 
 ## Done when
 
-- [ ] Cargo/lock and public release references consistently identify 0.1.0. A concise changelog states the supported shared language, API and limits; earlier release history is retained honestly.
-- [ ] Package lists are stable with or without installed site dependencies. The archive builds and its word/implicit-CSV/named-CSV examples run from an extracted directory outside the repository, with relative guide/fixture links intact.
-- [ ] A small standalone public-API consumer demonstrates the APIs the two hosts need. Documentation uses actual 0.1.0 registry syntax and versioned checkout examples while retaining explicit CSV/program and host support limits.
-- [ ] Required Rust checks and affected site check/build/link/UI pass. Root independently verifies, commits and retains exact candidate archive hashes and a real reviewed 0.1.0 source revision for consumers.
+- [x] Cargo/lock and public release references consistently identify 0.1.0. A concise changelog states the supported shared language, API and limits; earlier release history is retained honestly.
+- [x] Package lists are stable with or without installed site dependencies. The archive builds and its word/implicit-CSV/named-CSV examples run from an extracted directory outside the repository, with relative guide/fixture links intact.
+- [x] A small standalone public-API consumer demonstrates the APIs the two hosts need. Documentation uses actual 0.1.0 registry syntax and versioned checkout examples while retaining explicit CSV/program and host support limits.
+- [x] Required Rust checks and affected site check/build/link/UI pass. Root independently verifies, commits and retains exact candidate archive hashes and a real reviewed 0.1.0 source revision for consumers.
 
 ## Validation
 
 - Run actual cargo package verification and inspect archive contents; a few public API/example/refusal controls suffice. No product tests for metadata/docs.
 - Run required current-stable formatting, fatal Clippy/workspace tests, existing MSRV 1.88 tests, doctests/warning-fatal docs and relevant site checks. Reuse unchanged language discovery evidence alongside candidate checks.
 - Distinguish local artifact checks from published-registry availability. Root handles external publication only after final review.
+
+## Result
+
+Prepared Zirql 0.1.0 with a self-contained 60-file crate, runnable word/CSV examples, current API/language/setup documentation and release notes/procedure; runtime and public API unchanged.
+
+Validation:
+
+- Independent PASS: stable fmt/fatal Clippy/tests, Rust1.88 tests, fatal docs/doctests; package verification and file selection independent of site dependencies; extracted word/single/named CSV plus refusals; external artifact API caller; site build, 1,215 local targets and desktop/mobile navigation/search. Guard and source/index byte comparisons exact; clean commit repack retained by Root.

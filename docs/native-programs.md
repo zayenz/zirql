@@ -306,8 +306,7 @@ Native handles and source coordinates survive until explicit rendering.
 
 Zirium retains ordered dictionaries through its library and JSON results and
 uses operand-order native set algebra. Zincite uses shared typed native ordering,
-operand-order sets and first-seen tally dictionaries through its pinned Git
-dependency. Its `map_by` dictionaries support stable value sorting and bounds;
+operand-order sets and first-seen tally dictionaries. Its `map_by` dictionaries support stable value sorting and bounds;
 native and constructed dictionaries render as ordered JSON objects. Both support
 the shared brace and indexed-array forms. Native identity, effects, completeness
 and data-edit policies stay with each host.

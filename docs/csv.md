@@ -3,7 +3,8 @@
 The [CSV example](../examples/csv.rs) reads header-named string fields and runs
 Zirql expressions over their rows. It accepts one file as the current input, or
 several named files for a correlated report. These commands run from the
-repository root with Rust 1.88 or later.
+root of a `v0.1.0` checkout or the extracted `zirql-0.1.0` crate with Rust 1.88
+or later. The [setup guide](getting-started.md#run-the-example) describes both.
 
 ## Select rows from one file
 

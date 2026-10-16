@@ -229,6 +229,9 @@ library values. Their budgeted operations preserve retained aliases, and
 returned wrappers remain usable after the function frame ends. They are
 computational values for use during evaluation. Direct scalar projection,
 rendering and serialization must fail with a located error. Identity-set
-iteration and general set algebra are absent. These operations have Rust
-representations. A host supplies their text syntax; the common reader does not
-parse worklist expressions.
+iteration and general set algebra are absent. The common expression reader accepts
+`queue(items)`, `queue<T>(items)`,
+`pop_front(q)`, `push_back_all(q, items)`, `identity_set<T>()`, `insert(seen, item)`
+and native membership. The host resolves native type names and supplies identity
+and container hooks. See [functions and control
+flow](functions-and-control-flow.md#other-control-flow-forms).

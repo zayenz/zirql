@@ -1,5 +1,8 @@
 # Zirql
 
+These guides describe Zirql 0.1.0. See [setup](getting-started.md) for the Rust
+dependency and runnable word and CSV examples.
+
 Zirql lets users write analyses that an application's built-in reports do not
 cover. A query can select the items of interest, combine related values and
 calculate a result. Inspired by awk and jq, Zirql uses expressions and small
@@ -106,8 +109,8 @@ Record fields can contain expressions and nested collections.
 <!-- examples:end -->
 
 [Work through the word analysis](examples.md), or [run these expressions from
-Rust](getting-started.md). The examples use the parser and evaluator in the
-development checkout; see the setup guide for version requirements.
+Rust](getting-started.md). The examples use Zirql 0.1.0; the setup guide describes the packaged examples
+and matching checkout.
 
 ## Learn the language
 

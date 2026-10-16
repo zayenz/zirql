@@ -10,7 +10,16 @@ The two small trait implementations in the example form its adapter to Zirql.
 
 ## Run the example
 
-Use Rust 1.88 or newer and a development checkout of Zirql. From its root:
+Use Rust 1.88 or newer. The published crate includes both examples, their CSV
+fixtures and these guides. Extract `zirql-0.1.0.crate` and run commands from its
+`zirql-0.1.0` directory, or check out the matching release:
+
+```sh
+git clone --branch v0.1.0 --depth 1 https://github.com/zayenz/zirql.git
+cd zirql
+```
+
+From either directory:
 
 ```sh
 cargo run --locked --example words
@@ -109,22 +118,27 @@ and rendering in that accounting; see [budget and diagnostic APIs](runtime-limit
 
 ## Use Zirql in another Rust project
 
-Development integrations use a pinned Git revision. Select and record the
-reviewed commit you are integrating:
+Add the 0.1.0 registry dependency to your manifest:
 
-```sh
-cargo add zirql --git https://github.com/zayenz/zirql --rev <reviewed-commit>
+```toml
+[dependencies]
+zirql = "0.1.0"
 ```
 
-Replace `<reviewed-commit>` with the full commit hash. Keep the resulting pin
-when updating other dependencies. These docs and the word example target the
-development checkout. The published `0.1.0-alpha.5` package has an earlier
-language subset, including fewer string and ordering helpers. Generate API
-documentation for the revision you actually use:
+Or use Cargo to add the same requirement:
+
+```sh
+cargo add zirql@0.1.0
+```
+
+These guides describe Zirql 0.1.0. The earlier `0.1.0-alpha.5` registry package
+has a smaller language and API. Use the matching
+[Rust API reference](https://docs.rs/zirql/0.1.0/zirql/), or generate documentation
+for the dependency selected in your lockfile:
 
 ```sh
 cargo doc --open
 ```
 
-[docs.rs](https://docs.rs/zirql) describes published versions. For a larger
-integration, continue with the [implementation reference](implementation-reference.md).
+For a larger integration, continue with the
+[implementation reference](implementation-reference.md).
