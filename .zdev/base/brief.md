@@ -220,6 +220,14 @@ Zirql's language tests in each host. Add a focused check only when a concrete
 adapter defect or uncovered behavior warrants it. This threshold does not
 replace package, clean-install, CI or documentation checks.
 
+For a small Zirql fix, review and test only the behavior and integration paths
+it affects in Zirium and Zincite. Retain accepted review conclusions and passing
+test evidence for unaffected consumer code. Updating a dependency pin does not
+restart a full consumer review, test suite or language campaign. Apply this
+impact-based scope to follow-up work even when an older task checklist lists
+broader checks. Rebuild affected release artifacts and verify their dependency
+identity as needed; that does not reopen unrelated language or adapter review.
+
 ### Scoped predicate expressions
 
 The user requires general predicate expressions and an unnamed argument across
