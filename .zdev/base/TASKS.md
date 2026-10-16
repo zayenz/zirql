@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 74
-- Ready: 3
+- Ready: 2
 - Blocked: 0
-- Done: 71
+- Done: 72
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -82,4 +82,4 @@
 | [base-071](tasks/071-explain-the-shared-language-through-current-runnable-example.md) | Explain the shared language through current runnable examples on all three sites | ready | base-070 |
 | [base-072](tasks/072-pass-current-stable-clippy-for-ordered-tally.md) | Pass current stable Clippy for ordered tally | done | — |
 | [base-073](tasks/073-retain-csv-header-schemas-in-runtime-rows.md) | Retain CSV header schemas in runtime rows | done | base-070 |
-| [base-074](tasks/074-use-shared-value-calls-and-saved-collection-pipelines-consis.md) | Use shared value calls and saved collection pipelines consistently | ready | base-065 |
+| [base-074](tasks/074-use-shared-value-calls-and-saved-collection-pipelines-consis.md) | Use shared value calls and saved collection pipelines consistently | done | base-065 |

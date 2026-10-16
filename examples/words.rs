@@ -22,6 +22,10 @@ impl ValueReaderHost for Words {
         name == "words"
     }
 
+    fn is_constructed_binding(&self, name: &str) -> bool {
+        self.is_binding(name)
+    }
+
     fn is_stage(&self, _: &str) -> bool {
         false
     }

@@ -23,6 +23,11 @@ pub trait ValueReaderHost {
     type Predicate;
 
     fn is_binding(&self, name: &str) -> bool;
+    /// Whether a known binding contains a constructed value. Unknown and native
+    /// bindings keep native pipeline routing. This does not classify local names.
+    fn is_constructed_binding(&self, _name: &str) -> bool {
+        false
+    }
     fn is_stage(&self, name: &str) -> bool;
     fn parse_stage(
         &mut self,
@@ -55,6 +60,16 @@ pub trait ValueReaderHost {
         budget: &mut Budget,
     ) -> Result<Self::Predicate, QueryError> {
         self.parse_predicate_leaf(reader, budget)
+    }
+    /// Admit a host's constructed filter spelling before native predicate parsing.
+    /// Return `None` without consuming input to keep the ordinary native filter.
+    fn parse_constructed_filter_in_scope(
+        &mut self,
+        _reader: &mut ArgumentReader<'_>,
+        _locals: &[&str],
+        _budget: &mut Budget,
+    ) -> Result<Option<Self::Stage>, QueryError> {
+        Ok(None)
     }
     fn filter(&mut self, predicate: Predicate<Self::Predicate>, range: Range<usize>)
     -> Self::Stage;
@@ -936,6 +951,84 @@ pub fn read_value_expression<H: ValueReaderHost>(
     .expression(0, 0)
 }
 
+/// Whether a name is one of the fixed common value calls. Native operation
+/// names, native ordering argument shapes and declared functions remain host facts.
+pub fn is_common_value_call(name: &str) -> bool {
+    matches!(
+        name,
+        "lookup"
+            | "has_key"
+            | "group_by"
+            | "sort"
+            | "sort_by"
+            | "min"
+            | "max"
+            | "min_by"
+            | "max_by"
+            | "zip_exact"
+            | "contains"
+            | "starts_with"
+            | "ends_with"
+            | "require"
+            | "length"
+            | "sum"
+            | "forall"
+            | "exists"
+            | "occurs"
+            | "absent"
+            | "entries"
+            | "index_set"
+            | "one"
+    )
+}
+
+/// One supported constructed collection suffix. Hosts can retain this syntax
+/// until their existing type facts distinguish constructed from native input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValueSuffix {
+    FilterStartsWith(Located<String>),
+    Count,
+    Sort,
+    Unique,
+    Tally,
+}
+
+/// Lower one suffix to the shared value tree, preserving the stage's location.
+/// Parsing and tree-allocation allowances remain with the caller.
+///
+/// # Errors
+/// A suffix after a terminal tally is refused at the suffix range.
+pub fn lower_value_suffix<S, O, E>(
+    value: ValueExpression<Expression<S, O, E>>,
+    stage: Located<ValueSuffix>,
+) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
+    if matches!(value.value, K::Tally(_)) {
+        dispose_native_value(value);
+        return Err(QueryError::query(
+            stage.range,
+            "tally must be the terminal stage",
+        ));
+    }
+    let kind = match stage.value {
+        ValueSuffix::FilterStartsWith(prefix) => K::FilterStartsWith {
+            prefix,
+            array: Box::new(value),
+        },
+        ValueSuffix::Count => K::Reduce {
+            operator: ValueReducer::Length,
+            array: Box::new(value),
+        },
+        ValueSuffix::Sort => K::Sort {
+            array: Box::new(value),
+            selector: None,
+            descending: false,
+        },
+        ValueSuffix::Unique => K::Unique(Box::new(value)),
+        ValueSuffix::Tally => K::Tally(Box::new(value)),
+    };
+    Ok(Located::new(kind, stage.range))
+}
+
 /// Continue an already lowered value with `filter(starts_with("prefix"))`,
 /// `count`, `sort`, `unique` and `tally` stages at the current cursor. The prefix
 /// must already satisfy its reader's nesting checks; `nesting` is the allowance remaining for suffix wrappers.
@@ -952,36 +1045,22 @@ pub fn read_value_suffix<S, O, E>(
     nesting: usize,
 ) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
     let mut value = ValueGuard::new(value);
-    let mut terminal = matches!(value.value().value, K::Tally(_));
     let mut depth = 0usize;
     while reader.consume('|') {
         let stage = reader.word()?;
         budget.charge(stage.value.len(), Location::Query(stage.range.clone()))?;
-        if terminal {
+        if matches!(value.value().value, K::Tally(_)) {
             return Err(QueryError::query(
                 stage.range,
                 "tally must be the terminal stage",
             ));
         }
-        let kind = match stage.value {
-            "filter" => K::FilterStartsWith {
-                prefix: read_prefix_filter(reader, budget)?,
-                array: Box::new(value.into_value()),
-            },
-            "count" => K::Reduce {
-                operator: ValueReducer::Length,
-                array: Box::new(value.into_value()),
-            },
-            "sort" => K::Sort {
-                array: Box::new(value.into_value()),
-                selector: None,
-                descending: false,
-            },
-            "unique" => K::Unique(Box::new(value.into_value())),
-            "tally" => {
-                terminal = true;
-                K::Tally(Box::new(value.into_value()))
-            }
+        let suffix = match stage.value {
+            "filter" => ValueSuffix::FilterStartsWith(read_constructed_filter(reader, budget)?),
+            "count" => ValueSuffix::Count,
+            "sort" => ValueSuffix::Sort,
+            "unique" => ValueSuffix::Unique,
+            "tally" => ValueSuffix::Tally,
             _ => {
                 return Err(QueryError::query(
                     stage.range,
@@ -989,7 +1068,10 @@ pub fn read_value_suffix<S, O, E>(
                 ));
             }
         };
-        value = ValueGuard::new(Located::new(kind, stage.range.start..reader.position()));
+        value = ValueGuard::new(lower_value_suffix(
+            value.into_value(),
+            Located::new(suffix, stage.range.start..reader.position()),
+        )?);
         let location = Location::Query(reader.position()..reader.position());
         budget.charge(1, location.clone())?;
         budget.charge_results(1, location)?;
@@ -1001,8 +1083,13 @@ pub fn read_value_suffix<S, O, E>(
     Ok(value.into_value())
 }
 
-// The one-argument spelling is deliberately confined to this closed predicate.
-fn read_prefix_filter(
+/// Read the closed `(starts_with("prefix"))` argument of a constructed filter.
+/// The cursor starts after `filter`; the literal retains its original range.
+/// Native predicate grammar remains with the host.
+///
+/// # Errors
+/// A different predicate, malformed syntax or exhausted parsing allowance is located.
+pub fn read_constructed_filter(
     reader: &mut ArgumentReader<'_>,
     budget: &mut Budget,
 ) -> Result<Located<String>, QueryError> {
@@ -2287,7 +2374,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         if !local && !self.host.is_binding(word.value) && !self.host.is_stage(word.value) {
             if word.value == "filter" && probe.remaining().starts_with('(') {
                 let name = self.name()?;
-                let prefix = read_prefix_filter(self.reader, self.budget)?;
+                let prefix = read_constructed_filter(self.reader, self.budget)?;
                 self.depth(depth + 1)?;
                 let input = self.node(K::CurrentInput, name.range)?;
                 return self.node(
@@ -2329,7 +2416,8 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 && ((!local && !self.host.is_binding(word.value)) || self.projection_call()))
             || (word.value == "input" && !local)
             || (probe.remaining().starts_with('|')
-                && !matches!(word.value, "true" | "false" | "null"))
+                && !matches!(word.value, "true" | "false" | "null")
+                && (local || !self.host.is_constructed_binding(word.value)))
         {
             return self.native(depth);
         }
@@ -2343,32 +2431,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                 operand: Box::new(self.expression(9, depth + 1)?),
             },
             _ if self.reader.consume('(') => {
-                if !matches!(
-                    name.value.as_str(),
-                    "lookup"
-                        | "has_key"
-                        | "group_by"
-                        | "sort"
-                        | "sort_by"
-                        | "min"
-                        | "max"
-                        | "min_by"
-                        | "max_by"
-                        | "zip_exact"
-                        | "contains"
-                        | "starts_with"
-                        | "ends_with"
-                        | "require"
-                        | "length"
-                        | "sum"
-                        | "forall"
-                        | "exists"
-                        | "occurs"
-                        | "absent"
-                        | "entries"
-                        | "index_set"
-                        | "one"
-                ) {
+                if !is_common_value_call(&name.value) {
                     let mut arguments =
                         ValueGuard::new(Located::new(K::Array(Vec::new()), start..start));
                     if !self.reader.consume(')') {
@@ -3041,7 +3104,18 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
                     stage_start..self.reader.position(),
                 ));
             }
-            let step = if self.reader.keyword("filter") {
+            let constructed_filter = if self.word_is("filter") {
+                self.host.parse_constructed_filter_in_scope(
+                    self.reader,
+                    &self.locals,
+                    self.budget,
+                )?
+            } else {
+                None
+            };
+            let step = if let Some(stage) = constructed_filter {
+                ExpressionStep::Stage(stage)
+            } else if self.reader.keyword("filter") {
                 self.reader.expect('(')?;
                 let predicate = self.predicate_or(depth + 1)?;
                 self.reader.expect(')')?;

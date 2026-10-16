@@ -419,6 +419,10 @@ impl ValueReaderHost for CsvHost<'_> {
                 .any(|input| input.name.as_deref() == Some(name))
             || self.let_names.iter().any(|binding| binding == name)
     }
+    fn is_constructed_binding(&self, name: &str) -> bool {
+        self.is_binding(name)
+    }
+
     fn is_stage(&self, _: &str) -> bool {
         false
     }
@@ -745,11 +749,40 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
         assert_eq!(text("count", &people()), "4\n");
         assert_eq!(
+            text("rows | count", &people()),
+            text("(rows) | count", &people())
+        );
+        assert_eq!(text("people | count", &named()), "4\n");
+        assert_eq!(
             text(
-                r#"let selected = [p for p in rows if p.active == "yes"]; (selected) | count"#,
+                "let numbers = [3, 1, 3]; numbers | sort | unique | count",
+                &people()
+            ),
+            "2\n"
+        );
+        assert_eq!(
+            text(
+                r#"let selected = [p for p in rows if p.active == "yes"]; selected | count"#,
                 &people()
             ),
             "3\n"
+        );
+        assert_eq!(
+            text(
+                r#"let selected = [p for p in people if p.active == "yes"]; selected | count"#,
+                &named()
+            ),
+            text(
+                r#"let selected = [p for p in people if p.active == "yes"]; (selected) | count"#,
+                &named()
+            )
+        );
+        let error = refusal("rows | unique", &people(), "unique");
+        assert_eq!(error.error.location, Location::Query(7..13));
+        refusal(
+            "rows | names",
+            &people(),
+            "unsupported constructed pipeline stage",
         );
         assert_eq!(text(REPORT, &named()), REPORT_JSON);
         assert_eq!(

@@ -23,21 +23,22 @@ newline in Ada's note. JSON escapes that newline inside its string. Empty cells
 stay empty strings. All cells are strings, including `id`, `yes`, `no` and `01`;
 the host does not guess types or trim labels and values.
 
-`rows` names the sole input table. `count` uses the same table implicitly:
+`rows` names the sole input table. Pipe it into `count` to count the rows:
 
 ```sh
-cargo run --locked --example csv -- 'count' examples/csv/people.csv
+cargo run --locked --example csv -- 'rows | count' examples/csv/people.csv
 ```
 
 ```json
 4
 ```
 
-A saved selection can feed a shared collection stage. Parentheses select the
-constructed-value pipeline form:
+The shorter `count` expression uses the same table implicitly.
+
+A saved selection can feed a shared collection stage directly:
 
 ```sh
-cargo run --locked --example csv -- 'let selected = [p for p in rows if p.active == "yes"]; (selected) | count' examples/csv/people.csv
+cargo run --locked --example csv -- 'let selected = [p for p in rows if p.active == "yes"]; selected | count' examples/csv/people.csv
 ```
 
 ```json
@@ -97,7 +98,7 @@ A missing column fails at its original query range:
 cargo run --locked --example csv -- '[p.missing for p in rows]' examples/csv/people.csv
 ```
 
-Several named tables make this implicit request ambiguous:
+Several named tables make an implicit request ambiguous:
 
 ```sh
 cargo run --locked --example csv -- 'count' people=examples/csv/people.csv teams=examples/csv/teams.csv
