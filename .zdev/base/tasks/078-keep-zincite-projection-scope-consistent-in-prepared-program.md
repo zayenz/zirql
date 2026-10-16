@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-078"
 key = "zincite-shared-prepared-projections"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 blocked_by = ["base-077"]
@@ -26,13 +26,21 @@ Root rebuilt the current canonical Zincite CLI and reproduced a concrete inconsi
 
 ## Done when
 
-- [ ] The exact two-item report returns n=1 per row both with and without an unrelated function declaration through actual library and inline/file CLI paths. A saved original input remains available separately and counts2.
-- [ ] The native-valued field on empty input is rejected before output in both modes. Valid empty projected reports and existing function/nested projection reports retain their supported schemas and results through shared execution.
-- [ ] Compact existing public controls cover the two regressions plus any otherwise-uncovered active function/located late-failure boundary. Reuse existing order/duplicate/native-owner/completeness/budget controls; no generic syntax matrix, callback-count or timing tests.
-- [ ] The actual Zincite manifest, lock and locked metadata resolve the independently accepted base-077 shared Git revision. Required affected-host Rust/library/CLI checks pass, existing model/data-edit contracts remain correct, and any directly affected guide explains current behavior.
+- [x] The exact two-item report returns n=1 per row both with and without an unrelated function declaration through actual library and inline/file CLI paths. A saved original input remains available separately and counts2.
+- [x] The native-valued field on empty input is rejected before output in both modes. Valid empty projected reports and existing function/nested projection reports retain their supported schemas and results through shared execution.
+- [x] Compact existing public controls cover the two regressions plus any otherwise-uncovered active function/located late-failure boundary. Reuse existing order/duplicate/native-owner/completeness/budget controls; no generic syntax matrix, callback-count or timing tests.
+- [x] The actual Zincite manifest, lock and locked metadata resolve the independently accepted base-077 shared Git revision. Required affected-host Rust/library/CLI checks pass, existing model/data-edit contracts remain correct, and any directly affected guide explains current behavior.
 
 ## Validation
 
 - Extend focused existing query/function/projection library coverage and a compact inline/file CLI control for the concrete count and empty-field failures; run rebuilt actual Zincite command paths and later-error empty stdout checks. Inspect native-stage scoped argument discovery and active dispatch rather than masking the defect with parser heuristics.
 - Run git diff --check, cargo fmt --all -- --check, default and explicit Rust1.99 warning-fatal workspace/all-target Clippy and locked workspace tests, plus the affected host required Rust1.88/docs checks. Use existing supported feature/check commands; do not invent a new matrix. Verify actual locked Cargo metadata against the reviewed pushed Git SHA, without path overrides or package releases.
 - Root runs applicable zdev checks and independent whole-task verification before separate attributable consumer/framework-record commits. Existing site check/build/link and desktop/mobile review apply only to edited reader pages. Preserve all unrelated Zincite formatter, site and record edits.
+
+## Result
+
+Zincite prepared and ordinary projections share singleton field scope and scalar admission through the active Zirql runner, using the same reviewed Git revision as Zirium.
+
+Validation:
+
+- Independent whole review PASS. Default and Rust1.99 fatal workspace Clippy and tests pass; Rust1.88 workspace tests and warning-fatal docs pass. Canonical suites500 tests each; rebuilt CLI22 controls pass. One unchanged CLI-helper BrokenPipe retry passed; optional older Clippy retains baseline warnings without unrelated repairs. Exact context and all-three repository guards equal; real pinned Git metadata verified.
