@@ -1360,6 +1360,16 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     .get(name)
                     .or_else(|| self.generator_kinds.get(name))
                     .cloned(),
+                ValueExpressionKind::Field { value, field } => {
+                    match self.local_kind(value, budget)? {
+                        Some(kind) => self
+                            .host
+                            .capture_record_kind(&kind)
+                            .map(|record| record.get(field, budget).cloned())
+                            .transpose()?,
+                        None => None,
+                    }
+                }
                 ValueExpressionKind::Loop { states, body } => {
                     crate::projection::admit_slots::<Option<Kind<C, H>>>(
                         states.len(),
@@ -2558,6 +2568,37 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                 return crate::value::pattern::select(
                     &mut value,
                     NativeStep::Tuple(index),
+                    self,
+                    budget,
+                    &location,
+                );
+            }
+            PreparedKind::Field { field, .. }
+                if matches!(&values[0].data, Data::Native(view)
+                    if self.host.capture_record(native_view::<C, H>(view, self.host)).is_some()) =>
+            {
+                let mut value = values.pop().expect("native capture");
+                let Data::Native(view) = &value.data else {
+                    unreachable!("native capture view")
+                };
+                let record = self
+                    .host
+                    .capture_record(native_view::<C, H>(view, self.host))
+                    .expect("native capture view");
+                let mut selected = None;
+                for (index, (label, _)) in record.fields.iter().enumerate() {
+                    budget.charge(1 + label.len().min(field.value.len()), location.clone())?;
+                    if label == &field.value {
+                        selected = Some(index);
+                        break;
+                    }
+                }
+                let index = selected.ok_or_else(|| {
+                    QueryError::query(field.range.clone(), "unknown native capture field")
+                })?;
+                return crate::value::pattern::select(
+                    &mut value,
+                    NativeStep::Record(index),
                     self,
                     budget,
                     &location,

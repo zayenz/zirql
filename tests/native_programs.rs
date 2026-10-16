@@ -3571,6 +3571,49 @@ mod projection {
         .evaluate(&entry, &bindings)
         .unwrap();
         assert!(matches!(result,Value::Subjects(rows) if rows==vec!["alpha"]));
+        let capture = Bindings::new([(
+            super::at("row".into(), 60),
+            Value::Capture(NativeCapture {
+                fields: vec![("selected".into(), Value::Subjects(vec!["alpha"]))],
+            }),
+        )])
+        .unwrap();
+        let field = function_value(K::Field {
+            value: Box::new(function_value(K::NativeValue(Box::new(super::at(
+                ExpressionKind::Binding("row".into()),
+                61,
+            ))))),
+            field: super::at("selected".into(), 62),
+        });
+        let kinds = BTreeMap::from([(
+            "row".into(),
+            Kind::Capture(Arc::new(NativeCapture {
+                fields: vec![("selected".into(), Kind::Subjects)],
+            })),
+        )]);
+        assert_eq!(
+            zirql::pattern_function_value_kind(
+                std::iter::empty(),
+                &Host,
+                &field,
+                &kinds,
+                None,
+                &mut budget,
+            )
+            .unwrap(),
+            Kind::Subjects
+        );
+        let result = FunctionRequest::prepare(
+            &functions,
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&field, &capture)
+        .unwrap();
+        assert!(matches!(result,Value::Subjects(rows) if rows==vec!["alpha"]));
         let mut items = native_function(
             "items",
             function_value(K::Loop {
