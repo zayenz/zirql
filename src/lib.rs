@@ -34,6 +34,7 @@ pub use functions::{
     PatternFunctionDeclarationRef, PatternParameter, PatternParameterRef, PreparedFunctionValue,
     PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
     evaluate_functions, evaluate_pattern_functions, pattern_function_value_kind,
+    pattern_function_value_kind_borrowed,
 };
 pub use mapping::{
     MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,

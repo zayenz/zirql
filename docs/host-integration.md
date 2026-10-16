@@ -129,7 +129,10 @@ optional borrowed `Pattern` and lexical names. Copy a retained pattern with
 leaf argument such as `op(p | names | one)`, retain that value through
 `PredicateArgument { argument, body }.bind_value(native_input_expression)`.
 `SubjectScope` matches the same pattern and binds the whole unnamed subject. The
-domain leaf checks its argument's existing string/scalar contract. `PredicateScope` checks
+scoped body retains its native result kind through preparation. Nested scopes
+bind `_` to their own subject and retain explicitly named outer captures.
+The domain leaf checks its argument's existing string/scalar or native contract before
+enumeration, including for empty selections. `PredicateScope` checks
 a shared Boolean body. Both use the same value runner and frame restoration. Other leaves pass through `predicate_expression`, which receives a
 `PredicateArgument`. Bind its subject with `PredicateArgument::bind`, using the
 native input expression, and retain that expression in the host predicate leaf.
@@ -683,6 +686,15 @@ body can read its parameters and earlier immutable locals. The entry receives
 explicit `Bindings`; functions receive that data through call arguments. Host
 kinds used for native declarations must identify the complete native contract.
 Native kind equality must agree with the host's declaration identity.
+
+Native kind callbacks can use `pattern_function_value_kind` with owned pattern
+declarations, or `pattern_function_value_kind_borrowed` with existing
+`PatternFunctionDeclarationRef` headers. Both register signatures and discover
+the selected expression's kind, including scoped native operands, without
+preparing declaration bodies or copying their trees. Kind discovery does not
+establish body purity. Before executing the request, separately prepare every
+body with `PreparedFunctions::prepare_patterns` or `prepare_patterns_borrowed`,
+including unused declarations.
 
 Preparation resolves calls, slots and pure native expressions once for this
 request. Native stages expose primitive argument bodies with `value_arguments`;

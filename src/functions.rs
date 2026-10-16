@@ -717,7 +717,7 @@ impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
     }
 }
 
-/// Discover one value's kind from borrowed pattern declarations and outer kinds.
+/// Discover one value's kind from pattern declarations and outer kinds.
 /// This registers and checks signatures, then uses ordinary common preflight for
 /// the value, including lexical patterns and native arguments. It does not prepare
 /// declaration bodies, so hosts can call it from a kind callback while complete
@@ -745,6 +745,36 @@ where
         declarations
             .into_iter()
             .map(PatternFunctionDeclaration::as_borrowed),
+        host,
+        budget,
+    )?
+    .entry_kind(value, scope, relative, budget)
+}
+
+/// Discover one value's kind from request-resolved borrowed pattern headers.
+///
+/// Like [`pattern_function_value_kind`], this checks signatures and the selected
+/// value without preparing declaration bodies. Hosts can call it from a native
+/// kind callback using their existing resolved headers and borrowed body trees.
+/// Before execution, separately check every body with
+/// [`PreparedFunctions::prepare_patterns_borrowed`], including unused declarations.
+///
+/// # Errors
+/// Invalid signatures, value scope/effects, host operations and limits are located.
+pub fn pattern_function_value_kind_borrowed<'a, C, H: FunctionHost<C>>(
+    declarations: impl IntoIterator<Item = PatternFunctionDeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+    host: &H,
+    value: &ValueExpression<Query<C, H>>,
+    scope: &BTreeMap<String, Kind<C, H>>,
+    relative: Option<Kind<C, H>>,
+    budget: &mut Budget,
+) -> Result<Kind<C, H>, QueryError>
+where
+    Query<C, H>: 'a,
+    Kind<C, H>: 'a,
+{
+    Preflight::new(
+        declarations.into_iter().map(DeclarationRef::from),
         host,
         budget,
     )?
@@ -1414,6 +1444,26 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     .get(name)
                     .or_else(|| self.generator_kinds.get(name))
                     .cloned(),
+                ValueExpressionKind::SubjectScope { subject, argument } => {
+                    let kind = self.local_kind(subject, budget)?;
+                    self.enter_scope(budget, &value.range)?;
+                    let result = (|| {
+                        let internal = crate::value::PREDICATE_SUBJECT;
+                        self.scope.remove(internal);
+                        self.generator_kinds.remove(internal);
+                        self.contracts.remove(internal);
+                        if let Some(kind) = &kind {
+                            budget_name(internal, budget, &subject.range)?;
+                            self.scope.insert(internal.to_owned(), kind.clone());
+                        }
+                        if let Some(pattern) = &argument.argument {
+                            self.pattern_kind(PatternRef::Pattern(pattern), kind, None, budget)?;
+                        }
+                        self.local_kind(&argument.body, budget)
+                    })();
+                    self.leave_scope();
+                    result?
+                }
                 ValueExpressionKind::Field { value, field } => {
                     match self.local_kind(value, budget)? {
                         Some(kind) => self

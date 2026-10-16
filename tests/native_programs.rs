@@ -3294,14 +3294,34 @@ mod projection {
             range: &Range<usize>,
         ) -> Result<Kind, QueryError> {
             match stage {
-                Stage::SignatureQuery { declaration, value } => zirql::pattern_function_value_kind(
-                    [declaration.as_ref()],
-                    self,
-                    value,
-                    scope,
-                    Some(input.clone()),
-                    budget,
-                ),
+                Stage::SignatureQuery { declaration, value } => {
+                    let parameters = declaration
+                        .parameters
+                        .iter()
+                        .map(|parameter| {
+                            Located::new(
+                                zirql::PatternParameterRef {
+                                    pattern: &parameter.value.pattern,
+                                    declaration: parameter.value.declaration.clone(),
+                                },
+                                parameter.range.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    zirql::pattern_function_value_kind_borrowed(
+                        [zirql::PatternFunctionDeclarationRef {
+                            name: &declaration.name,
+                            parameters: &parameters,
+                            result: &declaration.result,
+                            value: &declaration.value,
+                        }],
+                        self,
+                        value,
+                        scope,
+                        Some(input.clone()),
+                        budget,
+                    )
+                }
                 Stage::Saved(name) => Ok(scope[name].clone()),
                 Stage::Match(matching) => Ok(Kind::Captures(Arc::new(zirql::match_types(
                     matching, self, input, scope, budget,
@@ -4616,8 +4636,33 @@ mod projection {
         // This enters the host's kind callback while the outer body's complete
         // preparation is active. The callback needs only the inner signature.
         assert!(PreparedFunctions::prepare(&outer, &Host, &mut budget).is_ok());
+        let owned = declaration();
+        let borrowed = || zirql::PatternFunctionDeclarationRef {
+            name: &owned.name,
+            parameters: &[],
+            result: &owned.result,
+            value: &owned.value,
+        };
+        let entry = function_call("header_only", vec![]);
+        let scope = BTreeMap::new();
+        assert_eq!(
+            zirql::pattern_function_value_kind([&owned], &Host, &entry, &scope, None, &mut budget)
+                .unwrap(),
+            zirql::pattern_function_value_kind_borrowed(
+                [borrowed()],
+                &Host,
+                &entry,
+                &scope,
+                None,
+                &mut budget,
+            )
+            .unwrap()
+        );
         // Signature discovery never substitutes for the complete request check.
-        assert!(PreparedFunctions::prepare_patterns([&declaration()], &Host, &mut budget).is_err());
+        assert!(PreparedFunctions::prepare_patterns([&owned], &Host, &mut budget).is_err());
+        assert!(
+            PreparedFunctions::prepare_patterns_borrowed([borrowed()], &Host, &mut budget).is_err()
+        );
         let text = "{row: (label, _), \"cost\": present(amount), ..}";
         let mut reader = zirql::ArgumentReader::new(text, 0).unwrap();
         let pattern = zirql::read_pattern(&mut reader, &mut budget, 64).unwrap();
@@ -8404,6 +8449,125 @@ mod projection {
                 matches!(run(&source).unwrap(), Value::Constructed(value) if value.data() == &V::Integer(expected))
             );
         }
+    }
+
+    #[test]
+    fn scoped_native_arguments_keep_body_kinds_and_nearest_subject() {
+        use zirql::{FunctionLimits, PatternKind as P, PredicateArgument, PreparedFunctions};
+        let named = |name: &str| function_value(K::Name(name.into()));
+        let scoped = |name: Option<&str>, subject, body| {
+            PredicateArgument {
+                argument: name.map(|name| super::at(P::Name(super::at(name.into(), 5)), 5)),
+                body: Box::new(body),
+            }
+            .bind_value(subject)
+        };
+        let scope = BTreeMap::from([
+            ("xs".into(), Kind::Subjects),
+            ("capture".into(), Kind::Subjects),
+        ]);
+        let bindings = Bindings::new([
+            (super::at("xs".into(), 0), Value::Subjects(vec!["alpha"])),
+            (
+                super::at("capture".into(), 0),
+                Value::Subjects(vec!["beta"]),
+            ),
+        ])
+        .unwrap();
+        let raw = named("xs");
+        let inner = scoped(
+            None,
+            function_value(K::Literal(V::Boolean(true))),
+            function_value(K::PredicateSubject),
+        );
+        let inner_kind = scoped(Some("whole"), named("xs"), inner);
+        let nested = scoped(
+            Some("whole"),
+            named("xs"),
+            function_value(K::Block {
+                bindings: vec![(
+                    super::at(P::Wildcard, 6),
+                    scoped(None, named("capture"), function_value(K::PredicateSubject)),
+                )],
+                value: Box::new(function_value(K::PredicateSubject)),
+            }),
+        );
+        let argument = Arc::new(scoped(Some("candidate"), named("xs"), named("candidate")));
+        let bridged = function_value(K::NativeValue(Box::new(native_operand(
+            Stage::NativeArgument(Arc::clone(&argument)),
+        ))));
+        let mut budget = function_budget();
+        let mut functions = PreparedFunctions::prepare_patterns([], &Host, &mut budget).unwrap();
+        for entry in [&raw, &nested, argument.as_ref(), &bridged] {
+            assert_eq!(
+                functions
+                    .value_kind(entry, &scope, None, &mut budget)
+                    .unwrap(),
+                Kind::Subjects
+            );
+            let prepared = functions
+                .prepare_value(entry, &scope, None, &mut budget)
+                .unwrap();
+            assert_eq!(
+                functions
+                    .evaluate(
+                        &prepared,
+                        &bindings,
+                        None,
+                        &mut (),
+                        &mut budget,
+                        FunctionLimits { active_depth: 1 }
+                    )
+                    .unwrap(),
+                Value::Subjects(vec!["alpha"])
+            );
+        }
+        assert_eq!(
+            functions
+                .value_kind(&inner_kind, &scope, None, &mut budget)
+                .unwrap(),
+            Kind::Constructed(Arc::new(vec![ValueType::Boolean]))
+        );
+
+        // Preparation refuses incompatible native operands before enumeration.
+        let invalid = scoped(
+            Some("candidate"),
+            named("xs"),
+            function_value(K::NativeValue(Box::new(super::sequence(
+                Located::new(ExpressionKind::Binding("candidate".into()), 10..19),
+                vec![
+                    Located::new(ExpressionStep::Stage(Stage::Names), 20..25),
+                    Located::new(ExpressionStep::Stage(Stage::Names), 26..31),
+                ],
+            )))),
+        );
+        let error = functions
+            .value_kind(
+                &invalid,
+                &BTreeMap::from([("xs".into(), Kind::Subjects)]),
+                None,
+                &mut budget,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error.error, EvaluationError::Core(QueryError { location: Location::Query(ref range), .. }) if *range == (26..31))
+        );
+        let prepared = functions
+            .prepare_value(&nested, &scope, None, &mut budget)
+            .unwrap();
+        assert_eq!(
+            functions
+                .evaluate(
+                    &prepared,
+                    &bindings,
+                    None,
+                    &mut (),
+                    &mut budget,
+                    FunctionLimits { active_depth: 1 }
+                )
+                .unwrap(),
+            Value::Subjects(vec!["alpha"])
+        );
     }
 
     #[test]
