@@ -670,6 +670,7 @@ struct Operand<K> {
     native: crate::projection::prepared::PreparedNative,
     names: Vec<String>,
     kind: K,
+    argument_kinds: BTreeMap<usize, K>,
 }
 struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
@@ -807,10 +808,12 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 native,
                 names,
                 kind: kind.clone(),
+                argument_kinds: BTreeMap::new(),
             },
         );
         let arguments =
             crate::projection::scoped_arguments::<C, H>(query, self.host, &input, &scope, budget)?;
+        let mut argument_kinds = BTreeMap::new();
         for argument in arguments {
             let saved = std::mem::replace(
                 &mut self.scope,
@@ -833,11 +836,27 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         .unwrap_or_else(|| vec![ValueType::Unestablished]),
                 );
             }
-            let result = query_value_types(argument.expression, &facts, self, budget);
+            let result = (|| {
+                let types = query_value_types(argument.expression, &facts, self, budget)?;
+                let kind = self
+                    .local_kind(argument.expression, budget)?
+                    .unwrap_or_else(|| self.host.constructed_kind(types));
+                crate::projection::admit_slots::<(usize, Kind<C, H>)>(
+                    1,
+                    budget,
+                    &argument.expression.range,
+                )?;
+                argument_kinds.insert(argument.expression as *const _ as usize, kind);
+                Ok::<_, QueryError>(())
+            })();
             self.scope = saved;
             self.relative = old;
             result?;
         }
+        self.prepared
+            .get_mut(&(query as *const _ as usize))
+            .expect("prepared native operand")
+            .argument_kinds = argument_kinds;
         match self.host.scalar_types(&kind, budget, &query.range)? {
             Some(types) => Ok(types),
             None if !projected => Ok(vec![ValueType::Unestablished]),
@@ -3236,6 +3255,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
                     bodies,
                     arguments,
                     declared,
+                    argument_kinds: &operand.argument_kinds,
                     depth,
                     limit,
                     calls,
@@ -3390,6 +3410,7 @@ struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
     bodies: &'a Bodies<'a, C, H>,
     arguments: &'a [PreparedArgument<'a, Query<C, H>>],
     declared: &'r [usize],
+    argument_kinds: &'r BTreeMap<usize, Kind<C, H>>,
     depth: usize,
     limit: usize,
     calls: &'r mut CallTrace,
@@ -3514,6 +3535,101 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
     ) -> Result<crate::NativeRead<H::Value, Kind<C, H>>, EvaluationError<H::Error>> {
         let value = self.run(expression, &input, Some(bindings), budget)?;
         self.native_read(value, budget, &expression.range)
+    }
+    fn evaluate_projection(
+        &mut self,
+        projection: &crate::Projection<Query<C, H>>,
+        input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<crate::ConstructedResult, EvaluationError<H::Error>> {
+        let range = &projection.subject.range;
+        budget.within_evaluation(1, Location::Query(range.clone()), |budget| {
+            if self
+                .bindings
+                .iter()
+                .any(|(name, _)| name == projection.subject.value)
+            {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "projection subject shadows an existing binding",
+                )
+                .into());
+            }
+            crate::projection::admit_slots::<Vec<ValueType>>(1, budget, range)?;
+            let mut positions = vec![Vec::new()];
+            for (index, (_, expression)) in projection.fields.iter().enumerate() {
+                crate::projection::check_projection_label(projection, index, budget)?;
+                let id = expression as *const _ as usize;
+                budget.charge(
+                    self.declared.len() + self.arguments.len() + 1,
+                    Location::Query(expression.range.clone()),
+                )?;
+                if !self.declared.contains(&id)
+                    || !self
+                        .arguments
+                        .iter()
+                        .any(|argument| std::ptr::eq(argument.source, expression))
+                {
+                    return Err(QueryError::query(
+                        expression.range.clone(),
+                        "projection requires every written prepared field",
+                    )
+                    .into());
+                }
+                let kind = self.argument_kinds.get(&id).ok_or_else(|| {
+                    QueryError::query(
+                        expression.range.clone(),
+                        "projection field kind was not prepared",
+                    )
+                })?;
+                let types = self
+                    .host
+                    .scalar_types(kind, budget, &expression.range)?
+                    .ok_or_else(|| {
+                        QueryError::query(
+                            expression.range.clone(),
+                            "native handles require an explicit scalar projection",
+                        )
+                    })?;
+                positions = crate::value::extend_type_positions(
+                    &positions,
+                    &types,
+                    budget,
+                    &Location::Query(expression.range.clone()),
+                )?;
+            }
+            let types = crate::projection::projection_result_types(projection, positions, budget)?;
+            let bindings = self
+                .bindings
+                .with_shared_values(BTreeMap::new(), budget, range)?;
+            let subjects = self.host.subjects(input, self.context, budget, range)?;
+            let value = crate::projection::projection_rows(
+                projection,
+                subjects,
+                &bindings,
+                self,
+                budget,
+                |index, local, runner, budget| {
+                    let expression = &projection.fields[index].1;
+                    let relative = local.get(&projection.subject.value, range.clone())?;
+                    let value = runner.run(expression, relative, Some(local), budget)?;
+                    let read = runner.native_read(value, budget, &expression.range)?;
+                    let value = match std::sync::Arc::try_unwrap(read.into_shared()) {
+                        Ok(value) => value,
+                        Err(value) => runner.host.copy_value(
+                            &value,
+                            runner.context,
+                            budget,
+                            &expression.range,
+                        )?,
+                    };
+                    runner
+                        .host
+                        .project_value(value, runner.context, budget, &expression.range)
+                },
+            )?;
+            Ok(crate::ConstructedResult { value, types })
+        })
     }
 }
 impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {

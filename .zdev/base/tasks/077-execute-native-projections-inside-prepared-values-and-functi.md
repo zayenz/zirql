@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-077"
 key = "projection-values-in-prepared-programs"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 blocked_by = ["base-076"]
@@ -26,13 +26,21 @@ A concrete existing Zirium composition gap remains outside base-076. On the one-
 
 ## Done when
 
-- [ ] The minimal one(row | names) projection with an unrelated function declaration succeeds and returns the same intended scalar report as its plain counterpart through actual library and inline/file CLI paths.
-- [ ] A named function can return a sequence of projected records, and a projection nested in a value field uses the same shared execution path. Prepared fields execute through the active native argument runner instead of missing Session entries; directly prepared projections remain correct.
-- [ ] Compact public controls establish valid typed empty reports, all-written invalid-field refusal on empty input, outer/subject and relative/original scope, duplicate subjects and field order, located active function failure and later-error empty stdout. Reuse the meaningful base-076 owner/budget controls rather than adding a generic matrix.
-- [ ] If a shared API changes, the actual affected consumer manifest, lock and locked metadata resolve the reviewed pushed Git revision. Required changed-repository checks pass, and any affected API guide describes current behavior and caller responsibilities.
+- [x] The minimal one(row | names) projection with an unrelated function declaration succeeds and returns the same intended scalar report as its plain counterpart through actual library and inline/file CLI paths.
+- [x] A named function can return a sequence of projected records, and a projection nested in a value field uses the same shared execution path. Prepared fields execute through the active native argument runner instead of missing Session entries; directly prepared projections remain correct.
+- [x] Compact public controls establish valid typed empty reports, all-written invalid-field refusal on empty input, outer/subject and relative/original scope, duplicate subjects and field order, located active function failure and later-error empty stdout. Reuse the meaningful base-076 owner/budget controls rather than adding a generic matrix.
+- [x] If a shared API changes, the actual affected consumer manifest, lock and locked metadata resolve the reviewed pushed Git revision. Required changed-repository checks pass, and any affected API guide describes current behavior and caller responsibilities.
 
 ## Validation
 
 - Run focused existing projection/function library controls and rebuilt actual CLI inline/file programs for the concrete reproductions, including empty and later-error cases. Inspect that shared row orchestration and one cumulative request are retained. No internal callback-count, timing or implementation-mirroring tests.
 - Run changed-repository diff/format, default and explicit Rust1.99 warning-fatal Clippy and locked workspace tests; shared Rust1.88 tests and required Zirium stable/1.88 all-target/all-feature tests/Clippy, doctests and warning-clean docs. Rebuild the current local Python extension, prove import identity and run the full compatibility suite; unchanged Python lint/type evidence may be reused and configured CI covers its interpreter matrix.
 - Run zdev checks for records; existing site build/link and desktop/mobile review only for directly affected guide pages. Root independently verifies the whole task, integrates serially and commits framework/consumer changes separately, preserving unrelated work and pinned Git development.
+
+## Result
+
+Prepared native projections use the active shared runner with lexical scope and typed empty reports; Zirium adopts the actual shared Git revision.
+
+Validation:
+
+- Independent whole review PASS; required default, Rust1.99 and supported stable/1.88 Rust checks, rebuilt inline/file CLI, canonical Python175/2, sites/links and desktop/mobile UI passed; exact snapshot and foreign-work guards equal.

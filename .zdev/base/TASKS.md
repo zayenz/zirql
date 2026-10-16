@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 77
-- Ready: 1
+- Ready: 0
 - Blocked: 0
-- Done: 76
+- Done: 77
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -85,4 +85,4 @@
 | [base-074](tasks/074-use-shared-value-calls-and-saved-collection-pipelines-consis.md) | Use shared value calls and saved collection pipelines consistently | done | base-065 |
 | [base-075](tasks/075-accept-shared-scalar-expressions-as-zirium-query-results.md) | Accept shared scalar expressions as Zirium query results | done | base-074 |
 | [base-076](tasks/076-use-shared-projection-execution-with-prepared-functions.md) | Use shared projection execution with prepared functions | done | base-066 |
-| [base-077](tasks/077-execute-native-projections-inside-prepared-values-and-functi.md) | Execute native projections inside prepared values and functions | ready | base-076 |
+| [base-077](tasks/077-execute-native-projections-inside-prepared-values-and-functi.md) | Execute native projections inside prepared values and functions | done | base-076 |

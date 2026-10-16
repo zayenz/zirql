@@ -148,6 +148,13 @@ each subject and constructs the rows; its `ConstructedResult` retains field type
 for empty reports. It checks that every entry belongs to this unit and matches
 its written field before enumerating subjects.
 
+When a projection is itself a native stage inside a prepared value or function,
+declare its fields through `ProjectionHost::value_arguments`. Its
+`scoped_value_arguments` supplies the subject local and singleton relative kind.
+Dispatch the stage through `NativeArguments::evaluate_projection`, which runs
+the fields with the active function's parameters and locals. Lift the returned
+value together with its types so empty projected reports retain their schema.
+
 `Bindings::with_local` shares the outer map when introducing a local name;
 native argument callbacks retain that sharing. Declaration inputs can be
 borrowed iterators over separately shared typed-root function trees.
