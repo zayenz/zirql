@@ -252,6 +252,41 @@ does not create new predicate overloads for eager Boolean reducers or selectors.
 Empty-input validation, source locations, stable order, finite cumulative
 budgets and whole-request output buffering remain part of the contract.
 
+### Shared destructuring patterns
+
+The user requires consistent destructuring across the shared language. Use one
+pattern representation, reader and matching rules for immutable `let` bindings,
+function parameters, predicate arguments, value-match arms and comprehension
+binders. Predicate arguments may use `(a, b) => body`, `[h1, h2] => body` or
+`[h1, h2, ..] => body`, alongside existing named and implicit forms. Existing
+record, presence, scalar and wildcard patterns remain the same language.
+
+Tuple patterns require exact tuple arity. List patterns inspect positional
+lists/sequences, with exact length unless a final `..` ignores the remaining
+elements. `[h1, h2, ..]` requires at least two elements; `[]` requires empty,
+and `[..]` accepts any positional list. The remainder has no binding or copied
+value. Lists remain distinct from tuples, sets and indexed/keyed arrays; use an
+explicit existing conversion when needed. Native structure requires established
+host views and retains handles, owners and type evidence.
+
+Evaluate the subject once and install all pattern names together only after
+matching succeeds. A mismatch in a binding, function/predicate argument or
+comprehension binder is a located error. In value `match`, a mismatch tries the
+next arm. Duplicate bindings, prohibited shadowing, skipped branches and typed
+empty sources retain existing preflight rules. A predicate's `_` still reads its
+whole subject, including when the argument pattern binds its parts; wildcard
+patterns discard their own component and do not change that implicit subject.
+Nested predicates rebind `_` and retain explicitly named outer captures.
+
+This decision supersedes the earlier exclusion of sequence-rest patterns only
+for the final discarded list remainder described here. It adds no named tail,
+first-class functions, closure values, reflected native fields or implicit
+collection conversions. CSV keeps its small let-plus-expression program form,
+with the same destructuring lets and expressions. Base-090 owns the shared
+implementation after base-086; both host integrations and release acceptance
+must consume that completed contract. Reuse a few public examples across the
+binding positions, including a short-list error, rather than adding a matrix.
+
 ### Language coherence, documentation and a CSV host
 
 Zirql owns the domain-independent language used by Zirium and Zincite. Someone
