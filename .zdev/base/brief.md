@@ -287,6 +287,41 @@ implementation after base-086; both host integrations and release acceptance
 must consume that completed contract. Reuse a few public examples across the
 binding positions, including a short-list error, rather than adding a matrix.
 
+### One shared query reader
+
+The user requires both comprehension spellings in Zirql itself: the common
+`[expression for pattern in source if condition]` and the MiniZinc-style
+`[expression | pattern in source where condition]`. Both lower to the same
+located generators and evaluator. Both consumers and the CSV example can use
+these forms for their admitted values. Lead shared-language guides with the
+common form and present the MiniZinc form as another spelling of the same rules.
+
+Minimize host-specific query parsing. Zirql owns generic expression, collection,
+pattern, binding, conditional and pipeline grammar. Existing domain-independent
+MiniZinc query spellings needed to replace Zincite's generic expression CST
+path belong in that shared reader too: grouped and binding generators, natural
+records and conditionals, Boolean operators, multidimensional access, matrices,
+starting-key tails and existing quoted-name/string/comment forms. Preserve the
+bounded supported subset; this does not add a full MiniZinc language parser.
+Use the existing AST, scope/type/admission rules and evaluator. Avoid a grammar
+configuration system, duplicate parser paths or new optional language features.
+
+Hosts retain input-file parsing/CST, native operations and their argument
+signatures, nominal/model lookup, native identity and source ownership,
+contextual effects, target shapes, serialization and validated edits. A narrow
+recognized domain atom/call hook is appropriate only where those facts are
+needed; ordinary expression-valued arguments use the shared scoped reader.
+Keep Zincite's Data operator/effect policy as admission over the shared AST,
+including unused bindings and unchosen branches. Accepting a spelling does not
+admit a report-only operation or erase native/keyed shape evidence.
+
+Base-091 follows base-090 to share the two comprehension forms and the existing
+generic expression spellings required by these concrete adapters. Both host
+integrations consume that completed reader and remove their generic query CST
+routing, while retaining domain parsing. Final acceptance compares a few
+ordinary programs across both consumers and CSV, including the alternative
+spelling and a closed-Data refusal, without a syntax matrix.
+
 ### Language coherence, documentation and a CSV host
 
 Zirql owns the domain-independent language used by Zirium and Zincite. Someone

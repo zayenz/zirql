@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 90
+- Total: 91
 - Ready: 1
-- Blocked: 4
+- Blocked: 5
 - Done: 85
 
 | ID | Task | State | Blocked by |
@@ -99,3 +99,4 @@
 | [base-088](tasks/088-handle-early-stdin-closure-in-zincite-cli-test-helpers.md) | Handle early stdin closure in Zincite CLI test helpers | done | — |
 | [base-089](tasks/089-integrate-shared-predicates-into-zirium-and-its-diff-languag.md) | Integrate shared predicates into Zirium and its diff language | blocked | base-090, base-083 |
 | [base-090](tasks/090-share-destructuring-across-bindings-and-predicate-arguments.md) | Share destructuring across bindings and predicate arguments | ready | base-086 |
+| [base-091](tasks/091-read-both-comprehension-forms-and-shared-query-expressions-i.md) | Read both comprehension forms and shared query expressions in Zirql | blocked | base-090 |
