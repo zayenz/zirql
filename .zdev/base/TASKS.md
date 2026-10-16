@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 89
-- Ready: 2
+- Ready: 1
 - Blocked: 4
-- Done: 83
+- Done: 84
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -96,5 +96,5 @@
 | [base-085](tasks/085-publish-and-check-the-authorized-release-versions-and-docume.md) | Publish and check the authorized release versions and documentation | blocked | base-084 |
 | [base-086](tasks/086-share-scoped-predicate-expressions-and-unnamed-arguments.md) | Share scoped predicate expressions and unnamed arguments | ready | — |
 | [base-087](tasks/087-unify-predicate-expressions-across-zirium-and-zincite-releas.md) | Integrate shared predicates into Zincite | blocked | base-086, base-082 |
-| [base-088](tasks/088-handle-early-stdin-closure-in-zincite-cli-test-helpers.md) | Handle early stdin closure in Zincite CLI test helpers | ready | — |
+| [base-088](tasks/088-handle-early-stdin-closure-in-zincite-cli-test-helpers.md) | Handle early stdin closure in Zincite CLI test helpers | done | — |
 | [base-089](tasks/089-integrate-shared-predicates-into-zirium-and-its-diff-languag.md) | Integrate shared predicates into Zirium and its diff language | blocked | base-086, base-083 |

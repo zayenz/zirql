@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-088"
 key = "zincite-linux-cli-stdin-helper"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "high"
@@ -26,12 +26,20 @@ Hosted CI at accepted Zincite commit f827689dc7dd9143422bddf9eef7aa2024277b31 fa
 
 ## Done when
 
-- [ ] The helper tolerates only the expected early-close BrokenPipe case and still waits for and validates child results; other stdin write failures remain visible. Inspect related required CLI helpers for the same exhibited pattern without a broad test rewrite.
-- [ ] The affected existing CLI controls and required workspace fmt/fatal Clippy/tests pass. The exact accepted source is pushed and the existing Linux CI succeeds, or any different concrete remaining failure is retained for correction before release acceptance.
-- [ ] Root independently verifies the focused change, records separate commits and makes final release acceptance depend on the hosted correction.
+- [x] The helper tolerates only the expected early-close BrokenPipe case and still waits for and validates child results; other stdin write failures remain visible. Inspect related required CLI helpers for the same exhibited pattern without a broad test rewrite.
+- [x] The affected existing CLI controls and required workspace fmt/fatal Clippy/tests pass. The exact accepted source is pushed and the existing Linux CI succeeds, or any different concrete remaining failure is retained for correction before release acceptance.
+- [x] Root independently verifies the focused change, records separate commits and makes final release acceptance depend on the hosted correction.
 
 ## Validation
 
 - Replay the four exhibited lint CLI controls and run existing workspace fmt, fatal all-target Clippy and tests. Add no mirrored test for the helper implementation.
 - Use the existing hosted stable workflow at the exact corrected commit as Linux evidence. Keep the failed run and successful replacement identifiable; no expanding compiler/platform matrix.
 - Run git diff --check and authoritative zdev checks; inspect full attributed source/record deltas.
+
+## Result
+
+Lint, query and root CLI test helpers now tolerate only expected BrokenPipe when commands exit before reading stdin. Existing child waits and status/stdout/stderr assertions remain unchanged. The independently reviewed correction is committed and pushed as Zincite 2ffb2b64d55fff1f0ca4980578519073128e5cc3.
+
+Validation:
+
+- Whole independent review plus one accepted root-helper correction and fresh focused recheck pass. Required fmt, fatal all-target Clippy, 500 workspace tests and 26 root controls pass. Exact corrected-source Linux CI 38856554322 and exact accepted-main CI 38856870221 both succeed; entire Git trees are identical. Only expected consumer commit and reviewed task-split record drift occurred; all unrelated data preserved. Single fresh completion comparison W1c98393bf1cabe85 is equal.
