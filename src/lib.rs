@@ -65,10 +65,10 @@ pub use reader::{
     UnresolvedPatternFunctionDeclaration, UnresolvedPatternFunctionParameter, ValueReaderHost,
     ValueSuffix, dispose_native_value, dispose_unresolved_functions,
     dispose_unresolved_pattern_functions, is_common_value_call, lower_value_suffix,
-    read_function_declaration, read_match, read_native_expression, read_paths, read_pattern,
-    read_pattern_function_declaration, read_pattern_let, read_projection, read_statement_prefix,
-    read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
-    read_value_expression, read_value_suffix,
+    read_constructed_filter, read_function_declaration, read_match, read_native_expression,
+    read_paths, read_pattern, read_pattern_function_declaration, read_pattern_let, read_projection,
+    read_statement_prefix, read_unresolved_function_declaration,
+    read_unresolved_pattern_function_declaration, read_value_expression, read_value_suffix,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,

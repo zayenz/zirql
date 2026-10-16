@@ -1056,7 +1056,7 @@ pub fn read_value_suffix<S, O, E>(
             ));
         }
         let suffix = match stage.value {
-            "filter" => ValueSuffix::FilterStartsWith(read_prefix_filter(reader, budget)?),
+            "filter" => ValueSuffix::FilterStartsWith(read_constructed_filter(reader, budget)?),
             "count" => ValueSuffix::Count,
             "sort" => ValueSuffix::Sort,
             "unique" => ValueSuffix::Unique,
@@ -1083,8 +1083,13 @@ pub fn read_value_suffix<S, O, E>(
     Ok(value.into_value())
 }
 
-// The one-argument spelling is deliberately confined to this closed predicate.
-fn read_prefix_filter(
+/// Read the closed `(starts_with("prefix"))` argument of a constructed filter.
+/// The cursor starts after `filter`; the literal retains its original range.
+/// Native predicate grammar remains with the host.
+///
+/// # Errors
+/// A different predicate, malformed syntax or exhausted parsing allowance is located.
+pub fn read_constructed_filter(
     reader: &mut ArgumentReader<'_>,
     budget: &mut Budget,
 ) -> Result<Located<String>, QueryError> {
@@ -2369,7 +2374,7 @@ impl<'s, H: ValueReaderHost> Reader<'_, 's, '_, H> {
         if !local && !self.host.is_binding(word.value) && !self.host.is_stage(word.value) {
             if word.value == "filter" && probe.remaining().starts_with('(') {
                 let name = self.name()?;
-                let prefix = read_prefix_filter(self.reader, self.budget)?;
+                let prefix = read_constructed_filter(self.reader, self.budget)?;
                 self.depth(depth + 1)?;
                 let input = self.node(K::CurrentInput, name.range)?;
                 return self.node(
