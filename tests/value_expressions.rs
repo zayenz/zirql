@@ -2627,6 +2627,119 @@ fn optional_report_keeps_declared_omissions_stored_absence_and_sparse_membership
 }
 
 #[test]
+fn retained_lookup_and_positions_keep_child_contracts_and_aliases() {
+    let row_type = D::Record(vec![
+        ("id".into(), D::Integer),
+        ("caption".into(), D::Optional(Box::new(D::String))),
+    ]);
+    let row = || V::Record(vec![("id".into(), V::Integer(7))]);
+    let report = declared(
+        V::Record(vec![
+            ("rows".into(), V::Array(vec![row()])),
+            (
+                "cells".into(),
+                V::KeyedArray {
+                    axes: vec![KeyAxis {
+                        key_type: ValueKeyType::Integer,
+                        keys: vec![ValueKey::Integer(2), ValueKey::Integer(5)],
+                    }],
+                    entries: vec![KeyedEntry {
+                        key: vec![ValueKey::Integer(2)],
+                        value: row(),
+                    }],
+                },
+            ),
+        ]),
+        D::Record(vec![
+            ("rows".into(), D::Sequence(Box::new(row_type.clone()))),
+            ("cells".into(), D::Keyed(Box::new(row_type.clone()))),
+        ]),
+    );
+    let bindings = Bindings::new([(Located::new("report".into(), 0..1), report)]).unwrap();
+    let expression = block(
+        vec![
+            (binder("rows"), field(name("report"), "rows")),
+            (binder("first"), lookup(name("rows"), int(1))),
+        ],
+        e(K::Tuple(vec![
+            name("first"),
+            access(name("rows"), int(1)),
+            lookup(field(name("report"), "cells"), int(2)),
+            lookup(field(name("report"), "cells"), int(5)),
+            lookup(name("rows"), int(0)),
+            has_key(name("rows"), int(1)),
+            has_key(name("rows"), int(2)),
+            default(lookup(name("first"), text("caption")), text("untitled")),
+        ])),
+    );
+    let V::Tuple(mut values) = evaluate_value(&expression, &bindings, &mut ample()).unwrap() else {
+        panic!("selected report");
+    };
+    let optional_row = D::Optional(Box::new(row_type.clone()));
+    assert_eq!(values[0], declared(row(), optional_row.clone()));
+    assert_eq!(values[1], declared(row(), row_type.clone()));
+    assert_eq!(values[2], values[0]);
+    assert_eq!(values[3], declared(V::Absent, optional_row.clone()));
+    assert_eq!(values[4], declared(V::Absent, optional_row));
+    assert_eq!(
+        values[5..],
+        [
+            V::Boolean(true),
+            V::Boolean(false),
+            declared(V::String("untitled".into()), D::String)
+        ]
+    );
+    let V::Declared { value, .. } = &mut values[0] else {
+        panic!("declared row")
+    };
+    **value = V::Record(vec![]);
+    assert_eq!(values[1].data(), &row());
+    assert_eq!(values[2].data(), &row());
+    assert_eq!(
+        evaluate_value(
+            &access(field(name("report"), "rows"), int(1)),
+            &bindings,
+            &mut ample()
+        )
+        .unwrap()
+        .data(),
+        &row(),
+    );
+    let caption = function(
+        "caption",
+        vec![("rows", D::Sequence(Box::new(row_type)))],
+        D::String,
+        default(
+            lookup(lookup(name("rows"), int(1)), text("caption")),
+            text("untitled"),
+        ),
+    );
+    assert_eq!(
+        run_functions(
+            &[caption],
+            &call("caption", vec![literal(V::Array(vec![row()]))]),
+            1,
+            &mut ample()
+        )
+        .unwrap()
+        .data(),
+        &V::String("untitled".into()),
+    );
+    for (index, message) in [
+        (-1, "missing array position"),
+        (2, "missing collection position"),
+    ] {
+        let expression = Located::new(
+            access(field(name("report"), "rows"), int(index)).value,
+            80..90,
+        );
+        let error = evaluate_value(&expression, &bindings, &mut ample()).unwrap_err();
+        assert_eq!(error.location, Location::Query(80..90));
+        assert_eq!(error.message, message);
+    }
+}
+
+#[test]
 fn array_declarations_preserve_storage_and_deferred_element_contracts() {
     let integers = D::Array(Box::new(D::Integer));
     let schema = D::Record(vec![
@@ -2888,10 +3001,17 @@ fn shared_reads_keep_aliases_admit_new_data_and_release_failed_scopes() {
     });
     let fresh = Bindings::new([(
         Located::new("xs".into(), 0..0),
-        V::Array(vec![V::Float(f64::NAN)]),
+        V::Array(vec![V::Integer(1), V::Float(f64::NAN)]),
     )])
     .unwrap();
     assert!(evaluate_value(&length, &fresh, &mut ample()).is_err());
+    for expression in [
+        lookup(name("xs"), int(1)),
+        has_key(name("xs"), int(1)),
+        access(name("xs"), int(1)),
+    ] {
+        assert!(evaluate_value(&expression, &fresh, &mut ample()).is_err());
+    }
     let failure = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {

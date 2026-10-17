@@ -1382,7 +1382,7 @@ fn declaration(value: &ConstructedValue) -> Option<&DeclaredType<()>> {
     }
 }
 
-fn underlying(mut declaration: &DeclaredType<()>) -> &DeclaredType<()> {
+fn underlying<K>(mut declaration: &DeclaredType<K>) -> &DeclaredType<K> {
     while let DeclaredType::Optional(child) = declaration {
         declaration = child;
     }
@@ -1754,61 +1754,59 @@ fn access_type(
     Ok(result)
 }
 
-fn optional_access(
-    value: ConstructedValue,
+fn access_declaration<'a, K>(
+    declaration: &'a DeclaredType<K>,
+    key: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Option<&'a DeclaredType<K>>, QueryError> {
+    Ok(match underlying(declaration) {
+        DeclaredType::Record(fields) => {
+            let ConstructedValue::String(label) = key.data() else {
+                return Err(error(location, "record lookup needs a string label"));
+            };
+            Some(record_declaration(fields, label, budget, location)?)
+        }
+        DeclaredType::Array(child) | DeclaredType::Sequence(child) | DeclaredType::Keyed(child) => {
+            Some(child)
+        }
+        _ => None,
+    })
+}
+
+fn optional_position(
+    value: &ConstructedValue,
     key: ConstructedValue,
     budget: &mut Budget,
     location: &Location,
-) -> Result<(bool, ConstructedValue), QueryError> {
-    let mut child = None;
-    if let Some(declaration) = declaration(&value) {
-        child = match underlying(declaration) {
-            DeclaredType::Record(fields) => {
-                let ConstructedValue::String(label) = key.data() else {
-                    return Err(error(location, "record lookup needs a string label"));
-                };
-                Some(copy_declaration(
-                    record_declaration(fields, label, budget, location)?,
-                    budget,
-                    location,
-                )?)
-            }
-            DeclaredType::Array(element)
-            | DeclaredType::Sequence(element)
-            | DeclaredType::Keyed(element) => Some(copy_declaration(element, budget, location)?),
-            _ => None,
-        };
-    }
-    let mut selected = None;
-    match expose(value, budget, location)? {
+) -> Result<Option<usize>, QueryError> {
+    match value.data() {
         ConstructedValue::Record(fields) => {
             let ConstructedValue::String(label) = key.into_data() else {
                 return Err(error(location, "record lookup needs a string label"));
             };
-            for (candidate, value) in fields {
+            for (index, (candidate, _)) in fields.iter().enumerate() {
                 budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
-                if label == candidate {
-                    selected = Some(value);
-                    break;
+                if label == *candidate {
+                    return Ok(Some(index));
                 }
             }
+            Ok(None)
         }
         ConstructedValue::Array(values) => {
             let position = integer(key, location)?;
-            if let Some(index) = usize::try_from(position)
+            budget.charge(1, location.clone())?;
+            Ok(usize::try_from(position)
                 .ok()
                 .and_then(|position| position.checked_sub(1))
-            {
-                budget.charge(values.len().min(index.saturating_add(1)), location.clone())?;
-                selected = values.into_iter().nth(index);
-            }
+                .filter(|&index| index < values.len()))
         }
         ConstructedValue::KeyedArray { axes, entries } => {
             let key = value_keys(key.into_data(), budget, location)?;
             if key.len() != axes.len() {
                 return Err(error(location, "key rank mismatch"));
             }
-            for (component, axis) in key.iter().zip(&axes) {
+            for (component, axis) in key.iter().zip(axes) {
                 budget.charge(1, location.clone())?;
                 if key_type(component) != axis.key_type {
                     return Err(error(location, "incompatible key type"));
@@ -1818,31 +1816,16 @@ fn optional_access(
                     compare_keys(component, candidate, budget, location)?;
                 }
             }
-            for entry in entries {
+            for (index, entry) in entries.iter().enumerate() {
                 budget.charge(1, location.clone())?;
                 if equal_keys(&key, &entry.key, budget, location)? {
-                    selected = Some(entry.value);
-                    break;
+                    return Ok(Some(index));
                 }
             }
+            Ok(None)
         }
-        _ => return Err(error(location, "lookup needs a record or array")),
+        _ => Err(error(location, "lookup needs a record or array")),
     }
-    let present = selected.is_some();
-    let value = match selected {
-        Some(value) => value,
-        None => scalar(ConstructedValue::Absent, budget, location)?,
-    };
-    let value = match child {
-        Some(child) => annotate(
-            value,
-            DeclaredType::Optional(Box::new(child)),
-            budget,
-            location,
-        )?,
-        None => value,
-    };
-    Ok((present, value))
 }
 
 fn error(location: &Location, message: impl Into<String>) -> QueryError {

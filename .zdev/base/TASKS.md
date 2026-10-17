@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 99
-- Ready: 2
+- Ready: 1
 - Blocked: 0
-- Done: 97
+- Done: 98
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -105,6 +105,6 @@
 | [base-094](tasks/094-preserve-native-operand-kinds-through-shared-predicate-scope.md) | Preserve native operand kinds through shared predicate scopes | done | base-092 |
 | [base-095](tasks/095-preserve-known-scalar-shape-during-shared-predicate-preparat.md) | Preserve known scalar shape during shared predicate preparation | done | base-094 |
 | [base-096](tasks/096-align-zirium-with-the-final-reviewed-scalar-preparation-api.md) | Align Zirium with the final reviewed scalar preparation API | done | base-095, base-089 |
-| [base-097](tasks/097-select-retained-lookup-and-indexed-values-without-whole-cont.md) | Select retained lookup and indexed values without whole-container copies | ready | — |
+| [base-097](tasks/097-select-retained-lookup-and-indexed-values-without-whole-cont.md) | Select retained lookup and indexed values without whole-container copies | done | — |
 | [base-098](tasks/098-deduplicate-constructed-strings-without-pairwise-declaration.md) | Deduplicate constructed strings without pairwise declaration validation | ready | — |
 | [base-099](tasks/099-share-retained-csv-tables-through-the-existing-binding-api.md) | Share retained CSV tables through the existing binding API | done | — |

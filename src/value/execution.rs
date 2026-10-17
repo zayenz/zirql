@@ -4,13 +4,13 @@ use super::{
     Budget, ConstructedValue, DeclaredType, Frame, KeyAxis, KeyedEntry, Located, Location,
     PreparedArgument, PreparedArguments, PreparedGenerator, PreparedKind, PreparedValue,
     QueryError, RuntimeValue, SetElementType, ValueBinaryOperator, ValueConstructor, ValueKey,
-    ValueQueryHost, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
-    constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
-    equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
-    integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_access,
-    push_metadata, record_declaration, reduce_ref, scalar, sort_value, source_axis,
-    string_match_ref, sum, take_one, take_position, tally_value, unary, underlying, unique_value,
-    value_keys, zip_exact,
+    ValueQueryHost, access_declaration, admit_container, admit_diagnostic, allocation, annotate,
+    binary, boolean, constructed_value_type, copy_axes, copy_constructed_value, copy_declaration,
+    entries, equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set,
+    integer, integer_range, key_positions, key_set_type, key_value, metadata_vec,
+    optional_position, push_metadata, record_declaration, reduce_ref, scalar, sort_value,
+    source_axis, string_match_ref, sum, take_one, take_position, tally_value, unary, underlying,
+    unique_value, value_keys, zip_exact,
 };
 use crate::construction::EntryAccounting;
 use std::rc::Rc;
@@ -1072,6 +1072,14 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     } else {
                                         value
                                     };
+                                    // Constructed operands were admitted when introduced. Keep
+                                    // native lookup operands on their existing materialization path.
+                                    let shared = shared
+                                        || (matches!(
+                                            expression.value,
+                                            PreparedKind::Lookup { .. }
+                                                | PreparedKind::HasKey { .. }
+                                        ) && matches!(value.data, Data::Constructed(_)));
                                     values.push(if shared {
                                         value
                                     } else {
@@ -3146,6 +3154,85 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             &location,
         );
     }
+    if matches!(
+        expression.value,
+        PreparedKind::Lookup { .. } | PreparedKind::HasKey { .. }
+    ) {
+        let key = host.materialize(values.pop().expect("lookup key"), budget, &location)?;
+        let value = values.pop().expect("lookup operand");
+        let Data::Constructed(mut data) = value.data else {
+            unreachable!("native lookup operands are materialized before applying lookup")
+        };
+        let membership = matches!(expression.value, PreparedKind::HasKey { .. });
+        let child = if let Some(contract) = value.contract
+            && !crate::runtime_types::contains_native(contract, budget, &location)?
+        {
+            access_declaration(contract, &key, budget, &location)?
+                .filter(|_| !membership)
+                .map(|child| {
+                    crate::runtime_types::constructed_declaration(child, budget, &location)
+                })
+                .transpose()?
+        } else {
+            data.declaration()
+                .map(|declaration| access_declaration(declaration, &key, budget, &location))
+                .transpose()?
+                .flatten()
+                .filter(|_| !membership)
+                .map(|child| copy_declaration(child, budget, &location))
+                .transpose()?
+        };
+        let position = optional_position(data.as_ref(), key, budget, &location)?;
+        if membership {
+            return Ok(Value::constructed(RuntimeValue::Owned(scalar(
+                ConstructedValue::Boolean(position.is_some()),
+                budget,
+                &location,
+            )?)));
+        }
+        let mut selected = match position {
+            Some(index) => data
+                .share(budget, &location)?
+                .into_data(budget, &location)?
+                .child(index, budget, &location)?,
+            None => RuntimeValue::Owned(scalar(ConstructedValue::Absent, budget, &location)?),
+        };
+        if let Some(child) = child {
+            // Selection preserves admission; only the optional contract is new.
+            budget.charge(1, location.clone())?;
+            let declaration = std::sync::Arc::new(DeclaredType::Optional(Box::new(child)));
+            selected = selected.into_data(budget, &location)?;
+            selected.retain_declaration(&declaration, budget, &location)?;
+        }
+        return Ok(Value::constructed(selected));
+    }
+    if matches!(expression.value, PreparedKind::ArrayAccess { .. })
+        && matches!(&values[0].data, Data::Constructed(data)
+            if matches!(data.as_ref().data(), ConstructedValue::Array(_)))
+    {
+        let key = host.materialize(values.pop().expect("array index"), budget, &location)?;
+        let position = usize::try_from(integer(key, &location)?)
+            .map_err(|_| error(&location, "missing array position"))?;
+        let mut value = values.pop().expect("array operand");
+        let Data::Constructed(data) = &value.data else {
+            unreachable!()
+        };
+        let ConstructedValue::Array(elements) = data.as_ref().data() else {
+            unreachable!()
+        };
+        budget.charge(1, location.clone())?;
+        let index = position
+            .checked_sub(1)
+            .filter(|&index| index < elements.len())
+            .ok_or_else(|| error(&location, "missing collection position"))?;
+        return super::pattern::select(
+            &mut value,
+            NativeStep::List(index),
+            host,
+            budget,
+            &location,
+        );
+    }
     if let PreparedKind::Occurs(_) | PreparedKind::Absent(_) = &expression.value {
         let present = host.occurs(&values[0], budget, &location)?;
         return Ok(Value::constructed(RuntimeValue::Owned(scalar(
@@ -3277,14 +3364,6 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
                 return Err(error(&location, "one needs a positional array").into());
             };
             take_one(values, expression.range.clone())?
-        }
-        PreparedKind::Lookup { .. } | PreparedKind::HasKey { .. } => {
-            let (present, value) = optional_access(next(), next(), budget, &location)?;
-            if matches!(expression.value, PreparedKind::HasKey { .. }) {
-                scalar(ConstructedValue::Boolean(present), budget, &location)?
-            } else {
-                value
-            }
         }
         PreparedKind::Array(_) | PreparedKind::Tuple(_) | PreparedKind::Set(_) => {
             let mut values = admit_container(arguments.len(), budget, &location)?;

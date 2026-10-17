@@ -145,12 +145,23 @@ projection, copying, member resolution and host execution.
 
 At runtime, default charges its node and left operand, then only the selected
 fallback. Presence checks charge their selected operand and Boolean result.
-Lookup and membership charge key, label and nominal comparisons with the same
-budget. Lookup adds an absent result on a miss; declared access copies the
-selected contract metadata. Declaration wrappers, copied declarations and
-constructed outputs charge before allocation. An annotation adds bounded
-validation/copy nesting, and repeated re-admission does not accumulate wrappers.
-Arithmetic, host and allowance failures retain their responsible locations.
+Lookup and membership borrow admitted constructed containers. Dictionary access
+charges each visited label and compared byte; keyed access charges axis checks,
+nominal metadata comparisons and visited entries. Positional lookup and strict
+positional indexing charge a bounds check and retain the selected child through
+its owner. They do not copy or revalidate the whole container on each access.
+External values still undergo admission when introduced; native operands retain
+their host materialization and ownership checks.
+
+Lookup retains selected declaration metadata and adds an absent result on a
+miss. Membership returns only a Boolean, without copying the selected value or
+constructing an unused absent result. Owner paths and selected contracts charge
+before allocation. An owned result or an explicit boundary copy still pays for
+the selected payload, and actual declaration wrappers charge result units.
+Avoided container copies and their validation no longer spend allowance; host
+limits are unchanged. An annotation adds bounded validation/copy nesting, and
+repeated re-admission does not accumulate wrappers. Arithmetic, host and
+allowance failures retain their responsible locations.
 
 Sorting evaluates its collection once and inspects each scalar, dictionary label
 or selected field once. Field-label inspection, finite/nominal checks and key comparisons pay

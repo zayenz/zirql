@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-097"
 key = "borrowed-lookup-performance"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "high"
@@ -27,13 +27,23 @@ The 2026-10-17 analysis measured N present-key lookups in an N-entry saved dicti
 
 ## Done when
 
-- [ ] Present and missing optional dictionary, positional and keyed accesses retain existing results and contracts; has_key avoids materializing an unused value; strict positional access retains its located refusals.
-- [ ] Saved aliases, declared selected children and native/constructed boundary behavior remain correct through the existing public entry points. Add only focused public coverage needed for newly selected paths or a concrete uncovered defect.
-- [ ] Matched temporary dictionary/keyed and positional access sweeps verify outputs and demonstrate removal of repeated whole-container copying. Retain raw samples, phase boundaries and source/binary identities outside the source tree; report refusals separately.
-- [ ] Required source checks pass and the runtime-limits documentation describes actual charging.
+- [x] Present and missing optional dictionary, positional and keyed accesses retain existing results and contracts; has_key avoids materializing an unused value; strict positional access retains its located refusals.
+- [x] Saved aliases, declared selected children and native/constructed boundary behavior remain correct through the existing public entry points. Add only focused public coverage needed for newly selected paths or a concrete uncovered defect.
+- [x] Matched temporary dictionary/keyed and positional access sweeps verify outputs and demonstrate removal of repeated whole-container copying. Retain raw samples, phase boundaries and source/binary identities outside the source tree; report refusals separately.
+- [x] Required source checks pass and the runtime-limits documentation describes actual charging.
 
 ## Validation
 
 - Run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace.
 - Run git diff --check; coordinator runs zdev check base --format json.
 - Use focused existing public-behavior tests and temporary matched performance measurements; no timing assertions, internal counters, new benchmark framework or broad test matrix.
+
+## Result
+
+Constructed lookup and membership select retained children; strict positional indexing reuses child selection without copying the parent. Admission, declarations, native fallback and locations are preserved.
+
+Validation:
+
+- Independent Astra/high whole-task verification passed; snapshot W15645e07960493fc remained equal.
+- Formatting, warning-fatal workspace Clippy, workspace tests, staged/unstaged diff checks and zdev check passed.
+- 120 matched samples passed with identical outputs using the frozen original CSV host. At 400 entries/accesses, median dictionary lookup 127.016 to 3.216 ms; keyed lookup 299.983 to 3.354 ms; positional indexing 4.353 to 0.707 ms. Dictionary indexing remained 3.351 to 3.328 ms. Evaluation includes preflight, preparation and admission.
