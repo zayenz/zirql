@@ -79,18 +79,21 @@ A CSV table fits an array of records. Each record stores header/value pairs in
 header order, and each cell is a string:
 
 ```rust
+use std::sync::Arc;
 use zirql::ConstructedValue as V;
 
 struct Table {
     headers: Vec<String>,
-    rows: V,
+    rows: Arc<V>,
 }
 ```
 
 For example, the first row of `people.csv` becomes a record with `id = "2"`,
 `name = "Grace Hopper"`, `team = "compiler"`, `active = "yes"` and
 `note = "Said \"hello\""`. Empty cells become `V::String(String::new())`.
-Numeric-looking text keeps its exact spelling.
+Numeric-looking text keeps its exact spelling. The host retains the immutable
+table in an `Arc`, which lets the evaluator share its ownership without copying
+all rows when it first reads a binding. Each invocation owns its own tables.
 
 This representation gives Zirql access to ordinary fields and collection
 operations. CSV rows do not need native handles, custom predicates or a native
@@ -100,7 +103,7 @@ an existing model or navigate domain relationships; see
 
 ## 3. Load and declare each table
 
-The [load_table and decode_table functions](../examples/csv.rs#L264)
+The [load_table and decode_table functions](../examples/csv.rs#L268)
 read bounded chunks, enforce an aggregate 64 KiB limit across files, then decode
 the bytes. The CSV decoder handles quoting, embedded newlines and UTF-8. The
 loader requires a nonempty header, unique nonempty labels and the same field
@@ -124,16 +127,23 @@ let rows = declare_constructed(
     V::Array(rows),
     DeclaredType::Array(Box::new(DeclaredType::Record(declaration))),
     budget,
-    header_location,
+    header_location.clone(),
 )?;
+budget.charge(1, header_location.clone())?;
+budget.charge_results(1, header_location)?;
+Ok(Table {
+    headers,
+    rows: Arc::new(rows),
+})
 ```
 
 Here `declaration` contains one `(header, DeclaredType::String)` pair per column.
 Keep the declaration even for a header-only file. A table without data still
-has known columns.
+has known columns. Charge the shared owner allocation before wrapping the
+declared value in `Arc::new`.
 
 The evaluator also needs type facts before it reads binding values. The
-[Table::types method](../examples/csv.rs#L245) derives those facts from headers:
+[Table::types method](../examples/csv.rs#L249) derives those facts from headers:
 
 ```rust
 impl Table {
@@ -165,7 +175,7 @@ array of string records. For another data source, change them together.
 
 ## 4. Expose names to the reader
 
-The [CsvHost](../examples/csv.rs#L386) retains loaded tables, their input names
+The [CsvHost](../examples/csv.rs#L395) retains loaded tables, their input names
 and the names introduced by parsed lets:
 
 ```rust
@@ -206,7 +216,7 @@ fn is_constructed_binding(&self, name: &str) -> bool {
 shared collection stages, as in `g.members | sort`. The same reader owns field
 access, comparisons, predicates, comprehensions and sorting.
 
-The remaining [reader methods](../examples/csv.rs#L409) declare the host's
+The remaining [reader methods](../examples/csv.rs#L428) declare the host's
 unsupported native operations. `Stage`, `SetOperator`, `Emitter` and `Predicate`
 are `()`. `is_stage` returns `false`, `set_operator` returns `None`, and the
 native stage and predicate parsers return located errors. The required native
@@ -216,9 +226,40 @@ continue to work.
 
 ## 5. Supply values and current input
 
-Implement [ValueQueryHost](../examples/csv.rs#L453) for
+Implement [ValueQueryHost](../examples/csv.rs#L472) for
 `ReadExpression<Self>`, with `type Error = QueryError`. This trait connects
 binding names to their data and defines the optional implicit input.
+
+The `binding` helper resolves `rows` through `implicit`; other names select the
+corresponding table in `inputs`. The shared hook returns a reference-counted
+owner of that table:
+
+```rust
+fn read_shared_binding(
+    &mut self,
+    name: &str,
+    range: &Range<usize>,
+    budget: &mut Budget,
+) -> Result<Option<Arc<V>>, QueryError> {
+    let table = self.binding(name, range)?;
+    // Share the retained owner; Zirql still admits the full table value.
+    budget.charge(1, Location::Query(range.clone()))?;
+    Ok(Some(Arc::clone(&table.rows)))
+}
+```
+
+This path serves named bindings such as `people` and the implicit table alias
+`rows`. Cloning the `Arc` shares the table; it does not copy its contents.
+Zirql still performs full runtime admission when it first reads the binding in
+this evaluation, checking the table under the request's active budget. Sharing
+removes the initial owned copy while retaining those checks.
+
+Keep `read_binding` as the owned fallback. It uses the same `binding` helper and
+returns `copy_constructed_value(&table.rows, budget, location)`, charging for
+the copy. Hosts without a retained immutable owner can leave
+`read_shared_binding` at its default `Ok(None)` to use that owned path.
+Zirql resolves saved `let` bindings internally; these hooks supply only table
+data.
 
 The two current-input hooks use the same table and schema:
 
@@ -245,11 +286,10 @@ fn read_current_input(
 }
 ```
 
-`read_binding` resolves `rows` through `implicit`; other names select the
-corresponding table in `inputs`. It returns that table's value through
-`copy_constructed_value` too, so copying stays within the request allowance.
-Zirql resolves saved `let` bindings internally; `read_binding` supplies only
-table data.
+A shorthand query such as `count` reads current input through the owned
+`read_current_input` hook. The existing API has no shared current-input hook.
+Write `rows | count` to use the shared binding path. Both forms return the same
+count and keep copies or sharing within the same request allowance.
 
 The other hooks have small, explicit roles:
 
@@ -261,7 +301,7 @@ The other hooks have small, explicit roles:
 
 ## 6. Read lets and a final expression
 
-Follow [read_program](../examples/csv.rs#L529). Start an
+Follow [read_program](../examples/csv.rs#L549). Start an
 `ArgumentReader::new(query, 0)` so diagnostics retain byte offsets in the user's
 original query. Repeatedly:
 
@@ -298,7 +338,7 @@ need the [larger program interfaces](embedding-programs.md).
 
 ## 7. Evaluate under one budget
 
-The [run function](../examples/csv.rs#L89) shows the complete request order:
+The [run function](../examples/csv.rs#L93) shows the complete request order:
 
 ```text
 admit input arguments
@@ -316,9 +356,9 @@ Create one budget at the beginning:
 let mut budget = Budget::for_program(limits);
 ```
 
-Use it for input loading, type facts, parsing, value copies, evaluation and
-rendering. In `run`, the `types` map contains each named table and `rows`.
-With one input, `rows` has that table's schema. With several inputs, it has
+Use it for input loading, type facts, parsing, owner allocation and sharing,
+value copies, evaluation and rendering. In `run`, the `types` map contains each
+named table and `rows`. With one input, `rows` has that table's schema. With several inputs, it has
 `ValueType::Unestablished`; the host refuses actual implicit access through
 `validate_name` and the current-input hooks.
 
@@ -359,7 +399,7 @@ allocations, copies and output.
 
 ## 8. Render only a completed result
 
-[write_json](../examples/csv.rs#L624) walks `value.data()`. Arrays, tuples and
+[write_json](../examples/csv.rs#L644) walks `value.data()`. Arrays, tuples and
 sets become JSON arrays. Records become JSON objects by visiting their stored
 fields in order. Absence becomes `null`; scalar encoding uses `serde_json`.
 Nominal members and keyed arrays return an error because plain JSON would lose

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-099"
 key = "csv-shared-input-performance"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -27,13 +27,23 @@ The analysis kept a temporary Table owner as Arc<ConstructedValue> and implement
 
 ## Done when
 
-- [ ] Named and implicit table bindings use retained immutable owners through the existing shared hook, with unchanged CLI results and default limits.
-- [ ] The source and CSV host guide coherently explain sharing, admission and owned fallback without assuming prior knowledge. Existing example tests remain useful; no new internal call-count tests.
-- [ ] A matched temporary large-input count/report check confirms output equivalence and reduced memory relative to the original host; note RSS scope and timing boundaries.
-- [ ] Required source checks, including the existing example tests, pass.
+- [x] Named and implicit table bindings use retained immutable owners through the existing shared hook, with unchanged CLI results and default limits.
+- [x] The source and CSV host guide coherently explain sharing, admission and owned fallback without assuming prior knowledge. Existing example tests remain useful; no new internal call-count tests.
+- [x] A matched temporary large-input count/report check confirms output equivalence and reduced memory relative to the original host; note RSS scope and timing boundaries.
+- [x] Required source checks, including the existing example tests, pass.
 
 ## Validation
 
 - Run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace.
 - Run git diff --check; coordinator runs zdev check base --format json.
 - Use focused existing public-behavior tests and temporary matched performance measurements; no timing assertions, internal counters, new benchmark framework or broad test matrix.
+
+## Result
+
+CSV tables use retained Arc owners through read_shared_binding; the implementation guide explains sharing, full admission and owned current-input fallback.
+
+Validation:
+
+- Independent Astra/high verification passed; snapshot W05e730dc49e6c00d remained equal.
+- Formatting, warning-fatal workspace Clippy, workspace tests, four existing CSV example tests, diff checks and zdev check passed.
+- 48 matched large-input samples passed with identical outputs. Million-row count evaluation 1.501s to 0.637s; peak process RSS 1689010176 to 1124548608 bytes. Report RSS 2742484992 to 2118205440 bytes. Evaluation excludes loading/rendering; buffered run includes them and excludes stdout writing. Enlarged probe limits only.

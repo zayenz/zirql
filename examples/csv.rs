@@ -9,6 +9,7 @@ use std::{
     io::{self, Read, Write},
     ops::Range,
     path::PathBuf,
+    sync::Arc,
 };
 use zirql::{
     ArgumentReader, ArrayType, Budget, ConstructedValue as V, DeclaredType, ExpressionStep,
@@ -243,7 +244,7 @@ fn is_table_name(name: &str) -> bool {
 #[derive(Debug)]
 struct Table {
     headers: Vec<String>,
-    rows: V,
+    rows: Arc<V>,
 }
 impl Table {
     fn types(&self, budget: &mut Budget, location: Location) -> Result<Vec<ValueType>, QueryError> {
@@ -353,9 +354,14 @@ fn decode_table(bytes: &[u8], budget: &mut Budget) -> Result<Table, QueryError> 
         V::Array(rows),
         DeclaredType::Array(Box::new(DeclaredType::Record(declaration))),
         budget,
-        header_location,
+        header_location.clone(),
     )?;
-    Ok(Table { headers, rows })
+    budget.charge(1, header_location.clone())?;
+    budget.charge_results(1, header_location)?;
+    Ok(Table {
+        headers,
+        rows: Arc::new(rows),
+    })
 }
 
 fn csv_location(position: Option<&csv::Position>) -> Location {
@@ -392,6 +398,16 @@ struct CsvHost<'a> {
     let_names: Vec<String>,
 }
 impl CsvHost<'_> {
+    fn binding(&self, name: &str, range: &Range<usize>) -> Result<&Table, QueryError> {
+        if name == "rows" {
+            return self.implicit(range);
+        }
+        self.inputs
+            .iter()
+            .position(|input| input.name.as_deref() == Some(name))
+            .map(|index| &self.tables[index])
+            .ok_or_else(|| QueryError::query(range.clone(), format!("unknown CSV table {name:?}")))
+    }
     fn implicit(&self, range: &Range<usize>) -> Result<&Table, QueryError> {
         if self.tables.len() == 1 {
             return Ok(&self.tables[0]);
@@ -503,18 +519,19 @@ impl ValueQueryHost<ReadExpression<Self>> for CsvHost<'_> {
         range: &Range<usize>,
         budget: &mut Budget,
     ) -> Result<V, QueryError> {
-        let table = if name == "rows" {
-            self.implicit(range)?
-        } else {
-            self.inputs
-                .iter()
-                .position(|input| input.name.as_deref() == Some(name))
-                .map(|index| &self.tables[index])
-                .ok_or_else(|| {
-                    QueryError::query(range.clone(), format!("unknown CSV table {name:?}"))
-                })?
-        };
+        let table = self.binding(name, range)?;
         copy_constructed_value(&table.rows, budget, Location::Query(range.clone()))
+    }
+    fn read_shared_binding(
+        &mut self,
+        name: &str,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Option<Arc<V>>, QueryError> {
+        let table = self.binding(name, range)?;
+        // Share the retained owner; Zirql still admits the full table value.
+        budget.charge(1, Location::Query(range.clone()))?;
+        Ok(Some(Arc::clone(&table.rows)))
     }
     fn validate_name(
         &mut self,
