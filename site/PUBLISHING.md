@@ -63,6 +63,8 @@ check the actual HTTPS paths:
 
 - The homepage and an existing personal-site route still work.
 - `/zirql/` and guide pages load; slash redirects follow the site's policy.
+  Include `/zirql/guides/csv/` and `/zirql/guides/csv-host/` when importing CSV
+  guide changes, and check that the example tabs and tutorial links work.
 - Search opens, finds a guide and follows its result.
 - Favicon, styles and Pagefind requests succeed below `/zirql/`.
 - Canonical URLs and the sitemap use `https://zayenz.se/zirql/`.

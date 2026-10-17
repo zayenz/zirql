@@ -10,8 +10,8 @@ The two small trait implementations in the example form its adapter to Zirql.
 
 ## Run the example
 
-Use Rust 1.88 or newer. The published crate includes both examples, their CSV
-fixtures and these guides. Extract `zirql-0.1.0.crate` and run commands from its
+Use Rust 1.88 or newer. The published crate includes both example sources and
+their CSV fixtures. Extract `zirql-0.1.0.crate` and run commands from its
 `zirql-0.1.0` directory, or check out the matching release:
 
 ```sh
@@ -140,5 +140,8 @@ for the dependency selected in your lockfile:
 cargo doc --open
 ```
 
-For a larger integration, continue with the
-[implementation reference](implementation-reference.md).
+To work with files and named tables, [query CSV files](csv.md), then follow
+[Build the CSV host](csv-host.md). That tutorial uses the same value interfaces
+and adds header types, saved bindings and buffered JSON output. The
+[implementation reference](implementation-reference.md) covers other data
+models and the native interfaces.

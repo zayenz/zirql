@@ -139,5 +139,9 @@ supply data and connect domain operations to the language. It starts with the
 word model, then uses Zincite and Zirium to explain choices such as source
 ownership and object identity. Their own sites document application usage.
 
+To query files, start with the [CSV examples](csv.md). Then
+[build the CSV host](csv-host.md) to see how the Rust application exposes those
+tables to Zirql and how to adapt it to your own data.
+
 Zirql is developed by [Mikael Zayenz Lagerkvist](https://zayenz.se/).
 [Source on GitHub](https://github.com/zayenz/zirql) · MIT OR Apache-2.0

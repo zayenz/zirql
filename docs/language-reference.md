@@ -79,8 +79,13 @@ let samples = [
   {"label": "birch", "count": 3}
 ];
 let selected = [row for row in samples if row.count > 1];
-sort_by({row.label: row.count for row in selected}, value, descending=true)
-' examples/csv/people.csv
+sort_by(
+  {row.label: row.count for row in selected},
+  value,
+  descending=true
+)
+' \
+  examples/csv/people.csv
 ```
 
 ```json

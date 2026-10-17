@@ -32,9 +32,11 @@ the input seen by `total`. A saved value can be a source too. The
 [CSV walkthrough](csv.md) saves a selection with `let`, then continues it with
 `selected | count`.
 
-Constructed filtering accepts positional strings and the exact, case-sensitive
-`starts_with` predicate shown above. General value conditions belong in a
-comprehension, such as `[w for w in words if ends_with(w, "h")]`.
+Constructed filtering also accepts a scoped condition:
+`words | filter(ends_with(_, "h"))` keeps the same words as
+`[w for w in words if ends_with(w, "h")]`. `_` denotes the current element;
+`filter(w => ends_with(w, "h"))` names it explicitly. The `starts_with("a")`
+shorthand shown above checks a case-sensitive prefix.
 
 ## Keep order explicit
 

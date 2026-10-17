@@ -37,10 +37,32 @@ Extract the archive into a new directory outside the checkout and run from its
 ```sh
 cargo run --locked --example words
 cargo run --locked --example words -- '[x*2 | x in [1,2,3] where x>1]'
-cargo run --locked --example csv -- 'let xs = [1,2,3]; [x*2 for x in xs if x>1]' examples/csv/people.csv
-cargo run --locked --example csv -- 'let xs = [1,2,3]; [x*2 | x in xs where x>1]' examples/csv/people.csv
-cargo run --locked --example csv -- 'let [first, ..] = rows | filter({active: status, ..} => status == "yes" and _.active == status); let {name, ..} = first; name' examples/csv/people.csv
-cargo run --locked --example csv -- 'let selected = people | filter(p => p.active == "yes"); [{"team": t.label, "count": length([p for p in selected if p.team == t.id])} for t in teams]' people=examples/csv/people.csv teams=examples/csv/teams.csv
+cargo run --locked --example csv -- \
+  'let xs = [1,2,3]; [x*2 for x in xs if x>1]' \
+  examples/csv/people.csv
+cargo run --locked --example csv -- \
+  'let xs = [1,2,3]; [x*2 | x in xs where x>1]' \
+  examples/csv/people.csv
+cargo run --locked --example csv -- '
+let [first, ..] = rows | filter(
+  {active: status, ..} => status == "yes" and _.active == status
+);
+let {name, ..} = first;
+name
+' \
+  examples/csv/people.csv
+cargo run --locked --example csv -- '
+let selected = people | filter(p => p.active == "yes");
+[
+  {
+    "team": t.label,
+    "count": length([p for p in selected if p.team == t.id])
+  }
+  for t in teams
+]
+' \
+  people=examples/csv/people.csv \
+  teams=examples/csv/teams.csv
 ```
 
 Expected results are the three adjacent word pairs, then `[4,6]` from each
@@ -71,7 +93,8 @@ SITE_URL=https://zayenz.se SITE_BASE=/zirql/ npm run build
 npm run preview -- --host 127.0.0.1
 ```
 
-Review `/zirql/`, setup, CSV and the language/API references. Check local links
+Review `/zirql/`, setup, the [CSV queries](docs/csv.md),
+[CSV host tutorial](docs/csv-host.md) and the language/API references. Check local links
 and fragments, assets, canonical paths, light/dark themes, narrow navigation and
 search. The output is `site/dist/`. Building does not deploy it. Follow the
 repository's `site/PUBLISHING.md` for the separate reviewed personal-site import.

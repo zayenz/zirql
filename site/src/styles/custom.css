@@ -60,6 +60,8 @@
 }
 .sl-markdown-content p { line-height: 1.75; }
 .sl-markdown-content table { display: block; max-width: 100%; overflow-x: auto; }
+/* Keep example cells readable; narrow screens can scroll the table. */
+.sl-markdown-content starlight-tabs :is(th, td) { white-space: nowrap; }
 .sl-markdown-content li + li { margin-top: 0.65rem; }
 :focus-visible { outline: 3px solid #2474f5; outline-offset: 4px; }
 @media (max-width: 49.99rem) {

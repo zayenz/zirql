@@ -24,12 +24,18 @@ an extracted crate or a `v0.1.0` checkout. From that directory:
 
 ```sh
 cargo run --locked --example words
-cargo run --locked --example csv -- 'let selected = [p for p in rows if p.active == "yes"]; selected | count' examples/csv/people.csv
+cargo run --locked --example csv -- '
+let selected = [p for p in rows if p.active == "yes"];
+selected | count
+' \
+  examples/csv/people.csv
 ```
 
 The word example prints adjacent pairs in Rust's `Debug` format. The CSV command
-prints `3` as JSON. The [CSV guide](https://zayenz.se/zirql/guides/csv/) also covers multiple named
-inputs, saved selections and reports.
+prints `3` as JSON. The [CSV guide](https://zayenz.se/zirql/guides/csv/) shows the
+input tables, queries and results for selections and reports across named files.
+[Build the CSV host](https://zayenz.se/zirql/guides/csv-host/) explains the Rust
+adapter and how to use it with your own data.
 
 ## Language and host APIs
 

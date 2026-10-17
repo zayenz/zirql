@@ -18,8 +18,12 @@ The [CSV example](csv.md) accepts ordered `let` bindings and a final expression:
 ```sh
 cargo run --locked --example csv -- '
 let selected = [p for p in rows if p.active == "yes"];
-{"names": [p.name for p in selected], "count": length(selected)}
-' examples/csv/people.csv
+{
+  "names": [p.name for p in selected],
+  "count": length(selected)
+}
+' \
+  examples/csv/people.csv
 ```
 
 It returns `["Grace Hopper", "Ada, Lovelace", "Barbara Liskov"]` under `names`,
@@ -37,7 +41,9 @@ formatting and whether it produces output for a library call. Zirium supports
 pass-through emitters; Zincite's output stages are terminal. Their
 [Zirium](https://zayenz.se/zirium/guides/query-language/) and
 [Zincite](https://zayenz.se/zincite/guides/queries/) guides document the actual
-commands. CSV's final expression renders JSON and does not accept `report` or
+commands. [Build the CSV host](csv-host.md#6-read-lets-and-a-final-expression)
+explains how its frontend reads lets into a shared value block.
+CSV's final expression renders JSON and does not accept `report` or
 named function declarations.
 
 ## Required caller parameters

@@ -9,11 +9,11 @@ evaluator runs.
 
 ## Dependency and toolchain
 
-Add Zirql to a Rust crate with Cargo. The crate uses edition 2024 and requires
-Rust 1.88 or newer. Development integrations pin a reviewed Git revision;
-[set up the word model](getting-started.md#use-zirql-in-another-rust-project)
-shows the dependency command and a complete executable. Generate API
-documentation for that revision with `cargo doc --open`.
+Add Zirql to a Rust crate with Cargo. Zirql 0.1.0 uses edition 2024 and requires
+Rust 1.88 or newer. The
+[setup guide](getting-started.md#use-zirql-in-another-rust-project)
+shows the registry dependency and a complete executable. Generate API
+documentation for your selected dependency with `cargo doc --open`.
 
 ## Evaluation entry points
 
@@ -37,7 +37,7 @@ pipes to these same nodes; existing prepared and function entry points use the
 same evaluator. See [value evaluation](value-runtime.md) for type discovery,
 validation and owned results.
 
-The [CSV walkthrough](csv.md) uses the same value interfaces for a complete
+The [CSV usage guide](csv.md) uses the same value interfaces for a complete
 application with [runnable source](../examples/csv.rs) and small
 [people](../examples/csv/people.csv) and [teams](../examples/csv/teams.csv) fixtures.
 Its adapter loads arrays of string dictionaries, supplies header type facts and
@@ -46,6 +46,10 @@ named-table bindings, and renders the final value as JSON. It reads ordered
 scope, correlated comprehensions, saved values and sorting; the CSV adapter
 needs no separate implementations of those operations. Named functions need
 the larger program interface below and are outside that example's input format.
+
+[Build the CSV host](csv-host.md) explains the implementation in order, including
+the header types and reader hooks. Start there to adapt it to your own tabular
+data; use the sections below when you need native objects or domain operations.
 
 The [borrowed-word example](../README.md#a-borrowed-source-query) instead
 implements `Host` for string slices, retaining their source through evaluation.

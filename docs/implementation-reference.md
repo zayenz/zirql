@@ -5,6 +5,11 @@ strings, expose it as `words` and pass the user's expression to Zirql. The
 application then handles the result. The [complete Rust
 example](getting-started.md) shows this integration.
 
+For an application over files, [Build the CSV host](csv-host.md) explains how to
+load typed rows, expose bindings and evaluate a query before writing JSON.
+Its [usage guide](csv.md) shows the input tables, queries, results and commands
+together.
+
 An application can also expose its own objects and operations. This reference
 explains the Rust adapter interfaces, then follows the word model into native
 occurrences, source ownership and navigation.

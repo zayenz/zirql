@@ -8,6 +8,12 @@ implementation choices. Use the [Zincite site](https://zayenz.se/zincite/) and
 [Zirium site](https://zayenz.se/zirium/) for commands, accepted syntax and
 workflows.
 
+For tabular data, start with the [CSV host tutorial](csv-host.md). It uses
+constructed arrays and records, with headers declaring each row's fields.
+The [CSV queries](csv.md) show how that representation supports filtering and
+reports across files. The examples below explain when an adapter needs native
+objects and retained source identity.
+
 ## Choose native values
 
 | Boundary | Word example | Zincite | Zirium |

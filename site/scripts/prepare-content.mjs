@@ -8,7 +8,7 @@ const guides = [
   'getting-started', 'shared-concepts', 'native-programs', 'values',
   'host-integration', 'embedding-programs', 'diagnostics-and-limits', 'examples', 'language-direction',
   'semantic-models', 'computation', 'execution-measurements', 'language-reference', 'implementation-reference',
-  'functions-and-control-flow', 'value-runtime', 'runtime-limits', 'csv',
+  'functions-and-control-flow', 'value-runtime', 'runtime-limits', 'csv', 'csv-host',
 ];
 const output = resolve(site, 'src/content/docs');
 await mkdir(resolve(output, 'guides'), { recursive: true });
@@ -44,9 +44,10 @@ hero:
       variant: secondary
       icon: right-arrow
 ` : '';
-  if (name === 'index') {
-    // Keep the repository Markdown readable; use Starlight's accessible tabs on the site.
-    body = body.replace(/<!-- examples:start -->([\s\S]*?)<!-- examples:end -->/, (_, examples) => {
+  // Marked sections remain ordinary headings in repository Markdown.
+  const hasTabs = /<!-- (examples|tabs):start -->/.test(body);
+  if (hasTabs) {
+    body = body.replace(/<!-- (examples|tabs):start -->([\s\S]*?)<!-- \1:end -->/g, (_, _marker, examples) => {
       const sections = examples.trim().split(/^### /m).filter(Boolean);
       const tabs = sections.map((section) => {
         const newline = section.indexOf('\n');
@@ -56,8 +57,10 @@ hero:
       return `<Tabs>\n${tabs.join('\n')}\n</Tabs>`;
     });
     body = `import { Tabs, TabItem } from '@astrojs/starlight/components';\n\n${body}`;
-    await rm(resolve(output, 'index.md'), { force: true });
   }
-  await writeFile(resolve(output, name === 'index' ? 'index.mdx' : `guides/${name}.md`),
+  const page = name === 'index' ? 'index' : `guides/${name}`;
+  const extension = hasTabs ? 'mdx' : 'md';
+  await rm(resolve(output, `${page}.${hasTabs ? 'md' : 'mdx'}`), { force: true });
+  await writeFile(resolve(output, `${page}.${extension}`),
     `---\ntitle: ${JSON.stringify(title[1])}\neditUrl: false\n${landing}---\n${body}`);
 }

@@ -1,4 +1,7 @@
 //! CSV rows as constructed Zirql values, with named inputs and buffered JSON.
+//!
+//! [Query examples](https://zayenz.se/zirql/guides/csv/) show the inputs and results.
+//! [Build the CSV host](https://zayenz.se/zirql/guides/csv-host/) explains this adapter.
 use std::{
     collections::BTreeMap,
     fmt,

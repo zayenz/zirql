@@ -3,14 +3,22 @@
 Authoritative reader guides live in `../docs/`. The preparation script adds
 Starlight metadata and rewrites their repository-relative links into site links.
 Generated content is ignored. Edit the Markdown guides, then rerun preparation;
-site tooling remains independent of Cargo. The sidebar leads with word analysis
-and its Rust setup, followed by language and implementation references. Existing
-`/guides/` routes remain available.
+site tooling remains independent of Cargo. The sidebar's Start here section
+contains word analysis, its Rust setup and the [CSV usage guide](../docs/csv.md).
+[Build the CSV host](../docs/csv-host.md) is in the Implementation reference
+section. Existing `/guides/` routes remain available.
 
 The landing page uses an array of words to demonstrate adjacent pairs,
 selection and summaries. The preparation script turns its marked example
 sections into Starlight tabs while keeping `docs/index.md` readable in the
-repository. `examples/words.rs` runs those expressions with the common reader.
+repository. The CSV guide uses the same conversion for groups marked with
+`<!-- tabs:start -->` and `<!-- tabs:end -->`; each `###` heading becomes a tab.
+These pages are generated as MDX to use Starlight's accessible tab components.
+The CSV examples separate highlighted queries, input data, formatted results and
+copyable shell commands. Their tables scroll within the content on narrow
+screens. Keep commands multiline in the source so they remain readable in both
+the repository and the rendered tabs.
+`examples/words.rs` runs the word expressions with the common reader.
 The adapter guide uses Zincite and Zirium to explain native identity and host
 policy; commands and consumer workflows belong on their own sites.
 
@@ -66,8 +74,10 @@ The lockfile pins the website toolchain independently of the Rust dependency.
 ## Check the rendered site
 
 Run `check` and `build`, then review the landing page and representative guides
-under `/zirql/`. Follow a guide link and a Pagefind search result. Check light
-and dark themes, narrow mobile navigation, keyboard focus and Escape to dismiss
+under `/zirql/`. For CSV changes, check `/guides/csv/` and `/guides/csv-host/`
+under that base, including the input, result and command tabs. Follow a guide
+link and a Pagefind search result. Check light and dark themes, narrow mobile
+navigation, keyboard focus and Escape to dismiss
 search. Code and tables should scroll within the content. Confirm favicon,
 styles, search assets, canonical URLs and sitemap paths use `/zirql/`.
 
