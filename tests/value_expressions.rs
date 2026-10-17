@@ -3995,6 +3995,26 @@ fn scalar_pipelines_keep_stable_equality_declarations_and_nonpositional_facts() 
         evaluate(&e(K::Unique(Box::new(sorting(input(), None, false))))).unwrap(),
         V::Array(vec![V::String("apple".into()), V::String("ash".into())])
     );
+    let first_ash = || declared(V::String("ash".into()), D::String);
+    let first_apple = || declared(V::String("apple".into()), D::Optional(Box::new(D::String)));
+    let annotated = declared(
+        V::Array(vec![
+            first_ash(),
+            first_apple(),
+            V::String("ash".into()),
+            declared(V::String("apple".into()), D::String),
+            V::String("birch".into()),
+            declared(V::String("birch".into()), D::String),
+        ]),
+        D::Sequence(Box::new(D::String)),
+    );
+    assert_eq!(
+        evaluate(&e(K::Unique(Box::new(literal(annotated))))).unwrap(),
+        declared(
+            V::Array(vec![first_ash(), first_apple(), V::String("birch".into())]),
+            D::Sequence(Box::new(D::String)),
+        )
+    );
     let tally = e(K::Tally(Box::new(input())));
     let value = evaluate(&tally).unwrap();
     assert_eq!(
@@ -4677,6 +4697,11 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
     let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
         .unwrap_err();
     assert_eq!(error.message, "tally needs strings");
+    assert_eq!(error.location, Location::Query(0..1));
+    let expression = e(K::Unique(Box::new(name("words"))));
+    let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
+        .unwrap_err();
+    assert_eq!(error.message, "unique needs homogeneous scalar elements");
     assert_eq!(error.location, Location::Query(0..1));
 
     for (expression, result_refusal) in [

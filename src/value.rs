@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::mem::size_of;
 
 pub(crate) mod execution;
@@ -5779,6 +5779,7 @@ fn unique_value(
     };
     let mut element_type = None;
     let mut retained = 0;
+    let mut strings = HashSet::new();
     for index in 0..rows.len() {
         budget.charge(1, location.clone())?;
         let ty = match rows[index].data() {
@@ -5802,13 +5803,39 @@ fn unique_value(
             return Err(error(location, "unique needs homogeneous scalar elements"));
         }
         element_type = Some(ty);
-        let mut duplicate = false;
-        for previous in &rows[..retained] {
-            if equal_values(previous, &rows[index], budget, location)? {
-                duplicate = true;
-                break;
+        let duplicate = if let ConstructedValue::String(key) = rows[index].data() {
+            if declaration(&rows[index]).is_some() {
+                constructed_value_type(&rows[index], budget, location.clone())?;
             }
-        }
+            if index == 0 {
+                // Reserve once so growing the index never rehashes earlier keys.
+                allocation::<String>(rows.len(), location)?;
+                budget.charge(rows.len() * size_of::<String>(), location.clone())?;
+                strings
+                    .try_reserve(rows.len())
+                    .map_err(|_| error(location, "unique index allocation failed"))?;
+            }
+            budget.charge(sum(1, key.len(), location)?, location.clone())?;
+            if strings.contains(key) {
+                true
+            } else {
+                allocation::<u8>(key.len(), location)?;
+                // Copy the new key, hash it for insertion, and retain its row.
+                let bytes = sum(key.len(), key.len(), location)?;
+                budget.charge(sum(2, bytes, location)?, location.clone())?;
+                strings.insert(key.clone());
+                false
+            }
+        } else {
+            let mut duplicate = false;
+            for previous in &rows[..retained] {
+                if equal_values(previous, &rows[index], budget, location)? {
+                    duplicate = true;
+                    break;
+                }
+            }
+            duplicate
+        };
         if !duplicate {
             rows.swap(retained, index);
             retained += 1;

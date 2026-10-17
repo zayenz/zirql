@@ -185,14 +185,25 @@ copies and counting all spend the same request allowance.
 
 Constructed pipe sort uses this same sorting operation and accounting. Unique
 materializes a shared array through the ordinary budgeted copy path, then
-compacts owned rows in place. It scans retained values for equality and charges
-row visits, comparisons, string bytes and nominal checks. This direct scan can
-take quadratic work; the work allowance bounds it. Tally validates every input
-string before counting, then scans existing fields and appends each spelling on
-its first occurrence. It charges field visits and inspected string bytes, uses
-checked signed counts and admits record storage, entries and count results
-before growth. Its lookup work can be quadratic in the number of distinct
-spellings. It allocates no sorting scratch.
+compacts owned rows in place, preserving each first occurrence and its declarations.
+Strings use a hash set of owned keys. Unique validates each declared string
+before indexing it and reserves one `String`-sized scratch slot per input row,
+charged in bytes before allocation. Each row visit, membership probe, insertion
+and retained row spends one work unit. Each probe and insertion also charges
+the key's UTF-8 length; each new key pays its copied bytes before allocation.
+The index reserves for the full input once, so insertion does not rehash earlier
+keys. Scratch and row moves add no result units; materializing shared input
+still pays the ordinary output-copy costs. These charges replace pairwise
+string comparisons and repeated declaration admission, so queries near their
+work limit can have different outcomes. Other scalar kinds scan retained values
+for equality and charge row visits, comparisons and nominal checks. That scan
+can take quadratic work; the work allowance bounds it.
+
+Tally validates every input string before counting, then scans existing fields
+and appends each spelling on its first occurrence. It charges field visits and
+inspected string bytes, uses checked signed counts and admits record storage,
+entries and count results before growth. Its lookup work can be quadratic in the
+number of distinct spellings. It allocates no sorting scratch.
 
 These constructed stages share the active work, result and nesting allowances.
 Current-input reads and prefix filtering also check `stream_items`. Sort keeps

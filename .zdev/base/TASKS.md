@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 99
-- Ready: 1
+- Ready: 0
 - Blocked: 0
-- Done: 98
+- Done: 99
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -106,5 +106,5 @@
 | [base-095](tasks/095-preserve-known-scalar-shape-during-shared-predicate-preparat.md) | Preserve known scalar shape during shared predicate preparation | done | base-094 |
 | [base-096](tasks/096-align-zirium-with-the-final-reviewed-scalar-preparation-api.md) | Align Zirium with the final reviewed scalar preparation API | done | base-095, base-089 |
 | [base-097](tasks/097-select-retained-lookup-and-indexed-values-without-whole-cont.md) | Select retained lookup and indexed values without whole-container copies | done | — |
-| [base-098](tasks/098-deduplicate-constructed-strings-without-pairwise-declaration.md) | Deduplicate constructed strings without pairwise declaration validation | ready | — |
+| [base-098](tasks/098-deduplicate-constructed-strings-without-pairwise-declaration.md) | Deduplicate constructed strings without pairwise declaration validation | done | — |
 | [base-099](tasks/099-share-retained-csv-tables-through-the-existing-binding-api.md) | Share retained CSV tables through the existing binding API | done | — |

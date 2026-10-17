@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-098"
 key = "indexed-string-unique-performance"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "high"
@@ -27,13 +27,23 @@ The same analysis measured 1k/4k/16k distinct CSV strings at 107/1660/26934 ms i
 
 ## Done when
 
-- [ ] Declared and plain string arrays deduplicate in first-seen order with the same retained values and declarations; existing scalar and refusal semantics remain valid.
-- [ ] A compact focused public case covers declared strings, duplicates and retained ordering where existing tests do not already suffice; no generic matrix is added.
-- [ ] Matched temporary 1k/4k/16k declared and plain string sweeps validate identical outputs and show that distinct-string performance no longer follows the prior pairwise scan. Evidence and limitations are retained locally.
-- [ ] Required source checks pass and runtime-limits documentation describes the actual index/allocation work.
+- [x] Declared and plain string arrays deduplicate in first-seen order with the same retained values and declarations; existing scalar and refusal semantics remain valid.
+- [x] A compact focused public case covers declared strings, duplicates and retained ordering where existing tests do not already suffice; no generic matrix is added.
+- [x] Matched temporary 1k/4k/16k declared and plain string sweeps validate identical outputs and show that distinct-string performance no longer follows the prior pairwise scan. Evidence and limitations are retained locally.
+- [x] Required source checks pass and runtime-limits documentation describes the actual index/allocation work.
 
 ## Validation
 
 - Run cargo fmt --all -- --check, cargo clippy --workspace --all-targets -- -D warnings and cargo test --workspace.
 - Run git diff --check; coordinator runs zdev check base --format json.
 - Use focused existing public-behavior tests and temporary matched performance measurements; no timing assertions, internal counters, new benchmark framework or broad test matrix.
+
+## Result
+
+String unique uses one local hash index and direct row compaction, preserving first declarations and order. Scratch and key costs are charged before growth; other scalar kinds retain existing equality.
+
+Validation:
+
+- Independent Astra/high whole-task verification passed; snapshot W150dc791711099b6 remained equal. No public API or dependency changes; implementation fits existing Rust ownership and located-error patterns.
+- Formatting, warning-fatal workspace Clippy, workspace tests, staged/unstaged diff checks and zdev check passed.
+- 48 matched samples passed with identical outputs using the frozen original CSV host. At 16000 distinct strings median evaluation declined from 26348.548 to 61.884 ms with declarations, and 1537.882 to 70.225 ms for plain strings. The 1000/4000/16000 sweep shows near-linear candidate scaling; enlarged temporary probe allowances remained fixed.
