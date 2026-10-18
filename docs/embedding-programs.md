@@ -114,7 +114,7 @@ and mutual recursion use the same path.
 For constructed values, `evaluate_functions` takes declarations, an entry
 expression, explicit bindings, the active budget and `FunctionLimits`. The
 [compiled accumulator example in the API
-source](https://github.com/zayenz/zirql/blob/v0.1.0/src/functions.rs) shows the
+source](https://github.com/zayenz/zirql/blob/v0.1.1/src/functions.rs) shows the
 full declaration construction. It counts down from 100 with an active function
 depth of one. For the syntax it represents, see [function
 declarations](functions-and-control-flow.md#declare-a-function).
@@ -362,7 +362,7 @@ under the active budget, without parsing generated text or copying matched data.
 Rust callers use `ValueExpressionKind::Fold { items, initial, step }` or `Scan`
 with the same fields. `step` is a located function name in this closed position.
 The [compiled fold example in the API
-source](https://github.com/zayenz/zirql/blob/v0.1.0/src/value.rs) adds `[2, 3]` to
+source](https://github.com/zayenz/zirql/blob/v0.1.1/src/value.rs) adds `[2, 3]` to
 initial state `0` with one active function frame. Replacing `Fold` with `Scan`
 returns `[2, 5]`. The common reader parses `fold(items, initial, step)` and
 `scan(items, initial, step)`, where `step` names a registered pure function.
@@ -410,7 +410,7 @@ function boundary. Even unused branches and function bodies receive these
 checks during preparation.
 
 The [compiled
-accumulator](https://github.com/zayenz/zirql/blob/v0.1.0/src/value.rs) adds 1
+accumulator](https://github.com/zayenz/zirql/blob/v0.1.1/src/value.rs) adds 1
 through 10,000 with an active function depth of one. `Continue` reads every
 operand against the complete old state, checks every fixed state contract, then
 installs the whole tuple. For example, a two-slot swap uses:
@@ -440,7 +440,7 @@ let nested = node(K::Loop {
 
 An inner `Continue` similarly advances only its own state. The Rust API checks
 in
-[`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/v0.1.0/tests/value_expressions.rs)
+[`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/v0.1.1/tests/value_expressions.rs)
 combine inner continues with outer block/match transfers, simultaneous swaps,
 contract failures and ordinary work-limit refusal. A body containing only
 `Continue` is valid; it eventually exhausts work rather than returning an

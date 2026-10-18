@@ -1,6 +1,6 @@
 # Zirql
 
-Zirql 0.1.0 is a Rust library for bounded query programs over application data.
+Zirql 0.1.1 is a Rust library for bounded query programs over application data.
 It supplies a shared expression reader and evaluator, immutable bindings,
 comprehensions, collection operations and typed pure functions. Native objects
 retain their host's ownership, identity and source coordinates throughout a
@@ -16,11 +16,11 @@ newer and is licensed under MIT OR Apache-2.0.
 
 ```toml
 [dependencies]
-zirql = "0.1.0"
+zirql = "0.1.1"
 ```
 
 The [setup guide](https://zayenz.se/zirql/guides/getting-started/) explains how to run the examples from
-an extracted crate or a `v0.1.0` checkout. From that directory:
+an extracted crate or a `v0.1.1` checkout. From that directory:
 
 ```sh
 cargo run --locked --example words
@@ -73,7 +73,7 @@ projections and identity. Native values need no JSON conversion, `Clone`,
 
 Use the [language reference](https://zayenz.se/zirql/guides/language-reference/) for syntax and limits,
 the [implementation reference](https://zayenz.se/zirql/guides/implementation-reference/) for adapter
-choices, and the [Rust API reference](https://docs.rs/zirql/0.1.0/zirql/) for
+choices, and the [Rust API reference](https://docs.rs/zirql/0.1.1/zirql/) for
 signatures. [Function and control-flow rules](https://zayenz.se/zirql/guides/functions-and-control-flow/)
 describe the shared forms and host requirements.
 
@@ -148,8 +148,8 @@ assert_eq!(result.value, NativeValue::Count(1));
 
 ## Release notes and development
 
-[CHANGELOG.md](https://github.com/zayenz/zirql/blob/v0.1.0/CHANGELOG.md) records 0.1.0 and the earlier prereleases.
-[RELEASING.md](https://github.com/zayenz/zirql/blob/v0.1.0/RELEASING.md) describes artifact checks and publication order.
+[CHANGELOG.md](https://github.com/zayenz/zirql/blob/v0.1.1/CHANGELOG.md) records releases and the earlier prereleases.
+[RELEASING.md](https://github.com/zayenz/zirql/blob/v0.1.1/RELEASING.md) describes publication order and checks.
 A local package check does not establish that a version is available on crates.io.
 
 ```sh

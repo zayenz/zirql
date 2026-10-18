@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.1
+
+- Avoid whole-container copies when selecting retained collection values.
+- Index string deduplication while preserving first occurrence and declared types.
+- Share immutable CSV tables through the existing host hook, reducing copies
+  and peak memory in the runnable example and embedding guide.
+- Clarify runtime work accounting. Public APIs and default limits are unchanged.
+
+Paired measurements with three measured repetitions per implementation found
+16,000 distinct declared strings deduplicated in 62 ms instead of 26.35 s
+(426 times faster). Repeated lookup in 400-entry dictionaries and keyed arrays
+was about 40 and 89 times faster, respectively. Counting one million four-column
+CSV rows took 1.69 s instead of 2.52 s for the complete buffered run, with peak
+process memory reduced from 1.57 to 1.05 GiB. These comparisons isolate each
+change; they do not measure their combined effect or predict every workload.
+
 ## 0.1.0
 
 Zirql's first non-prerelease version provides one Rust library for shared query
