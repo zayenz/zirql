@@ -150,8 +150,8 @@ with one:
 The set keeps `1, 2, 0`; the dictionary keeps `pear`, then `apple`.
 Keys are expressions and must produce present strings. Duplicate keys fail
 before their values run. Empty `{}` is a dictionary. Empty scalar sets use
-`set<int>()`, `set<bool>()` or `set<float>()`. The development checkout also
-supports string sets and `set<string>()`; see [values](values.md).
+`set<int>()`, `set<bool>()`, `set<float>()` or `set<string>()`. String sets
+are available since Zirql `0.1.2`; see [values](values.md).
 
 Indexed brackets retain integer or nominal row and column keys:
 

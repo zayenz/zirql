@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- Support insertion-ordered string sets, typed empty sets and `set<string>`
+  signatures, with unordered membership equality and lexicographic sorting.
+- Tally arrays of string sets into first-seen `key`/`count` records while keeping
+  existing string tally dictionaries. Retain inferred types for empty results.
+- Add a runnable neighbouring-word set example and document its result, limits
+  and host serialization boundary.
+
 ## 0.1.1
 
 - Avoid whole-container copies when selecting retained collection values.

@@ -85,8 +85,8 @@ the array and its type facts; it adds no collection parser or evaluator.
 
 ## Count unordered neighbouring word pairs
 
-This example requires the development checkout; published `0.1.1` does not
-support string sets. From that checkout, run:
+String sets and set tally are available in Zirql `0.1.2`. From the release
+checkout or extracted crate, run:
 
 ```sh
 cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'

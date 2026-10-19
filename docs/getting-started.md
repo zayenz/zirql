@@ -11,11 +11,11 @@ The two small trait implementations in the example form its adapter to Zirql.
 ## Run the example
 
 Use Rust 1.88 or newer. The published crate includes both example sources and
-their CSV fixtures. Extract `zirql-0.1.1.crate` and run commands from its
-`zirql-0.1.1` directory, or check out the matching release:
+their CSV fixtures. Extract `zirql-0.1.2.crate` and run commands from its
+`zirql-0.1.2` directory, or check out the matching release:
 
 ```sh
-git clone --branch v0.1.1 --depth 1 https://github.com/zayenz/zirql.git
+git clone --branch v0.1.2 --depth 1 https://github.com/zayenz/zirql.git
 cd zirql
 ```
 
@@ -41,9 +41,9 @@ The three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and th
 `{"ash": 1, "apple": 2}`, respectively.
 
 The tally returns fields in first-seen order: `ash: 1`, then `apple: 2`.
-The development checkout also supports [tallying unordered neighbouring word
+Zirql `0.1.2` also supports [tallying unordered neighbouring word
 sets](examples.md#count-unordered-neighbouring-word-pairs), with an exact command
-and printed output. That addition is not in the published `0.1.1` archive.
+and printed output.
 
 To order a dictionary explicitly, sort its keys or select its values:
 
@@ -122,22 +122,22 @@ and rendering in that accounting; see [budget and diagnostic APIs](runtime-limit
 
 ## Use Zirql in another Rust project
 
-Add the 0.1.1 registry dependency to your manifest:
+Add the 0.1.2 registry dependency to your manifest:
 
 ```toml
 [dependencies]
-zirql = "0.1.1"
+zirql = "0.1.2"
 ```
 
 Or use Cargo to add the same requirement:
 
 ```sh
-cargo add zirql@0.1.1
+cargo add zirql@0.1.2
 ```
 
-These guides describe Zirql 0.1.1. The earlier `0.1.0-alpha.5` registry package
+These guides describe Zirql 0.1.2. The earlier `0.1.0-alpha.5` registry package
 has a smaller language and API. Use the matching
-[Rust API reference](https://docs.rs/zirql/0.1.1/zirql/), or generate documentation
+[Rust API reference](https://docs.rs/zirql/0.1.2/zirql/), or generate documentation
 for the dependency selected in your lockfile:
 
 ```sh

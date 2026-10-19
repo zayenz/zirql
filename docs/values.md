@@ -347,7 +347,7 @@ stage may follow tally. Empty untyped arrays yield `[]` for sort/unique and
 `{}` for tally. Explicit incompatible element declarations still fail on empty
 input; unique retains valid declarations and element kinds.
 
-In the development checkout, tally also accepts homogeneous string sets:
+Since Zirql `0.1.2`, tally also accepts homogeneous string sets:
 
 ```zirql
 [{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally
@@ -366,8 +366,7 @@ When the input type establishes string sets, empty input returns `[]`, including
 an empty neighbouring-word comprehension over typed string words. An empty
 `sequence<set<string>>` also returns `[]`. An ambiguous `[] | tally` retains the
 existing `{}` result, as do empty string arrays. Mixed strings and sets, sets of
-other element types and unestablished set element types are refused. These
-additions are not in the published `0.1.1` crate.
+other element types and unestablished set element types are refused.
 
 A pipe applies to the completed expression, after arithmetic, Boolean and
 `default` operators. A completed comprehension or conditional can pipe directly.
@@ -402,7 +401,7 @@ Bare braces construct sets: `{3, 1, 3}` iterates as `3, 1`, and
 `{n mod 3 for n in 1..5}` iterates as `1, 2, 0`. Empty braces mean a dictionary;
 use `set<int>()`, `set<bool>()`, `set<float>()` or `set<string>()` for an empty
 scalar set.
-String sets and `set<string>()` require the development checkout. A host can
+String sets and `set<string>()` are available since Zirql `0.1.2`. A host can
 supply a typed empty nominal set through the Rust API. The common
 reader does not resolve nominal type names.
 

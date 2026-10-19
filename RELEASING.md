@@ -1,4 +1,4 @@
-# Release Zirql 0.1.1
+# Release Zirql 0.1.2
 
 ## Prepare the source
 
@@ -23,9 +23,9 @@ name reservation and earlier usable releases. Publish only the intended tag
 and short release notes:
 
 ```sh
-git tag -a v0.1.1 -m "Zirql 0.1.1"
-git push origin v0.1.1
-gh release create v0.1.1 --title "Zirql 0.1.1" --notes-file /path/to/release-notes.md
+git tag -a v0.1.2 -m "Zirql 0.1.2"
+git push origin v0.1.2
+gh release create v0.1.2 --title "Zirql 0.1.2" --notes-file /path/to/release-notes.md
 ```
 
 Do not use `git push --tags`. Report the version and public package/release URLs.

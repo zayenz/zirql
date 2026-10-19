@@ -28,7 +28,7 @@ for (const name of ['index', ...guides]) {
     if (slug && guides.includes(slug)) {
       return `](${name === 'index' ? './guides/' : '../'}${slug}/${fragment})`;
     }
-    return `](https://github.com/zayenz/zirql/blob/v0.1.1/${resolved}${fragment})`;
+    return `](https://github.com/zayenz/zirql/blob/v0.1.2/${resolved}${fragment})`;
   });
   const landing = name === 'index' ? `template: doc
 tableOfContents: false
