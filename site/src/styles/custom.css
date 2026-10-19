@@ -88,3 +88,25 @@
   display: block;
   visibility: hidden;
 }
+
+/* Make documentation navigation easy to find on narrow screens. */
+@media (max-width: 49.99rem) {
+  :root { --sl-menu-button-size: 4.75rem; }
+  .sl-menu-button {
+    height: 2.5rem;
+    top: calc((var(--sl-nav-height) - 2.5rem) / 2);
+    border-radius: 0.25rem;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+  }
+  /* Keep Starlight's translated menu label visible beside its icon. */
+  .sl-menu-button .sr-only {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+  }
+}

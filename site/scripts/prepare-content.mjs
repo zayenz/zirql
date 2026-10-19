@@ -30,7 +30,8 @@ for (const name of ['index', ...guides]) {
     }
     return `](https://github.com/zayenz/zirql/blob/v0.1.1/${resolved}${fragment})`;
   });
-  const landing = name === 'index' ? `template: splash
+  const landing = name === 'index' ? `template: doc
+tableOfContents: false
 hero:
   title: Zirql
   tagline: A language for data transformation and analysis, embedded in your application.

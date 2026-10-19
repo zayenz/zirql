@@ -28,7 +28,7 @@ export default defineConfig({
     expressiveCode: { shiki: { langs: [zirql] } },
     social: [{ icon: 'github', label: 'Source on GitHub', href: 'https://github.com/zayenz/zirql' }],
     sidebar: [
-      { label: 'Start here', items: ['guides/examples', 'guides/getting-started', 'guides/csv'] },
+      { label: 'Start here', items: [{ label: 'Overview', slug: '' }, 'guides/examples', 'guides/getting-started', 'guides/csv'] },
       { label: 'Language reference', items: ['guides/language-reference', 'guides/values', 'guides/functions-and-control-flow', 'guides/shared-concepts', 'guides/native-programs', 'guides/diagnostics-and-limits'] },
       { label: 'Implementation reference', items: ['guides/implementation-reference', 'guides/csv-host', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql/0.1.1/zirql/' },
