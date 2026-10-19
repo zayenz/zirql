@@ -1,14 +1,25 @@
 //! A constructed-value host for the documentation's word-analysis examples.
+//!
+//! Count unordered neighbouring word sets (development checkout):
+//! cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
 use std::{collections::BTreeMap, ops::Range};
 use zirql::{
-    ArgumentReader, Budget, ConstructedValue, ExpressionStep, Location, Predicate, ProgramLimits,
-    Projection, QueryError, ReadExpression, ValueQueryHost, ValueReaderHost, ValueType,
-    constructed_value_type, copy_constructed_value, dispose_native_value, evaluate_query_value,
+    ArgumentReader, ArrayType, Budget, ConstructedValue, ExpressionStep, Location, Predicate,
+    ProgramLimits, Projection, QueryError, ReadExpression, ValueQueryHost, ValueReaderHost,
+    ValueType, copy_constructed_value, dispose_native_value, evaluate_query_value,
     read_value_expression,
 };
 
 struct Words {
     words: ConstructedValue,
+}
+
+// Splitting source text establishes string elements even when there are no words.
+fn word_types(budget: &mut Budget, location: Location) -> Result<Vec<ValueType>, QueryError> {
+    budget.charge(3, location)?;
+    Ok(vec![ValueType::Array(ArrayType::Elements(vec![
+        ValueType::String,
+    ]))])
 }
 
 // This host exposes the same immutable words as input and a named binding.
@@ -67,11 +78,7 @@ impl ValueQueryHost<ReadExpression<Self>> for Words {
         range: &Range<usize>,
         budget: &mut Budget,
     ) -> Result<Vec<ValueType>, QueryError> {
-        Ok(vec![constructed_value_type(
-            &self.words,
-            budget,
-            Location::Query(range.clone()),
-        )?])
+        word_types(budget, Location::Query(range.clone()))
     }
 
     fn read_current_input(
@@ -152,10 +159,7 @@ fn main() -> Result<(), QueryError> {
             .map(|w| ConstructedValue::String(w.into()))
             .collect(),
     );
-    let types = BTreeMap::from([(
-        "words".into(),
-        vec![constructed_value_type(&words, &mut budget, location)?],
-    )]);
+    let types = BTreeMap::from([("words".into(), word_types(&mut budget, location)?)]);
     let mut host = Words { words };
     let mut reader = ArgumentReader::new(&query, 0)?;
     let expression = read_value_expression(&mut reader, &mut host, &mut budget, 64)?;
@@ -166,6 +170,6 @@ fn main() -> Result<(), QueryError> {
         Err(reader.error("expected the end of the expression"))
     };
     dispose_native_value(expression);
-    println!("{:#?}", result?);
+    println!("{:?}", result?);
     Ok(())
 }

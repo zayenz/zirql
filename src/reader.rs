@@ -640,6 +640,7 @@ impl SignatureType {
                     D::Boolean => S::Boolean,
                     D::Integer => S::Integer,
                     D::Float => S::Float,
+                    D::String => S::String,
                     D::Member(id) => S::Member(id),
                     _ => {
                         return Err(QueryError::query(
@@ -2081,7 +2082,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     _ => {
                         if !matches!(
                             element.value,
-                            S::Boolean | S::Integer | S::Float | S::Named(_)
+                            S::Boolean | S::Integer | S::Float | S::String | S::Named(_)
                         ) {
                             return Err(QueryError::query(
                                 element.range,
@@ -2615,10 +2616,11 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 "int" => crate::SetElementType::Integer,
                 "bool" => crate::SetElementType::Boolean,
                 "float" => crate::SetElementType::Float,
+                "string" => crate::SetElementType::String,
                 _ => {
                     return Err(QueryError::query(
                         element.range,
-                        "empty sets support int, bool or float",
+                        "empty sets support int, bool, float or string",
                     ));
                 }
             };

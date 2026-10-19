@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-100"
 key = "string-set-tally"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 blocked_by = []
@@ -25,10 +25,10 @@ The blog author wants [{words[i], words[i + 1]} | i in index_set(words) where i 
 
 ## Done when
 
-- [ ] String set literals, set comprehensions, typed empty sets and their relevant shared type/equality/ordering/serialization paths work coherently with the existing budget and located-error contracts.
-- [ ] Tally accepts arrays of homogeneous string sets, groups reversed insertion orders together and collapses equal adjacent words to singleton keys; its result representation and empty-result behavior are documented, and string tally behavior is preserved.
-- [ ] Focused public-behavior checks cover empty and singleton word inputs, reverse-order equality, repeated identical words, result order, types, and meaningful error/budget behavior without a broad test matrix.
-- [ ] The runnable word host and documentation show the exact supported neighbouring-set query and printed output for ash apple birch apple, and all required checks pass.
+- [x] String set literals, set comprehensions, typed empty sets and their relevant shared type/equality/ordering/serialization paths work coherently with the existing budget and located-error contracts.
+- [x] Tally accepts arrays of homogeneous string sets, groups reversed insertion orders together and collapses equal adjacent words to singleton keys; its result representation and empty-result behavior are documented, and string tally behavior is preserved.
+- [x] Focused public-behavior checks cover empty and singleton word inputs, reverse-order equality, repeated identical words, result order, types, and meaningful error/budget behavior without a broad test matrix.
+- [x] The runnable word host and documentation show the exact supported neighbouring-set query and printed output for ash apple birch apple, and all required checks pass.
 
 ## Validation
 
@@ -38,3 +38,12 @@ The blog author wants [{words[i], words[i + 1]} | i in index_set(words) where i 
 - Run the documented words example with the exact query and inspect its printed result.
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Added string sets and unordered set-key tally as ordinary key/count records, retaining string tally dictionaries and first-seen order; established empty-result typing, focused public behavior coverage and runnable development-only word documentation. Independently verified including the inferred-empty-comprehension correction.
+
+Validation:
+
+- cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace: 157 tests and doctests passed
+- Exact documented word query and inferred-empty regressions passed; git diff --check and zdev check base --format json passed; independent verifier pass at W82f6fc4e0eb98e6f

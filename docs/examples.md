@@ -78,10 +78,33 @@ Use `tally` to count each selected spelling:
 
 The record fields follow each spelling's first occurrence. Counts are checked signed
 integers. Tally ends a constructed pipeline; a later stage is refused. Empty
-input gives `[]` for sort or unique and `{}` for tally.
+string input gives `[]` for sort or unique and `{}` for tally.
 
 These operations are part of Zirql's common language. The word host supplies
 the array and its type facts; it adds no collection parser or evaluator.
+
+## Count unordered neighbouring word pairs
+
+This example requires the development checkout; published `0.1.1` does not
+support string sets. From that checkout, run:
+
+```sh
+cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
+```
+
+The word host prints this exact Rust `Debug` result:
+
+```text
+Array([Record([("key", Set { element_type: Some(String), elements: [String("ash"), String("apple")] }), ("count", Integer(1))]), Record([("key", Set { element_type: Some(String), elements: [String("apple"), String("birch")] }), ("count", Integer(2))])])
+```
+
+The first pair occurs once. The next two pairs have the same members in opposite
+orders, so tally counts them together. Each `key` remains a typed string set.
+The records follow first occurrence, and keys preserve their first insertion
+order. Equal adjacent words form a singleton set. An empty or singleton typed
+word array yields no pairs and returns `[]`. An ambiguous `[] | tally` still
+returns `{}`. See [the value guide](values.md) for the type and host serialization
+contracts.
 
 ## Construct records
 

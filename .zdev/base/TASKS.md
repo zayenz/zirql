@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 100
-- Ready: 1
+- Ready: 0
 - Blocked: 0
-- Done: 99
+- Done: 100
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -108,4 +108,4 @@
 | [base-097](tasks/097-select-retained-lookup-and-indexed-values-without-whole-cont.md) | Select retained lookup and indexed values without whole-container copies | done | — |
 | [base-098](tasks/098-deduplicate-constructed-strings-without-pairwise-declaration.md) | Deduplicate constructed strings without pairwise declaration validation | done | — |
 | [base-099](tasks/099-share-retained-csv-tables-through-the-existing-binding-api.md) | Share retained CSV tables through the existing binding API | done | — |
-| [base-100](tasks/100-tally-unordered-string-sets-in-constructed-word-queries.md) | Tally unordered string sets in constructed word queries | ready | — |
+| [base-100](tasks/100-tally-unordered-string-sets-in-constructed-word-queries.md) | Tally unordered string sets in constructed word queries | done | — |

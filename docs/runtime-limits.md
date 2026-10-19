@@ -199,11 +199,19 @@ work limit can have different outcomes. Other scalar kinds scan retained values
 for equality and charge row visits, comparisons and nominal checks. That scan
 can take quadratic work; the work allowance bounds it.
 
-Tally validates every input string before counting, then scans existing fields
+String tally validates every input string before counting, then scans existing fields
 and appends each spelling on its first occurrence. It charges field visits and
 inspected string bytes, uses checked signed counts and admits record storage,
 entries and count results before growth. Its lookup work can be quadratic in the
 number of distinct spellings. It allocates no sorting scratch.
+
+String-set tally scans earlier groups using budgeted membership equality, with
+inspected string bytes charged to the same request. It retains each first key,
+checks signed count overflow, and admits the output array, key/count records,
+labels and counts before allocating them. Set comparison can take quadratic
+work in set size, and grouping can take quadratic work in distinct groups;
+the work allowance bounds both. Empty-result type hints are retained during
+preparation under the same metadata budget.
 
 These constructed stages share the active work, result and nesting allowances.
 Current-input reads and prefix filtering also check `stream_items`. Sort keeps

@@ -145,7 +145,10 @@ pub(crate) enum PreparedKind<'a, Q> {
         descending: bool,
     },
     Unique(Box<PreparedValue<'a, Q>>),
-    Tally(Box<PreparedValue<'a, Q>>),
+    Tally {
+        array: Box<PreparedValue<'a, Q>>,
+        sets: bool,
+    },
     Extremum {
         operator: ValueExtremum,
         array: Box<PreparedValue<'a, Q>>,
@@ -223,6 +226,9 @@ pub(crate) enum PreparedGenerator<'a, Q> {
 pub(crate) struct Preparation<'a> {
     pub names: Vec<&'a str>,
     pub(crate) locals: Vec<&'a str>,
+    // Source addresses identify tally nodes only while their borrowed trees live.
+    // Keep their empty string-set result shape after array data loses element facts.
+    pub(crate) set_tallies: Vec<usize>,
 }
 
 impl<'a> Preparation<'a> {
@@ -230,6 +236,7 @@ impl<'a> Preparation<'a> {
         Self {
             names: Vec::new(),
             locals: Vec::new(),
+            set_tallies: Vec::new(),
         }
     }
 
@@ -316,7 +323,9 @@ impl<'a> Preparation<'a> {
                     let mut arguments = metadata_vec(sources.len(), budget, &location)?;
                     for source in sources {
                         let mut preparation = Self::new();
+                        preparation.set_tallies = std::mem::take(&mut self.set_tallies);
                         let expression = preparation.resolve(source, queries, budget)?;
+                        self.set_tallies = preparation.set_tallies;
                         arguments.push(PreparedArgument {
                             source,
                             expression,
@@ -568,7 +577,13 @@ impl<'a> Preparation<'a> {
                     PreparedKind::Unique(Box::new(self.resolve(array, queries, budget)?))
                 }
                 ValueExpressionKind::Tally(array) => {
-                    PreparedKind::Tally(Box::new(self.resolve(array, queries, budget)?))
+                    budget.charge(self.set_tallies.len(), location.clone())?;
+                    PreparedKind::Tally {
+                        sets: self
+                            .set_tallies
+                            .contains(&(expression as *const _ as usize)),
+                        array: Box::new(self.resolve(array, queries, budget)?),
+                    }
                 }
                 ValueExpressionKind::Extremum {
                     operator,

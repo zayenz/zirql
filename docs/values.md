@@ -324,7 +324,7 @@ such as `["apple", "birch"] | filter(w => starts_with(w, "a")) | count`, returns
 
 The `sort` suffix applies the same ascending sort to arrays, sets and
 dictionaries, retaining their kind. Positional arrays also support stable
-`unique` and terminal string `tally`:
+`unique` and terminal `tally`:
 
 ```zirql
 [w for w in words if starts_with(w, "a")] | sort | unique
@@ -341,11 +341,33 @@ strings implicitly.
 [w for w in words if starts_with(w, "a")] | tally
 ```
 
-Tally accepts only strings and returns `{"ash": 1, "apple": 2}`, with record
+Tally accepts strings and returns `{"ash": 1, "apple": 2}`, with record
 fields in first-seen order and checked signed integer counts. No further
 stage may follow tally. Empty untyped arrays yield `[]` for sort/unique and
 `{}` for tally. Explicit incompatible element declarations still fail on empty
 input; unique retains valid declarations and element kinds.
+
+In the development checkout, tally also accepts homogeneous string sets:
+
+```zirql
+[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally
+```
+
+For `ash apple birch apple`, the result is an array of records with `key` and
+`count` fields. The keys are the sets `{"ash", "apple"}` and
+`{"apple", "birch"}`, with counts `1` and `2`. Set membership determines equality,
+so `{"birch", "apple"}` joins the second group. Groups follow their first
+occurrence, and each key retains its first set's iteration order. Repeated
+identical words produce singleton keys. The result keeps each key as a set;
+Zirql does not encode sets as dictionary strings or allow arbitrary dictionary
+keys.
+
+When the input type establishes string sets, empty input returns `[]`, including
+an empty neighbouring-word comprehension over typed string words. An empty
+`sequence<set<string>>` also returns `[]`. An ambiguous `[] | tally` retains the
+existing `{}` result, as do empty string arrays. Mixed strings and sets, sets of
+other element types and unestablished set element types are refused. These
+additions are not in the published `0.1.1` crate.
 
 A pipe applies to the completed expression, after arithmetic, Boolean and
 `default` operators. A completed comprehension or conditional can pipe directly.
@@ -373,14 +395,24 @@ use declaration order. Arithmetic on members and mixed nominal types fail.
 
 Typed sets remove equal elements while retaining each first occurrence,
 including the sign of the first floating zero. Supported scalar set elements
-are Booleans, integers, finite floats and nominal members. Strings are not set
-elements. Set equality compares membership independently of stored order.
+are Booleans, integers, finite floats, exact strings and nominal members. Set
+equality compares membership independently of stored order.
 `sort` orders a set explicitly by its supported type order and returns a set.
 Bare braces construct sets: `{3, 1, 3}` iterates as `3, 1`, and
 `{n mod 3 for n in 1..5}` iterates as `1, 2, 0`. Empty braces mean a dictionary;
-use `set<int>()`, `set<bool>()` or `set<float>()` for an empty scalar set.
-A host can supply a typed empty nominal set through the Rust API. The common
+use `set<int>()`, `set<bool>()`, `set<float>()` or `set<string>()` for an empty
+scalar set.
+String sets and `set<string>()` require the development checkout. A host can
+supply a typed empty nominal set through the Rust API. The common
 reader does not resolve nominal type names.
+
+String-set sorting uses exact lexicographic string order. Strings keep their
+original case and bytes; no normalization or coercion occurs. Native results
+retain `SetElementType::String`, including inside tally keys. Serialization
+remains an explicit host boundary: a host can render set elements as an array
+in iteration order or refuse string sets under its own data policy. A host must
+handle the new `String` element variant; Zirql does not change MiniZinc target
+serialization rules.
 
 ## Keyed arrays
 

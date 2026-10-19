@@ -41,6 +41,10 @@ The three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and th
 `{"ash": 1, "apple": 2}`, respectively.
 
 The tally returns fields in first-seen order: `ash: 1`, then `apple: 2`.
+The development checkout also supports [tallying unordered neighbouring word
+sets](examples.md#count-unordered-neighbouring-word-pairs), with an exact command
+and printed output. That addition is not in the published `0.1.1` archive.
+
 To order a dictionary explicitly, sort its keys or select its values:
 
 ```sh

@@ -3062,7 +3062,7 @@ fn operands<'a, Q>(
         | PreparedKind::IndexSet(value)
         | PreparedKind::Entries(value)
         | PreparedKind::Unique(value)
-        | PreparedKind::Tally(value)
+        | PreparedKind::Tally { array: value, .. }
         | PreparedKind::Unary { operand: value, .. }
         | PreparedKind::Field { value, .. }
         | PreparedKind::TupleAccess { value, .. }
@@ -3467,7 +3467,7 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
         },
         PreparedKind::Entries(_) => entries(next(), budget, &location)?,
         PreparedKind::Unique(_) => unique_value(next(), budget, &location)?,
-        PreparedKind::Tally(_) => tally_value(next(), budget, &location)?,
+        PreparedKind::Tally { sets, .. } => tally_value(next(), *sets, budget, &location)?,
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
         PreparedKind::GroupBy { field, .. } => group_by(next(), field, budget, &location)?,
         PreparedKind::Sort {

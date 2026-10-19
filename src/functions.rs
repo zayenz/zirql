@@ -11,7 +11,7 @@ use crate::{
     ExpressionKind, Located, Location, NativeArguments, NativeExpression, ProgramHost,
     ProjectionHost, QueryError, RuntimeTypeHost, ValueExpression, ValueExpressionKind,
     ValueQueryHost, ValueType, admit_value, constructed_value_type, copy_constructed_value,
-    copy_value_types, dispose_native_value, native_expression_kind, query_value_types,
+    copy_value_types, dispose_native_value, native_expression_kind,
 };
 use std::{collections::BTreeMap, fmt, ops::Range};
 
@@ -683,6 +683,7 @@ struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     contracts: BTreeMap<String, DeclaredType<Kind<C, H>>>,
     worklists: BTreeMap<usize, Option<DeclaredType<Kind<C, H>>>>,
     worklist_contracts: Vec<Option<DeclaredType<Kind<C, H>>>>,
+    set_tallies: Vec<usize>,
 }
 impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
     fn new(
@@ -713,6 +714,7 @@ impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
             contracts: BTreeMap::new(),
             worklists: BTreeMap::new(),
             worklist_contracts: Vec::new(),
+            set_tallies: Vec::new(),
         })
     }
 }
@@ -782,6 +784,20 @@ where
 }
 
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
+    fn value_types(
+        &mut self,
+        entry: &ValueExpression<Query<C, H>>,
+        facts: &BTreeMap<String, Vec<ValueType>>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let analysis = crate::value::analyze_query_value(entry, facts, self, budget)?;
+        for tally in analysis.set_tallies {
+            crate::projection::admit_slots::<usize>(1, budget, &entry.range)?;
+            self.set_tallies.push(tally);
+        }
+        Ok(analysis.types)
+    }
+
     fn native(
         &mut self,
         query: &Query<C, H>,
@@ -867,7 +883,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 );
             }
             let result = (|| {
-                let types = query_value_types(argument.expression, &facts, self, budget)?;
+                let types = self.value_types(argument.expression, &facts, budget)?;
                 let kind = self
                     .local_kind(argument.expression, budget)?
                     .unwrap_or_else(|| self.host.constructed_kind(types));
@@ -920,7 +936,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     .unwrap_or_else(|| vec![ValueType::Unestablished]),
             );
         }
-        let types = query_value_types(entry, &facts, self, budget)?;
+        let types = self.value_types(entry, &facts, budget)?;
         Ok(match self.local_kind(entry, budget)? {
             Some(kind) => kind,
             None => self.host.constructed_kind(types),
@@ -2196,9 +2212,11 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
     > {
         let saved = std::mem::take(&mut self.preflight.prepared);
         let saved_worklists = std::mem::take(&mut self.preflight.worklists);
+        let saved_tallies = std::mem::take(&mut self.preflight.set_tallies);
         let result = (|| {
             let kind = self.preflight.entry_kind(entry, scope, relative, budget)?;
             let mut preparation = Preparation::new();
+            preparation.set_tallies = std::mem::take(&mut self.preflight.set_tallies);
             let value = preparation.resolve(entry, &mut self.preflight, budget)?;
             budget.charge(1, Location::Query(entry.range.clone()))?;
             Ok(PreparedFunctionValue {
@@ -2212,6 +2230,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         })();
         self.preflight.prepared = saved;
         self.preflight.worklists = saved_worklists;
+        self.preflight.set_tallies = saved_tallies;
         result
     }
 
@@ -2230,9 +2249,11 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
     ) -> Result<Kind<C, H>, FunctionError<EvaluationError<H::Error>>> {
         let saved = std::mem::take(&mut self.preflight.prepared);
         let saved_worklists = std::mem::take(&mut self.preflight.worklists);
+        let saved_tallies = std::mem::take(&mut self.preflight.set_tallies);
         let result = self.preflight.entry_kind(entry, scope, relative, budget);
         self.preflight.prepared = saved;
         self.preflight.worklists = saved_worklists;
+        self.preflight.set_tallies = saved_tallies;
         Ok(result?)
     }
 

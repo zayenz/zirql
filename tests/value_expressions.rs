@@ -706,7 +706,7 @@ fn skipped_runtime_failures_still_receive_bounded_static_validation() {
         evaluate(&choose(field(record(vec![]), "absent"))).unwrap(),
         V::Integer(7)
     );
-    let unsupported = Located::new(K::Set(vec![literal(V::String("x".into()))]), 50..55);
+    let unsupported = Located::new(K::Set(vec![e(K::Tuple(vec![int(1)]))]), 50..55);
     assert_eq!(
         evaluate(&choose(unsupported)).unwrap_err().location,
         Location::Query(50..55)
@@ -4173,6 +4173,200 @@ impl<Q> zirql::ValueQueryHost<Q> for WordInput {
     }
 }
 
+fn read_word_expression(
+    source: &str,
+    host: &mut WordInput,
+    allowance: &mut Budget,
+) -> E<zirql::ReadExpression<WordInput>> {
+    let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+    let expression = zirql::read_value_expression(&mut reader, host, allowance, 64).unwrap();
+    assert!(reader.remaining().trim().is_empty());
+    expression
+}
+
+#[test]
+fn string_sets_preserve_first_spelling_and_share_scalar_set_operations() {
+    let mut host = WordInput {
+        value: V::Array(vec![]),
+        unknown: false,
+    };
+    let run = |source: &str, host: &mut WordInput| {
+        let mut allowance = ample();
+        let expression = read_word_expression(source, host, &mut allowance);
+        let result =
+            zirql::evaluate_query_value(&expression, &BTreeMap::new(), host, &mut allowance);
+        zirql::dispose_native_value(expression);
+        result
+    };
+    let expected = V::Set {
+        element_type: Some(SetElementType::String),
+        elements: vec![V::String("birch".into()), V::String("apple".into())],
+    };
+    let value = run(r#"{"birch", "apple", "birch"}"#, &mut host).unwrap();
+    assert_eq!(value, expected);
+    admit_constructed(
+        &value,
+        &D::<()>::Set(SetElementType::String),
+        &mut ample(),
+        Location::Source(0..1),
+    )
+    .unwrap();
+    assert_eq!(
+        copy_constructed_value(&value, &mut ample(), Location::Source(0..1)).unwrap(),
+        value
+    );
+    assert_eq!(
+        constructed_value_type(&value, &mut ample(), Location::Source(0..1)).unwrap(),
+        ValueType::Set(Some(SetElementType::String))
+    );
+    assert_eq!(
+        run(r#"{w | w in ["birch", "apple", "birch"]}"#, &mut host).unwrap(),
+        expected
+    );
+    assert_eq!(run(r#"["apple" in {"birch", "apple"}, {"birch", "apple"} == {"apple", "birch"}, "Apple" in {"apple"}]"#, &mut host).unwrap(), V::Array(vec![V::Boolean(true), V::Boolean(true), V::Boolean(false)]));
+    assert_eq!(
+        run(r#"sort({"birch", "apple"})"#, &mut host).unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::String),
+            elements: vec![V::String("apple".into()), V::String("birch".into())]
+        }
+    );
+    assert_eq!(
+        run("set<string>()", &mut host).unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::String),
+            elements: vec![]
+        }
+    );
+    assert!(run(r#"{"apple", 1}"#, &mut host).is_err());
+}
+
+#[test]
+fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
+    const QUERY: &str =
+        "[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally";
+    let group = |words: &[&str], count| {
+        V::Record(vec![
+            (
+                "key".into(),
+                V::Set {
+                    element_type: Some(SetElementType::String),
+                    elements: words.iter().map(|word| V::String((*word).into())).collect(),
+                },
+            ),
+            ("count".into(), V::Integer(count)),
+        ])
+    };
+    for (words, expected) in [
+        (
+            vec!["ash", "apple", "birch", "apple"],
+            V::Array(vec![
+                group(&["ash", "apple"], 1),
+                group(&["apple", "birch"], 2),
+            ]),
+        ),
+        (
+            vec!["apple", "apple", "apple"],
+            V::Array(vec![group(&["apple"], 2)]),
+        ),
+        (vec!["ash"], V::Array(vec![])),
+        (vec![], V::Array(vec![])),
+    ] {
+        let mut allowance = ample();
+        let mut host = WordInput {
+            value: V::Array(
+                words
+                    .into_iter()
+                    .map(|word| V::String(word.into()))
+                    .collect(),
+            ),
+            unknown: false,
+        };
+        let expression = read_word_expression(QUERY, &mut host, &mut allowance);
+        let types = BTreeMap::from([(
+            "words".into(),
+            vec![ValueType::Array(ArrayType::Elements(vec![
+                ValueType::String,
+            ]))],
+        )]);
+        let discovered =
+            zirql::query_value_types(&expression, &types, &mut host, &mut allowance).unwrap();
+        assert_eq!(
+            discovered,
+            vec![ValueType::Array(ArrayType::Elements(vec![
+                ValueType::Record(vec![
+                    ("key".into(), ValueType::Set(Some(SetElementType::String))),
+                    ("count".into(), ValueType::Integer),
+                ])
+            ]))]
+        );
+        assert_eq!(
+            zirql::evaluate_query_value(&expression, &types, &mut host, &mut allowance).unwrap(),
+            expected
+        );
+        zirql::dispose_native_value(expression);
+    }
+    for (query, count) in [
+        ("[{w for w in words if false}] | tally", 1),
+        ("[{w for w in words if false}, set<string>()] | tally", 2),
+    ] {
+        let mut allowance = ample();
+        let mut host = WordInput {
+            value: V::Array(vec![V::String("ash".into())]),
+            unknown: false,
+        };
+        let expression = read_word_expression(query, &mut host, &mut allowance);
+        let types = BTreeMap::from([(
+            "words".into(),
+            vec![ValueType::Array(ArrayType::Elements(vec![
+                ValueType::String,
+            ]))],
+        )]);
+        let value =
+            zirql::evaluate_query_value(&expression, &types, &mut host, &mut allowance).unwrap();
+        assert_eq!(value, V::Array(vec![group(&[], count)]));
+        zirql::dispose_native_value(expression);
+    }
+    let unestablished = e(K::Tally(Box::new(e(K::Array(vec![literal(V::Set {
+        element_type: None,
+        elements: vec![],
+    })])))));
+    assert!(evaluate(&unestablished).is_err());
+    let empty_sets = literal(declared(
+        V::Array(vec![]),
+        D::Sequence(Box::new(D::Set(SetElementType::String))),
+    ));
+    assert_eq!(
+        evaluate(&e(K::Tally(Box::new(empty_sets)))).unwrap(),
+        V::Array(vec![])
+    );
+    assert_eq!(
+        evaluate(&e(K::Tally(Box::new(e(K::Array(vec![])))))).unwrap(),
+        V::Record(vec![])
+    );
+    let empty_set = || {
+        literal(V::Set {
+            element_type: Some(SetElementType::String),
+            elements: vec![],
+        })
+    };
+    let repeated_empty = e(K::Tally(Box::new(e(K::Array(vec![
+        empty_set(),
+        empty_set(),
+    ])))));
+    assert_eq!(
+        evaluate(&repeated_empty).unwrap(),
+        V::Array(vec![group(&[], 2)])
+    );
+    let mixed = e(K::Tally(Box::new(e(K::Array(vec![
+        e(K::Set(vec![text("ash")])),
+        text("ash"),
+    ])))));
+    let error = evaluate(&mixed).unwrap_err();
+    assert!(error.message.contains("homogeneous string sets"));
+    assert_eq!(error.location, Location::Query(0..1));
+}
+
 #[test]
 fn brace_collections_share_order_scope_and_strict_dictionary_access() {
     let run = |source: &str| {
@@ -4289,13 +4483,11 @@ fn brace_collections_share_order_scope_and_strict_dictionary_access() {
     for source in [
         r#"{1: 2}"#,
         r#"{<>: 2}"#,
-        r#"{"string"}"#,
         "{1,true}",
         "{missing:1}",
         "{n for n in n}",
         "{n for n in [] if 1}",
         "{1:2 for n in []}",
-        "set<string>()",
     ] {
         assert!(run(source).is_err(), "{source}");
     }
@@ -4696,7 +4888,10 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
     let expression: zirql::ValueExpression<()> = e(K::Tally(Box::new(name("words"))));
     let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
         .unwrap_err();
-    assert_eq!(error.message, "tally needs strings");
+    assert_eq!(
+        error.message,
+        "tally needs strings or homogeneous string sets"
+    );
     assert_eq!(error.location, Location::Query(0..1));
     let expression = e(K::Unique(Box::new(name("words"))));
     let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
@@ -4725,6 +4920,20 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
                 text("ash"),
                 text("ash"),
             ]))))),
+            true,
+        ),
+        (
+            e(K::Tally(Box::new(e(K::Array(vec![
+                e(K::Set(vec![text("ash"), text("apple")])),
+                e(K::Set(vec![text("apple"), text("ash")])),
+            ]))))),
+            false,
+        ),
+        (
+            e(K::Tally(Box::new(e(K::Array(vec![e(K::Set(vec![
+                text("ash"),
+                text("apple"),
+            ]))]))))),
             true,
         ),
     ] {

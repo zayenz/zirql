@@ -4375,6 +4375,67 @@ mod projection {
     }
 
     #[test]
+    fn prepared_set_tallies_retain_empty_shape_and_signature_types() {
+        use zirql::{FunctionLimits, PreparedFunctions};
+        let mut allowance = function_budget();
+        let mut reader = zirql::ArgumentReader::new(
+            r#"fn tally_sets(xs: sequence<set<string>>) -> sequence<record {key: set<string>, count: int}> { (xs) | tally }"#,
+            0,
+        ).unwrap();
+        let function = zirql::read_function_declaration(
+            &mut reader,
+            &mut Host,
+            &mut allowance,
+            64,
+            |name, _| {
+                Err::<zirql::DeclaredType<Kind>, _>(QueryError::query(
+                    name.range,
+                    "unexpected type",
+                ))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let mut functions = PreparedFunctions::prepare([&function], &Host, &mut allowance).unwrap();
+        let source = r#"[tally_sets([]), ([set<string>() for x in []] | tally), ([{"ash", "apple"}, {"apple", "ash"}] | tally)]"#;
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let expression =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 64).unwrap();
+        let prepared = functions
+            .prepare_value(&expression, &BTreeMap::new(), None, &mut allowance)
+            .unwrap();
+        let result = functions
+            .evaluate(
+                &prepared,
+                &Bindings::default(),
+                None,
+                &mut (),
+                &mut allowance,
+                FunctionLimits { active_depth: 1 },
+            )
+            .unwrap();
+        let Value::Constructed(V::Array(rows)) = result else {
+            panic!("constructed rows")
+        };
+        assert!(matches!(rows[0].data(), V::Array(values) if values.is_empty()));
+        assert_eq!(rows[1], V::Array(vec![]));
+        assert_eq!(
+            rows[2],
+            V::Array(vec![V::Record(vec![
+                (
+                    "key".into(),
+                    V::Set {
+                        element_type: Some(zirql::SetElementType::String),
+                        elements: vec![V::String("ash".into()), V::String("apple".into())]
+                    }
+                ),
+                ("count".into(), V::Integer(2)),
+            ])])
+        );
+        zirql::dispose_native_value(expression);
+    }
+
+    #[test]
     fn parsed_functions_share_preparation_native_arguments_and_generator_kinds() {
         use zirql::{DeclaredType as D, FunctionLimits, PreparedFunctions};
         let source = r#"
@@ -5384,7 +5445,7 @@ mod projection {
         for (source, expected) in [
             ("fn f(x: Missing) -> int { 0 }", "unknown signature type"),
             (
-                "fn f(x: set<string>) -> int { 0 }",
+                "fn f(x: set<tuple<int>>) -> int { 0 }",
                 "unsupported set element",
             ),
             ("fn f() -> int { if true { 1 } }", "final else"),
