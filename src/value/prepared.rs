@@ -152,6 +152,11 @@ pub(crate) enum PreparedKind<'a, Q> {
         rows: Box<PreparedValue<'a, Q>>,
         field: &'a Located<String>,
     },
+    Align {
+        left: Box<PreparedValue<'a, Q>>,
+        right: Box<PreparedValue<'a, Q>>,
+        field: &'a Located<String>,
+    },
     Sort {
         array: Box<PreparedValue<'a, Q>>,
         selector: Option<&'a Located<SortSelector>>,
@@ -618,6 +623,11 @@ impl<'a> Preparation<'a> {
                 },
                 ValueExpressionKind::RunsBy { rows, field } => PreparedKind::RunsBy {
                     rows: Box::new(self.resolve(rows, queries, budget)?),
+                    field,
+                },
+                ValueExpressionKind::Align { left, right, field } => PreparedKind::Align {
+                    left: Box::new(self.resolve(left, queries, budget)?),
+                    right: Box::new(self.resolve(right, queries, budget)?),
                     field,
                 },
                 ValueExpressionKind::Sort {

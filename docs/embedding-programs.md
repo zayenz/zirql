@@ -662,3 +662,52 @@ This form replaces existing fields only. General dictionaries, keyed arrays,
 source edits and symbolic CP lowering require separate support. See
 [consumer adoption](host-integration.md#immutable-record-adoption) for Zincite
 and Zirium integration requirements.
+
+## Record alignment expressions
+
+Build `ValueExpressionKind::Align { left, right, field }` with two boxed
+positional record expressions and a `Located<String>` field selector. The
+selector range locates missing, absent and duplicate key errors. This callable
+example compares two one-row tables:
+
+```rust
+use zirql::{Bindings, Budget, ConstructedValue as V, Located, ProgramLimits,
+    ValueExpression as E, ValueExpressionKind as K, evaluate_value};
+fn node(kind: K) -> E { Located::new(kind, 0..1) }
+fn table(ms: i64) -> E {
+    node(K::Literal(V::Array(vec![V::Record(vec![
+        ("id".into(), V::String("parse".into())),
+        ("ms".into(), V::Integer(ms)),
+    ])])))
+}
+let expression = node(K::Align {
+    left: Box::new(table(12)), right: Box::new(table(10)),
+    field: Located::new("id".into(), 0..1),
+});
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 100_000, results: 10_000, nesting: 64, stream_items: 100,
+});
+let V::Array(rows) = evaluate_value(&expression, &Bindings::default(), &mut budget)
+    .unwrap() else { panic!("aligned rows") };
+assert_eq!(rows.len(), 1);
+let V::Record(fields) = &rows[0] else { panic!("aligned record") };
+assert_eq!(fields[0], ("key".into(), V::String("parse".into())));
+```
+
+Validation, free-name discovery, type discovery and execution use the ordinary
+value APIs. The common reader lowers exactly `align(left, right, by="field")`
+to this node. Both operands are prepared even for empty input, then evaluate
+once in written order. [The value guide](values.md#align-two-record-sequences)
+defines key identity, ordering, absence and refusals; the [CSV comparison](examples.md#compare-benchmark-tables)
+shows guarded downstream field access. Dispose retained native expression trees
+with `dispose_native_value`.
+
+`FunctionRequest` uses existing positional and record views, structural
+hashing/equality and list/record constructors. It preserves original records,
+native owners and source coordinates. Result kinds retain optional side
+contracts for downstream projections, including typed empty sequences. An
+untyped empty source supplies no record schema. Hosts keep native identity,
+admission and rendering policy. No new host hook is required. This eager value
+operation has no pipeline suffix, selector callback or symbolic CP lowering.
+See [consumer adoption](host-integration.md#record-alignment-adoption) before
+advertising it through a Zincite or Zirium frontend.

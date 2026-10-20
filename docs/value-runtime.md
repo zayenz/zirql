@@ -200,6 +200,20 @@ row schemas without predicting which keys will occur. Keyed entries and exact
 pairing also move admitted cells into their new containers where ownership
 allows it.
 
+Alignment evaluates both positional record sources once, left then right.
+A hash index uses the host's structural hashing and equality to reject duplicate
+keys on each side and match equal keys across sides. Staged rows keep the left
+key and original before/after values, then append right-only rows in their input
+order. Existing record and list constructors retain native handles and source
+coordinates. Missing sides become ordinary absence. Traversal, index buckets,
+collision comparisons, staging and output use the active budget.
+
+Type discovery retains the result's `key`/`before`/`after` record shape and each
+side's optional record contract, including declared empty native sequences.
+An untyped empty array supplies no inferred row schema. The [callable
+interface](embedding-programs.md#record-alignment-expressions) uses the same
+preparation and execution as the shared reader.
+
 New containers, metadata, comparisons and copies spend the continuing budget.
 See [resource accounting](runtime-limits.md#what-uses-the-allowance) for the exact
 boundary, including producer admission before allocation.

@@ -825,6 +825,7 @@ fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
             [zirql::ValueType::Boolean] => DeclaredType::Boolean,
             [zirql::ValueType::Float] => DeclaredType::Float,
             [zirql::ValueType::String] => DeclaredType::String,
+            [zirql::ValueType::Absent] => DeclaredType::Optional(Box::new(DeclaredType::Value)),
             _ => panic!("unsupported fixture scalar declaration"),
         },
         SourceKind::Record(record) => DeclaredType::Record(
@@ -12865,4 +12866,233 @@ fn record_updates_retain_native_children_and_declared_contracts() {
         SourceValue::Constructed(V::Integer(8))
     );
     zirql::dispose_native_value(expression);
+}
+
+#[test]
+fn alignment_retains_native_rows_and_optional_side_contracts() {
+    use std::collections::BTreeMap;
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, PredicateArgument,
+        PreparedFunctions, ValueExpressionKind as K,
+    };
+    let source = String::from("ash apple birch");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let row_type = || {
+        DeclaredType::Record(vec![
+            ("id".into(), DeclaredType::String),
+            ("node".into(), DeclaredType::Native(SourceKind::Words)),
+        ])
+    };
+    let row = |id: &str, range| {
+        SourceValue::Record(zirql::NativeCapture {
+            fields: vec![
+                ("id".into(), SourceValue::Constructed(V::String(id.into()))),
+                ("node".into(), word_at(&source, range, 0)),
+            ],
+        })
+    };
+    let sequence = |values| SourceValue::Sequence {
+        values,
+        element: row_type(),
+    };
+    let bindings = Bindings::new([
+        (
+            at("before".into(), 0),
+            sequence(vec![row("ash", 0..3), row("apple", 4..9)]),
+        ),
+        (
+            at("after".into(), 0),
+            sequence(vec![row("birch", 10..15), row("apple", 4..9)]),
+        ),
+        (at("empty".into(), 0), sequence(vec![])),
+        (
+            at("bad".into(), 0),
+            SourceValue::Sequence {
+                values: vec![],
+                element: DeclaredType::String,
+            },
+        ),
+    ])
+    .unwrap();
+    let v = worklist_value;
+    let native = |name: &str| {
+        v(K::NativeValue(Box::new(at(
+            ExpressionKind::Binding(name.into()),
+            0,
+        ))))
+    };
+    let aligned = |before: &str, after: &str| {
+        v(K::Align {
+            left: Box::new(native(before)),
+            right: Box::new(native(after)),
+            field: at("id".into(), 20),
+        })
+    };
+    let select = |base, label: &str| {
+        v(K::Field {
+            value: Box::new(base),
+            field: at(label.into(), 30),
+        })
+    };
+    let choose_node = || {
+        v(K::Map {
+            array: Box::new(worklist_name("pairs")),
+            argument: PredicateArgument {
+                argument: None,
+                body: Box::new(v(K::Conditional {
+                    branches: vec![(
+                        v(K::Occurs(Box::new(select(
+                            v(K::PredicateSubject),
+                            "before",
+                        )))),
+                        select(select(v(K::PredicateSubject), "before"), "node"),
+                    )],
+                    otherwise: Box::new(select(select(v(K::PredicateSubject), "after"), "node")),
+                })),
+            },
+        })
+    };
+    let report = |before: &str| {
+        v(K::Block {
+            bindings: vec![(
+                at(zirql::PatternKind::Name(at("pairs".into(), 0)), 0),
+                aligned(before, "after"),
+            )],
+            value: Box::new(v(K::Record(vec![
+                (at("pairs".into(), 0), worklist_name("pairs")),
+                (at("nodes".into(), 0), choose_node()),
+            ]))),
+        })
+    };
+    let expression = report("before");
+    let mut budget = Budget::for_program(worklist_limits());
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&expression, &bindings)
+    .unwrap();
+    let SourceValue::Record(result) = result else {
+        panic!("alignment report")
+    };
+    let pairs = match &result.fields[0].1 {
+        SourceValue::Sequence { values, .. } | SourceValue::List(values) => values,
+        _ => panic!("alignment rows"),
+    };
+    assert_eq!(pairs.len(), 3);
+    for (pair, (key, before, after)) in pairs.iter().zip([
+        ("ash", Some(0..3), None),
+        ("apple", Some(4..9), Some(4..9)),
+        ("birch", None, Some(10..15)),
+    ]) {
+        let SourceValue::Record(record) = pair else {
+            panic!("alignment record")
+        };
+        assert_eq!(
+            record.fields[0].1,
+            SourceValue::Constructed(V::String(key.into()))
+        );
+        for ((label, value), range) in record.fields[1..].iter().zip([before, after]) {
+            let Some(range) = range else {
+                assert_eq!(value, &SourceValue::Constructed(V::Absent), "{label}");
+                continue;
+            };
+            let SourceValue::Record(row) = value else {
+                panic!("original row")
+            };
+            let SourceValue::Words(words) = &row.fields[1].1 else {
+                panic!("original native node")
+            };
+            assert_eq!(words[0].range, range.clone());
+            assert_eq!(words[0].text.as_ptr(), source[range].as_ptr());
+        }
+    }
+    let SourceValue::Sequence { values: nodes, .. } = &result.fields[1].1 else {
+        panic!("guarded nodes")
+    };
+    for (node, range) in nodes.iter().zip([0..3, 4..9, 10..15]) {
+        let SourceValue::Words(words) = node else {
+            panic!("guarded native node")
+        };
+        assert_eq!(words[0].range, range.clone());
+        assert_eq!(words[0].text.as_ptr(), source[range].as_ptr());
+    }
+    let empty_expression = report("empty");
+    let empty_result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&empty_expression, &bindings)
+    .unwrap();
+    let SourceValue::Record(empty_result) = empty_result else {
+        panic!("empty-side report")
+    };
+    let SourceValue::Sequence { values, .. } = &empty_result.fields[1].1 else {
+        panic!("right-only nodes")
+    };
+    for (node, range) in values.iter().zip([10..15, 4..9]) {
+        let SourceValue::Words(words) = node else {
+            panic!("right-only node")
+        };
+        assert_eq!(words[0].range, range.clone());
+        assert_eq!(words[0].text.as_ptr(), source[range].as_ptr());
+    }
+    let empty = aligned("empty", "empty");
+    let scope = BTreeMap::from([("empty".into(), SourceKind::Sequence(Box::new(row_type())))]);
+    let mut functions = PreparedFunctions::prepare([], &SourceHost, &mut budget).unwrap();
+    let row_kind =
+        zirql::FunctionHost::declaration_kind(&SourceHost, &row_type(), &mut budget, &(0..1))
+            .unwrap();
+    let key_kind = zirql::FunctionHost::declaration_kind(
+        &SourceHost,
+        &DeclaredType::String,
+        &mut budget,
+        &(0..1),
+    )
+    .unwrap();
+    assert_eq!(
+        functions
+            .value_kind(&empty, &scope, None, &mut budget)
+            .unwrap(),
+        SourceKind::Sequence(Box::new(DeclaredType::Record(vec![
+            ("key".into(), DeclaredType::Native(key_kind)),
+            (
+                "before".into(),
+                DeclaredType::Optional(Box::new(DeclaredType::Native(row_kind.clone())))
+            ),
+            (
+                "after".into(),
+                DeclaredType::Optional(Box::new(DeclaredType::Native(row_kind)))
+            ),
+        ])))
+    );
+    let bad = aligned("bad", "empty");
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&bad, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(ref e) if e.message.contains("record rows"))
+    );
+    for expression in [expression, empty_expression, empty, bad] {
+        zirql::dispose_native_value(expression);
+    }
 }

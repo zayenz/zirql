@@ -1082,6 +1082,7 @@ pub fn is_common_value_call(name: &str) -> bool {
             | "group_by"
             | "windows"
             | "runs_by"
+            | "align"
             | "sort"
             | "sort_by"
             | "min"
@@ -2944,6 +2945,21 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     self.reader.expect(')')?;
                     K::RunsBy {
                         rows: Box::new(value.into_value()),
+                        field,
+                    }
+                } else if name.value == "align" {
+                    self.reader.expect(',')?;
+                    let right = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.reader.expect(',')?;
+                    if !self.reader.keyword("by") {
+                        return Err(self.reader.error("expected by=\"field\""));
+                    }
+                    self.reader.expect('=')?;
+                    let field = self.string()?;
+                    self.reader.expect(')')?;
+                    K::Align {
+                        left: Box::new(value.into_value()),
+                        right: Box::new(right.into_value()),
                         field,
                     }
                 } else if name.value == "group_by" {
@@ -4950,6 +4966,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 size: right,
             }
             | K::ZipExact { left, right }
+            | K::Align { left, right, .. }
             | K::ArrayAccess {
                 array: left,
                 index: right,

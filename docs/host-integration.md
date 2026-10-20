@@ -1090,3 +1090,31 @@ behaviour and preservation of axes; `with` does not provide keyed updates.
 Zirium can retain a native operation beside changed report fields using its
 existing handle and source-coordinate rules. This core slice changes neither
 consumer repository and adds no symbolic CP operation.
+
+## Record alignment adoption
+
+The shared reader, callable evaluator and local CSV/word hosts support
+`align(left, right, by="field")` in this development checkout. The
+[benchmark comparison](examples.md#compare-benchmark-tables) demonstrates matched,
+removed and new cases with explicit guards before reading each side's timing.
+
+Zincite and Zirium need a dependency revision containing
+`ValueExpressionKind::Align`, updates to exhaustive AST visitors and callable
+builders, and frontend lowering to that shared node. Common-reader frontends
+receive the call grammar through that reader. Host-owned parsers must preserve
+the literal selector's surface range. Native records need existing positional
+and record value/kind views and list/record constructors. Their equality and
+hashing must agree for admitted key values, retaining source and diff-side
+identity. Optional before/after contracts must survive downstream projections,
+including empty native sequences.
+
+A Zincite report can compare two projected model summaries by an explicit
+stable field, retaining declarations beside their measurements. Model meaning,
+MiniZinc admission and Data edit safety stay with Zincite. A Zirium report can
+compare two projected operation summaries by an explicit unique label while
+retaining operation handles and source coordinates. Its native semantic diff
+and cross-document identity policy remain host responsibilities. Neither use
+infers native identity from matching display text. Both consumers must choose
+and validate their keys and rendering of absent sides before exposing these
+reports. This core slice changes no consumer repository and adds no symbolic CP
+operation.

@@ -178,6 +178,41 @@ The shared reader and local examples support these operations in this checkout.
 Using them on real Zirium operations requires [consumer
 adoption](host-integration.md#sequence-neighbourhood-adoption).
 
+## Compare benchmark tables
+
+A benchmark report needs to retain removed and new cases as well as cases with
+two timings. Run this comparison of constructed tables through the local CSV
+host in the development checkout:
+
+```sh
+cargo run --locked --example csv -- '
+let before = [{"case":"parse","ms":12}, {"case":"old","ms":7}, {"case":"solve","ms":40}];
+let after = [{"case":"new","ms":9}, {"case":"solve","ms":35}, {"case":"parse","ms":10}];
+align(before, after, by="case") | map({
+  "case": _.key,
+  "before_ms": if occurs(_.before) then _.before.ms else null endif,
+  "after_ms": if occurs(_.after) then _.after.ms else null endif,
+  "delta_ms": if occurs(_.before) and occurs(_.after)
+              then _.after.ms - _.before.ms else null endif
+})
+' examples/csv/people.csv
+```
+
+```json
+[{"case":"parse","before_ms":12,"after_ms":10,"delta_ms":-2},{"case":"old","before_ms":7,"after_ms":null,"delta_ms":null},{"case":"solve","before_ms":40,"after_ms":35,"delta_ms":-5},{"case":"new","before_ms":null,"after_ms":9,"delta_ms":null}]
+```
+
+The left table determines the order of `parse`, `old` and `solve`, even though
+the right table lists them differently. The right-only `new` case follows.
+Every timing access is guarded by presence of its side; a missing side produces
+`null`. A delta requires both sides. Duplicate case keys fail rather than
+multiplying report rows.
+
+The CSV file supplies the executable's normal input; this report constructs its
+two benchmark tables in the query. The [value guide](values.md#align-two-record-sequences)
+defines the alignment contract. Using two model summaries in Zincite or two
+projected operation summaries in Zirium requires [consumer adoption](host-integration.md#record-alignment-adoption).
+
 ## Keep the occurrences in each group
 
 To find every position of a repeated word, group the occurrences by spelling.

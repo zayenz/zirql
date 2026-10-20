@@ -534,6 +534,14 @@ pub enum ValueExpressionKind<Q = ()> {
         rows: Box<ValueExpression<Q>>,
         field: Located<String>,
     },
+    /// Fully align positional records by one unique present field on each side.
+    /// Results contain `key`, optional `before` and optional `after`; retain
+    /// left order followed by right-only order and use structural key identity.
+    Align {
+        left: Box<ValueExpression<Q>>,
+        right: Box<ValueExpression<Q>>,
+        field: Located<String>,
+    },
     /// Stably sort an array, set or dictionary, retaining its kind.
     /// Without a selector, arrays/sets use values and dictionaries use keys.
     /// Descending reverses comparisons, preserving current order for ties.
@@ -3209,7 +3217,9 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
     ) -> Result<Vec<ValueType>, QueryError> {
         if !matches!(
             expression.value,
-            ValueExpressionKind::Map { .. } | ValueExpressionKind::FlatMap { .. }
+            ValueExpressionKind::Map { .. }
+                | ValueExpressionKind::FlatMap { .. }
+                | ValueExpressionKind::Align { .. }
         ) {
             self.queries.prepare_computation(expression, budget)?;
         }
@@ -4060,6 +4070,23 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 }
                 one_type(
                     ValueType::Array(ArrayType::Elements(groups)),
+                    budget,
+                    location,
+                )
+            }
+            ValueExpressionKind::Align { left, right, field } => {
+                let left = self.walk(left, budget)?;
+                let right = self.walk(right, budget)?;
+                let mut records = alignment_records(left, field, "before", budget, location)?;
+                append_types(
+                    &mut records,
+                    alignment_records(right, field, "after", budget, location)?,
+                    budget,
+                    location,
+                )?;
+                self.queries.prepare_computation(expression, budget)?;
+                one_type(
+                    ValueType::Array(ArrayType::Elements(records)),
                     budget,
                     location,
                 )
@@ -6155,6 +6182,68 @@ fn group_by(
         items.push(row);
     }
     Ok(ConstructedValue::Array(groups))
+}
+
+pub(crate) fn alignment_key_type(
+    row: ValueType,
+    field: &Located<String>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    match shape_type(row, budget, location)? {
+        ValueType::Record(fields) => {
+            let index = execution::record_field_position(
+                fields.iter().map(|(label, _)| label.as_str()),
+                &field.value,
+                budget,
+                location,
+            )?;
+            Ok(fields.into_iter().nth(index).expect("selected key field").1)
+        }
+        ValueType::RecordKind | ValueType::Unestablished => Ok(ValueType::Unestablished),
+        _ => Err(error(location, "align needs record rows")),
+    }
+}
+
+fn alignment_records(
+    sources: Vec<ValueType>,
+    field: &Located<String>,
+    side: &str,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    let selector = Location::Query(field.range.clone());
+    let mut records = Vec::new();
+    for source in sources {
+        for row in positional_elements(source, budget, location)? {
+            let key =
+                alignment_key_type(copy_type(&row, budget, location)?, field, budget, &selector)?;
+            let mut fields = metadata_vec(3, budget, location)?;
+            budget.charge(
+                "key".len() + "before".len() + "after".len(),
+                location.clone(),
+            )?;
+            fields.push(("key".into(), key));
+            for label in ["before", "after"] {
+                let actual = if label == side {
+                    copy_type(&row, budget, location)?
+                } else {
+                    ValueType::Unestablished
+                };
+                fields.push((
+                    label.into(),
+                    declared_fact(
+                        &DeclaredType::Optional(Box::new(DeclaredType::Value)),
+                        actual,
+                        budget,
+                        location,
+                    )?,
+                ));
+            }
+            push_metadata(&mut records, ValueType::Record(fields), budget, location)?;
+        }
+    }
+    Ok(records)
 }
 
 pub(crate) fn positional_elements(

@@ -1211,6 +1211,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Tally { .. }
                                             | PreparedKind::Windows { .. }
                                             | PreparedKind::RunsBy { .. }
+                                            | PreparedKind::Align { .. }
                                             | PreparedKind::Lookup { .. }
                                             | PreparedKind::HasKey { .. }
                                             | PreparedKind::Binary {
@@ -3346,6 +3347,7 @@ fn operands<'a, Q>(
         | PreparedKind::ArrayAccess { .. }
         | PreparedKind::Range { .. }
         | PreparedKind::Windows { .. }
+        | PreparedKind::Align { .. }
         | PreparedKind::ZipExact { .. } => 2,
         _ => 1,
     };
@@ -3370,6 +3372,7 @@ fn operands<'a, Q>(
             items: left,
             size: right,
         }
+        | PreparedKind::Align { left, right, .. }
         | PreparedKind::ZipExact { left, right } => result.extend([left.as_ref(), right.as_ref()]),
         PreparedKind::Lookup { value, key } | PreparedKind::HasKey { value, key } => {
             result.extend([value.as_ref(), key.as_ref()])
@@ -3553,6 +3556,100 @@ fn runs_by<'a, Q, H: Host<'a, Q> + ?Sized>(
     host.finish_array(runs, budget, location)
 }
 
+struct AlignmentRow<V> {
+    key: V,
+    before: Option<V>,
+    after: Option<V>,
+}
+
+fn align<'a, Q, H: Host<'a, Q> + ?Sized>(
+    left: ResultValue<'a, H, Q>,
+    right: ResultValue<'a, H, Q>,
+    field: &Located<String>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let left = generator_source(left, true, host, budget, location)?;
+    let right = generator_source(right, true, host, budget, location)?;
+    let selector = Location::Query(field.range.clone());
+    let mut rows: Vec<AlignmentRow<ResultValue<'a, H, Q>>> = admit_container(0, budget, location)?;
+    let mut hashes = HashIndex::default();
+    for (mut source, side) in [(left, "left"), (right, "right")] {
+        for index in 0..source.len() {
+            let mut row = source.child(index, budget, location)?;
+            let key = select_record_field(&mut row, &field.value, host, budget, &selector)?;
+            if !host.occurs(&key, budget, &selector)? {
+                return Err(error(&selector, "alignment keys must be present").into());
+            }
+            let hash = host.collection_hash(&key, budget, &selector)?;
+            let mut matched = None;
+            for &candidate in hashes.candidates(hash) {
+                budget.charge(1, selector.clone())?;
+                if host.collection_equal(&rows[candidate].key, &key, budget, &selector)? {
+                    matched = Some(candidate);
+                    break;
+                }
+            }
+            if let Some(index) = matched {
+                let previous = &mut rows[index];
+                if side == "left" || previous.after.is_some() {
+                    return Err(error(&selector, format!("duplicate {side} alignment key")).into());
+                }
+                previous.after = Some(row);
+            } else {
+                budget.check_items(sum(rows.len(), 1, location)?, location.clone())?;
+                hashes.insert(hash, rows.len(), budget, &selector)?;
+                let (before, after) = if side == "left" {
+                    (Some(row), None)
+                } else {
+                    (None, Some(row))
+                };
+                push_metadata(
+                    &mut rows,
+                    AlignmentRow { key, before, after },
+                    budget,
+                    location,
+                )?;
+                budget.charge_results(1, location.clone())?;
+            }
+        }
+    }
+    let mut output = admit_container(rows.len(), budget, location)?;
+    for row in rows {
+        output.push(finish_alignment_row(row, host, budget, location)?);
+    }
+    host.finish_array(output, budget, location)
+}
+
+fn finish_alignment_row<'a, Q, H: Host<'a, Q> + ?Sized>(
+    row: AlignmentRow<ResultValue<'a, H, Q>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        let mut fields = admit_container(3, budget, location)?;
+        fields.push(("key".into(), row.key));
+        for (label, value) in [("before", row.before), ("after", row.after)] {
+            let value = match value {
+                Some(value) => value,
+                None => Value::constructed(RuntimeValue::Owned(scalar(
+                    ConstructedValue::Absent,
+                    budget,
+                    location,
+                )?)),
+            };
+            fields.push((label.into(), value));
+        }
+        budget.charge(
+            "key".len() + "before".len() + "after".len(),
+            location.clone(),
+        )?;
+        host.finish_record(fields, budget, location)
+    })
+}
+
 fn finish_run<'a, Q, H: Host<'a, Q> + ?Sized>(
     key: ResultValue<'a, H, Q>,
     items: Vec<ResultValue<'a, H, Q>>,
@@ -3724,6 +3821,11 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
                 &location,
                 &size_location,
             );
+        }
+        PreparedKind::Align { field, .. } => {
+            let right = values.pop().expect("right alignment input");
+            let left = values.pop().expect("left alignment input");
+            return align(left, right, field, host, budget, &location);
         }
         PreparedKind::RunsBy { field, .. } => {
             return runs_by(

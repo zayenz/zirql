@@ -8136,3 +8136,210 @@ fn record_update_failures_follow_written_evaluation_order() {
     .unwrap_err();
     assert!(error.message.contains("undefined binding: a"), "{error}");
 }
+
+#[test]
+fn alignment_keeps_complete_rows_and_left_then_right_only_order() {
+    let row = |id: &str, time| {
+        V::Record(vec![
+            ("id".into(), V::String(id.into())),
+            ("ms".into(), V::Integer(time)),
+        ])
+    };
+    let before = || V::Array(vec![row("b", 10), row("a", 20), row("c", 30)]);
+    let after = || V::Array(vec![row("d", 40), row("c", 33), row("b", 12)]);
+    let aligned = |id: &str, before, after| {
+        V::Record(vec![
+            ("key".into(), V::String(id.into())),
+            ("before".into(), before),
+            ("after".into(), after),
+        ])
+    };
+    let expected = V::Array(vec![
+        aligned("b", row("b", 10), row("b", 12)),
+        aligned("a", row("a", 20), V::Absent),
+        aligned("c", row("c", 30), row("c", 33)),
+        aligned("d", V::Absent, row("d", 40)),
+    ]);
+    let expression = e(K::Align {
+        left: Box::new(literal(before())),
+        right: Box::new(literal(after())),
+        field: Located::new("id".into(), 7..11),
+    });
+    assert_eq!(evaluate(&expression).unwrap(), expected);
+    let source =
+        r#"align(words, [{"id":"d","ms":40}, {"id":"c","ms":33}, {"id":"b","ms":12}], by="id")"#;
+    assert_eq!(run_query(source, before(), &mut ample()).unwrap(), expected);
+    let guarded = format!(
+        r#"{source} | map({{"id": _.key, "delta": if occurs(_.before) and occurs(_.after) then _.after.ms - _.before.ms else null endif}})"#
+    );
+    assert_eq!(
+        run_query(&guarded, before(), &mut ample()).unwrap(),
+        V::Array(vec![
+            V::Record(vec![
+                ("id".into(), V::String("b".into())),
+                ("delta".into(), V::Integer(2))
+            ]),
+            V::Record(vec![
+                ("id".into(), V::String("a".into())),
+                ("delta".into(), V::Absent)
+            ]),
+            V::Record(vec![
+                ("id".into(), V::String("c".into())),
+                ("delta".into(), V::Integer(3))
+            ]),
+            V::Record(vec![
+                ("id".into(), V::String("d".into())),
+                ("delta".into(), V::Absent)
+            ]),
+        ])
+    );
+    let empty = V::Array(vec![]);
+    assert_eq!(
+        run_query(r#"align([], [], by="id")"#, V::Absent, &mut ample()).unwrap(),
+        empty
+    );
+    assert_eq!(
+        run_query(r#"align(words, [], by="id")"#, before(), &mut ample()).unwrap(),
+        V::Array(vec![
+            aligned("b", row("b", 10), V::Absent),
+            aligned("a", row("a", 20), V::Absent),
+            aligned("c", row("c", 30), V::Absent),
+        ])
+    );
+    assert_eq!(
+        run_query(r#"align([], words, by="id")"#, after(), &mut ample()).unwrap(),
+        V::Array(vec![
+            aligned("d", V::Absent, row("d", 40)),
+            aligned("c", V::Absent, row("c", 33)),
+            aligned("b", V::Absent, row("b", 12)),
+        ])
+    );
+}
+
+#[test]
+fn alignment_rejects_invalid_keys_and_operands_even_with_an_empty_side() {
+    for (source, message) in [
+        (
+            r#"align([{"id":1}, {"id":1}], [], by="id")"#,
+            "duplicate left",
+        ),
+        (
+            r#"align([], [{"id":1}, {"id":1}], by="id")"#,
+            "duplicate right",
+        ),
+        (
+            r#"align([{"other":1}], [], by="id")"#,
+            "missing record field",
+        ),
+        (
+            r#"align([], [{"id":null}], by="id")"#,
+            "keys must be present",
+        ),
+    ] {
+        let error = run_query(source, V::Absent, &mut ample()).unwrap_err();
+        assert!(error.message.contains(message), "{source}: {error}");
+        let start = source.rfind("\"id\"").unwrap();
+        assert_eq!(error.location, Location::Query(start..start + 4));
+    }
+    assert!(
+        run_query(r#"align([], [1], by="id")"#, V::Absent, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("record rows")
+    );
+    assert!(
+        run_query(r#"align({1, 2}, [], by="id")"#, V::Absent, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("positional")
+    );
+    assert!(
+        run_query(
+            r#"align([], [1: {"id":1}], by="id")"#,
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap_err()
+        .message
+        .contains("positional")
+    );
+    assert!(
+        run_query(
+            r#"align([], [{"id": 1 + true}], by="id")"#,
+            V::Absent,
+            &mut ample()
+        )
+        .is_err()
+    );
+    assert!(run_query(r#"align([], [], "id")"#, V::Absent, &mut ample()).is_err());
+    assert!(run_query(r#"align([], [], by=1)"#, V::Absent, &mut ample()).is_err());
+}
+
+#[test]
+fn alignment_uses_unordered_structural_key_identity_without_coercion() {
+    let result = run_query(
+        r#"align(
+        [{"id": {1, 2}}, {"id": {"a":1,"b":2}}, {"id":1}],
+        [{"id": {"b":2,"a":1}}, {"id": {2, 1}}, {"id":1.0}], by="id")"#,
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap();
+    let V::Array(rows) = result else {
+        panic!("aligned array")
+    };
+    assert_eq!(rows.len(), 4);
+    let V::Record(first) = &rows[0] else {
+        panic!("alignment record")
+    };
+    assert_eq!(
+        first[0].1,
+        V::Set {
+            element_type: Some(SetElementType::Integer),
+            elements: vec![V::Integer(1), V::Integer(2)].into()
+        }
+    );
+    for row in &rows[..2] {
+        let V::Record(fields) = row else {
+            panic!("alignment record")
+        };
+        assert!(fields[1].1.occurs() && fields[2].1.occurs());
+    }
+    let V::Record(left_only) = &rows[2] else {
+        panic!("left-only record")
+    };
+    assert_eq!(left_only[0].1, V::Integer(1));
+    assert!(!left_only[2].1.occurs());
+    let V::Record(right_only) = &rows[3] else {
+        panic!("right-only record")
+    };
+    assert_eq!(right_only[0].1, V::Float(1.0));
+    assert!(!right_only[1].1.occurs());
+    for source in [
+        r#"align([{"id":{1,2}}, {"id":{2,1}}], [], by="id")"#,
+        r#"align([], [{"id":{"a":1,"b":2}}, {"id":{"b":2,"a":1}}], by="id")"#,
+    ] {
+        assert!(
+            run_query(source, V::Absent, &mut ample())
+                .unwrap_err()
+                .message
+                .contains("duplicate")
+        );
+    }
+}
+
+#[test]
+fn alignment_exhaustion_fails_the_request() {
+    let rows = V::Array(
+        (0..20)
+            .map(|id| V::Record(vec![("id".into(), V::Integer(id))]))
+            .collect(),
+    );
+    let error = run_query(
+        r#"align(words, [], by="id")"#,
+        rows,
+        &mut budget(100_000, 30, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::ResultLimit);
+}

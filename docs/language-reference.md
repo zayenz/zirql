@@ -199,6 +199,7 @@ names but operate on a host's native selections.
 | `sort(a)`, `sort_by(d, value)`, `sort_by(rows, "field")` | Stable same-kind array, set or dictionary ordering, optionally `descending=true` |
 | `min(a)`, `max(a)`, `min_by(rows, "field")`, `max_by(rows, "field")` | Select an extremum, or absence on empty input |
 | `group_by(rows, "field")` | First-seen groups, each with `key` and `items` |
+| `align(left, right, by="field")` | Full alignment by unique present structural keys; `key`, optional `before` and optional `after`, in left then right-only order |
 | `lookup(a, key)`, `has_key(a, key)` | Optional access and membership |
 | `occurs(v)`, `absent(v)` | Test presence or absence |
 | `v default fallback` | Evaluate the fallback only when `v` is absent |

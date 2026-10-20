@@ -356,6 +356,47 @@ development checkout, including the local word and CSV examples. See the
 [runnable word and operation-name reports](examples.md#find-adjacent-word-pairs)
 and [consumer adoption requirements](host-integration.md#sequence-neighbourhood-adoption).
 
+## Align two record sequences
+
+`align(left, right, by="field")` compares two positional sequences of records.
+Each row must have a present value in the selected field, and each side must
+have unique keys. The result is an array of records with `key`, `before` and
+`after`. An unmatched side is absent. Guard it with `occurs` or `absent` before
+selecting its fields.
+
+```zirql
+align([{"id": "a", "ms": 12}, {"id": "b", "ms": 7}],
+      [{"id": "c", "ms": 9}, {"id": "a", "ms": 10}], by="id")
+```
+
+This produces:
+
+```json
+[{"key":"a","before":{"id":"a","ms":12},"after":{"id":"a","ms":10}},{"key":"b","before":{"id":"b","ms":7},"after":null},{"key":"c","before":null,"after":{"id":"c","ms":9}}]
+```
+
+Rows follow left input order, then right-only keys in right input order. A
+matched row keeps the left key's representation and both original records.
+Keys use structural identity: set membership and dictionary associations ignore
+insertion order, while arrays and tuples retain positions. Different value
+kinds stay distinct, including integer and float keys. Keys may contain nested
+absence; the selected key itself must be present. Hosts can retain native keys
+through their existing identity and hashing rules.
+
+Both operands receive normal preparation, including when one is empty. They
+evaluate eagerly once, left then right. Empty sides contribute unmatched rows;
+both empty returns `[]`. Missing fields, absent keys, duplicate keys and
+incompatible source or row kinds fail with located errors. The selector is a
+literal field name; this operation has no selector callback or pipeline suffix.
+Work, indexing, comparisons and result construction share the request budget;
+exhaustion fails the request.
+
+The shared reader, callable evaluator and local CSV/word hosts support this call
+in the development checkout. Run the [benchmark comparison](examples.md#compare-benchmark-tables)
+for a report that reads timings only from present sides. Consumer adoption is
+[separate](host-integration.md#record-alignment-adoption); `align` is an ordinary
+value operation and adds no symbolic CP support.
+
 ## Stable record groups
 
 `group_by(rows, "field")` groups an array of records by a literal field label.

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-107"
 key = "full-value-alignment"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -27,10 +27,10 @@ zip_exact currently demands matching axes and present cells; native semantic dif
 
 ## Done when
 
-- [ ] Provide shared textual and callable align(left, right, by="field") with full alignment and unique present keys on each side; use existing structural key identity and reject duplicates rather than multiplying rows.
-- [ ] Results contain key, before and after, with absence for an unmatched side. Emit keys in left input order followed by right-only keys in right input order; preserve records and native values without serialization.
-- [ ] A runnable comparison handles missing sides explicitly before field access. Focused checks cover matched/left-only/right-only rows, empty sides, duplicate keys and equal structural keys with different insertion order.
-- [ ] Update the relevant public language guide and callable/embedding documentation with the implemented contract, supported host/example entry point, limitations and a runnable example with expected output. Document necessary consumer adoption separately.
+- [x] Provide shared textual and callable align(left, right, by="field") with full alignment and unique present keys on each side; use existing structural key identity and reject duplicates rather than multiplying rows.
+- [x] Results contain key, before and after, with absence for an unmatched side. Emit keys in left input order followed by right-only keys in right input order; preserve records and native values without serialization.
+- [x] A runnable comparison handles missing sides explicitly before field access. Focused checks cover matched/left-only/right-only rows, empty sides, duplicate keys and equal structural keys with different insertion order.
+- [x] Update the relevant public language guide and callable/embedding documentation with the implemented contract, supported host/example entry point, limitations and a runnable example with expected output. Document necessary consumer adoption separately.
 
 ## Validation
 
@@ -40,3 +40,12 @@ zip_exact currently demands matching axes and present cells; native semantic dif
 - cargo test --workspace
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Implemented full unique-key alignment with structural identity, stable order, ordinary optional side values and retained native rows/contracts. Added benchmark comparison and public/API/adoption documentation. Independent whole review and focused accounting recheck passed at W0dfe497e2f6d08ad.
+
+Validation:
+
+- Formatting, fatal workspace Clippy, 179 workspace tests and 6 doctests, diff whitespace and zdev consistency checks passed.
+- Focused structural/duplicate/empty/absence/budget/native controls passed and documented comparison matched exact JSON. Corrected two-operand allocation admission; focused recheck passed and final snapshot comparison equal.

@@ -436,6 +436,7 @@ fn builtin(name: &str) -> bool {
             | "group_by"
             | "windows"
             | "runs_by"
+            | "align"
             | "require"
             | "project"
             | "match"
@@ -829,6 +830,10 @@ struct Operand<K> {
     names: Vec<String>,
     kind: K,
     argument_kinds: BTreeMap<usize, K>,
+}
+struct AlignmentSide<K> {
+    row: DeclaredType<K>,
+    key: DeclaredType<K>,
 }
 struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
@@ -1320,6 +1325,9 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         ],
                     ))))
                 }
+                ValueExpressionKind::Align { left, right, field } => {
+                    Some(self.alignment_declaration(left, right, field, budget)?)
+                }
                 ValueExpressionKind::Map { array, argument }
                 | ValueExpressionKind::FlatMap { array, argument } => self.mapping_declaration(
                     array,
@@ -1365,6 +1373,108 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 _ => self.local_kind(value, budget)?.map(DeclaredType::Native),
             })
         })
+    }
+
+    fn alignment_declaration(
+        &mut self,
+        left: &ValueExpression<Query<C, H>>,
+        right: &ValueExpression<Query<C, H>>,
+        field: &Located<String>,
+        budget: &mut Budget,
+    ) -> Result<DeclaredType<Kind<C, H>>, QueryError> {
+        let before = self.alignment_side_declaration(left, field, budget)?;
+        let after = self.alignment_side_declaration(right, field, budget)?;
+        let location = Location::Query(field.range.clone());
+        let key = if crate::runtime_types::same_declaration(
+            &before.key,
+            &after.key,
+            budget,
+            &location,
+        )? {
+            before.key
+        } else {
+            DeclaredType::Value
+        };
+        crate::projection::admit_slots::<(String, DeclaredType<Kind<C, H>>)>(
+            3,
+            budget,
+            &field.range,
+        )?;
+        budget.charge("key".len() + "before".len() + "after".len(), location)?;
+        Ok(DeclaredType::Sequence(Box::new(DeclaredType::Record(
+            vec![
+                ("key".into(), key),
+                (
+                    "before".into(),
+                    DeclaredType::Optional(Box::new(before.row)),
+                ),
+                ("after".into(), DeclaredType::Optional(Box::new(after.row))),
+            ],
+        ))))
+    }
+
+    fn alignment_side_declaration(
+        &mut self,
+        rows: &ValueExpression<Query<C, H>>,
+        field: &Located<String>,
+        budget: &mut Budget,
+    ) -> Result<AlignmentSide<Kind<C, H>>, QueryError> {
+        let row = match self.value_declaration(rows, budget)? {
+            Some(DeclaredType::Sequence(element) | DeclaredType::Array(element)) => *element,
+            Some(DeclaredType::Native(kind)) => {
+                DeclaredType::Native(self.positional_element_kind(&kind, budget, &rows.range)?)
+            }
+            None => DeclaredType::Value,
+            _ => {
+                return Err(QueryError::query(
+                    rows.range.clone(),
+                    "operation needs positional sequences",
+                ));
+            }
+        };
+        let key = match &row {
+            DeclaredType::Record(fields) => {
+                let index = execution::record_field_position(
+                    fields.iter().map(|(label, _)| label.as_str()),
+                    &field.value,
+                    budget,
+                    &Location::Query(field.range.clone()),
+                )?;
+                crate::runtime_types::copy_declaration(
+                    &fields[index].1,
+                    budget,
+                    &Location::Query(field.range.clone()),
+                )?
+            }
+            DeclaredType::Native(kind) => {
+                if let Some(record) = self.host.capture_record_kind(kind) {
+                    DeclaredType::Native(record.get(field, budget)?.clone())
+                } else if let Some(types) = self.host.scalar_types(kind, budget, &rows.range)? {
+                    for ty in types {
+                        crate::value::alignment_key_type(
+                            ty,
+                            field,
+                            budget,
+                            &Location::Query(field.range.clone()),
+                        )?;
+                    }
+                    DeclaredType::Value
+                } else {
+                    return Err(QueryError::query(
+                        rows.range.clone(),
+                        "align needs record rows",
+                    ));
+                }
+            }
+            DeclaredType::Value => DeclaredType::Value,
+            _ => {
+                return Err(QueryError::query(
+                    rows.range.clone(),
+                    "align needs record rows",
+                ));
+            }
+        };
+        Ok(AlignmentSide { row, key })
     }
 
     fn updated_record_declaration(
@@ -1760,6 +1870,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 | ValueExpressionKind::FlatMap { .. }
                 | ValueExpressionKind::Windows { .. }
                 | ValueExpressionKind::RunsBy { .. }
+                | ValueExpressionKind::Align { .. }
                 | ValueExpressionKind::Tuple(_) => match self.value_declaration(value, budget)? {
                     Some(d)
                         if crate::runtime_types::contains_native(
@@ -2017,6 +2128,9 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
                     matches!(expression.value, ValueExpressionKind::FlatMap { .. }),
                     budget,
                 )?;
+            }
+            ValueExpressionKind::Align { left, right, field } => {
+                self.alignment_declaration(left, right, field, budget)?;
             }
             ValueExpressionKind::Loop { states, body } => {
                 let mut types = Vec::new();
