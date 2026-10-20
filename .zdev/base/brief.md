@@ -1704,3 +1704,20 @@ assuming that every ready pair is compatible. Follow-up task creation/import and
 implementation are authorized under the recorded two-role and serial integration
 limits. No publication, deployment, new reflection, model resolver or broader
 edit policy is included.
+
+### General dictionary keys (2026-10-20)
+
+The user corrected base-100's record-array tally workaround and requested
+constructed tuples, arrays, sets and dictionaries as both dictionary keys and
+values. This supersedes the older string-only dictionary restriction. Retain
+string-field records for existing string dictionaries; add general constructed
+dictionaries using structural key identity. Lists/tuples compare by position,
+sets by membership and dictionaries by associations, independently of insertion
+order. Different value kinds are distinct keys, without string coercion.
+Tally returns a dictionary with actual keys; empty results are dictionaries.
+Duplicate keys fail before evaluating their values. Lookup, copies, type facts
+and value sorting retain dictionary kind. No total order is invented for
+collection keys; unsupported sorting fails explicitly. Rendering and JSON
+conversion stay with hosts; this change authorizes no consumer edits or release.
+Use focused existing public tests for the word example, reversed and duplicate
+sets, empty input, structural collection keys, lookup and string compatibility.
