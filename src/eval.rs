@@ -3,6 +3,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
 
+use crate::value::identity::{HashIndex, hash_string};
 use crate::{
     Located, Location, MAX_NESTING, Nesting, Pipeline, Predicate, PredicateKind, QueryError,
     QueryErrorCategory, Stage,
@@ -514,14 +515,21 @@ where
                         };
                         budget.charge_results(1, location.clone())?;
                         let mut counts: Vec<(String, usize)> = Vec::new();
+                        let mut hashes = HashIndex::default();
                         for item in items {
                             budget.charge(
                                 host.collection_item_work(),
                                 Location::Query(stage.range.clone()),
                             )?;
                             let key = host.tally_key(item, &mut context, budget, &stage.range)?;
+                            budget.charge_program_work(
+                                key.len().checked_add(1).ok_or_else(storage_error)?,
+                                location.clone(),
+                            )?;
+                            let hash = hash_string(&key);
                             let mut existing = None;
-                            for (previous, count) in &mut counts {
+                            for &index in hashes.candidates(hash) {
+                                let previous = &counts[index].0;
                                 let work = previous
                                     .len()
                                     .min(key.len())
@@ -529,11 +537,12 @@ where
                                     .ok_or_else(storage_error)?;
                                 budget.charge_program_work(work, location.clone())?;
                                 if previous == &key {
-                                    existing = Some(count);
+                                    existing = Some(index);
                                     break;
                                 }
                             }
-                            if let Some(count) = existing {
+                            if let Some(index) = existing {
+                                let count = &mut counts[index].1;
                                 *count = count.checked_add(1).ok_or_else(|| {
                                     QueryError::query(stage.range.clone(), "tally count overflow")
                                 })?;
@@ -551,6 +560,7 @@ where
                                 budget.charge_program_work(1, location.clone())?;
                                 // One dictionary entry and its newly produced count.
                                 budget.charge_results(2, location.clone())?;
+                                hashes.insert_program(hash, counts.len(), budget, &location)?;
                                 counts.push((key, 1));
                             }
                         }

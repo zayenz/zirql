@@ -1716,8 +1716,36 @@ sets by membership and dictionaries by associations, independently of insertion
 order. Different value kinds are distinct keys, without string coercion.
 Tally returns a dictionary with actual keys; empty results are dictionaries.
 Duplicate keys fail before evaluating their values. Lookup, copies, type facts
-and value sorting retain dictionary kind. No total order is invented for
-collection keys; unsupported sorting fails explicitly. Rendering and JSON
+and value sorting retain dictionary kind. Structural ordering and hashing apply
+to all constructed kinds, including nested collection keys and set elements.
+Rendering and JSON
 conversion stay with hosts; this change authorizes no consumer edits or release.
 Use focused existing public tests for the word example, reversed and duplicate
 sets, empty input, structural collection keys, lookup and string compatibility.
+
+The same request includes sets of constructed values, including mixed types.
+General sets use structural identity with positional list/tuple equality and
+unordered nested sets/dictionaries. Explicit scalar set declarations stay
+strict; `set<value>()` expresses a general empty set. Tally accepts any
+constructed array elements under that same identity rule.
+
+
+The user's follow-up requires public general-value hashing and comparison,
+hash-indexed membership and dictionary lookup, and domain-value participation.
+`constructed_value_hash` and `compare_constructed_values` cover every admitted
+constructed kind. Lists/tuples are positional; sets and dictionaries hash and
+compare canonically independent of insertion order. Different scalar kinds stay
+distinct; floating signed zeros share identity and hash. General sets and
+dictionary keys sort structurally; scalar selector contracts stay strict.
+Construction and tally use hash buckets with equality collision checks. General
+dictionaries cache a lazily built lookup index and invalidate it on mutation.
+
+`FunctionHost` collection views and constructors retain native domain handles
+as ordinary set elements and dictionary keys or values, including handles from
+different query paths or sources. `native_values_equal`, `native_value_hash`
+and `native_values_compare` recurse through those collections using host leaf
+identity and ordering. A host can supply cross-kind native ordering. Existing
+host context, stale-handle, ownership and source-coordinate rules continue to
+apply. JSON may use tagged entry pairs; consumer adoption and its serialization
+policy remain separate work. These requirements supersede the earlier proposal
+to refuse collection-key ordering and authorize no consumer edits or release.

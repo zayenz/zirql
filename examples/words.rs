@@ -1,6 +1,6 @@
 //! A constructed-value host for the documentation's word-analysis examples.
 //!
-//! Count unordered neighbouring word sets (Zirql 0.1.2):
+//! Count unordered neighbouring word sets into a dictionary:
 //! cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
 use std::{collections::BTreeMap, ops::Range};
 use zirql::{

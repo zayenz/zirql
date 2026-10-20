@@ -1,8 +1,13 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::size_of;
 
+mod dictionary;
+pub use dictionary::Dictionary;
 pub(crate) mod execution;
+pub(crate) mod identity;
+mod set;
+pub use set::SetElements;
 pub(crate) mod pattern;
 pub use pattern::{Pattern, PatternKind, copy_pattern, dispose_pattern, pattern_names};
 pub(crate) mod prepared;
@@ -78,10 +83,12 @@ pub struct KeyedArrayType {
     pub elements: Vec<ValueType>,
 }
 
-/// Supported homogeneous set identities. Float identities use numeric equality,
+/// Precise scalar or general constructed set identities. Floats use numeric equality,
 /// so positive and negative zero denote the same element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SetElementType {
+    /// Arbitrary constructed values, compared structurally.
+    Value,
     Boolean,
     Integer,
     Float,
@@ -117,9 +124,12 @@ pub enum ConstructedValue {
     Array(Vec<Self>),
     Tuple(Vec<Self>),
     Record(Vec<(String, Self)>),
+    /// General keys and values, retaining insertion order. String-only dictionaries
+    /// use Record for structural field access and existing host compatibility.
+    Dictionary(Dictionary),
     Set {
         element_type: Option<SetElementType>,
-        elements: Vec<Self>,
+        elements: SetElements,
     },
 }
 
@@ -134,6 +144,12 @@ pub(crate) fn dispose_constructed_value(value: ConstructedValue) {
             }
             ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => {
                 pending.extend(values);
+            }
+            ConstructedValue::Dictionary(entries) => {
+                for (key, value) in entries {
+                    pending.push(key);
+                    pending.push(value);
+                }
             }
             ConstructedValue::Record(fields) => {
                 pending.extend(fields.into_iter().map(|(_, value)| value));
@@ -189,6 +205,10 @@ pub enum ValueType {
     Record(Vec<(String, Self)>),
     /// A record whose stored fields have not been inspected; no schema is known.
     RecordKind,
+    Dictionary {
+        keys: Vec<Self>,
+        values: Vec<Self>,
+    },
     Set(Option<SetElementType>),
     Unestablished,
 }
@@ -480,7 +500,7 @@ pub enum ValueExpressionKind<Q = ()> {
         array: Box<ValueExpression<Q>>,
         predicate: PredicateArgument<Q>,
     },
-    /// Stably sort an array, set or string dictionary, retaining its kind.
+    /// Stably sort an array, set or dictionary, retaining its kind.
     /// Without a selector, arrays/sets use values and dictionaries use keys.
     /// Descending reverses comparisons, preserving current order for ties.
     /// Array and dictionary selector keys are present homogeneous integers,
@@ -493,10 +513,9 @@ pub enum ValueExpressionKind<Q = ()> {
     /// Retain each first occurrence in a homogeneous positional scalar array.
     /// Supports Booleans, integers, finite floats, strings and one nominal type.
     Unique(Box<ValueExpression<Q>>),
-    /// Count strings into a first-seen dictionary, or string sets into an array
-    /// of records with `key` (set) and `count` (integer) fields. Set keys compare
-    /// unordered membership and retain their first representative's order.
-    /// Typed/inferred empty string-set arrays yield `[]`; ambiguous empties yield `{}`.
+    /// Count positional values into an insertion-ordered dictionary using
+    /// structural key identity. String keys retain the existing record representation;
+    /// other keys remain values. Empty results are dictionaries.
     Tally(Box<ValueExpression<Q>>),
     /// Select one original array scalar or record, or absence for empty input.
     /// Ties retain the first input value. Keys follow `Sort`'s array contract.
@@ -1027,9 +1046,15 @@ pub fn query_value_types<Q, H: ValueQueryHost<Q>>(
     Ok(analyze_query_value(expression, binding_types, queries, budget)?.types)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct GeneralKeyExpression {
+    pub expression: usize,
+    pub set_type: Option<SetElementType>,
+}
+
 pub(crate) struct ValueAnalysis {
     pub types: Vec<ValueType>,
-    pub set_tallies: Vec<usize>,
+    pub general_key_expressions: Vec<GeneralKeyExpression>,
 }
 
 pub(crate) fn analyze_query_value<Q, H: ValueQueryHost<Q>>(
@@ -1042,7 +1067,7 @@ pub(crate) fn analyze_query_value<Q, H: ValueQueryHost<Q>>(
     let types = analysis.walk(expression, budget)?;
     Ok(ValueAnalysis {
         types,
-        set_tallies: analysis.set_tallies,
+        general_key_expressions: analysis.general_key_expressions,
     })
 }
 
@@ -1099,7 +1124,7 @@ pub(crate) fn prepare_query_value<'a, Q, H: ValueQueryHost<Q>>(
 ) -> Result<PreparedQueryValue<'a, Q>, QueryError> {
     let analysis = analyze_query_value(expression, binding_types, queries, budget)?;
     let mut preparation = Preparation::new();
-    preparation.set_tallies = analysis.set_tallies;
+    preparation.general_key_expressions = analysis.general_key_expressions;
     let expression = preparation.resolve(expression, queries, budget)?;
     Ok(PreparedQueryValue {
         expression,
@@ -1263,6 +1288,16 @@ pub fn constructed_value_type(
                 }
                 Ok(ValueType::Record(types))
             }
+            ConstructedValue::Dictionary(entries) => {
+                check_dictionary(entries, budget, &location)?;
+                let mut keys = metadata_vec(entries.len(), budget, &location)?;
+                let mut values = metadata_vec(entries.len(), budget, &location)?;
+                for (key, value) in entries {
+                    keys.push(constructed_value_type(key, budget, location.clone())?);
+                    values.push(constructed_value_type(value, budget, location.clone())?);
+                }
+                Ok(ValueType::Dictionary { keys, values })
+            }
             ConstructedValue::Set {
                 element_type,
                 elements,
@@ -1340,7 +1375,7 @@ pub fn evaluate_value_with_host_validation(
     let mut analysis = Analysis::new(Globals::Types(&types), &mut queries);
     analysis.walk(expression, budget)?;
     let mut preparation = Preparation::new();
-    preparation.set_tallies = analysis.set_tallies;
+    preparation.general_key_expressions = analysis.general_key_expressions;
     let prepared = preparation.resolve(expression, &mut queries, budget)?;
     let mut frame = Frame::new(
         preparation.names,
@@ -1423,6 +1458,19 @@ fn declared_facts(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         Ok(match declaration {
+            DeclaredType::Value => ValueType::Unestablished,
+            DeclaredType::Dictionary(key, value) => ValueType::Dictionary {
+                keys: one_type(
+                    declared_fact(key, ValueType::Unestablished, budget, location)?,
+                    budget,
+                    location,
+                )?,
+                values: one_type(
+                    declared_fact(value, ValueType::Unestablished, budget, location)?,
+                    budget,
+                    location,
+                )?,
+            },
             DeclaredType::Optional(child) => declared_facts(child, budget, location)?,
             DeclaredType::Boolean => ValueType::Boolean,
             DeclaredType::Integer => ValueType::Integer,
@@ -1675,6 +1723,10 @@ fn shallow_type(
         ConstructedValue::Array(_) => ValueType::Array(ArrayType::Elements(Vec::new())),
         ConstructedValue::Tuple(_) => ValueType::TupleKind,
         ConstructedValue::Record(_) => ValueType::RecordKind,
+        ConstructedValue::Dictionary(_) => ValueType::Dictionary {
+            keys: vec![],
+            values: vec![ValueType::Unestablished],
+        },
         ConstructedValue::Set { .. } => ValueType::Set(None),
         ConstructedValue::KeyedArray { .. } => ValueType::KeyedArray(KeyedArrayType {
             axes: None,
@@ -1694,6 +1746,12 @@ fn access_type(
     let mut child = None;
     if let ValueType::Declared { declaration, .. } = &ty {
         child = match underlying(declaration) {
+            DeclaredType::Dictionary(key, value) => {
+                for ty in keys {
+                    check_known_type(ty, key, budget, location)?;
+                }
+                Some(copy_declaration(value, budget, location)?)
+            }
             DeclaredType::Record(fields) => match label {
                 Some(label) => Some(copy_declaration(
                     record_declaration(fields, label, budget, location)?,
@@ -1710,6 +1768,7 @@ fn access_type(
     }
     let mut result = Vec::new();
     match shape_type(ty, budget, location)? {
+        ValueType::Dictionary { values, .. } => result = values,
         record @ (ValueType::RecordKind | ValueType::Record(_)) => {
             for key in keys {
                 let key = shape_type(copy_type(key, budget, location)?, budget, location)?;
@@ -1756,7 +1815,12 @@ fn access_type(
         ValueType::Unestablished => {
             push_metadata(&mut result, ValueType::Unestablished, budget, location)?
         }
-        _ => return Err(error(location, "lookup needs a record or array")),
+        _ => {
+            return Err(error(
+                location,
+                "lookup needs a dictionary, record or array",
+            ));
+        }
     }
     if let Some(child) = child {
         return one_type(
@@ -1787,6 +1851,10 @@ fn access_declaration<'a, K>(
     location: &Location,
 ) -> Result<Option<&'a DeclaredType<K>>, QueryError> {
     Ok(match underlying(declaration) {
+        DeclaredType::Dictionary(expected, value) => {
+            crate::admit_constructed(key, expected, budget, location.clone())?;
+            Some(value.as_ref())
+        }
         DeclaredType::Record(fields) => {
             let ConstructedValue::String(label) = key.data() else {
                 return Err(error(location, "record lookup needs a string label"));
@@ -1807,6 +1875,7 @@ fn optional_position(
     location: &Location,
 ) -> Result<Option<usize>, QueryError> {
     match value.data() {
+        ConstructedValue::Dictionary(entries) => entries.position(&key, budget, location),
         ConstructedValue::Record(fields) => {
             let ConstructedValue::String(label) = key.into_data() else {
                 return Err(error(location, "record lookup needs a string label"));
@@ -1850,7 +1919,10 @@ fn optional_position(
             }
             Ok(None)
         }
-        _ => Err(error(location, "lookup needs a record or array")),
+        _ => Err(error(
+            location,
+            "lookup needs a dictionary, record or array",
+        )),
     }
 }
 
@@ -1890,7 +1962,7 @@ pub(crate) fn allocation<T>(len: usize, location: &Location) -> Result<(), Query
     Ok(())
 }
 
-fn metadata_vec<T>(
+pub(crate) fn metadata_vec<T>(
     len: usize,
     budget: &mut Budget,
     location: &Location,
@@ -2440,16 +2512,22 @@ fn finish_keyed(
     })
 }
 
+fn collection_elements(value: &ConstructedValue) -> &[ConstructedValue] {
+    match value {
+        ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => values,
+        ConstructedValue::Set { elements, .. } => elements,
+        _ => unreachable!("matched element collection"),
+    }
+}
+
 fn source_axis(
     value: ConstructedValue,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<KeyAxis, QueryError> {
     let empty = match value.data() {
-        ConstructedValue::Array(values)
-        | ConstructedValue::Set {
-            elements: values, ..
-        } => values.is_empty(),
+        ConstructedValue::Array(values) => values.is_empty(),
+        ConstructedValue::Set { elements, .. } => elements.is_empty(),
         ConstructedValue::KeyedArray { entries, .. } => entries.is_empty(),
         _ => false,
     };
@@ -2479,7 +2557,7 @@ fn source_axis(
                 Some(SetElementType::Member(id)) => Some(ValueKeyType::Member(id)),
                 _ => None,
             };
-            (ty.or(declared), elements)
+            (ty.or(declared), elements.into_vec())
         }
         _ => {
             return Err(error(
@@ -2532,43 +2610,6 @@ fn scalar_set_type(value: &ConstructedValue) -> Option<SetElementType> {
     }
 }
 
-fn compare_set_values(
-    left: &ConstructedValue,
-    right: &ConstructedValue,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<Ordering, QueryError> {
-    budget.charge(1, location.clone())?;
-    match (left.data(), right.data()) {
-        (ConstructedValue::Boolean(a), ConstructedValue::Boolean(b)) => Ok(a.cmp(b)),
-        (ConstructedValue::Integer(a), ConstructedValue::Integer(b)) => Ok(a.cmp(b)),
-        (ConstructedValue::String(a), ConstructedValue::String(b)) => {
-            budget.charge(a.len().min(b.len()), location.clone())?;
-            Ok(a.cmp(b))
-        }
-        (ConstructedValue::Float(a), ConstructedValue::Float(b)) => {
-            finite(*a, location)?;
-            finite(*b, location)?;
-            Ok(a.partial_cmp(b).expect("finite floats are ordered"))
-        }
-        (ConstructedValue::Member(a), ConstructedValue::Member(b)) => {
-            check_member_pair(a, b, budget, location)?;
-            if a.type_id != b.type_id {
-                return Err(error(location, "incompatible nominal types"));
-            }
-            Ok(if a.member_id == b.member_id {
-                Ordering::Equal
-            } else {
-                a.declaration_order.cmp(&b.declaration_order)
-            })
-        }
-        _ => Err(error(
-            location,
-            "set elements must have one supported scalar type",
-        )),
-    }
-}
-
 fn check_set(
     element_type: Option<SetElementType>,
     elements: &[ConstructedValue],
@@ -2578,23 +2619,44 @@ fn check_set(
     if element_type.is_none() && !elements.is_empty() {
         return Err(error(location, "a nonempty set needs its element type"));
     }
+    let mut hashes = identity::HashIndex::default();
+    let mut nominal_types: HashMap<u64, usize> = HashMap::new();
+    let mut nominal_orders: HashMap<(u64, usize), usize> = HashMap::new();
     for (index, value) in elements.iter().enumerate() {
         budget.charge(1, location.clone())?;
-        if scalar_set_type(value) != element_type {
+        if element_type != Some(SetElementType::Value) && scalar_set_type(value) != element_type {
             return Err(error(location, "set element type mismatch"));
         }
+        constructed_value_type(value, budget, location.clone())?;
         match value.data() {
             ConstructedValue::Float(value) => finite(*value, location)?,
             ConstructedValue::Member(member) => {
                 member_bytes(member, budget, location)?;
+                budget.charge(2, location.clone())?;
+                for previous in [
+                    nominal_types.get(&member.type_id.0),
+                    nominal_orders.get(&(member.type_id.0, member.declaration_order)),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let ConstructedValue::Member(previous) = elements[*previous].data() else {
+                        unreachable!("nominal index")
+                    };
+                    check_member_pair(previous, member, budget, location)?;
+                }
+                nominal_types.entry(member.type_id.0).or_insert(index);
+                nominal_orders.insert((member.type_id.0, member.declaration_order), index);
             }
             _ => {}
         }
-        for previous in &elements[..index] {
-            if compare_set_values(previous, value, budget, location)? == Ordering::Equal {
+        let hash = identity::hash_admitted(value, budget, location)?;
+        for &previous in hashes.candidates(hash) {
+            if key_equal(&elements[previous], value, budget, location)? {
                 return Err(error(location, "set elements must be unique"));
             }
         }
+        hashes.insert(hash, index, budget, location)?;
     }
     Ok(())
 }
@@ -2663,11 +2725,10 @@ fn copy_size(
                 allocation::<u8>(value.len(), location)?;
                 bytes = value.len();
             }
-            ConstructedValue::Array(values)
-            | ConstructedValue::Tuple(values)
-            | ConstructedValue::Set {
-                elements: values, ..
-            } => {
+            ConstructedValue::Array(_)
+            | ConstructedValue::Tuple(_)
+            | ConstructedValue::Set { .. } => {
+                let values = collection_elements(value);
                 allocation::<ConstructedValue>(values.len(), location)?;
                 if let ConstructedValue::Set { element_type, .. } = value {
                     check_set(*element_type, values, budget, location)?;
@@ -2677,6 +2738,18 @@ fn copy_size(
                     let (child_units, child_bytes) = copy_size(value, budget, location)?;
                     units = sum(units, child_units, location)?;
                     bytes = sum(bytes, child_bytes, location)?;
+                }
+            }
+            ConstructedValue::Dictionary(entries) => {
+                allocation::<(ConstructedValue, ConstructedValue)>(entries.len(), location)?;
+                check_dictionary(entries, budget, location)?;
+                units = sum(units, entries.len(), location)?;
+                for (key, value) in entries {
+                    for child in [key, value] {
+                        let (child_units, child_bytes) = copy_size(child, budget, location)?;
+                        units = sum(units, child_units, location)?;
+                        bytes = sum(bytes, child_bytes, location)?;
+                    }
                 }
             }
             ConstructedValue::Record(fields) => {
@@ -2737,11 +2810,10 @@ fn copy_admitted(
                     entries: copied_entries,
                 }
             }
-            ConstructedValue::Array(values)
-            | ConstructedValue::Tuple(values)
-            | ConstructedValue::Set {
-                elements: values, ..
-            } => {
+            ConstructedValue::Array(_)
+            | ConstructedValue::Tuple(_)
+            | ConstructedValue::Set { .. } => {
+                let values = collection_elements(value);
                 let mut copied = Vec::with_capacity(values.len());
                 for value in values {
                     copied.push(copy_admitted(value, budget, location)?);
@@ -2751,10 +2823,20 @@ fn copy_admitted(
                     ConstructedValue::Tuple(_) => ConstructedValue::Tuple(copied),
                     ConstructedValue::Set { element_type, .. } => ConstructedValue::Set {
                         element_type: *element_type,
-                        elements: copied,
+                        elements: copied.into(),
                     },
                     _ => unreachable!("matched collection"),
                 }
+            }
+            ConstructedValue::Dictionary(entries) => {
+                let mut copied = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    copied.push((
+                        copy_admitted(key, budget, location)?,
+                        copy_admitted(value, budget, location)?,
+                    ));
+                }
+                ConstructedValue::Dictionary(copied.into())
             }
             ConstructedValue::Record(fields) => {
                 let mut copied = Vec::with_capacity(fields.len());
@@ -2815,6 +2897,10 @@ fn copy_type(
                 ValueType::ArrayKind(copy_types(elements, budget, location)?)
             }
             ValueType::Tuple(entries) => ValueType::Tuple(copy_types(entries, budget, location)?),
+            ValueType::Dictionary { keys, values } => ValueType::Dictionary {
+                keys: copy_types(keys, budget, location)?,
+                values: copy_types(values, budget, location)?,
+            },
             ValueType::Record(fields) => {
                 check_value_labels(fields, budget, location)?;
                 let mut copied = metadata_vec(fields.len(), budget, location)?;
@@ -2906,7 +2992,7 @@ struct Analysis<'a, 'h, Q, H> {
     free: Vec<Located<String>>,
     fallback_names: Vec<Located<String>>,
     fallback: bool,
-    set_tallies: Vec<usize>,
+    general_key_expressions: Vec<GeneralKeyExpression>,
 }
 
 impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
@@ -2919,7 +3005,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             free: Vec::new(),
             fallback_names: Vec::new(),
             fallback: false,
-            set_tallies: Vec::new(),
+            general_key_expressions: Vec::new(),
         }
     }
 
@@ -3341,31 +3427,37 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 Ok(types)
             }
             ValueExpressionKind::Dictionary(entries) => {
+                let mut keys = Vec::new();
+                let mut values = Vec::new();
                 for (key, value) in entries {
-                    for ty in self.walk(key, budget)? {
-                        require_type(
-                            &ty,
-                            ScalarRequirement::String,
-                            &Location::Query(key.range.clone()),
-                        )?;
-                    }
-                    self.walk(value, budget)?;
+                    append_types(&mut keys, self.walk(key, budget)?, budget, location)?;
+                    append_types(&mut values, self.walk(value, budget)?, budget, location)?;
                 }
-                one_type(ValueType::RecordKind, budget, location)
+                one_type(
+                    dictionary_type(keys, values, budget, location)?,
+                    budget,
+                    location,
+                )
             }
             ValueExpressionKind::DictionaryComprehension { clauses, key, head } => {
                 let saved = self.locals.len();
                 let result = (|| {
                     self.clauses(clauses, budget)?;
-                    for ty in self.walk(key, budget)? {
-                        require_type(
-                            &ty,
-                            ScalarRequirement::String,
-                            &Location::Query(key.range.clone()),
+                    let keys = self.walk(key, budget)?;
+                    let values = self.walk(head, budget)?;
+                    let ty = dictionary_type(keys, values, budget, location)?;
+                    if matches!(ty, ValueType::Dictionary { .. }) {
+                        push_metadata(
+                            &mut self.general_key_expressions,
+                            GeneralKeyExpression {
+                                expression: expression as *const _ as usize,
+                                set_type: None,
+                            },
+                            budget,
+                            location,
                         )?;
                     }
-                    self.walk(head, budget)?;
-                    one_type(ValueType::RecordKind, budget, location)
+                    one_type(ty, budget, location)
                 })();
                 self.locals.truncate(saved);
                 result
@@ -3587,9 +3679,11 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 };
                 let mut result = Vec::new();
                 for array in arrays {
-                    if matches!(&array, ValueType::Record(_) | ValueType::RecordKind)
-                        || matches!(&array, ValueType::Declared { declaration, .. }
-                            if matches!(underlying(declaration), DeclaredType::Record(_)))
+                    if matches!(
+                        &array,
+                        ValueType::Record(_) | ValueType::RecordKind | ValueType::Dictionary { .. }
+                    ) || matches!(&array, ValueType::Declared { declaration, .. }
+                            if matches!(underlying(declaration), DeclaredType::Record(_) | DeclaredType::Dictionary(_, _)))
                     {
                         let label = match &index.value {
                             ValueExpressionKind::Literal(ConstructedValue::String(label)) => {
@@ -3651,18 +3745,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             }
                         }
                         ValueType::Unestablished => {
-                            for ty in &indices {
-                                if matches!(ty, ValueType::String) {
-                                    continue;
-                                }
-                                let mut facts = None;
-                                merge_key_facts(
-                                    &mut facts,
-                                    std::slice::from_ref(ty),
-                                    budget,
-                                    location,
-                                )?;
-                            }
+                            // A deferred container may be a dictionary with any value key.
                             push_metadata(&mut result, ValueType::Unestablished, budget, location)?;
                         }
                         _ => return Err(error(location, "array access needs an array or record")),
@@ -3837,37 +3920,50 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             }
             ValueExpressionKind::Tally(array) => {
                 let mut result = Vec::new();
-                let mut all_sets = true;
+                let mut all_general = true;
+                let mut set_type = None;
+                let mut homogeneous_sets = true;
                 for ty in self.walk(array, budget)? {
                     let elements = tally_elements(ty, budget, location)?;
-                    let sets = elements
-                        .iter()
-                        .any(|ty| matches!(ty, ValueType::Set(Some(SetElementType::String))));
-                    all_sets &= sets;
-                    let ty = if sets {
-                        set_tally_type(budget, location)?
-                    } else if elements.is_empty() {
-                        ValueType::Record(Vec::new())
-                    } else if elements
-                        .iter()
-                        .any(|ty| matches!(ty, ValueType::Unestablished))
+                    homogeneous_sets &= !elements.is_empty();
+                    for element in &elements {
+                        match element {
+                            ValueType::Set(Some(ty))
+                                if set_type.is_none_or(|known| known == *ty) =>
+                            {
+                                set_type = Some(*ty);
+                            }
+                            _ => homogeneous_sets = false,
+                        }
+                    }
+                    all_general &= !elements.is_empty()
+                        && elements.iter().any(|ty| !matches!(ty, ValueType::String));
+                    let ty = if elements.is_empty()
+                        || elements.iter().all(|ty| matches!(ty, ValueType::String))
                     {
-                        ValueType::Unestablished
-                    } else {
                         ValueType::RecordKind
+                    } else {
+                        ValueType::Dictionary {
+                            keys: elements,
+                            values: one_type(ValueType::Integer, budget, location)?,
+                        }
                     };
                     push_metadata(&mut result, ty, budget, location)?;
                 }
-                if all_sets {
+                if all_general {
                     push_metadata(
-                        &mut self.set_tallies,
-                        expression as *const _ as usize,
+                        &mut self.general_key_expressions,
+                        GeneralKeyExpression {
+                            expression: expression as *const _ as usize,
+                            set_type: homogeneous_sets.then_some(set_type).flatten(),
+                        },
                         budget,
                         location,
                     )?;
                 }
                 Ok(result)
             }
+
             ValueExpressionKind::Unique(array) => {
                 let mut result = Vec::new();
                 for ty in self.walk(array, budget)? {
@@ -4598,7 +4694,6 @@ fn check_source_facts(
 
 #[derive(Clone, Copy)]
 enum ScalarRequirement {
-    String,
     Boolean,
     Integer,
     Numeric,
@@ -4635,7 +4730,6 @@ fn require_type(
         }
         let expected = underlying(declaration);
         let accepted = match requirement {
-            ScalarRequirement::String => matches!(expected, DeclaredType::String),
             ScalarRequirement::Boolean => matches!(expected, DeclaredType::Boolean),
             ScalarRequirement::Integer => matches!(expected, DeclaredType::Integer),
             ScalarRequirement::Numeric => {
@@ -4649,7 +4743,6 @@ fn require_type(
     }
     let accepted = matches!(ty, ValueType::Unestablished | ValueType::ScalarKind)
         || match requirement {
-            ScalarRequirement::String => matches!(ty, ValueType::String),
             ScalarRequirement::Boolean => matches!(ty, ValueType::Boolean),
             ScalarRequirement::Integer => matches!(ty, ValueType::Integer),
             ScalarRequirement::Numeric => matches!(ty, ValueType::Integer | ValueType::Float),
@@ -4658,7 +4751,6 @@ fn require_type(
         return Err(error(
             location,
             match requirement {
-                ScalarRequirement::String => "dictionary key needs a present string",
                 ScalarRequirement::Boolean => "condition needs a fixed Boolean",
                 ScalarRequirement::Integer => "operation needs integers",
                 ScalarRequirement::Numeric => "operation needs numeric operands",
@@ -4670,6 +4762,7 @@ fn require_type(
 
 fn set_value_type(ty: Option<SetElementType>) -> ValueType {
     match ty {
+        Some(SetElementType::Value) => ValueType::Unestablished,
         Some(SetElementType::Boolean) => ValueType::Boolean,
         Some(SetElementType::Integer) => ValueType::Integer,
         Some(SetElementType::Float) => ValueType::Float,
@@ -4704,19 +4797,12 @@ fn merge_set_types(
             ValueType::String => SetElementType::String,
             ValueType::Member(id) => SetElementType::Member(*id),
             ValueType::Unestablished => continue,
-            _ => {
-                return Err(error(
-                    location,
-                    "set elements must have one supported scalar type",
-                ));
-            }
+            _ => SetElementType::Value,
         };
-        if element_type.is_some_and(|previous| previous != ty) {
-            return Err(error(
-                location,
-                "set elements must have one supported scalar type",
-            ));
-        }
+        let ty = match *element_type {
+            Some(previous) if previous != ty => SetElementType::Value,
+            _ => ty,
+        };
         *element_type = Some(ty);
     }
     Ok(())
@@ -4750,6 +4836,11 @@ fn compatible_types(
             return compatible_types(right, left, budget, location);
         }
         Ok(match (left, right) {
+            (
+                ValueType::Dictionary { .. },
+                ValueType::Dictionary { .. } | ValueType::Record(_) | ValueType::RecordKind,
+            )
+            | (ValueType::Record(_) | ValueType::RecordKind, ValueType::Dictionary { .. }) => true,
             (ValueType::Absent, _) | (_, ValueType::Absent) => true,
             (ValueType::Unestablished, _) | (_, ValueType::Unestablished) => true,
             (
@@ -4796,7 +4887,13 @@ fn compatible_types(
                 }
                 compatible_keyed_elements(&a.elements, &b.elements, budget, location)?
             }
-            (ValueType::Set(a), ValueType::Set(b)) => a.is_none() || b.is_none() || a == b,
+            (ValueType::Set(a), ValueType::Set(b)) => {
+                a.is_none()
+                    || b.is_none()
+                    || a == b
+                    || *a == Some(SetElementType::Value)
+                    || *b == Some(SetElementType::Value)
+            }
             (ValueType::Tuple(a), ValueType::Tuple(b)) => {
                 if a.len() != b.len() {
                     return Ok(false);
@@ -4997,7 +5094,10 @@ fn binary_type(
             }
             match right {
                 ValueType::Set(ty)
-                    if ty.is_none() || element_type.is_none() || ty == &element_type =>
+                    if ty.is_none()
+                        || *ty == Some(SetElementType::Value)
+                        || element_type.is_none()
+                        || ty == &element_type =>
                 {
                     Ok(ValueType::Boolean)
                 }
@@ -5167,6 +5267,32 @@ fn string_match_ref(
     scalar(ConstructedValue::Boolean(matched), budget, location)
 }
 
+fn membership_ref(
+    left: &ConstructedValue,
+    right: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    let ConstructedValue::Set {
+        element_type,
+        elements,
+    } = right.data()
+    else {
+        return Err(error(location, "membership needs a supported set"));
+    };
+    let ty = scalar_set_type(left).unwrap_or(SetElementType::Value);
+    if element_type
+        .is_some_and(|element_type| element_type != SetElementType::Value && element_type != ty)
+    {
+        return Err(error(location, "membership element type mismatch"));
+    }
+    scalar(
+        ConstructedValue::Boolean(elements.contains(left, budget, location)?),
+        budget,
+        location,
+    )
+}
+
 fn binary(
     operator: ValueBinaryOperator,
     left: ConstructedValue,
@@ -5226,28 +5352,7 @@ fn binary(
                 location,
             )
         }
-        ValueBinaryOperator::In => {
-            let ConstructedValue::Set {
-                element_type,
-                elements,
-            } = right
-            else {
-                return Err(error(location, "membership needs a supported set"));
-            };
-            let ty = scalar_set_type(&left)
-                .ok_or_else(|| error(location, "membership needs a supported scalar"))?;
-            if element_type.is_some_and(|element_type| element_type != ty) {
-                return Err(error(location, "membership element type mismatch"));
-            }
-            let mut found = false;
-            for value in &elements {
-                if compare_set_values(&left, value, budget, location)? == Ordering::Equal {
-                    found = true;
-                    break;
-                }
-            }
-            scalar(ConstructedValue::Boolean(found), budget, location)
-        }
+        ValueBinaryOperator::In => membership_ref(&left, &right, budget, location),
         ValueBinaryOperator::And | ValueBinaryOperator::Or => {
             let a = boolean(left, location)?;
             let b = boolean(right, location)?;
@@ -5360,9 +5465,29 @@ fn equal_values(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<bool, QueryError> {
+    equal_values_impl(left, right, true, budget, location)
+}
+
+/// Structural identity for keys and set members. Different value kinds are distinct.
+pub(crate) fn key_equal(
+    left: &ConstructedValue,
+    right: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
+    identity::compare_admitted(left, right, budget, location).map(|order| order == Ordering::Equal)
+}
+
+fn equal_values_impl(
+    left: &ConstructedValue,
+    right: &ConstructedValue,
+    strict: bool,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<bool, QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
-        if declaration(left).is_some() || declaration(right).is_some() {
+        if strict && (declaration(left).is_some() || declaration(right).is_some()) {
             let a = constructed_value_type(left, budget, location.clone())?;
             let b = constructed_value_type(right, budget, location.clone())?;
             if !compatible_types(&a, &b, budget, location)? {
@@ -5385,6 +5510,7 @@ fn equal_values(
             (ConstructedValue::Member(a), ConstructedValue::Member(b)) => {
                 check_member_pair(a, b, budget, location)?;
                 if a.type_id != b.type_id {
+                    if !strict { return Ok(false); }
                     return Err(error(location, "equality needs compatible nominal types"));
                 }
                 a.member_id == b.member_id
@@ -5405,6 +5531,7 @@ fn equal_values(
                 for (a, b) in a.iter().zip(b) {
                     budget.charge(1, location.clone())?;
                     if a.key_type != b.key_type {
+                        if !strict { return Ok(false); }
                         return Err(error(location, "equality needs compatible keyed types"));
                     }
                     if !equal_keys(&a.keys, &b.keys, budget, location)? {
@@ -5414,7 +5541,7 @@ fn equal_values(
                 for (a, b) in a_entries.iter().zip(b_entries) {
                     budget.charge(1, location.clone())?;
                     if !equal_keys(&a.key, &b.key, budget, location)?
-                        || !equal_values(&a.value, &b.value, budget, location)?
+                        || !equal_values_impl(&a.value, &b.value, strict, budget, location)?
                     {
                         return Ok(false);
                     }
@@ -5427,7 +5554,7 @@ fn equal_values(
                     return Ok(false);
                 }
                 for (a, b) in a.iter().zip(b) {
-                    if !equal_values(a, b, budget, location)? {
+                    if !equal_values_impl(a, b, strict, budget, location)? {
                         return Ok(false);
                     }
                 }
@@ -5443,7 +5570,7 @@ fn equal_values(
                     elements: b,
                 },
             ) => {
-                if matches!((a_type, b_type), (Some(a), Some(b)) if a != b) {
+                if strict && matches!((a_type, b_type), (Some(a), Some(b)) if a != b && *a != SetElementType::Value && *b != SetElementType::Value) {
                     return Err(error(location, "equality needs compatible set types"));
                 }
                 if a.len() != b.len() {
@@ -5452,7 +5579,7 @@ fn equal_values(
                 for value in a {
                     let mut found = false;
                     for other in b {
-                        if equal_values(value, other, budget, location)? {
+                        if key_equal(value, other, budget, location)? {
                             found = true;
                             break;
                         }
@@ -5482,12 +5609,44 @@ fn equal_values(
                     let Some(other) = other else {
                         return Ok(false);
                     };
-                    if !equal_values(value, other, budget, location)? {
+                    if !equal_values_impl(value, other, strict, budget, location)? {
                         return Ok(false);
                     }
                 }
                 true
             }
+            (ConstructedValue::Dictionary(a), ConstructedValue::Dictionary(b)) => {
+                if a.len() != b.len() { return Ok(false); }
+                for (key, value) in a {
+                    let mut found = false;
+                    for (other_key, other_value) in b {
+                        if key_equal(key, other_key, budget, location)? {
+                            if !key_equal(value, other_value, budget, location)? { return Ok(false); }
+                            found = true; break;
+                        }
+                    }
+                    if !found { return Ok(false); }
+                }
+                true
+            }
+            (ConstructedValue::Dictionary(entries), ConstructedValue::Record(fields))
+            | (ConstructedValue::Record(fields), ConstructedValue::Dictionary(entries)) => {
+                if entries.len() != fields.len() { return Ok(false); }
+                for (key, value) in entries {
+                    let ConstructedValue::String(label) = key.data() else { return Ok(false); };
+                    let mut found = false;
+                    for (other_label, other_value) in fields {
+                        budget.charge(1 + label.len().min(other_label.len()), location.clone())?;
+                        if label == other_label {
+                            if !key_equal(value, other_value, budget, location)? { return Ok(false); }
+                            found = true; break;
+                        }
+                    }
+                    if !found { return Ok(false); }
+                }
+                true
+            }
+            _ if !strict => false,
             _ => return Err(error(location, "equality needs compatible types")),
         })
     })
@@ -5900,184 +6059,157 @@ fn tally_elements(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Vec<ValueType>, QueryError> {
-    let elements = match shape_type(ty, budget, location)? {
+    match shape_type(ty, budget, location)? {
         ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
-        | ValueType::ArrayKind(elements) => elements,
-        ValueType::Unestablished => return one_type(ValueType::Unestablished, budget, location),
-        _ => return Err(error(location, "tally needs a positional array")),
-    };
-    let mut normalized = metadata_vec(elements.len(), budget, location)?;
-    let mut kind = None;
-    for ty in elements {
-        let ty = shape_type(ty, budget, location)?;
-        budget.charge(1, location.clone())?;
-        if ty != ValueType::Unestablished {
-            if !matches!(
-                ty,
-                ValueType::String | ValueType::Set(Some(SetElementType::String))
-            ) || kind.as_ref().is_some_and(|previous| previous != &ty)
-            {
-                return Err(error(
-                    location,
-                    "tally needs strings or homogeneous string sets",
-                ));
+        | ValueType::ArrayKind(elements) => {
+            let mut normalized = metadata_vec(elements.len(), budget, location)?;
+            for element in elements {
+                normalized.push(shape_type(element, budget, location)?);
             }
-            kind = Some(copy_type(&ty, budget, location)?);
+            Ok(normalized)
         }
-        normalized.push(ty);
+        ValueType::Unestablished => one_type(ValueType::Unestablished, budget, location),
+        _ => Err(error(location, "tally needs a positional array")),
     }
-    Ok(normalized)
-}
-
-fn set_tally_type(budget: &mut Budget, location: &Location) -> Result<ValueType, QueryError> {
-    let mut fields = metadata_vec(2, budget, location)?;
-    for (label, ty) in [
-        ("key", ValueType::Set(Some(SetElementType::String))),
-        ("count", ValueType::Integer),
-    ] {
-        budget.charge(label.len(), location.clone())?;
-        fields.push((label.into(), ty));
-    }
-    Ok(ValueType::Array(ArrayType::Elements(one_type(
-        ValueType::Record(fields),
-        budget,
-        location,
-    )?)))
 }
 
 fn tally_value(
     array: ConstructedValue,
-    mut sets: bool,
+    general: bool,
+    set_type: Option<SetElementType>,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
-    if declaration(&array).is_some() {
-        let elements = tally_elements(
-            constructed_value_type(&array, budget, location.clone())?,
-            budget,
-            location,
-        )?;
-        sets = elements
-            .iter()
-            .any(|ty| matches!(ty, ValueType::Set(Some(SetElementType::String))));
-    }
-    let ConstructedValue::Array(rows) = array.data() else {
+    let facts = constructed_value_type(&array, budget, location.clone())?;
+    let elements = tally_elements(facts, budget, location)?;
+    let general = general || elements.iter().any(|ty| !matches!(ty, ValueType::String));
+    let ConstructedValue::Array(rows) = expose(array, budget, location)? else {
         return Err(error(location, "tally needs a positional array"));
     };
-    let mut kind = None;
-    for row in rows {
-        budget.charge(1, location.clone())?;
-        let is_set = match row.data() {
-            ConstructedValue::String(_) => false,
-            ConstructedValue::Set {
-                element_type: Some(SetElementType::String),
-                ..
-            } => true,
-            ConstructedValue::Set {
-                element_type: None,
-                elements,
-            } if sets && elements.is_empty() => true,
-            _ => {
-                return Err(error(
-                    location,
-                    "tally needs strings or homogeneous string sets",
-                ));
-            }
-        };
-        if kind.is_some_and(|previous| previous != is_set) {
-            return Err(error(
-                location,
-                "tally needs strings or homogeneous string sets",
-            ));
-        }
-        kind = Some(is_set);
-    }
-    sets = kind.unwrap_or(sets);
-    if sets {
-        return tally_string_sets(array, budget, location);
-    }
-    let ConstructedValue::Array(rows) = expose(array, budget, location)? else {
-        unreachable!("checked positional array")
-    };
-    let mut fields: Vec<(String, ConstructedValue)> = metadata_vec(rows.len(), budget, location)?;
-    budget.charge(1, location.clone())?;
-    budget.charge_results(1, location.clone())?;
-    for row in rows {
-        budget.charge(1, location.clone())?;
-        let ConstructedValue::String(label) = expose(row, budget, location)? else {
-            return Err(error(
-                location,
-                "tally needs strings or homogeneous string sets",
-            ));
-        };
-        let mut existing = None;
-        for (previous, count) in &mut fields {
-            budget.charge(
-                sum(1, previous.len().min(label.len()), location)?,
-                location.clone(),
-            )?;
-            if *previous == label {
-                existing = Some(count);
-                break;
-            }
-        }
-        if let Some(ConstructedValue::Integer(count)) = existing {
-            *count = count
-                .checked_add(1)
-                .ok_or_else(|| error(location, "tally count overflow"))?;
-            continue;
-        }
-        budget.charge(2, location.clone())?;
-        budget.charge_results(2, location.clone())?;
-        fields.push((label, ConstructedValue::Integer(1)));
-    }
-    Ok(ConstructedValue::Record(fields))
-}
-
-fn tally_string_sets(
-    array: ConstructedValue,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<ConstructedValue, QueryError> {
-    let ConstructedValue::Array(rows) = expose(array, budget, location)? else {
-        unreachable!("checked positional array")
-    };
-    let mut groups: Vec<(ConstructedValue, i64)> = metadata_vec(rows.len(), budget, location)?;
+    let mut groups: Vec<(ConstructedValue, ConstructedValue)> =
+        admit_container(0, budget, location)?;
+    let mut hashes = identity::HashIndex::default();
     for mut row in rows {
         budget.charge(1, location.clone())?;
-        // Admission established string sets even when an empty head erased its type.
-        let mut key = &mut row;
-        while let ConstructedValue::Declared { value, .. } = key {
-            key = value;
-        }
-        if let ConstructedValue::Set { element_type, .. } = key {
-            *element_type = Some(SetElementType::String);
+        if let Some(known_type) = set_type {
+            let mut data = &mut row;
+            while let ConstructedValue::Declared { value, .. } = data {
+                budget.charge(1, location.clone())?;
+                data = value;
+            }
+            if let ConstructedValue::Set {
+                element_type,
+                elements,
+            } = data
+                && element_type.is_none()
+                && elements.is_empty()
+            {
+                *element_type = Some(known_type);
+            }
         }
         let mut existing = None;
-        for (key, count) in &mut groups {
-            if equal_values(key, &row, budget, location)? {
-                existing = Some(count);
+        let hash = identity::hash_admitted(&row, budget, location)?;
+        for &index in hashes.candidates(hash) {
+            if key_equal(&groups[index].0, &row, budget, location)? {
+                existing = Some(index);
                 break;
             }
         }
-        if let Some(count) = existing {
+        if let Some(index) = existing {
+            let ConstructedValue::Integer(count) = &mut groups[index].1 else {
+                unreachable!("tally count")
+            };
             *count = count
                 .checked_add(1)
                 .ok_or_else(|| error(location, "tally count overflow"))?;
         } else {
-            groups.push((row, 1));
+            budget.charge(1, location.clone())?;
+            budget.charge_results(1, location.clone())?;
+            hashes.insert(hash, groups.len(), budget, location)?;
+            push_dictionary_entry(
+                &mut groups,
+                row,
+                ConstructedValue::Integer(1),
+                budget,
+                location,
+            )?;
         }
     }
-    let mut result = admit_container(groups.len(), budget, location)?;
-    for (key, count) in groups {
-        let mut fields = metadata_vec(2, budget, location)?;
-        budget.charge(10, location.clone())?;
-        budget.charge_results(4, location.clone())?;
-        fields.push(("key".into(), key));
-        fields.push(("count".into(), ConstructedValue::Integer(count)));
-        result.push(ConstructedValue::Record(fields));
+    if groups.is_empty() && general {
+        Ok(ConstructedValue::Dictionary(groups.into()))
+    } else {
+        finish_dictionary(groups, budget, location)
     }
-    Ok(ConstructedValue::Array(result))
+}
+
+fn dictionary_type(
+    keys: Vec<ValueType>,
+    values: Vec<ValueType>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ValueType, QueryError> {
+    for key in &keys {
+        let shape = shape_type(copy_type(key, budget, location)?, budget, location)?;
+        if !matches!(shape, ValueType::String) {
+            return Ok(ValueType::Dictionary { keys, values });
+        }
+    }
+    Ok(ValueType::RecordKind)
+}
+
+fn check_dictionary(
+    entries: &[(ConstructedValue, ConstructedValue)],
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    let mut hashes = identity::HashIndex::default();
+    for (index, (key, _)) in entries.iter().enumerate() {
+        let hash = identity::hash_admitted(key, budget, location)?;
+        for &previous in hashes.candidates(hash) {
+            if key_equal(&entries[previous].0, key, budget, location)? {
+                return Err(error(location, "duplicate dictionary key"));
+            }
+        }
+        hashes.insert(hash, index, budget, location)?;
+    }
+    Ok(())
+}
+
+fn push_dictionary_entry(
+    entries: &mut Vec<(ConstructedValue, ConstructedValue)>,
+    key: ConstructedValue,
+    value: ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.check_items(sum(entries.len(), 1, location)?, location.clone())?;
+    allocation::<(ConstructedValue, ConstructedValue)>(sum(entries.len(), 1, location)?, location)?;
+    budget.charge(1, location.clone())?;
+    budget.charge_results(1, location.clone())?;
+    entries.push((key, value));
+    Ok(())
+}
+
+fn finish_dictionary(
+    entries: Vec<(ConstructedValue, ConstructedValue)>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    if !entries
+        .iter()
+        .all(|(key, _)| matches!(key.data(), ConstructedValue::String(_)))
+    {
+        return Ok(ConstructedValue::Dictionary(entries.into()));
+    }
+    let mut fields = metadata_vec(entries.len(), budget, location)?;
+    for (key, value) in entries {
+        budget.charge(1, location.clone())?;
+        let ConstructedValue::String(key) = key.into_data() else {
+            unreachable!("string key")
+        };
+        fields.push((key, value));
+    }
+    Ok(ConstructedValue::Record(fields))
 }
 
 fn sort_type(
@@ -6120,6 +6252,13 @@ fn sort_type(
                 return Err(error(&selected, "set sorting uses its scalar values"));
             }
             ty
+        }
+        ValueType::Dictionary { keys, values } => {
+            if selector.is_some() {
+                check_ordering_types(values.iter(), field, budget, &selected)?;
+            }
+
+            ValueType::Dictionary { keys, values }
         }
         ValueType::Record(fields) => {
             if selector.is_some() {
@@ -6359,6 +6498,7 @@ fn sort_value(
             elements.len()
         }
         ConstructedValue::Record(fields) => fields.len(),
+        ConstructedValue::Dictionary(entries) => entries.len(),
         _ => return Err(error(location, "sort needs an array, set or dictionary")),
     };
     let mut order: Vec<OrderingRow<'_>> = metadata_vec(count, budget, location)?;
@@ -6369,6 +6509,10 @@ fn sort_value(
                 budget.charge(1, selected.clone())?;
                 SortKey::Value(elements[index].data())
             }
+            ConstructedValue::Dictionary(entries) if selector.is_none() => {
+                budget.charge(1, selected.clone())?;
+                SortKey::Value(entries[index].0.data())
+            }
             ConstructedValue::Record(fields) if selector.is_none() => {
                 budget.charge(1, selected.clone())?;
                 SortKey::Label(&fields[index].0)
@@ -6377,6 +6521,7 @@ fn sort_value(
                 let row = match data {
                     ConstructedValue::Array(rows) => &rows[index],
                     ConstructedValue::Record(fields) => &fields[index].1,
+                    ConstructedValue::Dictionary(entries) => &entries[index].1,
                     _ => unreachable!("checked collection kind"),
                 };
                 let (key, ty) = ordering_key(row, field, budget, &selected)?;
@@ -6418,7 +6563,13 @@ fn sort_value(
                         (SortKey::Value(left), SortKey::Value(right))
                             if matches!(data, ConstructedValue::Set { .. }) =>
                         {
-                            compare_set_values(left, right, budget, &selected)?
+                            identity::compare_admitted(left, right, budget, &selected)?
+                        }
+                        (SortKey::Value(left), SortKey::Value(right))
+                            if matches!(data, ConstructedValue::Dictionary(_))
+                                && selector.is_none() =>
+                        {
+                            identity::compare_admitted(left, right, budget, &selected)?
                         }
                         (SortKey::Value(left), SortKey::Value(right)) => {
                             compare_ordering_keys(left, right, budget, &selected)?
@@ -6465,10 +6616,10 @@ fn sort_value(
             budget.charge(1, location.clone())?;
             let destination = destinations[index];
             match data {
-                ConstructedValue::Array(rows) | ConstructedValue::Set { elements: rows, .. } => {
-                    rows.swap(index, destination)
-                }
+                ConstructedValue::Array(rows) => rows.swap(index, destination),
+                ConstructedValue::Set { elements, .. } => elements.swap(index, destination),
                 ConstructedValue::Record(fields) => fields.swap(index, destination),
+                ConstructedValue::Dictionary(entries) => entries.swap(index, destination),
                 _ => unreachable!("checked collection kind"),
             }
             destinations.swap(index, destination);
@@ -6628,37 +6779,30 @@ fn integer_range(
     }
     Ok(ConstructedValue::Set {
         element_type: Some(SetElementType::Integer),
-        elements,
+        elements: elements.into(),
     })
 }
 
 fn insert_set(
     values: &mut Vec<ConstructedValue>,
+    hashes: &mut identity::HashIndex,
     element_type: &mut Option<SetElementType>,
     value: ConstructedValue,
     admit_slot: bool,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
-    let ty = scalar_set_type(&value)
-        .ok_or_else(|| error(location, "set elements must have one supported scalar type"))?;
-    if element_type.is_some_and(|previous| previous != ty) {
-        return Err(error(location, "set element type mismatch"));
+    let ty = scalar_set_type(&value).unwrap_or(SetElementType::Value);
+    *element_type = Some(match *element_type {
+        Some(previous) if previous != ty => SetElementType::Value,
+        _ => ty,
+    });
+    if let ConstructedValue::Float(value) = value.data() {
+        finite(*value, location)?;
     }
-    *element_type = Some(ty);
-    match value.data() {
-        ConstructedValue::Float(value) => finite(*value, location)?,
-        ConstructedValue::Member(member) => {
-            for previous in values.iter() {
-                if let ConstructedValue::Member(previous) = previous.data() {
-                    check_member_pair(previous, member, budget, location)?;
-                }
-            }
-        }
-        _ => {}
-    }
-    for existing in values.iter() {
-        if compare_set_values(&value, existing, budget, location)? == Ordering::Equal {
+    let hash = identity::hash_admitted(&value, budget, location)?;
+    for &existing in hashes.candidates(hash) {
+        if key_equal(&value, &values[existing], budget, location)? {
             return Ok(());
         }
     }
@@ -6666,6 +6810,7 @@ fn insert_set(
     if admit_slot {
         budget.charge_results(1, location.clone())?;
     }
+    hashes.insert(hash, values.len(), budget, location)?;
     values.push(value);
     Ok(())
 }
@@ -6767,9 +6912,9 @@ pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
     for (name, value) in declaration.bindings {
         function_local(name, &analysis.locals, budget)?;
         let types = analysis.walk(value, budget)?;
-        for tally in analysis.set_tallies.drain(..) {
+        for tally in analysis.general_key_expressions.drain(..) {
             push_metadata(
-                &mut preparation.set_tallies,
+                &mut preparation.general_key_expressions,
                 tally,
                 budget,
                 &Location::Query(value.range.clone()),
@@ -6794,9 +6939,9 @@ pub(crate) fn prepare_function_body<'a, Q, K, H: ValueQueryHost<Q>>(
         bindings.push((name.value.as_str(), expression));
     }
     analysis.walk(declaration.value, budget)?;
-    for tally in analysis.set_tallies.drain(..) {
+    for tally in analysis.general_key_expressions.drain(..) {
         push_metadata(
-            &mut preparation.set_tallies,
+            &mut preparation.general_key_expressions,
             tally,
             budget,
             &Location::Query(declaration.value.range.clone()),
@@ -6867,7 +7012,7 @@ pub(crate) fn run_function_refs(
     let mut analysis = Analysis::new(Globals::Available(bindings), &mut resolver);
     analysis.walk(entry, budget)?;
     let mut preparation = Preparation::new();
-    preparation.set_tallies = analysis.set_tallies;
+    preparation.general_key_expressions = analysis.general_key_expressions;
     let entry = preparation.resolve(entry, &mut resolver, budget)?;
     let names = preparation.names;
     let mut frame = Frame::new(names.clone(), budget, &location)?;

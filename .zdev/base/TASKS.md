@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 101
-- Ready: 1
+- Ready: 0
 - Blocked: 0
-- Done: 100
+- Done: 101
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -109,4 +109,4 @@
 | [base-098](tasks/098-deduplicate-constructed-strings-without-pairwise-declaration.md) | Deduplicate constructed strings without pairwise declaration validation | done | — |
 | [base-099](tasks/099-share-retained-csv-tables-through-the-existing-binding-api.md) | Share retained CSV tables through the existing binding API | done | — |
 | [base-100](tasks/100-tally-unordered-string-sets-in-constructed-word-queries.md) | Tally unordered string sets in constructed word queries | done | — |
-| [base-101](tasks/101-return-set-keyed-dictionaries-from-tally.md) | Return set-keyed dictionaries from tally | ready | — |
+| [base-101](tasks/101-return-set-keyed-dictionaries-from-tally.md) | Return set-keyed dictionaries from tally | done | — |

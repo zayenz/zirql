@@ -199,19 +199,19 @@ work limit can have different outcomes. Other scalar kinds scan retained values
 for equality and charge row visits, comparisons and nominal checks. That scan
 can take quadratic work; the work allowance bounds it.
 
-String tally validates every input string before counting, then scans existing fields
-and appends each spelling on its first occurrence. It charges field visits and
-inspected string bytes, uses checked signed counts and admits record storage,
-entries and count results before growth. Its lookup work can be quadratic in the
-number of distinct spellings. It allocates no sorting scratch.
+Tally and general set/dictionary construction hash each key and check structural
+equality only within its hash collision bucket. They retain first occurrence,
+charge nested hashing and comparisons, and admit index and result storage before
+growth. Tally uses checked signed counts; string keys retain record results and
+general keys retain dictionary results. Hash collisions preserve correctness
+through equality checks. Empty-result type hints use the same metadata budget.
 
-String-set tally scans earlier groups using budgeted membership equality, with
-inspected string bytes charged to the same request. It retains each first key,
-checks signed count overflow, and admits the output array, key/count records,
-labels and counts before allocating them. Set comparison can take quadratic
-work in set size, and grouping can take quadratic work in distinct groups;
-the work allowance bounds both. Empty-result type hints are retained during
-preparation under the same metadata budget.
+General dictionaries lazily build a hash index for repeated lookup. Building it
+charges stored-key hashing and index allocation to the active request. Later
+lookups hash the requested key and compare only collision candidates. Mutable
+entry access invalidates the cache. Structural comparison of unordered sets and
+dictionaries uses canonical ordering with budgeted sorting scratch and nested
+comparisons. All paths share the active work, result and nesting allowances.
 
 These constructed stages share the active work, result and nesting allowances.
 Current-input reads and prefix filtering also check `stream_items`. Sort keeps
@@ -481,10 +481,12 @@ stream ceiling, and moves already-admitted key strings and native values. Hosts
 charge selector work, singleton copies and their existing content limits. An
 additional host output container is admitted before materialization.
 
-With program budgets, iteration, storage and key inspection consume work. Key
-inspection charges the incoming key length plus one visit per possible prior
-entry, including a visit for empty keys. It admits that upper bound before
-scanning prior keys. Diagnostic bytes are admitted before allocation.
+With program budgets, iteration, storage and key hashing consume work. A hash
+index records insertion positions; duplicate checks inspect only matching hash
+buckets. Hashing charges the incoming key length plus a visit, including empty
+keys, and collisions charge inspected key bytes. Computed string-entry
+construction uses the same index with its ordinary work charges. Diagnostic
+bytes are admitted before allocation.
 Legacy budgets retain their existing work accounting, with these new program
 bookkeeping charges inactive. No nested evaluation resets the allowance.
 
@@ -502,11 +504,11 @@ entries, keys and payload content through the host's ordinary copy hook.
 
 Native tally keeps first-seen string keys in an entry vector and uses checked
 `usize` counts. Its existing per-row work hook applies to both budget modes.
-Lookup visits, inspected key bytes and entry bookkeeping additionally charge
-program work; legacy budgets keep their existing hook costs. Result slots and
-storage arithmetic are checked before growth. These scans and declaration
-checks during constructed sorting can refuse near-limit requests sooner;
-allowances are unchanged.
+An index hashes each incoming spelling and checks equality only in its collision
+bucket. Hashing, inspected collision-key bytes and index/entry bookkeeping charge
+program work; legacy budgets keep their existing hook costs. Keys move into the
+output without an additional string copy for the index. Result slots and storage
+arithmetic are checked before growth; request allowances are unchanged.
 
 ## Native existence
 

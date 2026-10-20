@@ -3,16 +3,17 @@ use super::prepared::ReadSlot;
 use super::{
     Budget, ConstructedValue, DeclaredType, Frame, KeyAxis, KeyedEntry, Located, Location,
     PreparedArgument, PreparedArguments, PreparedGenerator, PreparedKind, PreparedValue,
-    QueryError, RuntimeValue, SetElementType, ValueBinaryOperator, ValueConstructor, ValueKey,
-    ValueQueryHost, access_declaration, admit_container, admit_diagnostic, allocation, annotate,
-    binary, boolean, constructed_value_type, copy_axes, copy_constructed_value, copy_declaration,
-    entries, equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set,
-    integer, integer_range, key_positions, key_set_type, key_value, metadata_vec,
-    optional_position, push_metadata, record_declaration, reduce_ref, scalar, sort_value,
-    source_axis, string_match_ref, sum, take_one, take_position, tally_value, unary, underlying,
-    unique_value, value_keys, zip_exact,
+    QueryError, RuntimeValue, ValueBinaryOperator, ValueConstructor, ValueKey, ValueQueryHost,
+    access_declaration, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
+    constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
+    equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
+    integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_position,
+    push_metadata, record_declaration, reduce_ref, scalar, sort_value, source_axis,
+    string_match_ref, sum, take_one, take_position, tally_value, unary, underlying, unique_value,
+    value_keys, zip_exact,
 };
-use crate::construction::EntryAccounting;
+
+use super::identity::HashIndex;
 use std::rc::Rc;
 
 pub(crate) struct Body<'a, Q, K> {
@@ -232,6 +233,7 @@ impl<'v> ConstructedRef<'v> {
     ) -> Result<Self, QueryError> {
         let data = self.value.data();
         let declaration = match (self.declaration.map(underlying), data) {
+            (Some(DeclaredType::Dictionary(_, child)), _) => Some(child.as_ref()),
             (Some(DeclaredType::Tuple(children)), _) => children.get(index),
             (Some(DeclaredType::Record(fields)), ConstructedValue::Record(values)) => Some(
                 record_declaration(fields, &values[index].0, budget, location)?,
@@ -248,11 +250,9 @@ impl<'v> ConstructedRef<'v> {
         };
         let value = match data {
             ConstructedValue::Record(fields) => &fields[index].1,
-            ConstructedValue::Array(values)
-            | ConstructedValue::Tuple(values)
-            | ConstructedValue::Set {
-                elements: values, ..
-            } => &values[index],
+            ConstructedValue::Dictionary(entries) => &entries[index].1,
+            ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => &values[index],
+            ConstructedValue::Set { elements, .. } => &elements[index],
             ConstructedValue::KeyedArray { entries, .. } => &entries[index].value,
             _ => unreachable!("selected constructed child"),
         };
@@ -278,6 +278,8 @@ impl<'v> ConstructedRef<'v> {
         }
     }
 }
+pub(crate) type DictionaryEntry<'a, N, K> = (Value<'a, N, K>, Value<'a, N, K>);
+
 pub(crate) trait Host<'a, Q> {
     type Native;
     type Kind: PartialEq;
@@ -409,6 +411,56 @@ pub(crate) trait Host<'a, Q> {
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
         apply(expression, values, self, budget)
     }
+    fn collection_hash(
+        &mut self,
+        value: &Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<u64, Self::Error> {
+        Ok(super::identity::hash_admitted(
+            self.scalar(value, budget, location)?,
+            budget,
+            location,
+        )?)
+    }
+    fn collection_equal(
+        &mut self,
+        left: &Value<'a, Self::Native, Self::Kind>,
+        right: &Value<'a, Self::Native, Self::Kind>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<bool, Self::Error> {
+        Ok(super::key_equal(
+            self.scalar(left, budget, location)?,
+            self.scalar(right, budget, location)?,
+            budget,
+            location,
+        )?)
+    }
+    fn finish_array(
+        &mut self,
+        values: Vec<Value<'a, Self::Native, Self::Kind>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        constructed_array(values, self, budget, location)
+    }
+    fn finish_dictionary(
+        &mut self,
+        entries: Vec<DictionaryEntry<'a, Self::Native, Self::Kind>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        constructed_dictionary(entries, self, budget, location)
+    }
+    fn finish_set(
+        &mut self,
+        values: Vec<Value<'a, Self::Native, Self::Kind>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        constructed_set(values, self, budget, location)
+    }
     fn retains_native_admission(&self) -> bool {
         false
     }
@@ -505,6 +557,66 @@ pub(crate) trait Host<'a, Q> {
     fn failure(&mut self, _calls: &[(usize, std::ops::Range<usize>)], _omitted: usize) {}
 }
 
+pub(crate) fn constructed_array<'a, Q, H: Host<'a, Q> + ?Sized>(
+    values: Vec<Value<'a, H::Native, H::Kind>>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value<'a, H::Native, H::Kind>, H::Error> {
+    let mut output = metadata_vec(values.len(), budget, location)?;
+    for value in values {
+        output.push(host.materialize(value, budget, location)?);
+    }
+    Ok(Value::constructed(RuntimeValue::Owned(
+        ConstructedValue::Array(output),
+    )))
+}
+pub(crate) fn constructed_dictionary<'a, Q, H: Host<'a, Q> + ?Sized>(
+    entries: Vec<DictionaryEntry<'a, H::Native, H::Kind>>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value<'a, H::Native, H::Kind>, H::Error> {
+    let mut output = metadata_vec(entries.len(), budget, location)?;
+    for (key, value) in entries {
+        output.push((
+            host.materialize(key, budget, location)?,
+            host.materialize(value, budget, location)?,
+        ));
+    }
+    Ok(Value::constructed(RuntimeValue::Owned(
+        super::finish_dictionary(output, budget, location)?,
+    )))
+}
+pub(crate) fn constructed_set<'a, Q, H: Host<'a, Q> + ?Sized>(
+    values: Vec<Value<'a, H::Native, H::Kind>>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value<'a, H::Native, H::Kind>, H::Error> {
+    let mut output = metadata_vec(values.len(), budget, location)?;
+    let mut kind = None;
+    let mut hashes = HashIndex::default();
+    for value in values {
+        insert_set(
+            &mut output,
+            &mut hashes,
+            &mut kind,
+            host.materialize(value, budget, location)?,
+            false,
+            budget,
+            location,
+        )?;
+    }
+    super::check_set(kind, &output, budget, location)?;
+    Ok(Value::constructed(RuntimeValue::Owned(
+        ConstructedValue::Set {
+            elements: output.into(),
+            element_type: kind,
+        },
+    )))
+}
+
 struct Activation<'a, N, K> {
     function: Option<usize>,
     range: std::ops::Range<usize>,
@@ -578,21 +690,24 @@ enum Pending<'a, Q, N, K> {
         &'a PreparedValue<'a, Q>,
         usize,
         usize,
-        Vec<ConstructedValue>,
-        Option<SetElementType>,
+        Vec<Value<'a, N, K>>,
+        HashIndex,
     ),
     DictionaryKey(
         &'a PreparedValue<'a, Q>,
         usize,
         usize,
-        Vec<(String, ConstructedValue)>,
+        Vec<DictionaryEntry<'a, N, K>>,
+        HashIndex,
     ),
     DictionaryValue(
         &'a PreparedValue<'a, Q>,
         usize,
         usize,
-        Vec<(String, ConstructedValue)>,
-        String,
+        Vec<DictionaryEntry<'a, N, K>>,
+        HashIndex,
+        Value<'a, N, K>,
+        u64,
     ),
     DeclaredAxes(&'a PreparedValue<'a, Q>, usize, usize, Vec<KeyAxis>),
     KeyedKey(
@@ -614,23 +729,23 @@ enum Pending<'a, Q, N, K> {
     Return(usize),
     Predicate(&'a PreparedValue<'a, Q>, usize, usize),
     PredicateResult(&'a PreparedValue<'a, Q>, usize),
-    Clauses(Rc<Comprehension<'a, Q>>, usize, usize),
-    Source(Rc<Comprehension<'a, Q>>, usize, usize),
+    Clauses(Rc<Comprehension<'a, Q, N, K>>, usize, usize),
+    Source(Rc<Comprehension<'a, Q, N, K>>, usize, usize),
     Candidate(
-        Rc<Comprehension<'a, Q>>,
+        Rc<Comprehension<'a, Q, N, K>>,
         usize,
         usize,
         GeneratorSource<'a, N, K>,
         Vec<usize>,
         usize,
     ),
-    Filter(Rc<Comprehension<'a, Q>>, usize, usize),
+    Filter(Rc<Comprehension<'a, Q, N, K>>, usize, usize),
     Restore(usize),
-    Head(Rc<Comprehension<'a, Q>>),
-    KeyHead(Rc<Comprehension<'a, Q>>, Vec<ValueKey>),
-    DictionaryHead(Rc<Comprehension<'a, Q>>, String),
-    FinishComprehension(Rc<Comprehension<'a, Q>>),
-    EmptyAxes(Rc<Comprehension<'a, Q>>, usize, Vec<KeyAxis>),
+    Head(Rc<Comprehension<'a, Q, N, K>>),
+    KeyHead(Rc<Comprehension<'a, Q, N, K>>, Vec<ValueKey>),
+    DictionaryHead(Rc<Comprehension<'a, Q, N, K>>, Value<'a, N, K>, u64),
+    FinishComprehension(Rc<Comprehension<'a, Q, N, K>>),
+    EmptyAxes(Rc<Comprehension<'a, Q, N, K>>, usize, Vec<KeyAxis>),
 }
 struct Accumulator<'a, N, K> {
     source: GeneratorSource<'a, N, K>,
@@ -658,10 +773,8 @@ impl<'a, N, K> GeneratorSource<'a, N, K> {
     fn len(&self) -> usize {
         match self {
             Self::Constructed(value) => match value.as_ref() {
-                ConstructedValue::Array(values)
-                | ConstructedValue::Set {
-                    elements: values, ..
-                } => values.len(),
+                ConstructedValue::Array(values) => values.len(),
+                ConstructedValue::Set { elements, .. } => elements.len(),
                 ConstructedValue::KeyedArray { entries, .. } => entries.len(),
                 _ => unreachable!("admitted generator source"),
             },
@@ -684,21 +797,22 @@ impl<'a, N, K> GeneratorSource<'a, N, K> {
         }
     }
 }
-struct Comprehension<'a, Q> {
+struct Comprehension<'a, Q, N, K> {
     expression: &'a PreparedValue<'a, Q>,
     clauses: &'a [Located<PreparedGenerator<'a, Q>>],
     key: Option<&'a PreparedValue<'a, Q>>,
     head: &'a PreparedValue<'a, Q>,
     empty: Option<&'a [PreparedValue<'a, Q>]>,
+    general_keys: bool,
     depth: usize,
-    output: std::cell::RefCell<Output>,
+    output: std::cell::RefCell<Output<'a, N, K>>,
     declaration: std::cell::RefCell<Option<DeclaredType<()>>>,
 }
-enum Output {
-    Array(Vec<ConstructedValue>),
-    Set(Vec<ConstructedValue>, Option<SetElementType>),
+enum Output<'a, N, K> {
+    Array(Vec<Value<'a, N, K>>),
+    Set(Vec<Value<'a, N, K>>, HashIndex),
     Keyed(Option<Vec<KeyAxis>>, Vec<Located<KeyedEntry>>),
-    Dictionary(Vec<(String, ConstructedValue)>),
+    Dictionary(Vec<DictionaryEntry<'a, N, K>>, HashIndex),
 }
 
 pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
@@ -785,7 +899,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::Source(c, index, _)
                     | Pending::Candidate(c, index, ..)
                     | Pending::Filter(c, index, _) => c.depth + index + 1,
-                    Pending::Head(c) | Pending::KeyHead(c, _) | Pending::DictionaryHead(c, _) => {
+                    Pending::Head(c) | Pending::KeyHead(c, _) | Pending::DictionaryHead(c, ..) => {
                         c.depth + c.clauses.len()
                     }
                     Pending::FinishComprehension(c) | Pending::EmptyAxes(c, ..) => c.depth,
@@ -796,6 +910,40 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     | Pending::PredicateResult(_, _)
                     | Pending::Invoke { .. } => 0,
                 };
+                // Native argument callbacks can reenter this runner. Dispatch them
+                // outside the large pure-value step so that frame is not retained.
+                if let Pending::Eval(expression, _, _) = &next
+                    && let PreparedKind::NativeQuery { query, arguments }
+                    | PreparedKind::NativeValue { query, arguments } = &expression.value
+                {
+                    budget.within_evaluation(
+                        depth,
+                        location.clone(),
+                        |budget| -> Result<(), H::Error> {
+                            budget.charge(1, location.clone())?;
+                            push_metadata(
+                                &mut pending,
+                                Pending::Check(expression, depth),
+                                budget,
+                                &location,
+                            )?;
+                            let frame = frames.last_mut().expect("active expression scope");
+                            result = Some(host.native(
+                                query,
+                                arguments,
+                                &mut frame.locals,
+                                bodies,
+                                offset + frame_depth - 1,
+                                frame.function,
+                                matches!(expression.value, PreparedKind::NativeQuery { .. }),
+                                budget,
+                                &expression.range,
+                            )?);
+                            Ok(())
+                        },
+                    )?;
+                    continue;
+                }
                 budget.within_evaluation(
                     depth,
                     location.clone(),
@@ -843,23 +991,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             &expression.range,
                                         )?)
                                     }
-                                    PreparedKind::NativeQuery { query, arguments }
-                                    | PreparedKind::NativeValue { query, arguments } => {
-                                        result = Some(host.native(
-                                            query,
-                                            arguments,
-                                            &mut frame.locals,
-                                            bodies,
-                                            offset + frame_depth - 1,
-                                            frame.function,
-                                            matches!(
-                                                expression.value,
-                                                PreparedKind::NativeQuery { .. }
-                                            ),
-                                            budget,
-                                            &expression.range,
-                                        )?);
-                                    }
+                                    PreparedKind::NativeQuery { .. }
+                                    | PreparedKind::NativeValue { .. } => unreachable!(
+                                        "native callbacks are dispatched before pure-value steps"
+                                    ),
                                     PreparedKind::SubjectScope { subject, .. } => {
                                         push!(Pending::Predicate(
                                             expression,
@@ -928,13 +1063,17 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         let values =
                                             admit_container(children.len(), budget, &location)?;
                                         if let Some(child) = children.first() {
-                                            push!(Pending::Set(expression, depth, 0, values, None));
+                                            push!(Pending::Set(
+                                                expression,
+                                                depth,
+                                                0,
+                                                values,
+                                                HashIndex::default()
+                                            ));
                                             push!(Pending::Eval(child, depth + 1, false));
                                         } else {
-                                            result = owned!(ConstructedValue::Set {
-                                                element_type: None,
-                                                elements: values
-                                            });
+                                            result =
+                                                Some(host.finish_set(values, budget, &location)?);
                                         }
                                     }
                                     PreparedKind::Dictionary(_)
@@ -945,6 +1084,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             frame.locals.len(),
                                             &mut pending,
                                             &mut result,
+                                            host,
                                             budget,
                                         )?;
                                     }
@@ -990,7 +1130,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             ),
                                             ValueConstructor::Set => Output::Set(
                                                 admit_container(0, budget, &location)?,
-                                                None,
+                                                HashIndex::default(),
                                             ),
                                         };
                                         let c = Rc::new(Comprehension {
@@ -999,6 +1139,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             key: None,
                                             head,
                                             empty: None,
+                                            general_keys: false,
                                             depth,
                                             output: std::cell::RefCell::new(output),
                                             declaration: std::cell::RefCell::new(None),
@@ -1043,6 +1184,18 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Array(_)
                                             | PreparedKind::Tuple(_)
                                             | PreparedKind::TupleAccess { .. }
+                                            | PreparedKind::Tally { .. }
+                                            | PreparedKind::Lookup { .. }
+                                            | PreparedKind::HasKey { .. }
+                                            | PreparedKind::Binary {
+                                                operator: ValueBinaryOperator::Equal
+                                                    | ValueBinaryOperator::NotEqual
+                                                    | ValueBinaryOperator::Less
+                                                    | ValueBinaryOperator::LessEqual
+                                                    | ValueBinaryOperator::Greater
+                                                    | ValueBinaryOperator::GreaterEqual,
+                                                ..
+                                            }
                                             | PreparedKind::Binary {
                                                 operator: ValueBinaryOperator::In,
                                                 ..
@@ -1556,23 +1709,39 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     });
                                 }
                             }
-                            Pending::Set(expression, depth, index, mut values, mut ty) => {
-                                let value = result
-                                    .take()
-                                    .expect("set child")
-                                    .materialize_with(host, budget, &location)?;
-                                insert_set(&mut values, &mut ty, value, false, budget, &location)?;
+                            Pending::Set(expression, depth, index, mut values, mut hashes) => {
+                                let value = result.take().expect("set child");
+                                let mut duplicate = false;
+                                let hash = host.collection_hash(&value, budget, &location)?;
+                                for &index in hashes.candidates(hash) {
+                                    if host.collection_equal(
+                                        &values[index],
+                                        &value,
+                                        budget,
+                                        &location,
+                                    )? {
+                                        duplicate = true;
+                                        break;
+                                    }
+                                }
+                                if !duplicate {
+                                    hashes.insert(hash, values.len(), budget, &location)?;
+                                    push_metadata(&mut values, value, budget, &location)?;
+                                }
                                 let PreparedKind::Set(children) = &expression.value else {
                                     unreachable!()
                                 };
                                 if let Some(child) = children.get(index + 1) {
-                                    push!(Pending::Set(expression, depth, index + 1, values, ty));
+                                    push!(Pending::Set(
+                                        expression,
+                                        depth,
+                                        index + 1,
+                                        values,
+                                        hashes
+                                    ));
                                     push!(Pending::Eval(child, depth + 1, false));
                                 } else {
-                                    result = owned!(ConstructedValue::Set {
-                                        element_type: ty,
-                                        elements: values
-                                    });
+                                    result = Some(host.finish_set(values, budget, &location)?);
                                 }
                             }
                             next @ (Pending::DictionaryKey(..) | Pending::DictionaryValue(..)) => {
@@ -1899,17 +2068,28 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                             }
                             Pending::Restore(saved) => frame.locals.truncate(saved),
                             Pending::Head(c) => {
-                                let value = result
-                                    .take()
-                                    .expect("head or key")
-                                    .materialize_with(host, budget, &location)?;
+                                let value = result.take().expect("head or key");
                                 if let Some(key) = c.key {
-                                    if let Output::Dictionary(entries) = &*c.output.borrow() {
+                                    if let Output::Dictionary(entries, hashes) = &*c.output.borrow()
+                                    {
                                         let location = Location::Query(key.range.clone());
-                                        budget.charge(1, location.clone())?;
-                                        let key =
-                                            dictionary_key(value, entries, budget, &location)?;
-                                        push!(Pending::DictionaryHead(Rc::clone(&c), key));
+                                        let hash =
+                                            host.collection_hash(&value, budget, &location)?;
+                                        for &index in hashes.candidates(hash) {
+                                            if host.collection_equal(
+                                                &entries[index].0,
+                                                &value,
+                                                budget,
+                                                &location,
+                                            )? {
+                                                return Err(error(
+                                                    &location,
+                                                    "duplicate dictionary key",
+                                                )
+                                                .into());
+                                            }
+                                        }
+                                        push!(Pending::DictionaryHead(Rc::clone(&c), value, hash));
                                         push!(Pending::Eval(
                                             c.head,
                                             c.depth + c.clauses.len() + 1,
@@ -1918,7 +2098,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         return Ok(());
                                     }
                                     let keys = value_keys(
-                                        value,
+                                        host.materialize(value, budget, &location)?,
                                         budget,
                                         &Location::Query(key.range.clone()),
                                     )?;
@@ -1928,8 +2108,33 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         c.depth + c.clauses.len() + 1,
                                         false
                                     ));
+                                } else if let Output::Set(elements, hashes) =
+                                    &mut *c.output.borrow_mut()
+                                {
+                                    let mut duplicate = false;
+                                    let hash = host.collection_hash(&value, budget, &location)?;
+                                    for &index in hashes.candidates(hash) {
+                                        if host.collection_equal(
+                                            &elements[index],
+                                            &value,
+                                            budget,
+                                            &location,
+                                        )? {
+                                            duplicate = true;
+                                            break;
+                                        }
+                                    }
+                                    if !duplicate {
+                                        hashes.insert(hash, elements.len(), budget, &location)?;
+                                        budget.charge_results(1, location.clone())?;
+                                        push_metadata(elements, value, budget, &location)?;
+                                    }
+                                } else if let Output::Array(elements) = &mut *c.output.borrow_mut()
+                                {
+                                    budget.charge_results(1, location.clone())?;
+                                    push_metadata(elements, value, budget, &location)?;
                                 } else {
-                                    append(&c, value, None, budget)?;
+                                    unreachable!("positional or set comprehension");
                                 }
                             }
                             Pending::KeyHead(c, key) => {
@@ -1939,22 +2144,20 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     .materialize_with(host, budget, &location)?;
                                 append(&c, value, Some(key), budget)?;
                             }
-                            Pending::DictionaryHead(c, key) => {
-                                let value = result
-                                    .take()
-                                    .expect("dictionary head")
-                                    .materialize_with(host, budget, &location)?;
-                                let Output::Dictionary(entries) = &mut *c.output.borrow_mut()
+                            Pending::DictionaryHead(c, key, hash) => {
+                                let value = result.take().expect("dictionary head");
+                                let Output::Dictionary(entries, hashes) =
+                                    &mut *c.output.borrow_mut()
                                 else {
                                     unreachable!("dictionary output")
                                 };
-                                EntryAccounting::Computed.append(
-                                    entries,
-                                    key,
-                                    value,
-                                    budget,
-                                    &Location::Query(c.expression.range.clone()),
+                                budget.check_items(
+                                    sum(entries.len(), 1, &location)?,
+                                    location.clone(),
                                 )?;
+                                budget.charge_results(1, location.clone())?;
+                                hashes.insert(hash, entries.len(), budget, &location)?;
+                                push_metadata(entries, (key, value), budget, &location)?;
                             }
                             Pending::FinishComprehension(c) => {
                                 let output = std::mem::replace(
@@ -1962,14 +2165,40 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     Output::Array(Vec::new()),
                                 );
                                 let value = match output {
-                                    Output::Array(values) => ConstructedValue::Array(values),
-                                    Output::Dictionary(entries) => {
-                                        ConstructedValue::Record(entries)
+                                    Output::Array(values) => {
+                                        let mut value =
+                                            host.finish_array(values, budget, &location)?;
+                                        if let Some(declaration) = c.declaration.borrow_mut().take()
+                                            && let Data::Constructed(data) = value.data
+                                        {
+                                            value.data =
+                                                Data::Constructed(RuntimeValue::Owned(annotate(
+                                                    data.materialize(budget, &location)?,
+                                                    declaration,
+                                                    budget,
+                                                    &location,
+                                                )?));
+                                        }
+                                        result = Some(value);
+                                        return Ok(());
                                     }
-                                    Output::Set(elements, element_type) => ConstructedValue::Set {
-                                        elements,
-                                        element_type,
-                                    },
+                                    Output::Dictionary(entries, _) => {
+                                        if entries.is_empty() && c.general_keys {
+                                            result = owned!(ConstructedValue::Dictionary(
+                                                Vec::new().into()
+                                            ));
+                                            return Ok(());
+                                        }
+                                        result = Some(
+                                            host.finish_dictionary(entries, budget, &location)?,
+                                        );
+                                        return Ok(());
+                                    }
+                                    Output::Set(elements, _) => {
+                                        result =
+                                            Some(host.finish_set(elements, budget, &location)?);
+                                        return Ok(());
+                                    }
                                     Output::Keyed(None, entries) if entries.is_empty() => {
                                         *c.output.borrow_mut() = Output::Keyed(None, entries);
                                         let sources = c.empty.ok_or_else(|| {
@@ -2519,6 +2748,7 @@ fn infer_state_type(
                 }
                 DeclaredType::Tuple(types)
             }
+            T::Dictionary { .. } => DeclaredType::Dictionary(Box::new(DeclaredType::Value), Box::new(DeclaredType::Value)),
             T::Record(fields) => {
                 let mut types = metadata_vec(fields.len(), budget, location)?;
                 for (name, field) in fields {
@@ -2620,14 +2850,15 @@ fn admit<'a, Q, H: Host<'a, Q>>(
     value.contract = Some(expected);
     Ok(())
 }
-fn start_dictionary<'a, Q, N, K>(
+fn start_dictionary<'a, Q, H: Host<'a, Q>>(
     expression: &'a PreparedValue<'a, Q>,
     depth: usize,
     saved: usize,
-    pending: &mut Vec<Pending<'a, Q, N, K>>,
-    result: &mut Option<Value<'a, N, K>>,
+    pending: &mut Vec<Pending<'a, Q, H::Native, H::Kind>>,
+    result: &mut Option<Value<'a, H::Native, H::Kind>>,
+    host: &mut H,
     budget: &mut Budget,
-) -> Result<(), QueryError> {
+) -> Result<(), H::Error> {
     let location = Location::Query(expression.range.clone());
     macro_rules! push {
         ($v:expr) => {
@@ -2636,28 +2867,39 @@ fn start_dictionary<'a, Q, N, K>(
     }
     match &expression.value {
         PreparedKind::Dictionary(entries) => {
-            let values = EntryAccounting::Computed.entries(budget, &location)?;
+            let values = admit_container(0, budget, &location)?;
             if let Some((key, _)) = entries.first() {
                 budget.charge(1, Location::Query(key.range.clone()))?;
-                push!(Pending::DictionaryKey(expression, depth, 0, values));
+                push!(Pending::DictionaryKey(
+                    expression,
+                    depth,
+                    0,
+                    values,
+                    HashIndex::default()
+                ));
                 push!(Pending::Eval(key, depth + 1, false));
             } else {
-                *result = Some(Value::constructed(RuntimeValue::Owned(
-                    ConstructedValue::Record(values),
-                )));
+                *result = Some(host.finish_dictionary(values, budget, &location)?);
             }
         }
-        PreparedKind::DictionaryComprehension { clauses, key, head } => {
+        PreparedKind::DictionaryComprehension {
+            general_keys,
+            clauses,
+            key,
+            head,
+        } => {
             let c = Rc::new(Comprehension {
                 expression,
                 clauses,
                 key: Some(key),
                 head,
                 empty: None,
+                general_keys: *general_keys,
                 depth,
                 declaration: std::cell::RefCell::new(None),
                 output: std::cell::RefCell::new(Output::Dictionary(
-                    EntryAccounting::Computed.entries(budget, &location)?,
+                    admit_container(0, budget, &location)?,
+                    HashIndex::default(),
                 )),
             });
             push!(Pending::FinishComprehension(Rc::clone(&c)));
@@ -2672,9 +2914,9 @@ fn dictionary_step<'a, Q, H: Host<'a, Q>>(
     next: Pending<'a, Q, H::Native, H::Kind>,
     pending: &mut Vec<Pending<'a, Q, H::Native, H::Kind>>,
     result: &mut Option<ResultValue<'a, H, Q>>,
-    host: &H,
+    host: &mut H,
     budget: &mut Budget,
-) -> Result<(), QueryError> {
+) -> Result<(), H::Error> {
     let location = match &next {
         Pending::DictionaryKey(expression, ..) | Pending::DictionaryValue(expression, ..) => {
             Location::Query(expression.range.clone())
@@ -2687,64 +2929,49 @@ fn dictionary_step<'a, Q, H: Host<'a, Q>>(
         };
     }
     match next {
-        Pending::DictionaryKey(expression, depth, index, values) => {
+        Pending::DictionaryKey(expression, depth, index, values, hashes) => {
             let PreparedKind::Dictionary(entries) = &expression.value else {
                 unreachable!("dictionary entries")
             };
             let key_location = Location::Query(entries[index].0.range.clone());
-            let key = dictionary_key(
-                result.take().expect("dictionary key").materialize_with(
-                    host,
-                    budget,
-                    &key_location,
-                )?,
-                &values,
-                budget,
-                &key_location,
-            )?;
+            let key = result.take().expect("dictionary key");
+            let hash = host.collection_hash(&key, budget, &key_location)?;
+            for &index in hashes.candidates(hash) {
+                if host.collection_equal(&values[index].0, &key, budget, &key_location)? {
+                    return Err(error(&key_location, "duplicate dictionary key").into());
+                }
+            }
             push!(Pending::DictionaryValue(
-                expression, depth, index, values, key
+                expression, depth, index, values, hashes, key, hash
             ));
             push!(Pending::Eval(&entries[index].1, depth + 1, false));
         }
-        Pending::DictionaryValue(expression, depth, index, mut values, key) => {
+        Pending::DictionaryValue(expression, depth, index, mut values, mut hashes, key, hash) => {
             let PreparedKind::Dictionary(entries) = &expression.value else {
                 unreachable!("dictionary entries")
             };
-            let value = result
-                .take()
-                .expect("dictionary value")
-                .materialize_with(host, budget, &location)?;
-            EntryAccounting::Computed.append(&mut values, key, value, budget, &location)?;
+            let value = result.take().expect("dictionary value");
+            budget.check_items(sum(values.len(), 1, &location)?, location.clone())?;
+            budget.charge_results(1, location.clone())?;
+            hashes.insert(hash, values.len(), budget, &location)?;
+            push_metadata(&mut values, (key, value), budget, &location)?;
             if let Some((key, _)) = entries.get(index + 1) {
                 budget.charge(1, Location::Query(key.range.clone()))?;
-                push!(Pending::DictionaryKey(expression, depth, index + 1, values));
+                push!(Pending::DictionaryKey(
+                    expression,
+                    depth,
+                    index + 1,
+                    values,
+                    hashes
+                ));
                 push!(Pending::Eval(key, depth + 1, false));
             } else {
-                *result = Some(Value::constructed(RuntimeValue::Owned(
-                    ConstructedValue::Record(values),
-                )));
+                *result = Some(host.finish_dictionary(values, budget, &location)?);
             }
         }
         _ => unreachable!("dictionary continuation"),
     }
     Ok(())
-}
-
-fn dictionary_key(
-    value: ConstructedValue,
-    entries: &[(String, ConstructedValue)],
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<String, QueryError> {
-    let ConstructedValue::String(key) = expose(value, budget, location)? else {
-        return Err(error(location, "dictionary key needs a present string"));
-    };
-    if EntryAccounting::Computed.contains(entries, &key, budget, location)? {
-        admit_diagnostic("duplicate dictionary key: ", &key, budget, location)?;
-        return Err(error(location, format!("duplicate dictionary key: {key}")));
-    }
-    Ok(key)
 }
 
 fn declared_axis_sources<'a, Q>(
@@ -2803,6 +3030,7 @@ fn start_keyed<'a, Q, N, K>(
                 key: Some(key),
                 head,
                 empty: empty_axis_sources.as_deref(),
+                general_keys: false,
                 depth,
                 declaration: std::cell::RefCell::new(None),
                 output: std::cell::RefCell::new(Output::Keyed(
@@ -2818,21 +3046,16 @@ fn start_keyed<'a, Q, N, K>(
     Ok(())
 }
 
-fn append<Q>(
-    c: &Comprehension<'_, Q>,
+fn append<Q, N, K>(
+    c: &Comprehension<'_, Q, N, K>,
     value: ConstructedValue,
     key: Option<Vec<ValueKey>>,
     budget: &mut Budget,
 ) -> Result<(), QueryError> {
-    let location = Location::Query(c.expression.range.clone());
     match &mut *c.output.borrow_mut() {
-        Output::Array(values) => {
-            allocation::<ConstructedValue>(sum(values.len(), 1, &location)?, &location)?;
-            budget.charge_results(1, location)?;
-            values.push(value);
-        }
-        Output::Set(elements, ty) => insert_set(elements, ty, value, true, budget, &location)?,
-        Output::Dictionary(_) => unreachable!("dictionary head has a string key"),
+        Output::Array(_) => unreachable!("array heads retain native values"),
+        Output::Set(..) => unreachable!("set heads retain native values"),
+        Output::Dictionary(..) => unreachable!("dictionary head has a string key"),
         Output::Keyed(_, entries) => {
             let expression = c.key.expect("key expression");
             let location = Location::Query(expression.range.clone());
@@ -3121,6 +3344,27 @@ fn select_record_field<'a, Q, H: Host<'a, Q> + ?Sized>(
     Err(error(location, format!("missing record field: {label}")).into())
 }
 
+fn constructed_access_declaration<K>(
+    contract: Option<&DeclaredType<K>>,
+    data: &RuntimeValue,
+    key: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Option<DeclaredType<()>>, QueryError> {
+    if let Some(contract) = contract
+        && !crate::runtime_types::contains_native(contract, budget, location)?
+        && let Some(child) = access_declaration(contract, key, budget, location)?
+    {
+        return crate::runtime_types::constructed_declaration(child, budget, location).map(Some);
+    }
+    data.declaration()
+        .map(|declaration| access_declaration(declaration, key, budget, location))
+        .transpose()?
+        .flatten()
+        .map(|child| copy_declaration(child, budget, location))
+        .transpose()
+}
+
 pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
     expression: &'a PreparedValue<'a, Q>,
     mut values: Vec<ResultValue<'a, H, Q>>,
@@ -3136,6 +3380,29 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             budget,
             &location,
         );
+    }
+    if matches!(expression.value, PreparedKind::ArrayAccess { .. })
+        && host
+            .constructed(&values[0], budget, &location)?
+            .is_some_and(|data| matches!(data.value.data(), ConstructedValue::Dictionary(_)))
+    {
+        let key = host.materialize(values.pop().expect("dictionary key"), budget, &location)?;
+        let value = host.normalize(values.pop().expect("dictionary operand"), budget, &location)?;
+        let Data::Constructed(mut data) = value.data else {
+            return Err(error(&location, "dictionary access needs constructed data").into());
+        };
+        let child = constructed_access_declaration(value.contract, &data, &key, budget, &location)?;
+        let index = optional_position(data.as_ref(), key, budget, &location)?
+            .ok_or_else(|| error(&location, "missing dictionary key"))?;
+        let mut selected = data
+            .share(budget, &location)?
+            .into_data(budget, &location)?
+            .child(index, budget, &location)?;
+        if let Some(child) = child {
+            selected = selected.into_data(budget, &location)?;
+            selected.retain_declaration(&std::sync::Arc::new(child), budget, &location)?;
+        }
+        return Ok(Value::constructed(selected));
     }
     if matches!(expression.value, PreparedKind::ArrayAccess { .. })
         && host
@@ -3159,29 +3426,12 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
         PreparedKind::Lookup { .. } | PreparedKind::HasKey { .. }
     ) {
         let key = host.materialize(values.pop().expect("lookup key"), budget, &location)?;
-        let value = values.pop().expect("lookup operand");
+        let value = host.normalize(values.pop().expect("lookup operand"), budget, &location)?;
         let Data::Constructed(mut data) = value.data else {
-            unreachable!("native lookup operands are materialized before applying lookup")
+            return Err(error(&location, "lookup needs a dictionary, record or array").into());
         };
         let membership = matches!(expression.value, PreparedKind::HasKey { .. });
-        let child = if let Some(contract) = value.contract
-            && !crate::runtime_types::contains_native(contract, budget, &location)?
-        {
-            access_declaration(contract, &key, budget, &location)?
-                .filter(|_| !membership)
-                .map(|child| {
-                    crate::runtime_types::constructed_declaration(child, budget, &location)
-                })
-                .transpose()?
-        } else {
-            data.declaration()
-                .map(|declaration| access_declaration(declaration, &key, budget, &location))
-                .transpose()?
-                .flatten()
-                .filter(|_| !membership)
-                .map(|child| copy_declaration(child, budget, &location))
-                .transpose()?
-        };
+        let child = constructed_access_declaration(value.contract, &data, &key, budget, &location)?;
         let position = optional_position(data.as_ref(), key, budget, &location)?;
         if membership {
             return Ok(Value::constructed(RuntimeValue::Owned(scalar(
@@ -3268,6 +3518,20 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             budget,
             &location,
         )?)));
+    }
+    if let PreparedKind::Binary {
+        operator: ValueBinaryOperator::In,
+        ..
+    } = &expression.value
+    {
+        return Ok(Value::constructed(RuntimeValue::Owned(
+            super::membership_ref(
+                host.scalar(&values[0], budget, &location)?,
+                host.scalar(&values[1], budget, &location)?,
+                budget,
+                &location,
+            )?,
+        )));
     }
     if let PreparedKind::Extremum {
         operator, field, ..
@@ -3368,10 +3632,12 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
         PreparedKind::Array(_) | PreparedKind::Tuple(_) | PreparedKind::Set(_) => {
             let mut values = admit_container(arguments.len(), budget, &location)?;
             let mut element_type = None;
+            let mut hashes = HashIndex::default();
             for value in arguments {
                 if matches!(expression.value, PreparedKind::Set(_)) {
                     insert_set(
                         &mut values,
+                        &mut hashes,
                         &mut element_type,
                         value,
                         false,
@@ -3386,7 +3652,7 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
                 PreparedKind::Array(_) => ConstructedValue::Array(values),
                 PreparedKind::Tuple(_) => ConstructedValue::Tuple(values),
                 _ => ConstructedValue::Set {
-                    elements: values,
+                    elements: values.into(),
                     element_type,
                 },
             }
@@ -3444,10 +3710,12 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
                 let axis = axes.pop().expect("rank one");
                 let mut values = admit_container(axis.keys.len(), budget, &location)?;
                 let mut element_type = Some(key_set_type(axis.key_type));
+                let mut hashes = HashIndex::default();
                 for key in axis.keys {
                     budget.charge(1, location.clone())?;
                     insert_set(
                         &mut values,
+                        &mut hashes,
                         &mut element_type,
                         key_value(key),
                         false,
@@ -3457,7 +3725,7 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
                 }
                 ConstructedValue::Set {
                     element_type,
-                    elements: values,
+                    elements: values.into(),
                 }
             }
             ConstructedValue::KeyedArray { .. } => {
@@ -3467,7 +3735,11 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
         },
         PreparedKind::Entries(_) => entries(next(), budget, &location)?,
         PreparedKind::Unique(_) => unique_value(next(), budget, &location)?,
-        PreparedKind::Tally { sets, .. } => tally_value(next(), *sets, budget, &location)?,
+        PreparedKind::Tally {
+            general_keys,
+            set_type,
+            ..
+        } => tally_value(next(), *general_keys, *set_type, budget, &location)?,
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
         PreparedKind::GroupBy { field, .. } => group_by(next(), field, budget, &location)?,
         PreparedKind::Sort {

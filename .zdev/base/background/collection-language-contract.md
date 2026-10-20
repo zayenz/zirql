@@ -14,7 +14,9 @@ expressions:
 {3, 1, 3}                              # set, iterating as 3, 1
 {x mod 3 for x in 1..5}                # set, iterating as 1, 2, 0
 {"pear": 3, "apple": 7}                # dictionary, pear then apple
-{w: 1 for w in words}                  # computed string keys; duplicates fail
+{w: 1 for w in words}                  # computed keys; duplicates fail
+{{"ash", "apple"}: 1}                  # a set used as a dictionary key
+{[1, 2], (1, 2), {1, 2}}               # a set of constructed values
 {}                                     # empty dictionary
 set<int>()                             # explicitly typed empty set
 ```
@@ -23,25 +25,32 @@ A colon at the brace body's own level selects a dictionary; a nonempty body
 without a colon selects a set. Each key is an ordinary expression, so `{k: v}`
 reads the binding `k`; static string keys stay quoted. Nested collections keep
 their own delimiters. Empty braces select a dictionary. The exceptional
-`set<int>()`, `set<bool>()` and `set<float>()` forms supply an empty set with an
-explicit existing scalar element type. A host can supply a typed empty nominal
-set directly; no common model or member-name resolver is introduced.
+`set<int>()`, `set<bool>()`, `set<float>()` and `set<string>()` forms supply an
+empty set with an explicit scalar element type; `set<value>()` supplies an empty
+general set. A host can supply a typed empty nominal set directly; no common model or member-name resolver is introduced.
 
 String dictionaries reuse the existing ordered string-field objects and their
 structural schemas. There is no separate everyday record syntax. `.field`
 continues to select a static string field; bracket access and `lookup` accept
-computed string keys. A dictionary key must evaluate to a string, with no
-implicit conversion from integer, member or native-handle text. Integer and
-nominal indexed data use the array-shaped forms below, retaining typed axes.
-This does not introduce a generalized arbitrary-key dictionary value.
+any constructed key. General dictionaries use ordered constructed key/value
+pairs; all-string dictionaries retain the existing record representation and
+empty `{}` remains a record. Keys and values include scalars, absence, tuples,
+lists, sets and dictionaries. `dict<K, V>` declares their respective contracts;
+`value` admits any constructed value. Integer and nominal indexed arrays remain
+a distinct array-shaped form retaining typed axes. No key is coerced to text.
 
 Sets preserve the first occurrence of each identity. Dictionaries preserve
 entry insertion order and refuse duplicate keys before evaluating that entry's
 value. Construction, iteration, saved values and rendering agree on this order.
-Set elements retain the existing homogeneous Boolean, integer, finite-float and
-nominal-member support; string sets remain outside this increment. Set equality
-compares membership; dictionary equality compares key/value associations.
-Iteration order remains observable separately.
+Inferred sets accept arbitrary constructed elements, including mixed kinds and
+nested collections. Homogeneous scalar sets retain their precise element type;
+general sets use `SetElementType::Value`. Explicit scalar contracts remain strict.
+Key equality is structural: lists and tuples compare by position, sets by
+membership, and dictionaries by associations. Different value kinds remain
+distinct, including integers and floats. Iteration order remains observable
+separately from set and dictionary equality. Tally uses this key equality and
+returns a dictionary, with empty results remaining dictionaries. String tally
+retains record results; general tally keeps actual constructed keys.
 
 Both kinds support explicit stable sorting and retain their collection kind:
 
@@ -53,12 +62,20 @@ sort_by({"pear": 3, "apple": 3}, value)
 
 These produce a set ordered 1, 2, 3; a dictionary ordered apple, pear; and a
 dictionary retaining pear, apple because the values tie. `sort(d)` orders
-string keys; `sort_by(d, value)` orders values through a closed built-in
+structural keys, including mixed and nested collections. Lists/tuples compare
+lexicographically; sets and dictionaries compare canonical membership and
+associations. Distinct kinds remain distinct, while floating signed zeros share
+identity and hash. `constructed_value_hash` and `compare_constructed_values`
+expose the same budgeted value semantics. Construction and tally use hash
+collision buckets, and general dictionary storage lazily indexes repeated
+lookups. `sort_by(d, value)` orders scalar values through a closed built-in
 selector. For record-valued dictionaries, `sort_by(d, "cost")` selects that
 field from each value. `descending=true` reverses comparison direction while
 keeping the current order within ties. Unsupported or absent sort keys fail.
-Sorting a dictionary never implicitly converts it to entry records or a list,
-including when a host renders it as a JSON object.
+Sorting a dictionary retains its kind. JSON remains a host boundary: string
+dictionaries can become ordered JSON objects, while general dictionaries need
+an explicit host encoding or a serialization error. Output-format restrictions
+do not restrict the language key domain.
 
 Array-shaped indexed values remain distinct from insertion-ordered dictionaries:
 

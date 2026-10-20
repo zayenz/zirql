@@ -280,6 +280,9 @@ enum SourceValue<'a> {
     Count(usize),
     Record(zirql::NativeCapture<SourceValue<'a>>),
     Tuple(Vec<SourceValue<'a>>),
+    Set(Vec<SourceValue<'a>>),
+    List(Vec<SourceValue<'a>>),
+    Dictionary(Vec<(SourceValue<'a>, SourceValue<'a>)>),
     Sequence {
         values: Vec<SourceValue<'a>>,
         element: DeclaredType<SourceKind>,
@@ -297,7 +300,10 @@ impl PartialEq for SourceValue<'_> {
             (Self::Words(a), Self::Words(b)) => a == b,
             (Self::Count(a), Self::Count(b)) => a == b,
             (Self::Record(a), Self::Record(b)) => a == b,
-            (Self::Tuple(a), Self::Tuple(b)) => a == b,
+            (Self::Tuple(a), Self::Tuple(b))
+            | (Self::Set(a), Self::Set(b))
+            | (Self::List(a), Self::List(b)) => a == b,
+            (Self::Dictionary(a), Self::Dictionary(b)) => a == b,
             (
                 Self::Sequence {
                     values: a,
@@ -438,6 +444,38 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
                     ));
                 }
                 SourceValue::Record(zirql::NativeCapture { fields: copied })
+            }
+            SourceValue::Dictionary(entries) => {
+                budget.charge_results(1 + entries.len(), location)?;
+                SourceValue::Dictionary(
+                    entries
+                        .iter()
+                        .map(|(k, v)| {
+                            Ok((
+                                self.copy_value(k, _context, budget, range)?,
+                                self.copy_value(v, _context, budget, range)?,
+                            ))
+                        })
+                        .collect::<Result<_, EvaluationError<SourceFailure>>>()?,
+                )
+            }
+            SourceValue::List(values) => {
+                budget.charge_results(1 + values.len(), location)?;
+                SourceValue::List(
+                    values
+                        .iter()
+                        .map(|v| self.copy_value(v, _context, budget, range))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
+            SourceValue::Set(values) => {
+                budget.charge_results(1 + values.len(), location)?;
+                SourceValue::Set(
+                    values
+                        .iter()
+                        .map(|v| self.copy_value(v, _context, budget, range))
+                        .collect::<Result<_, _>>()?,
+                )
             }
             SourceValue::Tuple(values) => {
                 budget.charge_results(values.len() + 1, location)?;
@@ -728,7 +766,7 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
 
     fn positional_view<'v>(&self, value: &'v SourceValue<'a>) -> Option<&'v [SourceValue<'a>]> {
         match value {
-            SourceValue::Sequence { values, .. } => Some(values),
+            SourceValue::Sequence { values, .. } | SourceValue::List(values) => Some(values),
             _ => None,
         }
     }
@@ -775,6 +813,9 @@ enum SourceKind {
     Count,
     Record(zirql::NativeCapture<SourceKind>),
     Tuple(Vec<SourceKind>),
+    Set,
+    List,
+    Dictionary,
     Sequence(Box<DeclaredType<SourceKind>>),
 }
 fn source_declaration(kind: &SourceKind) -> DeclaredType<SourceKind> {
@@ -871,6 +912,56 @@ impl<'a> RuntimeTypeHost<SourceContext<'a>> for SourceHost {
                 }
                 return Ok(());
             }
+            (DeclaredType::Native(SourceKind::Set), SourceValue::Set(values))
+            | (DeclaredType::Native(SourceKind::List), SourceValue::List(values)) => {
+                for value in values {
+                    let kind = zirql::ProjectionHost::kind(
+                        self,
+                        value,
+                        budget,
+                        match &location {
+                            Location::Query(r) | Location::Source(r) => r,
+                        },
+                    )?;
+                    self.admit_native(
+                        value,
+                        &source_declaration(&kind),
+                        context,
+                        budget,
+                        location.clone(),
+                    )?;
+                }
+                return Ok(());
+            }
+            (DeclaredType::Native(SourceKind::Dictionary), SourceValue::Dictionary(entries)) => {
+                for (key, value) in entries {
+                    for value in [key, value] {
+                        let kind = zirql::ProjectionHost::kind(
+                            self,
+                            value,
+                            budget,
+                            match &location {
+                                Location::Query(r) | Location::Source(r) => r,
+                            },
+                        )?;
+                        self.admit_native(
+                            value,
+                            &source_declaration(&kind),
+                            context,
+                            budget,
+                            location.clone(),
+                        )?;
+                    }
+                }
+                return Ok(());
+            }
+            (DeclaredType::Dictionary(key_type, value_type), SourceValue::Dictionary(entries)) => {
+                for (key, value) in entries {
+                    self.admit_native(key, key_type, context, budget, location.clone())?;
+                    self.admit_native(value, value_type, context, budget, location.clone())?;
+                }
+                return Ok(());
+            }
             (DeclaredType::Native(SourceKind::Count), SourceValue::Count(_)) => return Ok(()),
             _ => {}
         }
@@ -947,6 +1038,9 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
             SourceValue::Sequence { element, .. } => {
                 SourceKind::Sequence(Box::new(element.clone()))
             }
+            SourceValue::Set(_) => SourceKind::Set,
+            SourceValue::List(_) => SourceKind::List,
+            SourceValue::Dictionary(_) => SourceKind::Dictionary,
             SourceValue::Words(_) => SourceKind::Words,
             SourceValue::Count(_) => SourceKind::Count,
             SourceValue::Record(record) => SourceKind::Record(zirql::NativeCapture {
@@ -1104,6 +1198,68 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     }
 }
 impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
+    fn construct_list(
+        &self,
+        values: Vec<SourceValue<'a>>,
+        context: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        let kinds = values
+            .iter()
+            .map(|value| zirql::ProjectionHost::kind(self, value, budget, range))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(first) = kinds.first()
+            && kinds.iter().all(|kind| kind == first)
+        {
+            return self.construct_sequence(
+                values,
+                &source_declaration(first),
+                context,
+                budget,
+                range,
+            );
+        }
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(SourceValue::List(values))
+    }
+
+    fn set_view<'v>(&self, value: &'v SourceValue<'a>) -> Option<&'v [SourceValue<'a>]> {
+        match value {
+            SourceValue::Set(values) => Some(values),
+            _ => None,
+        }
+    }
+    fn dictionary_view<'v>(
+        &self,
+        value: &'v SourceValue<'a>,
+    ) -> Option<&'v [(SourceValue<'a>, SourceValue<'a>)]> {
+        match value {
+            SourceValue::Dictionary(entries) => Some(entries),
+            _ => None,
+        }
+    }
+    fn construct_set(
+        &self,
+        values: Vec<SourceValue<'a>>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(SourceValue::Set(values))
+    }
+    fn construct_dictionary(
+        &self,
+        entries: Vec<(SourceValue<'a>, SourceValue<'a>)>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(SourceValue::Dictionary(entries))
+    }
+
     fn prepare_computational(
         &self,
         d: Option<&DeclaredType<SourceKind>>,
@@ -3595,7 +3751,7 @@ mod projection {
                 "{x mod 2 | x in xs}",
                 V::Set {
                     element_type: Some(zirql::SetElementType::Integer),
-                    elements: vec![V::Integer(1), V::Integer(0)],
+                    elements: vec![V::Integer(1), V::Integer(0)].into(),
                 },
             ),
             (
@@ -3611,7 +3767,7 @@ mod projection {
                 "index_set([x:x | x in (x:set<int>()).x])",
                 V::Set {
                     element_type: Some(zirql::SetElementType::Integer),
-                    elements: vec![],
+                    elements: vec![].into(),
                 },
             ),
         ] {
@@ -4379,7 +4535,7 @@ mod projection {
         use zirql::{FunctionLimits, PreparedFunctions};
         let mut allowance = function_budget();
         let mut reader = zirql::ArgumentReader::new(
-            r#"fn tally_sets(xs: sequence<set<string>>) -> sequence<record {key: set<string>, count: int}> { (xs) | tally }"#,
+            r#"fn tally_sets(xs: sequence<set<string>>) -> dict<set<string>, int> { (xs) | tally }"#,
             0,
         ).unwrap();
         let function = zirql::read_function_declaration(
@@ -4417,20 +4573,24 @@ mod projection {
         let Value::Constructed(V::Array(rows)) = result else {
             panic!("constructed rows")
         };
-        assert!(matches!(rows[0].data(), V::Array(values) if values.is_empty()));
-        assert_eq!(rows[1], V::Array(vec![]));
+        assert!(
+            matches!(rows[0].data(), V::Dictionary(values) if values.is_empty()),
+            "{:?}",
+            rows[0]
+        );
+        assert_eq!(rows[1], V::Dictionary(vec![].into()));
         assert_eq!(
             rows[2],
-            V::Array(vec![V::Record(vec![
-                (
-                    "key".into(),
+            V::Dictionary(
+                vec![(
                     V::Set {
                         element_type: Some(zirql::SetElementType::String),
-                        elements: vec![V::String("ash".into()), V::String("apple".into())]
-                    }
-                ),
-                ("count".into(), V::Integer(2)),
-            ])])
+                        elements: vec![V::String("ash".into()), V::String("apple".into())].into()
+                    },
+                    V::Integer(2)
+                )]
+                .into()
+            )
         );
         zirql::dispose_native_value(expression);
     }
@@ -5130,7 +5290,7 @@ mod projection {
             vec![function_value(K::Array(vec![function_value(K::Literal(
                 V::Set {
                     element_type: Some(zirql::SetElementType::Member(zirql::NominalTypeId(7))),
-                    elements: vec![],
+                    elements: vec![].into(),
                 },
             ))]))],
         );
@@ -7536,7 +7696,7 @@ mod projection {
                 Located::new("empty_guests".into(), 0..0),
                 Value::Constructed(V::Set {
                     element_type: Some(SetElementType::Member(member_type)),
-                    elements: vec![],
+                    elements: vec![].into(),
                 }),
             ),
             (Located::new("keyed".into(), 0..0), keyed(vec![axis()])),
@@ -7608,7 +7768,7 @@ mod projection {
                 "index_set([2: 20, 5: 50] axes([5, 2, 9]))",
                 V::Set {
                     element_type: Some(SetElementType::Integer),
-                    elements: vec![V::Integer(5), V::Integer(2), V::Integer(9)],
+                    elements: vec![V::Integer(5), V::Integer(2), V::Integer(9)].into(),
                 },
             ),
             (
@@ -7630,7 +7790,7 @@ mod projection {
                 "index_set([5: 50, 2: 20])",
                 V::Set {
                     element_type: Some(SetElementType::Integer),
-                    elements: vec![V::Integer(2), V::Integer(5)],
+                    elements: vec![V::Integer(2), V::Integer(5)].into(),
                 },
             ),
             ("has_key([2: 20] axes([5, 2, 9]), 9)", V::Boolean(false)),
@@ -7639,28 +7799,28 @@ mod projection {
                 "index_set([8, 5])",
                 V::Set {
                     element_type: Some(SetElementType::Integer),
-                    elements: vec![V::Integer(1), V::Integer(2)],
+                    elements: vec![V::Integer(1), V::Integer(2)].into(),
                 },
             ),
             (
                 "index_set([])",
                 V::Set {
                     element_type: Some(SetElementType::Integer),
-                    elements: vec![],
+                    elements: vec![].into(),
                 },
             ),
             (
                 "index_set(keyed)",
                 V::Set {
                     element_type: Some(SetElementType::Member(member_type)),
-                    elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))],
+                    elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))].into(),
                 },
             ),
             (
                 "index_set(empty)",
                 V::Set {
                     element_type: Some(SetElementType::Member(member_type)),
-                    elements: vec![],
+                    elements: vec![].into(),
                 },
             ),
             (
@@ -7671,7 +7831,7 @@ mod projection {
                 "(1, 2).2..4",
                 V::Set {
                     element_type: Some(SetElementType::Integer),
-                    elements: vec![V::Integer(2), V::Integer(3), V::Integer(4)],
+                    elements: vec![V::Integer(2), V::Integer(3), V::Integer(4)].into(),
                 },
             ),
             ("(1.5, 2.5).1 + 0.5", V::Float(2.0)),
@@ -7814,7 +7974,7 @@ mod projection {
                 "index_set(keyed)",
                 V::Set {
                     element_type: Some(zirql::SetElementType::Integer),
-                    elements: vec![V::Integer(9), V::Integer(3)],
+                    elements: vec![V::Integer(9), V::Integer(3)].into(),
                 },
             ),
             (
@@ -11726,4 +11886,506 @@ fn native_list_patterns_share_selected_owners_with_ordinary_predicates() {
     );
     zirql::dispose_native_value(entry);
     zirql::dispose_native_value(call);
+}
+
+#[test]
+fn ordinary_native_sets_and_dictionary_keys_retain_identity_and_source() {
+    use zirql::{ConstructedValue as V, FunctionLimits, FunctionRequest, ValueExpressionKind as K};
+    let source = String::from("ash apple ash");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 100_000,
+    });
+    let bindings = Bindings::new([
+        (at("a".into(), 1), word_at(&source, 0..3, 0)),
+        (at("b".into(), 2), word_at(&source, 4..9, 0)),
+        (at("another_ash".into(), 3), word_at(&source, 10..13, 0)),
+        (
+            at("path".into(), 4),
+            SourceValue::Record(zirql::NativeCapture {
+                fields: vec![("a".into(), word_at(&source, 0..3, 0))],
+            }),
+        ),
+    ])
+    .unwrap();
+    let native = |name: &str| {
+        at(
+            K::NativeValue(Box::new(at(ExpressionKind::Binding(name.into()), 5))),
+            5,
+        )
+    };
+    let alias = || {
+        at(
+            K::NativeValue(Box::new(at(
+                ExpressionKind::Field {
+                    value: Box::new(at(ExpressionKind::Binding("path".into()), 6)),
+                    field: at("a".into(), 7),
+                },
+                6,
+            ))),
+            6,
+        )
+    };
+    let pair = || at(K::Set(vec![native("a"), native("b")]), 8);
+    let expression = at(
+        K::Tally(Box::new(at(
+            K::Array(vec![
+                pair(),
+                at(K::Set(vec![native("b"), alias()]), 9),
+                at(K::Set(vec![native("a"), alias()]), 10),
+                at(K::Set(vec![native("another_ash")]), 11),
+            ]),
+            8,
+        ))),
+        8,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&expression, &bindings)
+    .unwrap();
+    let SourceValue::Dictionary(entries) = result else {
+        panic!("expected ordinary native dictionary")
+    };
+    assert_eq!(entries.len(), 3);
+    for ((key, count), expected) in entries.iter().zip([2, 1, 1]) {
+        assert_eq!(count, &SourceValue::Constructed(V::Integer(expected)));
+        let SourceValue::Set(values) = key else {
+            panic!("set key")
+        };
+        for value in values {
+            let SourceValue::Words(words) = value else {
+                panic!("native word")
+            };
+            assert_eq!(
+                words[0].text.as_ptr(),
+                source[words[0].range.clone()].as_ptr()
+            );
+        }
+    }
+    assert!(
+        !zirql::native_values_equal(
+            &entries[1].0,
+            &entries[2].0,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            Location::Query(0..1)
+        )
+        .unwrap()
+    );
+    let lookup = at(
+        K::ArrayAccess {
+            array: Box::new(at(K::Dictionary(vec![(pair(), native("a"))]), 12)),
+            index: Box::new(at(K::Set(vec![native("b"), alias()]), 13)),
+        },
+        12,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&lookup, &bindings)
+    .unwrap();
+    assert!(
+        matches!(result, SourceValue::Words(ref words) if words[0].range == (0..3) && words[0].text.as_ptr() == source.as_ptr())
+    );
+    let comprehension = at(
+        K::Tally(Box::new(at(
+            K::Comprehension {
+                constructor: zirql::ValueConstructor::Array,
+                clauses: vec![at(
+                    zirql::ValueGenerator::In {
+                        binders: vec![at(zirql::PatternKind::Name(at("i".into(), 15)), 15)],
+                        source: at(K::Literal(V::Array(vec![V::Integer(1), V::Integer(2)])), 15),
+                        filter: None,
+                    },
+                    15,
+                )],
+                head: Box::new(pair()),
+            },
+            15,
+        ))),
+        15,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&comprehension, &bindings)
+    .unwrap();
+    assert!(
+        matches!(result, SourceValue::Dictionary(ref entries) if entries.len() == 1 && entries[0].1 == SourceValue::Constructed(V::Integer(2)))
+    );
+    let native_dictionary_comprehension = at(
+        K::DictionaryComprehension {
+            clauses: vec![at(
+                zirql::ValueGenerator::In {
+                    binders: vec![at(zirql::PatternKind::Name(at("node".into(), 15)), 15)],
+                    source: pair(),
+                    filter: None,
+                },
+                15,
+            )],
+            key: Box::new(at(K::Name("node".into()), 15)),
+            head: Box::new(at(K::Name("node".into()), 15)),
+        },
+        15,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&native_dictionary_comprehension, &bindings)
+    .unwrap();
+    assert!(
+        matches!(result, SourceValue::Dictionary(ref entries) if entries.len() == 2 && entries.iter().all(|(key, value)| key == value))
+    );
+    let mixed_list = at(
+        K::Tally(Box::new(at(
+            K::Array(vec![native("a"), at(K::Literal(V::Integer(1)), 16)]),
+            16,
+        ))),
+        16,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&mixed_list, &bindings)
+    .unwrap();
+    assert!(matches!(result, SourceValue::Dictionary(ref entries) if entries.len() == 2));
+    let mixed = at(
+        K::Set(vec![
+            native("a"),
+            at(K::Literal(V::String("ash".into())), 14),
+        ]),
+        14,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&mixed, &bindings)
+    .unwrap();
+    assert!(matches!(result, SourceValue::Set(ref values) if values.len() == 2));
+    assert!(
+        zirql::admit_value(
+            &word_at(&source, 0..3, 0),
+            &DeclaredType::Value,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            Location::Query(0..1)
+        )
+        .is_err()
+    );
+    let queue = zirql::NativeQueue::new(
+        vec![],
+        DeclaredType::Native(SourceKind::Words),
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        Location::Query(0..1),
+    )
+    .unwrap();
+    let queue =
+        SourceValue::Computational(std::sync::Arc::new(zirql::ComputationalValue::Queue(queue)));
+    assert!(
+        zirql::admit_value(
+            &queue,
+            &DeclaredType::Value,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            Location::Query(0..1)
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn nested_native_collections_have_structural_hashes_comparison_and_admission() {
+    use zirql::ConstructedValue as V;
+    let source = String::from("ash apple");
+    let foreign = String::from("ash apple");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 100_000,
+    });
+    let location = Location::Query(0..10);
+    let number = || SourceValue::Constructed(V::Integer(1));
+    let tuple = || SourceValue::Tuple(vec![word_at(&source, 0..3, 0), number()]);
+    let first = zirql::construct_native_dictionary(
+        vec![
+            (tuple(), word_at(&source, 4..9, 0)),
+            (number(), word_at(&source, 0..3, 0)),
+        ],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap();
+    let second = zirql::construct_native_dictionary(
+        vec![
+            (number(), word_at(&source, 0..3, 0)),
+            (tuple(), word_at(&source, 4..9, 0)),
+        ],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap();
+    assert!(
+        zirql::native_values_equal(
+            &first,
+            &second,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        zirql::native_value_hash(
+            &first,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap(),
+        zirql::native_value_hash(
+            &second,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        zirql::native_values_compare(
+            &first,
+            &second,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap(),
+        std::cmp::Ordering::Equal
+    );
+    let set = zirql::construct_native_set(
+        vec![first, second],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap();
+    assert!(matches!(set, SourceValue::Set(ref values) if values.len() == 1));
+    let positional = SourceValue::Tuple(vec![
+        number(),
+        SourceValue::Constructed(V::String("ash".into())),
+    ]);
+    let constructed =
+        SourceValue::Constructed(V::Tuple(vec![V::Integer(1), V::String("ash".into())]));
+    assert!(
+        zirql::native_values_equal(
+            &positional,
+            &constructed,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        zirql::native_value_hash(
+            &positional,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap(),
+        zirql::native_value_hash(
+            &constructed,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        zirql::native_values_compare(
+            &positional,
+            &constructed,
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location.clone()
+        )
+        .unwrap(),
+        std::cmp::Ordering::Equal
+    );
+    let foreign_value = zirql::construct_native_dictionary(
+        vec![(number(), word_at(&foreign, 0..3, 0))],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        foreign_value,
+        EvaluationError::Host(SourceFailure::Source(_))
+    ));
+    let bad_data = SourceValue::Constructed(V::Float(f64::NAN));
+    assert!(
+        zirql::construct_native_set(
+            vec![bad_data],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            location
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn constructed_dictionary_children_of_native_values_support_all_lookup_forms() {
+    use zirql::{
+        ConstructedValue as V, DeclaredType as D, FunctionLimits, FunctionRequest,
+        ValueExpressionKind as K,
+    };
+    let source = String::from("ash apple");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 1_000,
+    });
+    let dictionary = zirql::declare_constructed(
+        V::Dictionary(vec![(V::Integer(1), V::Integer(7))].into()),
+        D::Dictionary(Box::new(D::Integer), Box::new(D::Integer)),
+        &mut budget,
+        Location::Query(0..1),
+    )
+    .unwrap();
+    let bindings = Bindings::new([(
+        at("t".into(), 0),
+        SourceValue::Tuple(vec![SourceValue::Constructed(dictionary)]),
+    )])
+    .unwrap();
+    let child = || {
+        at(
+            K::TupleAccess {
+                value: Box::new(at(
+                    K::NativeValue(Box::new(at(ExpressionKind::Binding("t".into()), 0))),
+                    0,
+                )),
+                position: at(1, 0),
+            },
+            0,
+        )
+    };
+    let key = || Box::new(at(K::Literal(V::Integer(1)), 0));
+    let entry = at(
+        K::Array(vec![
+            at(
+                K::ArrayAccess {
+                    array: Box::new(child()),
+                    index: key(),
+                },
+                0,
+            ),
+            at(
+                K::Lookup {
+                    value: Box::new(child()),
+                    key: key(),
+                },
+                0,
+            ),
+            at(
+                K::HasKey {
+                    value: Box::new(child()),
+                    key: key(),
+                },
+                0,
+            ),
+        ]),
+        0,
+    );
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &bindings)
+    .unwrap();
+    let SourceValue::Constructed(result) = result else {
+        panic!("constructed lookup results")
+    };
+    let V::Array(values) = result.data() else {
+        panic!("lookup result array")
+    };
+    assert_eq!(values[0].data(), &V::Integer(7));
+    assert_eq!(values[1].data(), &V::Integer(7));
+    assert_eq!(values[2].data(), &V::Boolean(true));
+    zirql::dispose_native_value(entry);
 }

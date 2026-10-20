@@ -1,5 +1,6 @@
 use std::{borrow::Cow, mem::size_of};
 
+use crate::value::identity::{HashIndex, hash_string};
 use crate::{Budget, EvaluationError, Location, QueryError, QueryErrorCategory};
 
 /// Resolve and append text fragments once, in written order.
@@ -52,8 +53,8 @@ pub fn expand_fragments<'a, P, C: ?Sized, E>(
 /// Callbacks share the active context and budget. Admit key/value allocations
 /// before returning them; already-admitted payloads move into the map without a
 /// copy charge. This operation enters one container level, admits container and
-/// entry slots, checks storage arithmetic and charges visits and an upper bound
-/// on inspected key bytes. Do not wrap it in another guard for that container.
+/// entry slots, checks storage arithmetic and charges hashing, collision checks
+/// and inspected key bytes. Do not wrap it in another guard for that container.
 ///
 /// # Errors
 /// Propagates callback failures and located duplicate, item, work, result,
@@ -112,6 +113,7 @@ impl EntryAccounting {
     pub(crate) fn contains<V>(
         &self,
         entries: &[(String, V)],
+        candidates: &[usize],
         key: &str,
         budget: &mut Budget,
         location: &Location,
@@ -124,13 +126,19 @@ impl EntryAccounting {
             .checked_mul(size_of::<(String, V)>())
             .filter(|bytes| *bytes <= isize::MAX as usize)
             .ok_or_else(|| self.storage_error(location))?;
-        let inspected = key
-            .len()
-            .checked_add(1)
-            .and_then(|per_key| per_key.checked_mul(count))
-            .ok_or_else(|| self.storage_error(location))?;
-        self.charge(budget, inspected, location)?;
-        Ok(entries.iter().any(|(previous, _)| previous == key))
+        for &index in candidates {
+            let previous = &entries[index].0;
+            let inspected = previous
+                .len()
+                .min(key.len())
+                .checked_add(1)
+                .ok_or_else(|| self.storage_error(location))?;
+            self.charge(budget, inspected, location)?;
+            if previous == key {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn append<V>(
@@ -180,14 +188,30 @@ pub(crate) fn construct_entries<I, C: ?Sized, V, E>(
     accounting: EntryAccounting,
 ) -> Result<Vec<(String, V)>, EvaluationError<E>> {
     let mut result = accounting.entries(budget, location)?;
+    let mut hashes = HashIndex::default();
     for item in entries {
         accounting.charge(budget, 1, location)?;
         let key = key(&item, context, budget)?;
-        if accounting.contains(&result, &key, budget, location)? {
+        accounting.charge(
+            budget,
+            key.len()
+                .checked_add(1)
+                .ok_or_else(|| accounting.storage_error(location))?,
+            location,
+        )?;
+        let hash = hash_string(&key);
+        if accounting.contains(&result, hashes.candidates(hash), &key, budget, location)? {
             return Err(duplicate(&key, context, budget)?.into());
         }
         let mapped = value(item, context, budget)?;
+        let position = result.len();
         accounting.append(&mut result, key, mapped, budget, location)?;
+        match &accounting {
+            EntryAccounting::Computed => hashes.insert(hash, position, budget, location)?,
+            EntryAccounting::NativeMap => {
+                hashes.insert_program(hash, position, budget, location)?
+            }
+        }
     }
     Ok(result)
 }

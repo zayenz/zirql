@@ -41,7 +41,7 @@ The three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and th
 `{"ash": 1, "apple": 2}`, respectively.
 
 The tally returns fields in first-seen order: `ash: 1`, then `apple: 2`.
-Zirql `0.1.2` also supports [tallying unordered neighbouring word
+The development checkout also supports [tallying unordered neighbouring word
 sets](examples.md#count-unordered-neighbouring-word-pairs), with an exact command
 and printed output.
 

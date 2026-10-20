@@ -311,7 +311,7 @@ The inner comprehension counts selected people in the current team. Every team
 gets an entry, including Operations with no active members. `sort_by` orders the
 counts from largest to smallest and retains the dictionary kind. Equal counts
 would keep their incoming team order. Duplicate labels fail because a
-dictionary requires distinct string keys.
+dictionary requires distinct keys.
 
 ## Use patterns and other expression forms
 
@@ -455,8 +455,11 @@ the bindings to one value block and calls `evaluate_query_value` once. Zirql
 therefore owns scope, saved-value reuse, correlated iteration, expressions,
 collection stages and their resource failures. The output writer walks the final
 constructed value directly, retaining record order. It renders absence as JSON
-`null`, tuples and sets as arrays, and refuses nominal members or keyed arrays
-whose identity or shape ordinary JSON would discard.
+`null` and tuples and sets as arrays. General dictionaries use tagged entries:
+`{"kind":"dictionary","entries":[{"key":...,"value":...}]}`. Each key and value
+is encoded recursively; string dictionaries remain ordinary JSON objects.
+Nominal members and keyed arrays are refused because this encoding would
+discard their identity or shape.
 
 [Build the CSV host](csv-host.md) walks through the Rust implementation, from
 loading a table to returning JSON. The [host integration guide](host-integration.md)

@@ -77,6 +77,7 @@ pub(crate) enum PreparedKind<'a, Q> {
     Record(Vec<(&'a Located<String>, PreparedValue<'a, Q>)>),
     Dictionary(Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>),
     DictionaryComprehension {
+        general_keys: bool,
         clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
         key: Box<PreparedValue<'a, Q>>,
         head: Box<PreparedValue<'a, Q>>,
@@ -147,7 +148,8 @@ pub(crate) enum PreparedKind<'a, Q> {
     Unique(Box<PreparedValue<'a, Q>>),
     Tally {
         array: Box<PreparedValue<'a, Q>>,
-        sets: bool,
+        general_keys: bool,
+        set_type: Option<SetElementType>,
     },
     Extremum {
         operator: ValueExtremum,
@@ -228,7 +230,7 @@ pub(crate) struct Preparation<'a> {
     pub(crate) locals: Vec<&'a str>,
     // Source addresses identify tally nodes only while their borrowed trees live.
     // Keep their empty string-set result shape after array data loses element facts.
-    pub(crate) set_tallies: Vec<usize>,
+    pub(crate) general_key_expressions: Vec<GeneralKeyExpression>,
 }
 
 impl<'a> Preparation<'a> {
@@ -236,7 +238,7 @@ impl<'a> Preparation<'a> {
         Self {
             names: Vec::new(),
             locals: Vec::new(),
-            set_tallies: Vec::new(),
+            general_key_expressions: Vec::new(),
         }
     }
 
@@ -323,9 +325,10 @@ impl<'a> Preparation<'a> {
                     let mut arguments = metadata_vec(sources.len(), budget, &location)?;
                     for source in sources {
                         let mut preparation = Self::new();
-                        preparation.set_tallies = std::mem::take(&mut self.set_tallies);
+                        preparation.general_key_expressions =
+                            std::mem::take(&mut self.general_key_expressions);
                         let expression = preparation.resolve(source, queries, budget)?;
-                        self.set_tallies = preparation.set_tallies;
+                        self.general_key_expressions = preparation.general_key_expressions;
                         arguments.push(PreparedArgument {
                             source,
                             expression,
@@ -469,7 +472,16 @@ impl<'a> Preparation<'a> {
                     let key = Box::new(self.resolve(key, queries, budget)?);
                     let head = Box::new(self.resolve(head, queries, budget)?);
                     self.locals.truncate(saved);
-                    PreparedKind::DictionaryComprehension { clauses, key, head }
+                    budget.charge(self.general_key_expressions.len(), location.clone())?;
+                    PreparedKind::DictionaryComprehension {
+                        general_keys: self
+                            .general_key_expressions
+                            .iter()
+                            .any(|known| known.expression == expression as *const _ as usize),
+                        clauses,
+                        key,
+                        head,
+                    }
                 }
                 ValueExpressionKind::KeyedArray {
                     axes,
@@ -577,11 +589,15 @@ impl<'a> Preparation<'a> {
                     PreparedKind::Unique(Box::new(self.resolve(array, queries, budget)?))
                 }
                 ValueExpressionKind::Tally(array) => {
-                    budget.charge(self.set_tallies.len(), location.clone())?;
+                    budget.charge(self.general_key_expressions.len(), location.clone())?;
+                    let hint = self
+                        .general_key_expressions
+                        .iter()
+                        .find(|known| known.expression == expression as *const _ as usize)
+                        .copied();
                     PreparedKind::Tally {
-                        sets: self
-                            .set_tallies
-                            .contains(&(expression as *const _ as usize)),
+                        general_keys: hint.is_some(),
+                        set_type: hint.and_then(|hint| hint.set_type),
                         array: Box::new(self.resolve(array, queries, budget)?),
                     }
                 }
@@ -864,11 +880,11 @@ impl RuntimeValue {
                     value = match value {
                         ConstructedValue::Declared { value, .. } => value,
                         ConstructedValue::Record(fields) => &fields[*index].1,
-                        ConstructedValue::Array(values)
-                        | ConstructedValue::Tuple(values)
-                        | ConstructedValue::Set {
-                            elements: values, ..
-                        } => &values[*index],
+                        ConstructedValue::Dictionary(entries) => &entries[*index].1,
+                        ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => {
+                            &values[*index]
+                        }
+                        ConstructedValue::Set { elements, .. } => &elements[*index],
                         ConstructedValue::KeyedArray { entries, .. } => &entries[*index].value,
                         _ => unreachable!("shared child path"),
                     };
@@ -1079,6 +1095,7 @@ impl RuntimeValue {
             _ => None,
         };
         let contract = match (inherited, self.as_ref().data()) {
+            (Some(DeclaredType::Dictionary(_, child)), _) => Some(child.as_ref()),
             (Some(DeclaredType::Tuple(children)), _) => children.get(index),
             (Some(DeclaredType::Record(fields)), ConstructedValue::Record(values)) => Some(
                 record_declaration(fields, &values[index].0, budget, location)?,
@@ -1099,14 +1116,22 @@ impl RuntimeValue {
             Self::Owned(value) => {
                 let value = std::mem::replace(value, ConstructedValue::Absent);
                 let selected = match value {
+                    ConstructedValue::Dictionary(entries) => {
+                        entries
+                            .into_iter()
+                            .nth(index)
+                            .expect("selected dictionary value")
+                            .1
+                    }
                     ConstructedValue::Record(fields) => {
                         fields.into_iter().nth(index).expect("selected field").1
                     }
-                    ConstructedValue::Array(values)
-                    | ConstructedValue::Tuple(values)
-                    | ConstructedValue::Set {
-                        elements: values, ..
-                    } => values.into_iter().nth(index).expect("selected position"),
+                    ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => {
+                        values.into_iter().nth(index).expect("selected position")
+                    }
+                    ConstructedValue::Set { elements, .. } => {
+                        elements.into_iter().nth(index).expect("selected position")
+                    }
                     ConstructedValue::KeyedArray { entries, .. } => {
                         entries.into_iter().nth(index).expect("selected cell").value
                     }

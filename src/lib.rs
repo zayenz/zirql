@@ -7,6 +7,7 @@ mod fixed_point;
 mod functions;
 mod mapping;
 mod matching;
+mod native_collections;
 mod ordering;
 mod parser;
 mod paths;
@@ -42,6 +43,11 @@ pub use mapping::{
 pub use matching::{
     MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
     evaluate_match_with_arguments, match_types,
+};
+pub use native_collections::{
+    construct_native_dictionary, construct_native_set, lookup_native_dictionary,
+    native_set_contains, native_value_hash, native_values_compare, native_values_equal,
+    tally_native_values,
 };
 pub use ordering::{NativeOrder, NativeOrderKey, NativeOrdering, order_native_by};
 pub use parser::{ArgumentReader, parse_pipeline};
@@ -79,16 +85,17 @@ pub use runtime_types::{
     checked_invoke, declare_constructed,
 };
 pub use sets::{NativeSetOperator, combine_native_set};
+pub use value::identity::{compare_constructed_values, constructed_value_hash};
 pub use value::{
-    ArrayType, ConstructedRead, ConstructedValue, KeyAxis, KeyedArrayType, KeyedEntry,
+    ArrayType, ConstructedRead, ConstructedValue, Dictionary, KeyAxis, KeyedArrayType, KeyedEntry,
     NominalMember, NominalMemberId, NominalTypeId, Pattern, PatternKind, PredicateArgument,
-    SetElementType, SortSelector, ValueArguments, ValueBinaryOperator, ValueConstructor,
-    ValueExpression, ValueExpressionKind, ValueExtremum, ValueGenerator, ValueKey, ValueKeyType,
-    ValueMatchArm, ValueQueryHost, ValueReducer, ValueType, ValueUnaryOperator,
-    constructed_value_type, copy_constructed_value, copy_pattern, copy_value_types, count_value,
-    dispose_pattern, evaluate_query_value, evaluate_value, evaluate_value_with_host_validation,
-    free_query_value_names, free_value_names, pattern_names, query_value_types, take_one,
-    validate_value_expression, value_expression_types,
+    SetElementType, SetElements, SortSelector, ValueArguments, ValueBinaryOperator,
+    ValueConstructor, ValueExpression, ValueExpressionKind, ValueExtremum, ValueGenerator,
+    ValueKey, ValueKeyType, ValueMatchArm, ValueQueryHost, ValueReducer, ValueType,
+    ValueUnaryOperator, constructed_value_type, copy_constructed_value, copy_pattern,
+    copy_value_types, count_value, dispose_pattern, evaluate_query_value, evaluate_value,
+    evaluate_value_with_host_validation, free_query_value_names, free_value_names, pattern_names,
+    query_value_types, take_one, validate_value_expression, value_expression_types,
 };
 pub use worklists::{
     ComputationalValue, NativeContextId, NativeIdentity, NativeIdentitySet, NativeQueue,

@@ -62,9 +62,9 @@ host-lowered prefixes retain the same name and call resolution.
 ## Values, facts and declarations
 
 `ConstructedValue` holds absence, Booleans, signed integers, finite floats,
-strings, nominal members, positional arrays, tuples, records, typed sets and
-keyed arrays. Native handles remain in the host's representation and require
-explicit projections to become constructed values.
+strings, nominal members, positional arrays, tuples, records, general
+dictionaries, sets and keyed arrays. Native handles remain in the host's
+representation and require explicit projections to become constructed values.
 
 `constructed_value_type` discovers facts from a value. `ValueType` can retain
 possible field schemas and element kinds even when a result is empty.
@@ -106,7 +106,7 @@ preflight still covers those branches.
 | Field/position access and optional lookup | `Field`, `ArrayAccess`, `TupleAccess`, `Lookup`, `HasKey` |
 | Absence checks and fallback | `Occurs`, `Absent`, `Default` |
 | Conditional selection | `Conditional` |
-| Computed string dictionary | `Dictionary` entry pairs or `DictionaryComprehension { clauses, key, head }` |
+| Computed dictionary | `Dictionary` entry pairs or `DictionaryComprehension { clauses, key, head }` |
 | Array or set comprehension | `Comprehension` with `ValueConstructor` and `ValueGenerator` clauses |
 | Scoped element selection | `Filter { array, predicate }` |
 | One bound predicate | `PredicateScope { subject, predicate }`, `PredicateSubject` |
@@ -128,15 +128,28 @@ cardinality check for native extraction. `count_value` converts a native
 `usize` count to an admitted signed integer only when it fits `i64`.
 
 `Record` retains static quoted field schemas. `Dictionary` and
-`DictionaryComprehension` evaluate string-key expressions and produce the same
-`ConstructedValue::Record` data. Their prepared continuations check each key
-and collision before running its value, including across generator candidates.
-Zero emitted entries produce an empty record. Dynamic labels have `RecordKind`
-facts until actual values or a declaration establish their fields.
+`DictionaryComprehension` evaluate constructed key expressions. All-string
+entries produce `ConstructedValue::Record`; other entries produce
+`ConstructedValue::Dictionary(Dictionary)`. Convert owned key/value entry pairs
+with `entries.into()`; the storage exposes their insertion order. Prepared
+continuations check each key and structural collision before running
+its value, including across generator candidates. Empty `{}` produces a record.
+General dictionaries retain key/value type facts and support
+`DeclaredType::Dictionary`; `DeclaredType::Value` admits any constructed value. General sets use
+`SetElementType::Value`, while homogeneous scalar sets retain their precise type.
 
-`ArrayAccess` also accepts a record and string key. It is strict: a missing
-stored field fails, while a stored absence succeeds. `Lookup` remains optional.
-Both preserve declared child contracts when a record carries a schema.
+`ArrayAccess` also accepts dictionaries and constructed keys. It is strict: a
+missing stored key fails, while stored absence succeeds. `Lookup` remains optional.
+Both preserve declared child contracts; record schemas keep their string labels.
+
+`constructed_value_hash` and `compare_constructed_values` expose budgeted
+structural hashing and ordering for every constructed kind. They validate input,
+keep distinct kinds separate and treat floating signed zeros equally. Lists and
+tuples retain positional order. Sets and dictionaries use canonical membership
+and associations, so insertion order does not affect hashes or comparison.
+Hashes are for in-memory indexes, not persistent identifiers. Set construction
+and tally use hash collision buckets with structural equality checks. General
+dictionary storage builds its lookup index lazily and clears it on mutable access.
 
 ## Keyed construction
 
@@ -211,8 +224,9 @@ A worklist computation can keep pending items in a queue and visited native
 identities in a set. The Rust function API represents their contracts with
 `DeclaredType::Queue(Box<DeclaredType<K>>)` and `DeclaredType::IdentitySet(K)`.
 A queue carries its whole element contract; an identity set accepts one native
-kind. Scalar and nominal sets retain insertion order and support explicit
-sorting; they remain separate from native identity sets.
+kind. Constructed sets retain insertion order and structural membership
+equality; sorting supports mixed and nested elements through structural order.
+They remain separate from computational native identity sets.
 
 | Value expression | Result |
 | --- | --- |

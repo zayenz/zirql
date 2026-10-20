@@ -651,11 +651,12 @@ fn write_json(
         budget.charge(1, location.clone())?;
         budget.charge_results(1, location.clone())?;
         match value.data() {
-            V::Array(values)
-            | V::Tuple(values)
-            | V::Set {
-                elements: values, ..
-            } => {
+            V::Array(_) | V::Tuple(_) | V::Set { .. } => {
+                let values: &[V] = match value.data() {
+                    V::Array(values) | V::Tuple(values) => values,
+                    V::Set { elements, .. } => elements,
+                    _ => unreachable!("matched collection"),
+                };
                 append(output, b"[", budget, location)?;
                 for (index, value) in values.iter().enumerate() {
                     if index != 0 {
@@ -676,6 +677,25 @@ fn write_json(
                     write_json(value, output, budget, location)?;
                 }
                 append(output, b"}", budget, location)
+            }
+            V::Dictionary(entries) => {
+                append(
+                    output,
+                    br#"{"kind":"dictionary","entries":["#,
+                    budget,
+                    location,
+                )?;
+                for (index, (key, value)) in entries.iter().enumerate() {
+                    if index != 0 {
+                        append(output, b",", budget, location)?;
+                    }
+                    append(output, br#"{"key":"#, budget, location)?;
+                    write_json(key, output, budget, location)?;
+                    append(output, br#","value":"#, budget, location)?;
+                    write_json(value, output, budget, location)?;
+                    append(output, b"}", budget, location)?;
+                }
+                append(output, b"]}", budget, location)
             }
             V::Member(_) | V::KeyedArray { .. } => Err(QueryError::query(
                 location_range(location),
@@ -770,6 +790,16 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
 
     #[test]
     fn fixture_queries_keep_decoded_strings_saved_values_and_written_order() {
+        assert_eq!(
+            text(
+                r#"[{"ash", "apple"}, {"apple", "birch"}, {"birch", "apple"}] | tally"#,
+                &named(),
+            ),
+            concat!(
+                r#"{"kind":"dictionary","entries":[{"key":["ash","apple"],"value":1},{"key":["apple","birch"],"value":2}]}"#,
+                "\n",
+            )
+        );
         let fields = r#"[outer.items | filter(_ > 1) for outer in [{"items": [1, 2, 3]}]]"#;
         assert_eq!(text(fields, &people()), "[[2,3]]\n");
         assert_eq!(

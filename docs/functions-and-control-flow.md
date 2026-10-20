@@ -172,11 +172,13 @@ bind. The returned value must meet the result type.
 | Type spelling | Contract |
 | --- | --- |
 | `int`, `float`, `bool`, `string` | The corresponding scalar kind |
+| `value` | Any constructed value |
 | `opt T` | A present `T` or absence |
 | `sequence<T>` | A positional sequence whose elements satisfy `T` |
 | `tuple<T, U>` | Two fixed positions with their own types |
 | `record {word: string, count: int}` | Declared record fields |
-| `set<T>` | A supported scalar or nominal set |
+| `set<T>` | A scalar or nominal set; `set<value>` accepts arbitrary constructed values |
+| `dict<K, V>` | A dictionary whose keys satisfy `K` and values satisfy `V` |
 | `keyed<T>` | Keyed cells satisfying `T` |
 | `queue<T>` | A computational FIFO with elements satisfying `T` |
 | `identity_set<T>` | A computational set of one native kind |

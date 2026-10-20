@@ -32,8 +32,8 @@ additional type or index information. Native objects keep their host's identity.
 ```
 
 Arrays and tuples use one-based positions. `words[1]` is `"ash"` in the word
-example; `(2, 5).2` selects the second tuple value. Dictionary access uses a string key,
-such as `row.word` or `row["word"]`. Ordinary access fails
+example; `(2, 5).2` selects the second tuple value. Dictionary access accepts constructed keys,
+such as `row["word"]` or `counts[{"ash", "apple"}]`; `row.word` selects a string field. Ordinary access fails
 when an entry is missing; `lookup(row, "word")` returns absence for a valid
 missing key.
 
@@ -139,8 +139,7 @@ Parentheses protect a native pipeline in a head or source. A pipe after the
 closing collection starts its suffix, as in `[x * 2 | x in [1, 2, 3] where x > 1] | count`.
 
 
-Bare braces construct a set without an outer colon, or a string dictionary
-with one:
+Bare braces construct a set without an outer colon, or a dictionary with one:
 
 ```zirql
 {n mod 3 for n in 1..5}
@@ -148,10 +147,11 @@ with one:
 ```
 
 The set keeps `1, 2, 0`; the dictionary keeps `pear`, then `apple`.
-Keys are expressions and must produce present strings. Duplicate keys fail
-before their values run. Empty `{}` is a dictionary. Empty scalar sets use
-`set<int>()`, `set<bool>()`, `set<float>()` or `set<string>()`. String sets
-are available since Zirql `0.1.2`; see [values](values.md).
+Keys and set elements can be any constructed value, including nested
+collections. Duplicate dictionary keys fail before their values run. Empty `{}`
+is a dictionary; `set<value>()` is an empty general set. Empty scalar sets use
+`set<int>()`, `set<bool>()`, `set<float>()` or `set<string>()`. See [values](values.md)
+for structural equality, general dictionary lookup and typed contracts.
 
 Indexed brackets retain integer or nominal row and column keys:
 
@@ -258,7 +258,7 @@ the common readers or lower an existing parser to that representation.
 Sets and dictionaries preserve insertion order and retain their kind through
 explicit sorting. `sort(d)` orders dictionary keys; `sort_by(d, value)` orders
 values and retains current-order ties. Bare braces accept sets and dictionaries,
-including computed string keys. See [collection order](values.md#selected-collection-syntax-and-ordering)
+including computed collection keys. See [collection order](values.md#selected-collection-syntax-and-ordering)
 for syntax and examples. Both native hosts retain dictionary order through
 saved results and JSON rendering.
 

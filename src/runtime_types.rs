@@ -10,10 +10,12 @@ use crate::{
 /// and keyed declarations restrict that storage. Tuples have fixed positions and
 /// records have the declared labels in any stored order, with optional fields
 /// allowed to be omitted. Keyed axes
-/// remain runtime facts. Sets use the existing supported scalar identities.
+/// remain runtime facts. Sets may contain any constructed values.
 /// `Native` uses the adapter's own kind identity, without erasing its values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeclaredType<K> {
+    /// Any constructed data value; excludes native and computational values.
+    Value,
     Optional(Box<Self>),
     Boolean,
     Integer,
@@ -25,6 +27,7 @@ pub enum DeclaredType<K> {
     Sequence(Box<Self>),
     Tuple(Vec<Self>),
     Record(Vec<(String, Self)>),
+    Dictionary(Box<Self>, Box<Self>),
     Set(SetElementType),
     Keyed(Box<Self>),
     Native(K),
@@ -245,6 +248,10 @@ fn reject_native(
             | DeclaredType::Array(child)
             | DeclaredType::Sequence(child)
             | DeclaredType::Keyed(child) => reject_native(child, budget, location)?,
+            DeclaredType::Dictionary(key, value) => {
+                reject_native(key, budget, location)?;
+                reject_native(value, budget, location)?;
+            }
             DeclaredType::Tuple(children) => {
                 for child in children {
                     reject_native(child, budget, location)?;
@@ -284,6 +291,10 @@ pub(crate) fn copy_declaration<K: Clone>(
             DeclaredType::Keyed(child) => {
                 DeclaredType::Keyed(Box::new(copy_declaration(child, budget, location)?))
             }
+            DeclaredType::Dictionary(key, value) => DeclaredType::Dictionary(
+                Box::new(copy_declaration(key, budget, location)?),
+                Box::new(copy_declaration(value, budget, location)?),
+            ),
             DeclaredType::Tuple(children) => {
                 budget.charge(children.len(), location.clone())?;
                 let mut copied = Vec::with_capacity(children.len());
@@ -340,6 +351,8 @@ fn compatible_declarations_with<A, B>(
             (left, DeclaredType::Optional(right)) => {
                 compatible_declarations_with(left, right, budget, location, native)?
             }
+            (DeclaredType::Value, other) => !contains_native(other, budget, location)?,
+            (other, DeclaredType::Value) => !contains_native(other, budget, location)?,
             (DeclaredType::Boolean, DeclaredType::Boolean)
             | (DeclaredType::Integer, DeclaredType::Integer)
             | (DeclaredType::Float, DeclaredType::Float)
@@ -347,7 +360,51 @@ fn compatible_declarations_with<A, B>(
             (DeclaredType::Native(a), DeclaredType::Native(b))
             | (DeclaredType::IdentitySet(a), DeclaredType::IdentitySet(b)) => native(a, b),
             (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
-            (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
+            (DeclaredType::Set(a), DeclaredType::Set(b)) => {
+                a == b || *a == SetElementType::Value || *b == SetElementType::Value
+            }
+            (DeclaredType::Dictionary(ak, av), DeclaredType::Dictionary(bk, bv)) => {
+                compatible_declarations_with(ak, bk, budget, location, native)?
+                    && compatible_declarations_with(av, bv, budget, location, native)?
+            }
+            (DeclaredType::Record(fields), DeclaredType::Dictionary(key, value)) => {
+                if !fields.is_empty()
+                    && !compatible_declarations_with(
+                        &DeclaredType::<A>::String,
+                        key,
+                        budget,
+                        location,
+                        native,
+                    )?
+                {
+                    return Ok(false);
+                }
+                for (_, field) in fields {
+                    if !compatible_declarations_with(field, value, budget, location, native)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
+            (DeclaredType::Dictionary(key, value), DeclaredType::Record(fields)) => {
+                if !fields.is_empty()
+                    && !compatible_declarations_with(
+                        key,
+                        &DeclaredType::<B>::String,
+                        budget,
+                        location,
+                        native,
+                    )?
+                {
+                    return Ok(false);
+                }
+                for (_, field) in fields {
+                    if !compatible_declarations_with(value, field, budget, location, native)? {
+                        return Ok(false);
+                    }
+                }
+                true
+            }
             (DeclaredType::Array(a), DeclaredType::Array(b))
             | (DeclaredType::Array(a), DeclaredType::Sequence(b) | DeclaredType::Keyed(b))
             | (DeclaredType::Sequence(a) | DeclaredType::Keyed(a), DeclaredType::Array(b))
@@ -407,6 +464,14 @@ fn admit_host_value<C, H: RuntimeTypeHost<C>>(
         if let Some(value) = host.constructed_value(value) {
             return Ok(admit_constructed_value(value, expected, budget, location)?);
         }
+        let mut underlying = expected;
+        while let DeclaredType::Optional(inner) = underlying {
+            budget.charge(1, location.clone())?;
+            underlying = inner;
+        }
+        if matches!(underlying, DeclaredType::Value) {
+            return Err(refusal("expected constructed value", budget, &location)?.into());
+        }
         host.admit_native(value, expected, context, budget, location)
     })
 }
@@ -451,6 +516,10 @@ pub(crate) fn validate_declaration<K>(
             | DeclaredType::Queue(element) => {
                 validate_declaration(element, budget, location)?;
             }
+            DeclaredType::Dictionary(key, value) => {
+                validate_declaration(key, budget, location)?;
+                validate_declaration(value, budget, location)?;
+            }
             DeclaredType::Tuple(elements) => {
                 for element in elements {
                     validate_declaration(element, budget, location)?;
@@ -470,7 +539,8 @@ pub(crate) fn validate_declaration<K>(
                     validate_declaration(field, budget, location)?;
                 }
             }
-            DeclaredType::Boolean
+            DeclaredType::Value
+            | DeclaredType::Boolean
             | DeclaredType::Integer
             | DeclaredType::Float
             | DeclaredType::String
@@ -567,6 +637,7 @@ fn check_type_facts<K>(
                 }
                 check_type_facts(actual, expected, deferred, budget, location)
             }
+            (_, DeclaredType::Value) => Ok(()),
             (ValueType::Absent, DeclaredType::Optional(_)) => Ok(()),
             (actual, DeclaredType::Optional(element)) => {
                 check_type_facts(actual, element, deferred, budget, location)
@@ -578,7 +649,9 @@ fn check_type_facts<K>(
             (ValueType::Member(actual), DeclaredType::Member(expected)) if actual == expected => {
                 Ok(())
             }
-            (ValueType::Set(actual), DeclaredType::Set(expected)) if *actual == Some(*expected) => {
+            (ValueType::Set(actual), DeclaredType::Set(expected))
+                if *expected == SetElementType::Value || *actual == Some(*expected) =>
+            {
                 Ok(())
             }
             (
@@ -613,6 +686,28 @@ fn check_type_facts<K>(
                 budget,
                 location,
             ),
+            (ValueType::Dictionary { keys, values }, DeclaredType::Dictionary(key, value)) => {
+                check_elements(keys, key, "dictionary key", deferred, budget, location)?;
+                check_elements(
+                    values,
+                    value,
+                    "dictionary value",
+                    deferred,
+                    budget,
+                    location,
+                )
+            }
+            (ValueType::Record(fields), DeclaredType::Dictionary(key, value)) => {
+                for (label, actual) in fields {
+                    check_type_facts(&ValueType::String, key, deferred, budget, location)?;
+                    check_type_facts(actual, value, deferred, budget, location)
+                        .map_err(|error| nested_error(error, label, None, budget))?;
+                }
+                Ok(())
+            }
+            (ValueType::RecordKind, DeclaredType::Dictionary(key, _)) if deferred => {
+                check_type_facts(&ValueType::String, key, deferred, budget, location)
+            }
             (ValueType::Tuple(actual), DeclaredType::Tuple(expected)) => {
                 if actual.len() != expected.len() {
                     return Err(refusal("tuple length mismatch", budget, location)?);
@@ -687,6 +782,7 @@ fn check_elements<K>(
 impl<K> DeclaredType<K> {
     fn description(&self) -> &'static str {
         match self {
+            Self::Value => "expected constructed value",
             Self::Optional(_) => "expected optional value",
             Self::Boolean => "expected Boolean",
             Self::Integer => "expected integer",
@@ -697,6 +793,7 @@ impl<K> DeclaredType<K> {
             Self::Sequence(_) => "expected positional sequence",
             Self::Tuple(_) => "expected tuple",
             Self::Record(_) => "expected record",
+            Self::Dictionary(_, _) => "expected dictionary",
             Self::Set(_) => "expected set of declared element type",
             Self::Keyed(_) => "expected keyed array",
             Self::Native(_) => "expected native value",
@@ -761,6 +858,10 @@ pub(crate) fn same_declaration<K: PartialEq>(
             | (DeclaredType::Queue(a), DeclaredType::Queue(b)) => {
                 same_declaration(a, b, budget, location)?
             }
+            (DeclaredType::Dictionary(ak, av), DeclaredType::Dictionary(bk, bv)) => {
+                same_declaration(ak, bk, budget, location)?
+                    && same_declaration(av, bv, budget, location)?
+            }
             (DeclaredType::Tuple(a), DeclaredType::Tuple(b)) if a.len() == b.len() => {
                 for (a, b) in a.iter().zip(b) {
                     if !same_declaration(a, b, budget, location)? {
@@ -793,7 +894,8 @@ pub(crate) fn same_declaration<K: PartialEq>(
             | (DeclaredType::IdentitySet(a), DeclaredType::IdentitySet(b)) => a == b,
             (DeclaredType::Member(a), DeclaredType::Member(b)) => a == b,
             (DeclaredType::Set(a), DeclaredType::Set(b)) => a == b,
-            (DeclaredType::Boolean, DeclaredType::Boolean)
+            (DeclaredType::Value, DeclaredType::Value)
+            | (DeclaredType::Boolean, DeclaredType::Boolean)
             | (DeclaredType::Integer, DeclaredType::Integer)
             | (DeclaredType::Float, DeclaredType::Float)
             | (DeclaredType::String, DeclaredType::String) => true,
@@ -821,6 +923,10 @@ pub(crate) fn constructed_declaration<K>(
             DeclaredType::Keyed(c) => {
                 DeclaredType::Keyed(Box::new(constructed_declaration(c, budget, location)?))
             }
+            DeclaredType::Dictionary(key, value) => DeclaredType::Dictionary(
+                Box::new(constructed_declaration(key, budget, location)?),
+                Box::new(constructed_declaration(value, budget, location)?),
+            ),
             DeclaredType::Tuple(c) => {
                 budget.charge(c.len(), location.clone())?;
                 DeclaredType::Tuple(
@@ -840,6 +946,7 @@ pub(crate) fn constructed_declaration<K>(
                         .collect::<Result<_, QueryError>>()?,
                 )
             }
+            DeclaredType::Value => DeclaredType::Value,
             DeclaredType::Boolean => DeclaredType::Boolean,
             DeclaredType::Integer => DeclaredType::Integer,
             DeclaredType::Float => DeclaredType::Float,
@@ -871,6 +978,9 @@ pub(crate) fn contains_native<K>(
             | DeclaredType::Array(child)
             | DeclaredType::Sequence(child)
             | DeclaredType::Keyed(child) => contains_native(child, budget, location)?,
+            DeclaredType::Dictionary(key, value) => {
+                contains_native(key, budget, location)? || contains_native(value, budget, location)?
+            }
             DeclaredType::Tuple(children) => {
                 for child in children {
                     if contains_native(child, budget, location)? {
@@ -906,6 +1016,10 @@ pub(crate) fn contains_computational<K>(
             | DeclaredType::Array(c)
             | DeclaredType::Sequence(c)
             | DeclaredType::Keyed(c) => contains_computational(c, budget, location)?,
+            DeclaredType::Dictionary(key, value) => {
+                contains_computational(key, budget, location)?
+                    || contains_computational(value, budget, location)?
+            }
             DeclaredType::Tuple(c) => {
                 for c in c {
                     if contains_computational(c, budget, location)? {

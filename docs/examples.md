@@ -85,8 +85,7 @@ the array and its type facts; it adds no collection parser or evaluator.
 
 ## Count unordered neighbouring word pairs
 
-String sets and set tally are available in Zirql `0.1.2`. From the release
-checkout or extracted crate, run:
+The development checkout returns a dictionary whose keys are the word sets. Run:
 
 ```sh
 cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
@@ -95,16 +94,18 @@ cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_se
 The word host prints this exact Rust `Debug` result:
 
 ```text
-Array([Record([("key", Set { element_type: Some(String), elements: [String("ash"), String("apple")] }), ("count", Integer(1))]), Record([("key", Set { element_type: Some(String), elements: [String("apple"), String("birch")] }), ("count", Integer(2))])])
+Dictionary([(Set { element_type: Some(String), elements: [String("ash"), String("apple")] }, Integer(1)), (Set { element_type: Some(String), elements: [String("apple"), String("birch")] }, Integer(2))])
 ```
 
 The first pair occurs once. The next two pairs have the same members in opposite
-orders, so tally counts them together. Each `key` remains a typed string set.
-The records follow first occurrence, and keys preserve their first insertion
-order. Equal adjacent words form a singleton set. An empty or singleton typed
-word array yields no pairs and returns `[]`. An ambiguous `[] | tally` still
-returns `{}`. See [the value guide](values.md) for the type and host serialization
-contracts.
+orders, so tally counts them together. The language value is
+`{{"ash", "apple"}: 1, {"apple", "birch"}: 2}`. Entries follow first occurrence;
+keys remain sets and preserve their first insertion order. Equal adjacent words
+form a singleton key. An empty or singleton typed word array yields no pairs
+and returns an empty dictionary (`Dictionary([])` in Rust). An ambiguous
+`[] | tally` retains the empty record `{}`. See [the value guide](values.md) for
+the type and host serialization contracts. The [CSV host](csv.md) renders
+general dictionaries as tagged entries, with set keys encoded as JSON arrays.
 
 ## Construct records
 

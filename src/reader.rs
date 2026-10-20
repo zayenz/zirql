@@ -485,6 +485,7 @@ impl<Q> UnresolvedPatternFunctionDeclaration<Q> {
 /// Nested locations and named leaves retain their original query coordinates.
 #[derive(Debug, PartialEq)]
 pub enum SignatureType {
+    Value,
     Boolean,
     Integer,
     Float,
@@ -494,6 +495,7 @@ pub enum SignatureType {
     Sequence(Box<Located<Self>>),
     Tuple(Vec<Located<Self>>),
     Record(Vec<(Located<String>, Located<Self>)>),
+    Dictionary(Box<Located<Self>>, Box<Located<Self>>),
     Set(Box<Located<Self>>),
     Keyed(Box<Located<Self>>),
     Queue(Box<Located<Self>>),
@@ -601,6 +603,7 @@ impl SignatureType {
                 value.value.resolve(budget, &value.range, resolve)
             };
             Ok(match self {
+                Self::Value => D::Value,
                 Self::Boolean => D::Boolean,
                 Self::Integer => D::Integer,
                 Self::Float => D::Float,
@@ -622,6 +625,10 @@ impl SignatureType {
                         ));
                     }
                 },
+                Self::Dictionary(key, value) => D::Dictionary(
+                    Box::new(child(key, budget, resolve)?),
+                    Box::new(child(value, budget, resolve)?),
+                ),
                 Self::Tuple(values) => D::Tuple(
                     values
                         .iter()
@@ -637,6 +644,7 @@ impl SignatureType {
                     D::Record(resolved)
                 }
                 Self::Set(value) => D::Set(match child(value, budget, resolve)? {
+                    D::Value => S::Value,
                     D::Boolean => S::Boolean,
                     D::Integer => S::Integer,
                     D::Float => S::Float,
@@ -2065,6 +2073,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let quoted = self.reader.source()[name.range.start..].starts_with('\'');
         let ty = match name.value {
             _ if quoted => S::Named(Located::new(name.value.to_owned(), name.range)),
+            "value" => S::Value,
             "int" => S::Integer,
             "float" => S::Float,
             "bool" => S::Boolean,
@@ -2082,7 +2091,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     _ => {
                         if !matches!(
                             element.value,
-                            S::Boolean | S::Integer | S::Float | S::String | S::Named(_)
+                            S::Value | S::Boolean | S::Integer | S::Float | S::String | S::Named(_)
                         ) {
                             return Err(QueryError::query(
                                 element.range,
@@ -2092,6 +2101,14 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         S::Set(Box::new(element))
                     }
                 }
+            }
+            "dict" => {
+                self.reader.expect('<')?;
+                let key = self.signature(depth + 1)?;
+                self.reader.expect(',')?;
+                let value = self.signature(depth + 1)?;
+                self.reader.expect('>')?;
+                S::Dictionary(Box::new(key), Box::new(value))
             }
             "tuple" => {
                 self.reader.expect('<')?;
@@ -2613,6 +2630,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             self.reader.expect('<')?;
             let element = self.name()?;
             let element_type = match element.value.as_str() {
+                "value" => crate::SetElementType::Value,
                 "int" => crate::SetElementType::Integer,
                 "bool" => crate::SetElementType::Boolean,
                 "float" => crate::SetElementType::Float,
@@ -2620,7 +2638,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 _ => {
                     return Err(QueryError::query(
                         element.range,
-                        "empty sets support int, bool, float or string",
+                        "empty sets support value, int, bool, float or string",
                     ));
                 }
             };
@@ -2630,7 +2648,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             return self.node(
                 K::Literal(V::Set {
                     element_type: Some(element_type),
-                    elements: Vec::new(),
+                    elements: Vec::new().into(),
                 }),
                 start..self.reader.position(),
             );
@@ -4952,6 +4970,10 @@ fn dispose_signature(value: SignatureType) {
             | SignatureType::Set(c)
             | SignatureType::Queue(c)
             | SignatureType::IdentitySet(c) => pending.push(c.value),
+            SignatureType::Dictionary(key, value) => {
+                pending.push(key.value);
+                pending.push(value.value);
+            }
             SignatureType::Tuple(c) => pending.extend(c.into_iter().map(|c| c.value)),
             SignatureType::Record(c) => pending.extend(c.into_iter().map(|(_, c)| c.value)),
             _ => {}

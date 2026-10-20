@@ -402,8 +402,12 @@ allocations, copies and output.
 [write_json](../examples/csv.rs#L644) walks `value.data()`. Arrays, tuples and
 sets become JSON arrays. Records become JSON objects by visiting their stored
 fields in order. Absence becomes `null`; scalar encoding uses `serde_json`.
-Nominal members and keyed arrays return an error because plain JSON would lose
-their identity or shape.
+General dictionaries become `{"kind":"dictionary","entries":[{"key":...,"value":...}]}`
+in entry order. Keys and values use the same recursive encoding, including sets
+as arrays. String dictionaries remain ordinary JSON objects. Nominal members
+and keyed arrays return an error because this host has no JSON encoding for
+their identity or shape. These rendering choices leave Zirql's value kinds and
+key identity intact during evaluation.
 
 The writer uses `budget.within_evaluation` for recursive containers. `append`
 charges output bytes before extending the buffer, and `JsonBuffer` applies the

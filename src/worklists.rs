@@ -757,6 +757,11 @@ fn promote_declaration<K>(
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
         Ok(match d {
+            DeclaredType::Value => DeclaredType::Value,
+            DeclaredType::Dictionary(key, value) => DeclaredType::Dictionary(
+                Box::new(promote_declaration(key, budget, location)?),
+                Box::new(promote_declaration(value, budget, location)?),
+            ),
             DeclaredType::Boolean => DeclaredType::Boolean,
             DeclaredType::Integer => DeclaredType::Integer,
             DeclaredType::Float => DeclaredType::Float,

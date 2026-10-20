@@ -177,10 +177,11 @@ the independent guards and failure context.
 
 The common reader accepts contextual declarations through
 `read_function_declaration`. Its resolver handles registered native and nominal
-names; Zirql reads `int`, `float`, `bool`, `string`, `opt T`, `sequence<T>`,
-`tuple<T, ...>`, `record {field: T, ...}`, `set<T>`, `keyed<T>`, `queue<T>` and
-`identity_set<T>`. Sets keep their supported Boolean, integer, float and nominal
-element types. A bare saved name `fn` remains a name. The reader consumes a
+names; Zirql reads `int`, `float`, `bool`, `string`, `value`, `opt T`,
+`sequence<T>`, `tuple<T, ...>`, `record {field: T, ...}`, `dict<K, V>`, `set<T>`,
+`keyed<T>`, `queue<T>` and `identity_set<T>`. `value` accepts any constructed
+value, including collection keys and elements through `dict<value, value>`
+and `set<value>`. Scalar and nominal set contracts remain strict. A bare saved name `fn` remains a name. The reader consumes a
 declaration only after recognizing `fn name(`. Collect every declaration before
 preparing the submitted program.
 

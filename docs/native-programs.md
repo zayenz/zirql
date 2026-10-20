@@ -291,7 +291,7 @@ map sorting and bounds APIs.
 
 ## Collection order in native reports
 
-The shared library keeps insertion order for scalar sets and string dictionaries.
+The shared library keeps insertion order for constructed sets and dictionaries.
 Set duplicates retain their first representative. Constructed sorting returns
 the same collection kind. Dictionary equality compares associations and set
 equality compares membership, independently of stored order. Explicit keyed
@@ -308,8 +308,8 @@ sort_by({"z": 2, "a": 2, "m": 1}, value, descending=true)
 
 They return dictionaries ordered `a, m, z`, `m, z, a` and `z, a, m`.
 Equal sort keys retain their incoming order in both directions. Sorting again after
-reversal keeps the reversed order within ties. Tally fields follow the first
-occurrence of each spelling. Empty dictionaries and zero bounds retain the
+reversal keeps the reversed order within ties. Tally entries follow the first
+occurrence of each key. Empty dictionaries and zero bounds retain the
 dictionary kind. A dictionary never implicitly becomes a list of entry records.
 
 Host adapters retain this entry order through saved results, copies and nested
@@ -320,9 +320,11 @@ Native handles and source coordinates survive until explicit rendering.
 Zirium retains ordered dictionaries through its library and JSON results and
 uses operand-order native set algebra. Zincite uses shared typed native ordering,
 operand-order sets and first-seen tally dictionaries. Its `map_by` dictionaries support stable value sorting and bounds;
-native and constructed dictionaries render as ordered JSON objects. Both support
-the shared brace and indexed-array forms. Native identity, effects, completeness
-and data-edit policies stay with each host.
+string dictionaries render as ordered JSON objects. Both support the shared
+brace and indexed-array forms. General constructed dictionaries require host
+adoption and an explicit output encoding; these released hosts pin earlier
+Zirql versions. Native identity, effects, completeness and data-edit policies
+stay with each host.
 
 ## Native existence
 

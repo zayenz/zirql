@@ -533,6 +533,74 @@ pub fn evaluate_pattern_functions(
 pub trait FunctionHost<C>:
     ProjectionHost<C> + RuntimeTypeHost<C, Kind = <Self as ProjectionHost<C>>::Kind>
 {
+    /// Expose an ordinary host-owned set. Its elements retain native handles;
+    /// iteration order is insertion order and equality uses membership.
+    fn set_view<'v>(&self, _value: &'v Self::Value) -> Option<&'v [Self::Value]> {
+        None
+    }
+    /// Expose an ordinary dictionary with arbitrary value keys.
+    fn dictionary_view<'v>(
+        &self,
+        _value: &'v Self::Value,
+    ) -> Option<&'v [(Self::Value, Self::Value)]> {
+        None
+    }
+    /// Consult a retained native set index using ordinary structural identity.
+    /// The outer `None` selects the shared temporary index; `Some(None)` means
+    /// indexed absence and `Some(Some(i))` selects position `i` in `set_view`.
+    /// Charge index work and resolve hash collisions by value equality. The
+    /// runner admits the set and item in the current context before this call.
+    fn set_position(
+        &self,
+        _set: &Self::Value,
+        _item: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Option<Option<usize>>, EvaluationError<Self::Error>> {
+        Ok(None)
+    }
+    /// Consult a retained dictionary key index. The outer `None` selects the
+    /// shared temporary index; `Some(None)` means indexed absence and
+    /// `Some(Some(i))` selects entry `i` in `dictionary_view`. Use structural
+    /// key identity, including native owners, and resolve hash collisions.
+    /// The runner admits the dictionary and key before this call.
+    fn dictionary_position(
+        &self,
+        _dictionary: &Self::Value,
+        _key: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Option<Option<usize>>, EvaluationError<Self::Error>> {
+        Ok(None)
+    }
+    /// Retain an admitted set's values and native owners in insertion order.
+    /// This is ordinary data; rendering remains an explicit host boundary.
+    fn construct_set(
+        &self,
+        _values: Vec<Self::Value>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native set construction is unsupported").into())
+    }
+    /// Retain admitted dictionary entries and their native owners in insertion
+    /// order. The shared runner checks duplicate keys before calling this hook.
+    fn construct_dictionary(
+        &self,
+        _entries: Vec<(Self::Value, Self::Value)>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(
+            range.clone(),
+            "native dictionary construction is unsupported",
+        )
+        .into())
+    }
     /// Map an explicit signature to the host's existing preflight kinds.
     fn declaration_kind(
         &self,
@@ -569,6 +637,66 @@ pub trait FunctionHost<C>:
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         Err(QueryError::query(range.clone(), "native scan construction is unsupported").into())
+    }
+
+    /// Construct an ordinary positional list. Hosts supporting mixed native
+    /// kinds override this hook; the default retains existing homogeneous
+    /// sequence adapters.
+    fn construct_list(
+        &self,
+        values: Vec<Self::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        let first = values.first().ok_or_else(|| {
+            QueryError::query(range.clone(), "empty native list needs host support")
+        })?;
+        let declaration = if let Some(computational) = self.computational_value(first) {
+            computational.declaration(budget, &Location::Query(range.clone()))?
+        } else {
+            match self.constructed_value(first) {
+                Some(value) => {
+                    let facts =
+                        constructed_value_type(value, budget, Location::Query(range.clone()))?;
+                    crate::worklists::fact_contract(
+                        &facts,
+                        budget,
+                        &Location::Query(range.clone()),
+                    )?
+                    .ok_or_else(|| {
+                        QueryError::query(
+                            range.clone(),
+                            "native list element contract is unestablished",
+                        )
+                    })?
+                }
+                None => DeclaredType::Native(self.kind(first, budget, range)?),
+            }
+        };
+        for value in &values {
+            if !crate::admit_computational(
+                value,
+                &declaration,
+                self,
+                context,
+                budget,
+                Location::Query(range.clone()),
+            )? {
+                admit_value(
+                    value,
+                    &declaration,
+                    self,
+                    context,
+                    budget,
+                    Location::Query(range.clone()),
+                )?;
+            }
+        }
+        self.construct_sequence(values, &declaration, context, budget, range)
     }
 
     /// Opt into computational constructors during all-branch preparation.
@@ -645,6 +773,34 @@ pub trait FunctionHost<C>:
     ) -> Result<crate::NativeIdentity, EvaluationError<Self::Error>> {
         Err(QueryError::query(range.clone(), "native identity is unsupported").into())
     }
+    /// Order admitted native leaves. The default orders canonical identities
+    /// within one kind; hosts can provide an order between domain kinds.
+    fn compare_native_values(
+        &self,
+        left: &Self::Value,
+        right: &Self::Value,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<std::cmp::Ordering, EvaluationError<Self::Error>> {
+        let left_kind = self.kind(left, budget, range)?;
+        let right_kind = self.kind(right, budget, range)?;
+        if left_kind != right_kind {
+            return Err(QueryError::query(
+                range.clone(),
+                "ordering different native kinds requires a host comparison",
+            )
+            .into());
+        }
+        Ok(self
+            .native_identity(left, &left_kind, context, budget, range)?
+            .0
+            .cmp(
+                &self
+                    .native_identity(right, &right_kind, context, budget, range)?
+                    .0,
+            ))
+    }
 
     /// Successful native admission remains valid for an unchanged immutable
     /// value and equivalent contract throughout this request. Opt in only when
@@ -683,7 +839,7 @@ struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     contracts: BTreeMap<String, DeclaredType<Kind<C, H>>>,
     worklists: BTreeMap<usize, Option<DeclaredType<Kind<C, H>>>>,
     worklist_contracts: Vec<Option<DeclaredType<Kind<C, H>>>>,
-    set_tallies: Vec<usize>,
+    general_key_expressions: Vec<crate::value::GeneralKeyExpression>,
 }
 impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
     fn new(
@@ -714,7 +870,7 @@ impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
             contracts: BTreeMap::new(),
             worklists: BTreeMap::new(),
             worklist_contracts: Vec::new(),
-            set_tallies: Vec::new(),
+            general_key_expressions: Vec::new(),
         })
     }
 }
@@ -791,9 +947,13 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         budget: &mut Budget,
     ) -> Result<Vec<ValueType>, QueryError> {
         let analysis = crate::value::analyze_query_value(entry, facts, self, budget)?;
-        for tally in analysis.set_tallies {
-            crate::projection::admit_slots::<usize>(1, budget, &entry.range)?;
-            self.set_tallies.push(tally);
+        for tally in analysis.general_key_expressions {
+            crate::projection::admit_slots::<crate::value::GeneralKeyExpression>(
+                1,
+                budget,
+                &entry.range,
+            )?;
+            self.general_key_expressions.push(tally);
         }
         Ok(analysis.types)
     }
@@ -2212,11 +2372,12 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
     > {
         let saved = std::mem::take(&mut self.preflight.prepared);
         let saved_worklists = std::mem::take(&mut self.preflight.worklists);
-        let saved_tallies = std::mem::take(&mut self.preflight.set_tallies);
+        let saved_tallies = std::mem::take(&mut self.preflight.general_key_expressions);
         let result = (|| {
             let kind = self.preflight.entry_kind(entry, scope, relative, budget)?;
             let mut preparation = Preparation::new();
-            preparation.set_tallies = std::mem::take(&mut self.preflight.set_tallies);
+            preparation.general_key_expressions =
+                std::mem::take(&mut self.preflight.general_key_expressions);
             let value = preparation.resolve(entry, &mut self.preflight, budget)?;
             budget.charge(1, Location::Query(entry.range.clone()))?;
             Ok(PreparedFunctionValue {
@@ -2230,7 +2391,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         })();
         self.preflight.prepared = saved;
         self.preflight.worklists = saved_worklists;
-        self.preflight.set_tallies = saved_tallies;
+        self.preflight.general_key_expressions = saved_tallies;
         result
     }
 
@@ -2249,11 +2410,11 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
     ) -> Result<Kind<C, H>, FunctionError<EvaluationError<H::Error>>> {
         let saved = std::mem::take(&mut self.preflight.prepared);
         let saved_worklists = std::mem::take(&mut self.preflight.worklists);
-        let saved_tallies = std::mem::take(&mut self.preflight.set_tallies);
+        let saved_tallies = std::mem::take(&mut self.preflight.general_key_expressions);
         let result = self.preflight.entry_kind(entry, scope, relative, budget);
         self.preflight.prepared = saved;
         self.preflight.worklists = saved_worklists;
-        self.preflight.set_tallies = saved_tallies;
+        self.preflight.general_key_expressions = saved_tallies;
         Ok(result?)
     }
 
@@ -2833,12 +2994,197 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
         self.host
             .lift_computational(value, self.context, budget, range)
     }
+    fn compute_collection(
+        &mut self,
+        expression: &'a PreparedValue<'a, Query<C, H>>,
+        values: &mut Vec<HostValue<'a, C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Option<HostValue<'a, C, H>>, EvaluationError<H::Error>> {
+        let location = Location::Query(expression.range.clone());
+        let range = &expression.range;
+        let output = match &expression.value {
+            PreparedKind::Field { field, .. } if matches!(&values[0].data, Data::Native(view) if self.host.dictionary_view(native_view::<C,H>(view, self.host)).is_some()) =>
+            {
+                let dictionary =
+                    self.finish_value(values.pop().expect("dictionary"), budget, &location)?;
+                budget.charge_results(field.value.len() + 1, location.clone())?;
+                let key = ConstructedValue::String(field.value.clone());
+                let facts = vec![ValueType::String];
+                let key = self
+                    .host
+                    .lift_constructed(key, facts, self.context, budget, range)?;
+                let value = crate::lookup_native_dictionary(
+                    &dictionary,
+                    &key,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?
+                .ok_or_else(|| {
+                    QueryError::query(field.range.clone(), "missing dictionary field")
+                })?;
+                return self
+                    .retained(std::sync::Arc::new(value), budget, range)
+                    .map(Some);
+            }
+            PreparedKind::Reduce {
+                operator: crate::ValueReducer::Length,
+                ..
+            } if matches!(&values[0].data, Data::Native(view) if {
+                let value = native_view::<C,H>(view, self.host);
+                self.host.set_view(value).is_some() || self.host.dictionary_view(value).is_some() || self.host.positional_view(value).is_some()
+            }) =>
+            {
+                let value =
+                    self.finish_value(values.pop().expect("collection"), budget, &location)?;
+                let len = self
+                    .host
+                    .set_view(&value)
+                    .map(<[_]>::len)
+                    .or_else(|| self.host.dictionary_view(&value).map(<[_]>::len))
+                    .or_else(|| self.host.positional_view(&value).map(<[_]>::len))
+                    .expect("native collection");
+                let len = i64::try_from(len)
+                    .map_err(|_| QueryError::query(range.clone(), "length overflow"))?;
+                budget.charge_results(1, location.clone())?;
+                return Ok(Some(Value::constructed(RuntimeValue::Owned(
+                    ConstructedValue::Integer(len),
+                ))));
+            }
+            PreparedKind::Binary {
+                operator: crate::ValueBinaryOperator::Equal | crate::ValueBinaryOperator::NotEqual,
+                ..
+            } if values
+                .iter()
+                .any(|value| matches!(value.data, Data::Native(_))) =>
+            {
+                let right =
+                    self.finish_value(values.pop().expect("right operand"), budget, &location)?;
+                let left =
+                    self.finish_value(values.pop().expect("left operand"), budget, &location)?;
+                let equal = crate::native_values_equal(
+                    &left,
+                    &right,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?;
+                return self
+                    .boolean_value(
+                        equal
+                            == matches!(
+                                expression.value,
+                                PreparedKind::Binary {
+                                    operator: crate::ValueBinaryOperator::Equal,
+                                    ..
+                                }
+                            ),
+                        budget,
+                        &location,
+                    )
+                    .map(Some);
+            }
+            PreparedKind::Binary {
+                operator:
+                    operator @ (crate::ValueBinaryOperator::Less
+                    | crate::ValueBinaryOperator::LessEqual
+                    | crate::ValueBinaryOperator::Greater
+                    | crate::ValueBinaryOperator::GreaterEqual),
+                ..
+            } if values
+                .iter()
+                .any(|value| matches!(value.data, Data::Native(_))) =>
+            {
+                let right =
+                    self.finish_value(values.pop().expect("right operand"), budget, &location)?;
+                let left =
+                    self.finish_value(values.pop().expect("left operand"), budget, &location)?;
+                let order = crate::native_values_compare(
+                    &left,
+                    &right,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?;
+                use crate::ValueBinaryOperator as B;
+                let found = match operator {
+                    B::Less => order.is_lt(),
+                    B::LessEqual => order.is_le(),
+                    B::Greater => order.is_gt(),
+                    B::GreaterEqual => order.is_ge(),
+                    _ => unreachable!(),
+                };
+                return self.boolean_value(found, budget, &location).map(Some);
+            }
+            PreparedKind::Lookup { .. }
+            | PreparedKind::HasKey { .. }
+            | PreparedKind::ArrayAccess { .. }
+                if matches!(&values[0].data, Data::Native(view) if self.host.dictionary_view(native_view::<C,H>(view, self.host)).is_some()) =>
+            {
+                let key =
+                    self.finish_value(values.pop().expect("lookup key"), budget, &location)?;
+                let dictionary =
+                    self.finish_value(values.pop().expect("dictionary"), budget, &location)?;
+                let found = crate::lookup_native_dictionary(
+                    &dictionary,
+                    &key,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?;
+                if matches!(expression.value, PreparedKind::HasKey { .. }) {
+                    return self
+                        .boolean_value(found.is_some(), budget, &location)
+                        .map(Some);
+                }
+                return match found {
+                    Some(value) => self.retained(std::sync::Arc::new(value), budget, range),
+                    None if matches!(expression.value, PreparedKind::Lookup { .. }) => {
+                        budget.charge_results(1, location.clone())?;
+                        Ok(Value::constructed(RuntimeValue::Owned(
+                            ConstructedValue::Absent,
+                        )))
+                    }
+                    None => Err(QueryError::query(range.clone(), "missing dictionary key").into()),
+                }
+                .map(Some);
+            }
+            PreparedKind::Tally { .. } if matches!(&values[0].data, Data::Native(view) if self.host.positional_view(native_view::<C,H>(view, self.host)).is_some()) =>
+            {
+                let source =
+                    self.finish_value(values.pop().expect("tally input"), budget, &location)?;
+                let source = self.host.positional_view(&source).expect("native sequence");
+                crate::projection::admit_slots::<H::Value>(source.len(), budget, range)?;
+                let mut items = Vec::with_capacity(source.len());
+                for value in source {
+                    items.push(self.host.copy_value(value, self.context, budget, range)?);
+                }
+                crate::tally_native_values(
+                    items,
+                    self.host,
+                    self.context,
+                    budget,
+                    location.clone(),
+                )?
+            }
+            _ => return Ok(None),
+        };
+        self.retained(std::sync::Arc::new(output), budget, range)
+            .map(Some)
+    }
     fn compute(
         &mut self,
         expression: &'a PreparedValue<'a, Query<C, H>>,
         mut values: Vec<HostValue<'a, C, H>>,
         budget: &mut Budget,
     ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
+        if let Some(result) = self.compute_collection(expression, &mut values, budget)? {
+            return Ok(result);
+        }
         use crate::ComputationalValue as W;
         let location = Location::Query(expression.range.clone());
         let range = &expression.range;
@@ -3068,6 +3414,17 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
             {
                 let set = self.finish_value(values.pop().expect("set"), budget, &location)?;
                 let item = self.finish_value(values.pop().expect("member"), budget, &location)?;
+                if self.host.set_view(&set).is_some() {
+                    let found = crate::native_set_contains(
+                        &set,
+                        &item,
+                        self.host,
+                        self.context,
+                        budget,
+                        location.clone(),
+                    )?;
+                    return self.boolean_value(found, budget, &location);
+                }
                 let Some(W::IdentitySet(set)) = self.host.computational_value(&set) else {
                     return Err(QueryError::query(
                         range.clone(),
@@ -3083,54 +3440,68 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                     ConstructedValue::Boolean(found)
                 })));
             }
-            PreparedKind::Array(_) | PreparedKind::Tuple(_)
-                if values.iter().any(|v| matches!(v.data, Data::Native(_))) =>
-            {
+            PreparedKind::Array(_) => {
+                return execution::Host::finish_array(self, values, budget, &location);
+            }
+            PreparedKind::Tuple(_) if values.iter().any(|v| matches!(v.data, Data::Native(_))) => {
                 let mut native = false;
                 for value in &values {
-                    native |= matches!(value.data, Data::Native(_))
-                        && execution::Host::constructed(self, value, budget, &location)?.is_none();
+                    native |=
+                        execution::Host::constructed(self, value, budget, &location)?.is_none();
                 }
                 if !native {
                     return execution::apply(expression, values, self, budget);
                 }
                 crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
                 let mut output = Vec::with_capacity(values.len());
-                for v in values {
-                    output.push(self.finish_value(v, budget, &location)?);
+                for value in values {
+                    output.push(self.finish_value(value, budget, &location)?);
                 }
-                if matches!(expression.value, PreparedKind::Tuple(_)) {
-                    self.host
-                        .construct_tuple(output, self.context, budget, range)?
-                } else {
-                    let first = output.first().expect("native array is nonempty");
-                    let element = self.value_contract(first, budget, &location)?;
-                    for v in &output {
-                        if !crate::admit_computational(
-                            v,
-                            &element,
-                            self.host,
-                            self.context,
-                            budget,
-                            location.clone(),
-                        )? {
-                            admit_value(
-                                v,
-                                &element,
-                                self.host,
-                                self.context,
-                                budget,
-                                location.clone(),
-                            )?;
-                        }
-                    }
-                    self.host
-                        .construct_sequence(output, &element, self.context, budget, range)?
-                }
+                self.host
+                    .construct_tuple(output, self.context, budget, range)?
             }
             _ => return execution::apply(expression, values, self, budget),
         };
         self.retained(std::sync::Arc::new(output), budget, range)
+    }
+    fn boolean_value(
+        &self,
+        value: bool,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
+        budget.charge(1, location.clone())?;
+        budget.charge_results(1, location.clone())?;
+        Ok(Value::constructed(RuntimeValue::Owned(
+            ConstructedValue::Boolean(value),
+        )))
+    }
+    fn copy_host_value(
+        &mut self,
+        value: &HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
+            let data = copy_constructed_value(data.value, budget, location.clone())?;
+            let facts = vec![constructed_value_type(&data, budget, location.clone())?];
+            return self
+                .host
+                .lift_constructed(data, facts, self.context, budget, range);
+        }
+        let Data::Native(view) = &value.data else {
+            unreachable!("constructed value handled")
+        };
+        budget.charge(view.path.len(), location.clone())?;
+        self.host.copy_value(
+            native_view::<C, H>(view, self.host),
+            self.context,
+            budget,
+            range,
+        )
     }
     fn owned_native(
         &mut self,
@@ -3282,6 +3653,134 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     }
     fn native_list<'v>(&self, value: &'v H::Value) -> Option<&'v [H::Value]> {
         self.host.positional_view(value)
+    }
+    fn collection_equal(
+        &mut self,
+        left: &HostValue<'a, C, H>,
+        right: &HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<bool, Self::Error> {
+        if let (Some(left), Some(right)) = (
+            execution::Host::constructed(self, left, budget, location)?,
+            execution::Host::constructed(self, right, budget, location)?,
+        ) {
+            return Ok(crate::value::key_equal(
+                left.value,
+                right.value,
+                budget,
+                location,
+            )?);
+        }
+        let left = self.copy_host_value(left, budget, location)?;
+        let right = self.copy_host_value(right, budget, location)?;
+        crate::native_values_equal(
+            &left,
+            &right,
+            self.host,
+            self.context,
+            budget,
+            location.clone(),
+        )
+    }
+    fn collection_hash(
+        &mut self,
+        value: &HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<u64, Self::Error> {
+        if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
+            return Ok(crate::value::identity::hash_admitted(
+                data.value, budget, location,
+            )?);
+        }
+        let value = self.copy_host_value(value, budget, location)?;
+        crate::native_value_hash(&value, self.host, self.context, budget, location.clone())
+    }
+    fn finish_array(
+        &mut self,
+        values: Vec<HostValue<'a, C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        let mut native = false;
+        for value in &values {
+            native |= execution::Host::constructed(self, value, budget, location)?.is_none();
+        }
+        if !native {
+            return execution::constructed_array(values, self, budget, location);
+        }
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+        let mut output = Vec::with_capacity(values.len());
+        for value in values {
+            output.push(self.finish_value(value, budget, location)?);
+        }
+        let value = self
+            .host
+            .construct_list(output, self.context, budget, range)?;
+        self.retained(std::sync::Arc::new(value), budget, range)
+    }
+    fn finish_dictionary(
+        &mut self,
+        values: Vec<(HostValue<'a, C, H>, HostValue<'a, C, H>)>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        let mut native = false;
+        for (key, value) in &values {
+            native |= execution::Host::constructed(self, key, budget, location)?.is_none()
+                || execution::Host::constructed(self, value, budget, location)?.is_none();
+        }
+        if !native {
+            return execution::constructed_dictionary(values, self, budget, location);
+        }
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        crate::projection::admit_slots::<(H::Value, H::Value)>(values.len(), budget, range)?;
+        let mut output = Vec::with_capacity(values.len());
+        for (key, value) in values {
+            output.push((
+                self.finish_value(key, budget, location)?,
+                self.finish_value(value, budget, location)?,
+            ));
+        }
+        let value = crate::construct_native_dictionary(
+            output,
+            self.host,
+            self.context,
+            budget,
+            location.clone(),
+        )?;
+        self.retained(std::sync::Arc::new(value), budget, range)
+    }
+    fn finish_set(
+        &mut self,
+        values: Vec<HostValue<'a, C, H>>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        let mut native = false;
+        for value in &values {
+            native |= execution::Host::constructed(self, value, budget, location)?.is_none();
+        }
+        if !native {
+            return execution::constructed_set(values, self, budget, location);
+        }
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+        let mut output = Vec::with_capacity(values.len());
+        for value in values {
+            output.push(self.finish_value(value, budget, location)?);
+        }
+        let value =
+            crate::construct_native_set(output, self.host, self.context, budget, location.clone())?;
+        self.retained(std::sync::Arc::new(value), budget, range)
     }
     fn check_native_context(
         &mut self,
@@ -3554,6 +4053,14 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
             Location::Query(range) | Location::Source(range) => range,
         };
         let value = self.owned_native(value, budget, range)?;
+        if let Some(values) = self.host.set_view(&value) {
+            crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+            let mut output = Vec::with_capacity(values.len());
+            for value in values {
+                output.push(self.host.copy_value(value, self.context, budget, range)?);
+            }
+            return Ok(output);
+        }
         let value = match std::sync::Arc::try_unwrap(value) {
             Ok(value) => value,
             Err(value) => self.host.copy_value(&value, self.context, budget, range)?,
@@ -3945,11 +4452,13 @@ pub(crate) fn dispose_declaration<K>(declaration: DeclaredType<K>) {
             | DeclaredType::Sequence(child)
             | DeclaredType::Keyed(child)
             | DeclaredType::Queue(child) => pending.push(*child),
+            DeclaredType::Dictionary(key, value) => pending.extend([*key, *value]),
             DeclaredType::Tuple(children) => pending.extend(children),
             DeclaredType::Record(fields) => {
                 pending.extend(fields.into_iter().map(|(_, value)| value))
             }
-            DeclaredType::Boolean
+            DeclaredType::Value
+            | DeclaredType::Boolean
             | DeclaredType::Integer
             | DeclaredType::Float
             | DeclaredType::String

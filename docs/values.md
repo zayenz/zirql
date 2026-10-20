@@ -19,8 +19,8 @@ operations that need additional host support. For the Rust representations, see
 | Absence | `null`, `<>` | One absent value with two accepted spellings |
 | Array | `["ash", "apple"]` | Ordered; duplicates and different element types are allowed |
 | Tuple | `("ash", 3)` | Fixed positions; distinct from an array |
-| Dictionary | `{"word": "ash", "count": 1}`, `(word: "ash", count: 1)` | String keys in insertion order |
-| Set | `{3, 1, 3}` | Homogeneous values; first occurrence wins |
+| Dictionary | `{"word": "ash", "count": 1}`, `{{"ash", "apple"}: 2}` | Constructed keys and values; insertion order |
+| Set | `{3, 1, 3}`, `{[1], (1,), {1}}` | Constructed elements; first occurrence wins |
 
 Use a field label or a one-based position to select a value:
 
@@ -116,9 +116,9 @@ native predicate. False, zero, an empty string and an empty collection are all
 present values.
 
 `lookup(container, key)` returns absence for a valid missing entry. Dictionary keys
-are strings, positional keys are one-based integers, and keyed arrays retain
-their declared key types and rank. Wrong key types or incompatible containers
-fail. For a dictionary with a declared schema, a label outside that schema also fails.
+can be any constructed value, positional keys are one-based integers, and keyed
+arrays retain their declared key types and rank. Incompatible containers or keys
+outside a declared contract fail. A record schema still restricts its string labels.
 
 | Expression | Result |
 | --- | --- |
@@ -179,7 +179,6 @@ This returns `[(1, 2, 3), (2, 1, 3), (2, 2, 4)]`. The common form uses repeated
 accept shared destructuring patterns. A generator pipe belongs to its collection;
 group native pipelines inside a head or source, and place collection suffixes
 after its closing bracket.
-
 
 Later generators can use earlier names. Each source is evaluated before its
 own pattern names become available; its filter can use those names. For example,
@@ -252,8 +251,9 @@ for a report that retains the positions of repeated words.
 
 ## Sorting and optional extrema
 
-`sort(a)` orders an array or set by its scalar values and a dictionary by its
-string keys. It retains the collection kind. `sort_by(rows, "field")` orders
+`sort(a)` orders an array by its scalar values, a set by structural value order
+and a dictionary by structural key order. Nested collection keys are supported.
+Sorting retains the collection kind. `sort_by(rows, "field")` orders
 array rows or dictionary values by a literal field label; `sort_by(d, value)`
 orders dictionary values directly. All sorts are ascending and stable.
 `descending=true` reverses key order while preserving input order within ties.
@@ -274,13 +274,16 @@ min([]) default "no minimum"
 
 This returns `"no minimum"`. Sorting an empty array returns an empty array.
 
-Ordering keys must be present and homogeneous: integers, finite floats, strings
-or members of one nominal type. Integers and floats do not mix. Boolean sets also support their usual false-before-true order. Array and
-dictionary Boolean keys and native handles need a supported projection first. A missing field, absent
-key or later incompatible key fails the whole operation, including an extremum
-that already has a candidate winner. Project an explicit default key before
-sorting if missing data should have an order. Keyed arrays need an explicit
-conversion such as `[cell.value for cell in entries(a)]` before ordering.
+Array ordering and `sort_by`/extremum selectors require present, homogeneous
+integers, finite floats, strings or members of one nominal type. Integers and
+floats do not mix in those scalar selector contracts. Boolean or native values
+need a supported projection there. A missing field, absent key or later
+incompatible selector key fails the whole operation, including an extremum that
+already has a candidate winner. Project an explicit default if missing data
+should have an order. Keyed arrays need a conversion such as
+`[cell.value for cell in entries(a)]` before these operations. General set and
+dictionary-key sorting instead uses structural order, including Boolean, absent
+and nested collection values.
 
 ## Constructed collection pipelines
 
@@ -341,32 +344,30 @@ strings implicitly.
 [w for w in words if starts_with(w, "a")] | tally
 ```
 
-Tally accepts strings and returns `{"ash": 1, "apple": 2}`, with record
-fields in first-seen order and checked signed integer counts. No further
-stage may follow tally. Empty untyped arrays yield `[]` for sort/unique and
-`{}` for tally. Explicit incompatible element declarations still fail on empty
-input; unique retains valid declarations and element kinds.
+Tally accepts constructed values and returns a dictionary of checked signed
+integer counts. String input gives `{"ash": 1, "apple": 2}` with fields in
+first-seen order. No further stage may follow tally. Empty untyped arrays yield
+`[]` for sort/unique and `{}` for tally. Unique retains its scalar-only rules.
 
-Since Zirql `0.1.2`, tally also accepts homogeneous string sets:
+Collections can be tally keys:
 
 ```zirql
 [{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally
 ```
 
-For `ash apple birch apple`, the result is an array of records with `key` and
-`count` fields. The keys are the sets `{"ash", "apple"}` and
-`{"apple", "birch"}`, with counts `1` and `2`. Set membership determines equality,
-so `{"birch", "apple"}` joins the second group. Groups follow their first
-occurrence, and each key retains its first set's iteration order. Repeated
-identical words produce singleton keys. The result keeps each key as a set;
-Zirql does not encode sets as dictionary strings or allow arbitrary dictionary
-keys.
+For `ash apple birch apple`, the language value is:
 
-When the input type establishes string sets, empty input returns `[]`, including
-an empty neighbouring-word comprehension over typed string words. An empty
-`sequence<set<string>>` also returns `[]`. An ambiguous `[] | tally` retains the
-existing `{}` result, as do empty string arrays. Mixed strings and sets, sets of
-other element types and unestablished set element types are refused.
+```zirql
+{{"ash", "apple"}: 1, {"apple", "birch"}: 2}
+```
+
+The reversed pair `{"birch", "apple"}` joins the second group. Groups follow
+first occurrence, and each key keeps its first iteration order. Equal adjacent
+words produce singleton keys. Tally also accepts tuples, lists, dictionaries,
+mixed scalar kinds and absence. It uses the structural key equality described
+below, without converting keys to strings. Empty input known to contain sets
+returns an empty general dictionary; ambiguous `[] | tally` and empty string
+input retain the empty string dictionary `{}`.
 
 A pipe applies to the completed expression, after arithmetic, Boolean and
 `default` operators. A completed comprehension or conditional can pipe directly.
@@ -392,26 +393,30 @@ one for a fixed set of word categories. Identity includes both the type and
 member, so identical printed names from different types are not equal. Members
 use declaration order. Arithmetic on members and mixed nominal types fail.
 
-Typed sets remove equal elements while retaining each first occurrence,
-including the sign of the first floating zero. Supported scalar set elements
-are Booleans, integers, finite floats, exact strings and nominal members. Set
-equality compares membership independently of stored order.
-`sort` orders a set explicitly by its supported type order and returns a set.
+Sets accept constructed values, including tuples, lists, sets and dictionaries.
+They remove structurally equal elements while retaining each first occurrence.
+For example, `{{1, 2}, {2, 1}, [1, 2], (1, 2)}` contains three elements: the
+nested sets are equal, while the list and tuple are distinct kinds. Sets compare
+membership independently of stored order. Mixed scalar kinds remain distinct,
+so `{1, 1.0, true}` contains three elements.
+
 Bare braces construct sets: `{3, 1, 3}` iterates as `3, 1`, and
 `{n mod 3 for n in 1..5}` iterates as `1, 2, 0`. Empty braces mean a dictionary;
-use `set<int>()`, `set<bool>()`, `set<float>()` or `set<string>()` for an empty
-scalar set.
-String sets and `set<string>()` are available since Zirql `0.1.2`. A host can
-supply a typed empty nominal set through the Rust API. The common
+use `set<value>()` for an empty general set. `set<int>()`, `set<bool>()`,
+`set<float>()` and `set<string>()` retain strict scalar element contracts.
+A host can supply a typed empty nominal set through the Rust API; the common
 reader does not resolve nominal type names.
 
-String-set sorting uses exact lexicographic string order. Strings keep their
-original case and bytes; no normalization or coercion occurs. Native results
-retain `SetElementType::String`, including inside tally keys. Serialization
-remains an explicit host boundary: a host can render set elements as an array
-in iteration order or refuse string sets under its own data policy. A host must
-handle the new `String` element variant; Zirql does not change MiniZinc target
-serialization rules.
+Inferred homogeneous scalar sets keep their precise `SetElementType`; nested
+or mixed sets use `SetElementType::Value`. String equality uses exact case and
+bytes. `sort` uses structural order for mixed and nested elements, keeping
+scalar kinds distinct. Lists and tuples compare lexicographically; sets compare
+canonically ordered members and dictionaries compare canonically ordered
+key/value associations. Rust hosts construct set storage with
+`elements: vec![...].into()`. The `SetElements` wrapper caches a structural
+membership index and invalidates it when the stored elements change.
+Serialization remains an explicit host boundary. Hosts choose an encoding that
+preserves the required information or refuse unsupported values.
 
 ## Keyed arrays
 
@@ -549,15 +554,31 @@ prepared reads and native worklist values are described in
 An outer colon distinguishes a dictionary from a set. Each key is an expression:
 `{"z": 2, "a": 2, "m": 1}` uses quoted strings, while `{w: 1 for w in words}`
 reads each `w` as its key. Static quoted fields retain their structural schemas.
-`.field` selects a static label; bracket access and `lookup` accept computed
-string keys. Empty `{}` is an empty dictionary.
+`.field` selects a static string label; bracket access and `lookup` accept any
+constructed key. Empty `{}` is an empty dictionary.
 
 Dictionaries preserve entry insertion order. Each entry evaluates its key,
-requires a present string, checks for a duplicate, then evaluates its value.
-A duplicate fails before that value runs. Keys must be strings; there is no
-implicit conversion from integer, member or native-handle text. Rust adapters
-use the ordered `ConstructedValue::Record` representation and
-`construct_string_entries`; see [value evaluation](value-runtime.md).
+checks for a duplicate, then evaluates its value. A duplicate fails before that
+value runs. Keys and values can be scalars, absence, tuples, lists, sets or
+other dictionaries. For example:
+
+```zirql
+{[1, 2]: "list", (1, 2): "tuple", {1, 2}: "set", {"x": 1}: "dictionary"}
+lookup({{1, 2}: "pair"}, {2, 1})
+```
+
+The lookup returns `"pair"`. Lists and tuples compare by position; sets compare
+by membership; dictionaries compare key/value associations. Set and dictionary
+iteration order does not affect key identity. Different value kinds remain
+distinct, including integer `1` and float `1.0`. Floating `-0.0` and `0.0`
+have the same identity and hash. No key is converted to text.
+
+Rust adapters receive all-string dictionaries as `ConstructedValue::Record`
+and other dictionaries as `ConstructedValue::Dictionary(Dictionary)`. The
+`Dictionary` storage exposes ordered entry pairs and caches a structural hash
+index for repeated lookup; `entries.into()` constructs it from an owned vector. Empty `{}` remains a record. `dict<K, V>` declares
+key and value contracts; `value` accepts any constructed value. Record schemas
+remain available for fixed string fields. See [value evaluation](value-runtime.md).
 
 Repeated `for` clauses and filters use the same scope and traversal rules as
 array comprehensions:
@@ -567,6 +588,10 @@ array comprehensions:
  for w in ["pear", "apple"]
  for k in [w, w ++ "!"] if ends_with(k, "!")}
 ```
+
+An empty comprehension retains general dictionary kind when its key facts are
+non-string or deferred, so `lookup({[x]: 1 for x in []}, [1])` returns absence.
+Known string-key comprehensions keep the existing string dictionary representation.
 
 The dictionary iterates as `pear!`, then `apple!`; each value is the set
 `1, 2, 0`. A final collection inside an explicit control or function block
@@ -587,8 +612,10 @@ heterogeneous values because it does not inspect them as ordering keys.
 Unsupported or absent selector keys fail at the selector.
 
 Sorting, copying and saving a dictionary retain its kind and current order.
-Dictionary equality compares key/value associations independently of field
-order. Hosts rendering a JSON object must preserve the same member order.
+Dictionary equality compares key/value associations independently of entry
+order. JSON objects require string keys; general dictionaries need a host-chosen
+encoding or an explicit serialization error. Hosts rendering string dictionaries
+as JSON objects preserve their member order.
 Keyed arrays remain distinct: they retain typed axes, missing cells and
 row-major cell order.
 
@@ -598,7 +625,7 @@ ordered `3, 1, 2`; wrapping it in `Sort` yields a set ordered `1, 2, 3`.
 Typed empty sets retain their supplied element identity through sorting.
 
 The common reader accepts bare-brace sets, computed-key dictionaries, typed
-empty scalar sets and indexed brackets with optional `axes(...)` domains.
+empty general or scalar sets and indexed brackets with optional `axes(...)` domains.
 The Rust API exposes the same constructors. Declared sources run before cells
 or generators and retain unused keys; `KeyedComprehension::empty_axis_sources`
 remains a lazy fallback that runs only when no cell is produced. All

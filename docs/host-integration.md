@@ -329,12 +329,14 @@ including individual array positions; it is not an interface declaration.
 `ValueType::Unestablished` means deferred knowledge, not a runtime absence value.
 
 The runtime type API supports Boolean, integer, finite float, string, nominal
-member, sequence, tuple, record, set, keyed and native contracts. Sequences and
+member, sequence, tuple, record, dictionary, set, keyed and native contracts.
+`DeclaredType::Value` admits any constructed value; `DeclaredType::Dictionary`
+checks key and value contracts, including nested constructed keys. Sequences and
 keyed cells check every present element. Tuples have fixed positions. Records
 require every nonoptional label and reject extra labels; optional fields may be
 omitted. Checking a record preserves its stored field order. Duplicate
-declaration labels fail. Sets retain their supported scalar element types,
-including typed empty sets. Keyed rank, axis identity, sparse coverage and entry
+declaration labels fail. Scalar sets retain their strict element contracts,
+including typed empty sets; `SetElementType::Value` admits general elements. Keyed rank, axis identity, sparse coverage and entry
 order remain actual runtime facts. Nominal declarations use `NominalTypeId`, so
 equal names do not make distinct types compatible. Integers do not implicitly
 satisfy float contracts.
@@ -704,6 +706,23 @@ body can read its parameters and earlier immutable locals. The entry receives
 explicit `Bindings`; functions receive that data through call arguments. Host
 kinds used for native declarations must identify the complete native contract.
 Native kind equality must agree with the host's declaration identity.
+
+For ordinary sets and dictionaries containing native values, implement
+`FunctionHost::{set_view, dictionary_view, construct_set, construct_dictionary}`.
+Views expose retained values; constructors retain their owners without rendering.
+`construct_native_set`, `construct_native_dictionary` and `tally_native_values`
+provide hash-indexed collection construction, while `lookup_native_dictionary`
+uses the same structural identity. The shared expression runner uses these
+hooks for collections containing native values. Values from different query
+paths or sources can coexist; normal context and stale-handle checks still apply.
+
+`native_values_equal`, `native_value_hash` and `native_values_compare` recurse
+through constructed data and host collection views. Native leaves use exact
+`native_identity` tokens. `compare_native_values` orders same-kind leaves by
+canonical identity by default; override it to order different native kinds.
+A host without collection hooks reports an explicit unsupported operation.
+Rendering remains host-owned: tagged entry pairs can preserve general keys in
+JSON, while a plain JSON object still requires string member names.
 
 Native kind callbacks can use `pattern_function_value_kind` with owned pattern
 declarations, or `pattern_function_value_kind_borrowed` with existing

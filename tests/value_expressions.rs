@@ -93,7 +93,7 @@ fn declared_report_contracts_check_actual_nested_values_without_changing_raw_val
             "flags".into(),
             V::Set {
                 element_type: Some(SetElementType::Boolean),
-                elements: vec![],
+                elements: vec![].into(),
             },
         ),
         (
@@ -169,6 +169,313 @@ fn declared_report_contracts_check_actual_nested_values_without_changing_raw_val
 }
 
 #[test]
+fn general_value_contracts_admit_nested_dictionary_keys_and_preserve_scalar_set_checks() {
+    let location = Location::Source(4..10);
+    let members = || V::Set {
+        element_type: Some(SetElementType::Integer),
+        elements: vec![V::Integer(2), V::Integer(1)].into(),
+    };
+    let mapping = V::Dictionary(
+        vec![
+            (
+                V::Array(vec![V::Integer(1), V::String("two".into())]),
+                V::Tuple(vec![members(), V::Record(vec![])]),
+            ),
+            (
+                members(),
+                V::Dictionary(vec![(V::Tuple(vec![V::Boolean(true)]), V::Absent)].into()),
+            ),
+        ]
+        .into(),
+    );
+    let contract: D<()> = D::Dictionary(Box::new(D::Value), Box::new(D::Value));
+    let declared =
+        zirql::declare_constructed(mapping, contract.clone(), &mut ample(), location.clone())
+            .unwrap();
+    let copied = copy_constructed_value(&declared, &mut ample(), location.clone()).unwrap();
+    admit_constructed(&copied, &contract, &mut ample(), location.clone()).unwrap();
+    admit_constructed(&copied, &D::<()>::Value, &mut ample(), location.clone()).unwrap();
+    assert_eq!(copied, declared);
+
+    // Existing string-field declarations also satisfy a homogeneous dictionary contract.
+    let record = zirql::declare_constructed(
+        V::Record(vec![("count".into(), V::Integer(2))]),
+        D::Record(vec![("count".into(), D::Integer)]),
+        &mut ample(),
+        location.clone(),
+    )
+    .unwrap();
+    admit_constructed(
+        &record,
+        &D::<()>::Dictionary(Box::new(D::String), Box::new(D::Integer)),
+        &mut ample(),
+        location.clone(),
+    )
+    .unwrap();
+
+    let general_set = D::<()>::Set(SetElementType::Value);
+    admit_constructed(&members(), &general_set, &mut ample(), location.clone()).unwrap();
+    admit_constructed(
+        &V::Set {
+            element_type: None,
+            elements: vec![].into(),
+        },
+        &general_set,
+        &mut ample(),
+        location.clone(),
+    )
+    .unwrap();
+    for elements in [
+        vec![V::Integer(1), V::String("two".into())],
+        vec![V::Array(vec![V::Integer(1)])],
+    ] {
+        let set = V::Set {
+            element_type: Some(SetElementType::Value),
+            elements: elements.into(),
+        };
+        admit_constructed(&set, &general_set, &mut ample(), location.clone()).unwrap();
+        let error = admit_constructed(
+            &set,
+            &D::<()>::Set(SetElementType::Integer),
+            &mut ample(),
+            location.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error.location, location);
+        assert!(
+            error
+                .message
+                .contains("expected set of declared element type")
+        );
+    }
+
+    let duplicate = V::Dictionary(
+        vec![
+            (members(), V::Integer(1)),
+            (
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(1), V::Integer(2)].into(),
+                },
+                V::Integer(2),
+            ),
+        ]
+        .into(),
+    );
+    let error =
+        admit_constructed(&duplicate, &contract, &mut ample(), location.clone()).unwrap_err();
+    assert_eq!(error.location, location);
+    assert!(error.message.contains("duplicate dictionary key"));
+}
+
+#[test]
+fn structural_hash_and_order_ignore_unordered_storage_and_signed_zero() {
+    use std::cmp::Ordering;
+    use zirql::{compare_constructed_values, constructed_value_hash};
+    let location = Location::Query(2..8);
+    let make = |reversed: bool| {
+        let mut members = vec![V::Integer(1), V::Integer(2)];
+        let mut fields = vec![
+            ("first".into(), V::Integer(1)),
+            ("second".into(), V::Integer(2)),
+        ];
+        if reversed {
+            members.reverse();
+            fields.reverse();
+        }
+        let record = if reversed {
+            V::Dictionary(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (V::String(key), value))
+                    .collect::<Vec<_>>()
+                    .into(),
+            )
+        } else {
+            V::Record(fields)
+        };
+        let mut entries = vec![
+            (
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: members.into(),
+                },
+                V::Array(vec![V::Tuple(vec![V::Float(if reversed {
+                    -0.0
+                } else {
+                    0.0
+                })])]),
+            ),
+            (V::String("record".into()), record),
+        ];
+        if reversed {
+            entries.reverse();
+        }
+        V::Dictionary(entries.into())
+    };
+    let left = make(false);
+    let right = make(true);
+    assert_eq!(
+        constructed_value_hash(&left, &mut ample(), location.clone()).unwrap(),
+        constructed_value_hash(&right, &mut ample(), location.clone()).unwrap(),
+    );
+    assert_eq!(
+        compare_constructed_values(&left, &right, &mut ample(), location.clone()).unwrap(),
+        Ordering::Equal,
+    );
+    let declared =
+        zirql::declare_constructed(right, D::Value, &mut ample(), location.clone()).unwrap();
+    assert_eq!(
+        constructed_value_hash(&left, &mut ample(), location.clone()).unwrap(),
+        constructed_value_hash(&declared, &mut ample(), location.clone()).unwrap(),
+    );
+    assert_eq!(
+        compare_constructed_values(
+            &V::Array(vec![V::Integer(1)]),
+            &V::Tuple(vec![V::Integer(1)]),
+            &mut ample(),
+            location.clone()
+        )
+        .unwrap(),
+        Ordering::Less,
+    );
+    assert_eq!(
+        compare_constructed_values(
+            &V::Integer(1),
+            &V::Float(1.0),
+            &mut ample(),
+            location.clone()
+        )
+        .unwrap(),
+        Ordering::Less,
+    );
+    let mut membership = binary(
+        B::In,
+        int(1),
+        literal(V::Set {
+            element_type: Some(SetElementType::Integer),
+            elements: vec![V::Integer(1)].into(),
+        }),
+    );
+    assert_eq!(evaluate(&membership).unwrap(), V::Boolean(true));
+    let K::Binary { right, .. } = &mut membership.value else {
+        unreachable!()
+    };
+    let K::Literal(V::Set { elements, .. }) = &mut right.value else {
+        unreachable!()
+    };
+    elements[0] = V::Integer(2);
+    assert_eq!(evaluate(&membership).unwrap(), V::Boolean(false));
+
+    let a = member(1, 0);
+    let mut b = member(1, 0);
+    b.member_name = "contradiction".into();
+    assert!(
+        compare_constructed_values(&V::Member(a), &V::Member(b), &mut ample(), location)
+            .unwrap_err()
+            .message
+            .contains("inconsistent nominal member")
+    );
+}
+
+#[test]
+fn declared_and_deferred_dictionaries_keep_general_bracket_access() {
+    let dictionary = || {
+        declared(
+            V::Dictionary(vec![(V::Integer(1), V::String("one".into()))].into()),
+            D::Dictionary(Box::new(D::Integer), Box::new(D::String)),
+        )
+    };
+    assert_eq!(
+        evaluate(&access(literal(dictionary()), int(1)))
+            .unwrap()
+            .data(),
+        &V::String("one".into())
+    );
+    let get = function(
+        "get",
+        vec![(
+            "d",
+            D::Dictionary(Box::new(D::Integer), Box::new(D::String)),
+        )],
+        D::String,
+        access(name("d"), int(1)),
+    );
+    assert_eq!(
+        run_functions(
+            &[get],
+            &call("get", vec![literal(dictionary())]),
+            2,
+            &mut ample()
+        )
+        .unwrap()
+        .data(),
+        &V::String("one".into())
+    );
+    let key = || e(K::Set(vec![int(1)]));
+    let get = function(
+        "get",
+        vec![("d", D::Value)],
+        D::Value,
+        access(name("d"), key()),
+    );
+    let entry = call("get", vec![e(K::Dictionary(vec![(key(), text("one"))]))]);
+    assert_eq!(
+        run_functions(&[get], &entry, 2, &mut ample())
+            .unwrap()
+            .data(),
+        &V::String("one".into())
+    );
+}
+
+#[test]
+fn common_signatures_read_value_and_general_collection_contracts() {
+    let source = "fn identity(items: set<value>, mapping: dict<value, value>, item: value) -> value { item }";
+    let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+    let mut host = WordInput {
+        value: V::Array(vec![]),
+        unknown: false,
+    };
+    let declaration = zirql::read_function_declaration(
+        &mut reader,
+        &mut host,
+        &mut ample(),
+        64,
+        |name, _| -> Result<D<()>, zirql::QueryError> {
+            Err(zirql::QueryError::query(name.range, "unexpected host type"))
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(reader.remaining().trim().is_empty());
+    assert_eq!(
+        declaration.parameters[0].value.declaration,
+        D::Set(SetElementType::Value)
+    );
+    assert_eq!(
+        declaration.parameters[1].value.declaration,
+        D::Dictionary(Box::new(D::Value), Box::new(D::Value)),
+    );
+    assert_eq!(declaration.parameters[2].value.declaration, D::Value);
+    assert_eq!(declaration.result.value, D::Value);
+    zirql::dispose_native_value(declaration.value);
+
+    let mut allowance = ample();
+    let expression = read_word_expression("set<value>()", &mut host, &mut allowance);
+    let empty =
+        zirql::evaluate_query_value(&expression, &BTreeMap::new(), &mut host, &mut allowance)
+            .unwrap();
+    zirql::dispose_native_value(expression);
+    assert_eq!(
+        empty,
+        V::Set {
+            element_type: Some(SetElementType::Value),
+            elements: vec![].into()
+        }
+    );
+}
+
+#[test]
 fn declared_nominal_types_use_identity_and_keep_empty_set_types() {
     let value = V::Member(member(1, 0));
     admit_constructed(
@@ -193,7 +500,7 @@ fn declared_nominal_types_use_identity_and_keep_empty_set_types() {
     assert_eq!(error.message, "expected member of declared nominal type");
     let empty = V::Set {
         element_type: Some(SetElementType::Member(NominalTypeId(8))),
-        elements: vec![],
+        elements: vec![].into(),
     };
     assert!(
         admit_constructed(
@@ -707,10 +1014,7 @@ fn skipped_runtime_failures_still_receive_bounded_static_validation() {
         V::Integer(7)
     );
     let unsupported = Located::new(K::Set(vec![e(K::Tuple(vec![int(1)]))]), 50..55);
-    assert_eq!(
-        evaluate(&choose(unsupported)).unwrap_err().location,
-        Location::Query(50..55)
-    );
+    assert_eq!(evaluate(&choose(unsupported)).unwrap(), V::Integer(7));
     let incompatible = Located::new(
         K::Binary {
             operator: B::Add,
@@ -833,7 +1137,7 @@ fn checked_numbers_and_typed_values_keep_responsible_failures() {
         evaluate(&e(K::Set(vec![int(2), int(1), int(2)]))).unwrap(),
         V::Set {
             element_type: Some(SetElementType::Integer),
-            elements: vec![V::Integer(2), V::Integer(1)]
+            elements: vec![V::Integer(2), V::Integer(1)].into()
         }
     );
     assert_eq!(
@@ -856,7 +1160,7 @@ fn checked_numbers_and_typed_values_keep_responsible_failures() {
         .unwrap(),
         V::Set {
             element_type: Some(SetElementType::Integer),
-            elements: vec![]
+            elements: vec![].into()
         }
     );
     assert_eq!(
@@ -1199,7 +1503,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         members,
         V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))]
+            elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))].into()
         }
     );
     assert_eq!(
@@ -1473,7 +1777,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         .unwrap(),
         V::Set {
             element_type: Some(SetElementType::Integer),
-            elements: vec![V::Integer(9), V::Integer(3)]
+            elements: vec![V::Integer(9), V::Integer(3)].into()
         }
     );
     assert_eq!(
@@ -1490,7 +1794,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         .unwrap(),
         V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))]
+            elements: vec![V::Member(member(22, 4)), V::Member(member(11, 1))].into()
         }
     );
 
@@ -1498,7 +1802,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         Located::new("empty_members".into(), 0..13),
         V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![],
+            elements: vec![].into(),
         },
     )])
     .unwrap();
@@ -1934,7 +2238,7 @@ fn nominal_keyed_duplicate_incompatible_empty_and_budget_refusals_are_located() 
         Located::new("empty_members".into(), 0..13),
         V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![],
+            elements: vec![].into(),
         },
     )])
     .unwrap();
@@ -3450,7 +3754,7 @@ fn sets_keep_insertion_order_first_representatives_and_membership_after_sorting(
     let value = evaluate(&set()).unwrap();
     let expected = V::Set {
         element_type: Some(SetElementType::Integer),
-        elements: vec![V::Integer(3), V::Integer(1), V::Integer(2)],
+        elements: vec![V::Integer(3), V::Integer(1), V::Integer(2)].into(),
     };
     assert_eq!(value, expected);
     admit_constructed(
@@ -3473,7 +3777,7 @@ fn sets_keep_insertion_order_first_representatives_and_membership_after_sorting(
         evaluate(&sorting(set(), None, false)).unwrap(),
         V::Set {
             element_type: Some(SetElementType::Integer),
-            elements: vec![V::Integer(1), V::Integer(2), V::Integer(3)],
+            elements: vec![V::Integer(1), V::Integer(2), V::Integer(3)].into(),
         }
     );
     let comprehension = e(K::Comprehension {
@@ -3509,14 +3813,14 @@ fn sets_keep_insertion_order_first_representatives_and_membership_after_sorting(
         .unwrap(),
         V::Set {
             element_type: Some(SetElementType::Boolean),
-            elements: vec![V::Boolean(false), V::Boolean(true)]
+            elements: vec![V::Boolean(false), V::Boolean(true)].into()
         }
     );
     let empty = || {
         literal(declared(
             V::Set {
                 element_type: Some(SetElementType::Member(NominalTypeId(7))),
-                elements: vec![],
+                elements: vec![].into(),
             },
             D::Set(SetElementType::Member(NominalTypeId(7))),
         ))
@@ -4200,7 +4504,7 @@ fn string_sets_preserve_first_spelling_and_share_scalar_set_operations() {
     };
     let expected = V::Set {
         element_type: Some(SetElementType::String),
-        elements: vec![V::String("birch".into()), V::String("apple".into())],
+        elements: vec![V::String("birch".into()), V::String("apple".into())].into(),
     };
     let value = run(r#"{"birch", "apple", "birch"}"#, &mut host).unwrap();
     assert_eq!(value, expected);
@@ -4228,17 +4532,23 @@ fn string_sets_preserve_first_spelling_and_share_scalar_set_operations() {
         run(r#"sort({"birch", "apple"})"#, &mut host).unwrap(),
         V::Set {
             element_type: Some(SetElementType::String),
-            elements: vec![V::String("apple".into()), V::String("birch".into())]
+            elements: vec![V::String("apple".into()), V::String("birch".into())].into()
         }
     );
     assert_eq!(
         run("set<string>()", &mut host).unwrap(),
         V::Set {
             element_type: Some(SetElementType::String),
-            elements: vec![]
+            elements: vec![].into()
         }
     );
-    assert!(run(r#"{"apple", 1}"#, &mut host).is_err());
+    assert!(matches!(
+        run(r#"{"apple", 1}"#, &mut host).unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::Value),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -4246,31 +4556,25 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
     const QUERY: &str =
         "[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally";
     let group = |words: &[&str], count| {
-        V::Record(vec![
-            (
-                "key".into(),
-                V::Set {
-                    element_type: Some(SetElementType::String),
-                    elements: words.iter().map(|word| V::String((*word).into())).collect(),
-                },
-            ),
-            ("count".into(), V::Integer(count)),
-        ])
+        (
+            V::Set {
+                element_type: Some(SetElementType::String),
+                elements: words.iter().map(|word| V::String((*word).into())).collect(),
+            },
+            V::Integer(count),
+        )
     };
     for (words, expected) in [
         (
             vec!["ash", "apple", "birch", "apple"],
-            V::Array(vec![
-                group(&["ash", "apple"], 1),
-                group(&["apple", "birch"], 2),
-            ]),
+            V::Dictionary(vec![group(&["ash", "apple"], 1), group(&["apple", "birch"], 2)].into()),
         ),
         (
             vec!["apple", "apple", "apple"],
-            V::Array(vec![group(&["apple"], 2)]),
+            V::Dictionary(vec![group(&["apple"], 2)].into()),
         ),
-        (vec!["ash"], V::Array(vec![])),
-        (vec![], V::Array(vec![])),
+        (vec!["ash"], V::Dictionary(vec![].into())),
+        (vec![], V::Dictionary(vec![].into())),
     ] {
         let mut allowance = ample();
         let mut host = WordInput {
@@ -4293,12 +4597,10 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
             zirql::query_value_types(&expression, &types, &mut host, &mut allowance).unwrap();
         assert_eq!(
             discovered,
-            vec![ValueType::Array(ArrayType::Elements(vec![
-                ValueType::Record(vec![
-                    ("key".into(), ValueType::Set(Some(SetElementType::String))),
-                    ("count".into(), ValueType::Integer),
-                ])
-            ]))]
+            vec![ValueType::Dictionary {
+                keys: vec![ValueType::Set(Some(SetElementType::String))],
+                values: vec![ValueType::Integer],
+            }]
         );
         assert_eq!(
             zirql::evaluate_query_value(&expression, &types, &mut host, &mut allowance).unwrap(),
@@ -4324,21 +4626,31 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
         )]);
         let value =
             zirql::evaluate_query_value(&expression, &types, &mut host, &mut allowance).unwrap();
-        assert_eq!(value, V::Array(vec![group(&[], count)]));
+        assert!(
+            matches!(value, V::Dictionary(ref entries) if entries.len() == 1 && entries[0].1 == V::Integer(count) && matches!(entries[0].0, V::Set { element_type: Some(SetElementType::String), ref elements } if elements.is_empty()))
+        );
         zirql::dispose_native_value(expression);
     }
     let unestablished = e(K::Tally(Box::new(e(K::Array(vec![literal(V::Set {
         element_type: None,
-        elements: vec![],
+        elements: vec![].into(),
     })])))));
-    assert!(evaluate(&unestablished).is_err());
+    assert!(matches!(
+        evaluate(&unestablished).unwrap(),
+        V::Dictionary(_)
+    ));
+    let empty_strings = literal(declared(V::Array(vec![]), D::Sequence(Box::new(D::String))));
+    assert_eq!(
+        evaluate(&e(K::Tally(Box::new(empty_strings)))).unwrap(),
+        V::Record(vec![])
+    );
     let empty_sets = literal(declared(
         V::Array(vec![]),
         D::Sequence(Box::new(D::Set(SetElementType::String))),
     ));
     assert_eq!(
         evaluate(&e(K::Tally(Box::new(empty_sets)))).unwrap(),
-        V::Array(vec![])
+        V::Dictionary(vec![].into())
     );
     assert_eq!(
         evaluate(&e(K::Tally(Box::new(e(K::Array(vec![])))))).unwrap(),
@@ -4347,7 +4659,7 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
     let empty_set = || {
         literal(V::Set {
             element_type: Some(SetElementType::String),
-            elements: vec![],
+            elements: vec![].into(),
         })
     };
     let repeated_empty = e(K::Tally(Box::new(e(K::Array(vec![
@@ -4356,15 +4668,118 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
     ])))));
     assert_eq!(
         evaluate(&repeated_empty).unwrap(),
-        V::Array(vec![group(&[], 2)])
+        V::Dictionary(vec![group(&[], 2)].into())
     );
     let mixed = e(K::Tally(Box::new(e(K::Array(vec![
         e(K::Set(vec![text("ash")])),
         text("ash"),
     ])))));
-    let error = evaluate(&mixed).unwrap_err();
-    assert!(error.message.contains("homogeneous string sets"));
-    assert_eq!(error.location, Location::Query(0..1));
+    assert!(matches!(evaluate(&mixed).unwrap(), V::Dictionary(ref entries) if entries.len() == 2));
+}
+#[test]
+fn general_collection_keys_lookup_deduplicate_and_sort_structurally() {
+    let run = |source: &str| {
+        let mut host = WordInput {
+            value: V::Array(vec![]),
+            unknown: false,
+        };
+        let mut budget = ample();
+        let expression = read_word_expression(source, &mut host, &mut budget);
+        let result =
+            zirql::evaluate_query_value(&expression, &BTreeMap::new(), &mut host, &mut budget);
+        zirql::dispose_native_value(expression);
+        result
+    };
+    let query = r#"[
+        {{"ash", "apple"}: 7}[{"apple", "ash"}],
+        {[1, {"x": 2}]: 9}[[1, {"x": 2}]],
+        {(1, [2]): 3}[(1, [2])],
+        {{"a": 1, "b": 2}: 4}[{"b": 2, "a": 1}],
+        {2, 1} in {{1, 2}, {3}},
+        {[1], (1, 2), {"a": 1}, {{2, 1}}, {{1, 2}}} ==
+            {{{1, 2}}, {"a": 1}, (1, 2), [1]}
+    ]"#;
+    assert_eq!(
+        run(query).unwrap(),
+        V::Array(vec![
+            V::Integer(7),
+            V::Integer(9),
+            V::Integer(3),
+            V::Integer(4),
+            V::Boolean(true),
+            V::Boolean(true)
+        ])
+    );
+    assert_eq!(run("lookup({[x]: 1 for x in []}, [1])").unwrap(), V::Absent);
+    assert!(
+        matches!(run("{[x]: 1 for x in []}").unwrap(), V::Dictionary(ref entries) if entries.is_empty())
+    );
+    assert_eq!(
+        run(r#"{x: 1 for x in ["one"] if false}"#).unwrap(),
+        V::Record(vec![])
+    );
+    let empty_string_dictionary = e(K::DictionaryComprehension {
+        clauses: vec![clause(G::In {
+            binders: vec![binder("k")],
+            source: literal(declared(V::Array(vec![]), D::Sequence(Box::new(D::String)))),
+            filter: None,
+        })],
+        key: Box::new(name("k")),
+        head: Box::new(int(1)),
+    });
+    assert_eq!(
+        value_expression_types(&empty_string_dictionary, &BTreeMap::new(), &mut ample()).unwrap(),
+        vec![ValueType::RecordKind]
+    );
+    assert_eq!(
+        evaluate(&empty_string_dictionary).unwrap(),
+        V::Record(vec![])
+    );
+    let declared_string_dictionary = e(K::Dictionary(vec![(
+        literal(declared(V::String("one".into()), D::String)),
+        int(1),
+    )]));
+    assert_eq!(
+        value_expression_types(&declared_string_dictionary, &BTreeMap::new(), &mut ample())
+            .unwrap(),
+        vec![ValueType::RecordKind]
+    );
+    assert_eq!(
+        evaluate(&declared_string_dictionary).unwrap(),
+        V::Record(vec![("one".into(), V::Integer(1))])
+    );
+    let tally = run("[{1, 2}, {2, 1}, {1, 1}, {1}] | tally").unwrap();
+    assert!(
+        matches!(tally, V::Dictionary(ref entries) if entries.len() == 2 && entries.iter().all(|(_, count)| *count == V::Integer(2)))
+    );
+    assert_eq!(
+        run("sort({{2}, {1}})").unwrap(),
+        V::Set {
+            element_type: Some(SetElementType::Value),
+            elements: vec![
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(1)].into()
+                },
+                V::Set {
+                    element_type: Some(SetElementType::Integer),
+                    elements: vec![V::Integer(2)].into()
+                }
+            ]
+            .into()
+        }
+    );
+    let ordered = run("sort_by({{2}: 2, {1}: 1}, value)").unwrap();
+    assert!(matches!(ordered, V::Dictionary(ref entries) if entries[0].1 == V::Integer(1)));
+    let error = run(r#"{[{"a": 1}]: 0, [{"a": 1}]: 1 div 0}"#).unwrap_err();
+    assert!(error.message.contains("duplicate dictionary key"));
+    assert_eq!(run(r#"lookup({[1]: 2}, [9])"#).unwrap(), V::Absent);
+    assert!(
+        run(r#"{[1]: 2}[[9]]"#)
+            .unwrap_err()
+            .message
+            .contains("missing dictionary key")
+    );
 }
 
 #[test]
@@ -4465,11 +4880,11 @@ fn brace_collections_share_order_scope_and_strict_dictionary_access() {
             ordered_set(&[]),
             V::Set {
                 element_type: Some(SetElementType::Boolean),
-                elements: vec![]
+                elements: vec![].into()
             },
             V::Set {
                 element_type: Some(SetElementType::Float),
-                elements: vec![]
+                elements: vec![].into()
             },
         ])
     );
@@ -4480,15 +4895,7 @@ fn brace_collections_share_order_scope_and_strict_dictionary_access() {
         "{error:?}"
     );
     assert_eq!(error.location, Location::Query(33..42));
-    for source in [
-        r#"{1: 2}"#,
-        r#"{<>: 2}"#,
-        "{1,true}",
-        "{missing:1}",
-        "{n for n in n}",
-        "{n for n in [] if 1}",
-        "{1:2 for n in []}",
-    ] {
+    for source in ["{missing:1}", "{n for n in n}", "{n for n in [] if 1}"] {
         assert!(run(source).is_err(), "{source}");
     }
     let schema_value = literal(declared(
@@ -4530,7 +4937,7 @@ fn brace_collections_share_order_scope_and_strict_dictionary_access() {
     ));
     let nominal_empty = V::Set {
         element_type: Some(SetElementType::Member(NominalTypeId(7))),
-        elements: vec![],
+        elements: vec![].into(),
     };
     let bindings = Bindings::new([(Located::new("empty".into(), 0..5), nominal_empty)]).unwrap();
     assert!(
@@ -4848,12 +5255,7 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
         V::Array(vec![]),
         D::Sequence(Box::new(D::Integer)),
     )))));
-    assert!(
-        evaluate(&choose(expression))
-            .unwrap_err()
-            .message
-            .contains("tally needs strings")
-    );
+    assert_eq!(evaluate(&choose(expression)).unwrap(), V::Integer(7));
 
     struct UnknownWords;
     impl zirql::ValueQueryHost<()> for UnknownWords {
@@ -4886,13 +5288,9 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
     }
     let unknown = BTreeMap::from([("words".into(), vec![ValueType::Unestablished])]);
     let expression: zirql::ValueExpression<()> = e(K::Tally(Box::new(name("words"))));
-    let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
-        .unwrap_err();
-    assert_eq!(
-        error.message,
-        "tally needs strings or homogeneous string sets"
+    assert!(
+        matches!(zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample()).unwrap(), V::Dictionary(ref entries) if entries.len() == 2)
     );
-    assert_eq!(error.location, Location::Query(0..1));
     let expression = e(K::Unique(Box::new(name("words"))));
     let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
         .unwrap_err();
@@ -6502,7 +6900,7 @@ fn declared_domains_keep_sparse_order_unused_keys_and_typed_empty_identity() {
             vec![
                 literal(V::Set {
                     element_type: Some(SetElementType::Integer),
-                    elements: vec![],
+                    elements: vec![].into(),
                 }),
                 e(K::Array(vec![int(8), int(1)])),
             ],
@@ -6574,7 +6972,7 @@ fn declared_domains_keep_sparse_order_unused_keys_and_typed_empty_identity() {
     fn literal_member_set() -> E {
         literal(V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(7))),
-            elements: vec![],
+            elements: vec![].into(),
         })
     }
 }
@@ -6632,7 +7030,7 @@ fn declared_sources_fail_before_cells_and_generators_with_original_locations() {
         axes: None,
         declared_axis_sources: Some(vec![literal(V::Set {
             element_type: Some(SetElementType::Member(NominalTypeId(8))),
-            elements: vec![V::Member(other_member)],
+            elements: vec![V::Member(other_member)].into(),
         })]),
         entries: vec![(
             Located::new(K::Literal(V::Member(member(11, 1))), 71..72),
@@ -6654,7 +7052,7 @@ fn declared_sources_fail_before_cells_and_generators_with_original_locations() {
         declared_axis_sources: Some(vec![
             literal(V::Set {
                 element_type: Some(SetElementType::Integer),
-                elements: vec![],
+                elements: vec![].into(),
             }),
             failing_source(31..36),
         ]),
