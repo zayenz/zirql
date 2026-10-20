@@ -1047,3 +1047,22 @@ A Zincite adoption could select present model-backed measurement records before
 constructing a report. Those adapters must supply their domain data and adopt
 the dependency before advertising these examples. This feature changes no
 consumer frontend or Data edit policy and adds no symbolic CP operations.
+
+## Sequence neighbourhood adoption
+
+The development checkout's shared reader, callable evaluator and local
+word/CSV examples support `windows(items, size)`, `runs_by(rows, "field")`
+and their constructed pipeline suffixes. A Zirium report could project operation
+names into positional records, then compare adjacent pairs, consecutive same-name
+runs and global groups as in the [local report](examples.md#compare-consecutive-runs-with-global-groups).
+This example does not establish support in an installed consumer frontend.
+
+Each consumer needs a dependency revision containing the new AST and suffix
+variants. Common-reader frontends receive the syntax through that reader;
+frontends with their own call or suffix dispatch must lower to the shared nodes.
+Update exhaustive AST/suffix visitors and callable builders. For Zirium, retain
+native operation handles alongside projected names using the existing positional
+and record views and list/record constructors. Keep native ownership, source
+coordinates and output conversion with the adapter. Zincite can adopt the calls
+for positional reports; Data edit admission remains its own policy. Consumer
+repositories are unchanged by this core slice.

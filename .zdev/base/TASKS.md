@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 111
-- Ready: 8
+- Ready: 7
 - Blocked: 0
-- Done: 103
+- Done: 104
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -112,7 +112,7 @@
 | [base-101](tasks/101-return-set-keyed-dictionaries-from-tally.md) | Return set-keyed dictionaries from tally | done | — |
 | [base-102](tasks/102-construct-sequence-results-with-scoped-map-and-flat-map-stag.md) | Construct sequence results with scoped map and flat_map stages | done | — |
 | [base-103](tasks/103-select-matching-values-with-explicit-case-generators.md) | Select matching values with explicit case generators | done | — |
-| [base-104](tasks/104-inspect-complete-windows-and-consecutive-runs.md) | Inspect complete windows and consecutive runs | ready | — |
+| [base-104](tasks/104-inspect-complete-windows-and-consecutive-runs.md) | Inspect complete windows and consecutive runs | done | — |
 | [base-105](tasks/105-design-composed-relationship-paths-and-intermediate-captures.md) | Design composed relationship paths and intermediate captures | ready | — |
 | [base-106](tasks/106-construct-modified-records-with-immutable-with-expressions.md) | Construct modified records with immutable with expressions | ready | — |
 | [base-107](tasks/107-align-two-record-sequences-by-unique-keys.md) | Align two record sequences by unique keys | ready | — |

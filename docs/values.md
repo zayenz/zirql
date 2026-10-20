@@ -283,6 +283,36 @@ require(length(words) > 0, words[1], "expected at least one word")
 The result is `"ash"`. On empty input the requirement fails before the access.
 Scope and known-type checks still cover the unselected value.
 
+## Complete windows and consecutive runs
+
+`windows(items, size)` returns an array of complete overlapping windows with
+stride one. `items | windows(size)` is equivalent. The source must be a
+positional array and `size` must evaluate to a positive integer. Windows are
+eager arrays in input order. A source shorter than `size`, including empty
+input, returns `[]`; there is no padding or configurable stride.
+
+```zirql
+windows([1, 2, 3, 4], 2)
+```
+
+This returns `[[1, 2], [2, 3], [3, 4]]`. Repeated values remain repeated.
+Expansion and copies spend the request's work, result and nesting allowances;
+exhaustion fails the request without returning a truncated result.
+
+`runs_by(rows, "field")` and `rows | runs_by("field")` group consecutive rows
+with structurally equal field values. Each run is a record with `key` and
+`items`. Runs and their members retain input order and duplicates. The selector
+is a literal field name, with the usual missing-field error. Keys may be any
+constructed values, including sets and dictionaries; their structural equality
+ignores set/dictionary insertion order. A later equal key starts another run
+when a different key intervenes. Empty input returns `[]`.
+
+Both operations accept positional sources only, with no selector callbacks.
+They are available through the shared reader and callable evaluator in this
+development checkout, including the local word and CSV examples. See the
+[runnable word and operation-name reports](examples.md#find-adjacent-word-pairs)
+and [consumer adoption requirements](host-integration.md#sequence-neighbourhood-adoption).
+
 ## Stable record groups
 
 `group_by(rows, "field")` groups an array of records by a literal field label.

@@ -434,6 +434,8 @@ fn builtin(name: &str) -> bool {
             | "min_by"
             | "max_by"
             | "group_by"
+            | "windows"
+            | "runs_by"
             | "require"
             | "project"
             | "match"
@@ -1282,6 +1284,42 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         .map(|d| DeclaredType::Sequence(Box::new(d))),
                     None => None,
                 },
+                ValueExpressionKind::Windows { items, .. } => {
+                    let Some(kind) = self.local_kind(items, budget)? else {
+                        return Ok(None);
+                    };
+                    let element = self.positional_element_kind(&kind, budget, &items.range)?;
+                    Some(DeclaredType::Sequence(Box::new(DeclaredType::Sequence(
+                        Box::new(DeclaredType::Native(element)),
+                    ))))
+                }
+                ValueExpressionKind::RunsBy { rows, field } => {
+                    let Some(kind) = self.local_kind(rows, budget)? else {
+                        return Ok(None);
+                    };
+                    let element = self.positional_element_kind(&kind, budget, &rows.range)?;
+                    let Some(record) = self.host.capture_record_kind(&element) else {
+                        return Ok(None);
+                    };
+                    let mut key = None;
+                    for (label, kind) in &record.fields {
+                        budget.charge(1 + label.len().min(field.value.len()), location.clone())?;
+                        if label == &field.value {
+                            key = Some(kind.clone());
+                            break;
+                        }
+                    }
+                    let Some(key) = key else { return Ok(None) };
+                    Some(DeclaredType::Sequence(Box::new(DeclaredType::Record(
+                        vec![
+                            ("key".into(), DeclaredType::Native(key)),
+                            (
+                                "items".into(),
+                                DeclaredType::Sequence(Box::new(DeclaredType::Native(element))),
+                            ),
+                        ],
+                    ))))
+                }
                 ValueExpressionKind::Map { array, argument }
                 | ValueExpressionKind::FlatMap { array, argument } => self.mapping_declaration(
                     array,
@@ -1340,7 +1378,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
             .host
             .scalar_types(kind, budget, range)?
             .ok_or_else(|| {
-                QueryError::query(range.clone(), "map and flat_map need positional sequences")
+                QueryError::query(range.clone(), "operation needs positional sequences")
             })?;
         let mut elements = Vec::new();
         for ty in types {
@@ -1670,6 +1708,8 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 | ValueExpressionKind::Record(_)
                 | ValueExpressionKind::Map { .. }
                 | ValueExpressionKind::FlatMap { .. }
+                | ValueExpressionKind::Windows { .. }
+                | ValueExpressionKind::RunsBy { .. }
                 | ValueExpressionKind::Tuple(_) => match self.value_declaration(value, budget)? {
                     Some(d)
                         if crate::runtime_types::contains_native(
@@ -3885,6 +3925,32 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         let value = self
             .host
             .construct_list(output, self.context, budget, range)?;
+        self.retained(std::sync::Arc::new(value), budget, range)
+    }
+    fn finish_record(
+        &mut self,
+        fields: Vec<(String, HostValue<'a, C, H>)>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        let mut native = false;
+        for (_, value) in &fields {
+            native |= execution::Host::constructed(self, value, budget, location)?.is_none();
+        }
+        if !native {
+            return execution::constructed_record(fields, self, budget, location);
+        }
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        crate::projection::admit_slots::<(String, H::Value)>(fields.len(), budget, range)?;
+        let mut output = Vec::with_capacity(fields.len());
+        for (label, value) in fields {
+            output.push((label, self.finish_value(value, budget, location)?));
+        }
+        let value = self
+            .host
+            .construct_record(output, self.context, budget, range)?;
         self.retained(std::sync::Arc::new(value), budget, range)
     }
     fn finish_dictionary(

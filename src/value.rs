@@ -516,6 +516,18 @@ pub enum ValueExpressionKind<Q = ()> {
         array: Box<ValueExpression<Q>>,
         argument: PredicateArgument<Q>,
     },
+    /// Return every complete overlapping positional window, with stride one.
+    /// Size is a positive integer; short input produces no windows.
+    Windows {
+        items: Box<ValueExpression<Q>>,
+        size: Box<ValueExpression<Q>>,
+    },
+    /// Group consecutive structurally equal field keys into `key`/`items`
+    /// records. Preserve input order and duplicates; missing fields fail.
+    RunsBy {
+        rows: Box<ValueExpression<Q>>,
+        field: Located<String>,
+    },
     /// Stably sort an array, set or dictionary, retaining its kind.
     /// Without a selector, arrays/sets use values and dictionaries use keys.
     /// Descending reverses comparisons, preserving current order for ties.
@@ -3965,6 +3977,84 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     location,
                 )
             }
+            ValueExpressionKind::Windows { items, size } => {
+                let mut elements = Vec::new();
+                for ty in self.walk(items, budget)? {
+                    append_types(
+                        &mut elements,
+                        positional_elements(ty, budget, location)?,
+                        budget,
+                        location,
+                    )?;
+                }
+                for ty in self.walk(size, budget)? {
+                    require_type(
+                        &ty,
+                        ScalarRequirement::Integer,
+                        &Location::Query(size.range.clone()),
+                    )?;
+                }
+                let windows = one_type(
+                    ValueType::Array(ArrayType::Elements(elements)),
+                    budget,
+                    location,
+                )?;
+                one_type(
+                    ValueType::Array(ArrayType::Elements(windows)),
+                    budget,
+                    location,
+                )
+            }
+            ValueExpressionKind::RunsBy { rows, field } => {
+                let mut elements = Vec::new();
+                let mut keys = Vec::new();
+                for ty in self.walk(rows, budget)? {
+                    append_types(
+                        &mut elements,
+                        positional_elements(ty, budget, location)?,
+                        budget,
+                        location,
+                    )?;
+                }
+                for row in &elements {
+                    let row = shape_type(copy_type(row, budget, location)?, budget, location)?;
+                    match row {
+                        ValueType::Record(fields) => {
+                            for (label, ty) in fields {
+                                budget.charge(
+                                    sum(1, label.len().min(field.value.len()), location)?,
+                                    location.clone(),
+                                )?;
+                                if label == field.value {
+                                    push_metadata(&mut keys, ty, budget, location)?;
+                                }
+                            }
+                        }
+                        ValueType::RecordKind | ValueType::Unestablished => {
+                            push_metadata(&mut keys, ValueType::Unestablished, budget, location)?;
+                        }
+                        _ => return Err(error(location, "runs_by needs record rows")),
+                    }
+                }
+                let mut groups = Vec::new();
+                for key in keys {
+                    let mut fields = metadata_vec(2, budget, location)?;
+                    budget.charge("key".len() + "items".len(), location.clone())?;
+                    fields.push(("key".into(), key));
+                    fields.push((
+                        "items".into(),
+                        ValueType::Array(ArrayType::Elements(copy_types(
+                            &elements, budget, location,
+                        )?)),
+                    ));
+                    push_metadata(&mut groups, ValueType::Record(fields), budget, location)?;
+                }
+                one_type(
+                    ValueType::Array(ArrayType::Elements(groups)),
+                    budget,
+                    location,
+                )
+            }
             ValueExpressionKind::Sort {
                 array, selector, ..
             } => {
@@ -6004,10 +6094,7 @@ pub(crate) fn positional_elements(
         ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
         | ValueType::ArrayKind(elements) => Ok(elements),
         ValueType::Unestablished => one_type(ValueType::Unestablished, budget, location),
-        _ => Err(error(
-            location,
-            "map and flat_map need positional sequences",
-        )),
+        _ => Err(error(location, "operation needs positional sequences")),
     }
 }
 

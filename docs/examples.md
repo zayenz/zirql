@@ -129,21 +129,54 @@ retains the order of the selected words.
 
 ## Find adjacent word pairs
 
-Use positions when the relation between words matters. This expression forms
-pairs of neighbouring words, also called bigrams:
+Use complete overlapping windows to form pairs of neighbouring words, also
+called bigrams. Run this in the development checkout:
 
-```zirql
-[words[i] ++ " " ++ words[i + 1]
- for i in 1..(length(words) - 1)]
+```sh
+cargo run --locked --example words -- 'words | windows(2) | map(_[1] ++ " " ++ _[2])'
+```
+
+The word host prints:
+
+```text
+Array([String("ash apple"), String("apple birch"), String("birch apple")])
+```
+
+`windows(2)` advances one position at a time and keeps only complete windows.
+Each window is an array, so its positions are one-based. Empty input and a
+single word produce no pairs. `windows(words, 2)` is the same operation with an
+explicit source.
+
+## Compare consecutive runs with global groups
+
+A projected sequence of operation names can reveal repeated adjacent work in a
+Zirium report. The following local CSV-host example uses constructed records
+representing that projection; it needs no MLIR input:
+
+```sh
+cargo run --locked --example csv -- '
+let operations = [{"name": "add"}, {"name": "add"},
+                  {"name": "mul"}, {"name": "add"}];
+{
+  "windows": windows(operations, 2) | map(pair => [item.name for item in pair]),
+  "runs": runs_by(operations, "name") | map({"name": _.key, "count": length(_.items)}),
+  "groups": group_by(operations, "name") | map({"name": _.key, "count": length(_.items)})
+}
+' examples/csv/people.csv
 ```
 
 ```json
-["ash apple", "apple birch", "birch apple"]
+{"windows":[["add","add"],["add","mul"],["mul","add"]],"runs":[{"name":"add","count":2},{"name":"mul","count":1},{"name":"add","count":1}],"groups":[{"name":"add","count":3},{"name":"mul","count":1}]}
 ```
 
-Positions are one-based, and `..` includes both endpoints. Stopping one position
-before the end leaves room for `words[i + 1]`. A reversed range is empty, so
-empty input and a single word both produce an empty array.
+Windows overlap. Runs contain consecutive equal keys, so the final `add` starts
+a new run. Global grouping collects all three `add` records together. Both
+`runs_by(operations, "name")` and its suffix retain the original records and
+repeated members. Empty input returns no runs; a missing field fails.
+
+The shared reader and local examples support these operations in this checkout.
+Using them on real Zirium operations requires [consumer
+adoption](host-integration.md#sequence-neighbourhood-adoption).
 
 ## Keep the occurrences in each group
 

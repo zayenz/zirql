@@ -7869,3 +7869,128 @@ fn case_generators_preserve_errors_preflight_and_rejected_candidate_budgets() {
     assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
     zirql::dispose_native_value(expression);
 }
+
+#[test]
+fn complete_windows_share_reader_and_callable_semantics() {
+    let input = || {
+        V::Array(vec![
+            V::Integer(1),
+            V::Integer(2),
+            V::Integer(3),
+            V::Integer(4),
+        ])
+    };
+    let expected = V::Array(vec![
+        V::Array(vec![V::Integer(1), V::Integer(2)]),
+        V::Array(vec![V::Integer(2), V::Integer(3)]),
+        V::Array(vec![V::Integer(3), V::Integer(4)]),
+    ]);
+    let expression = e(K::Windows {
+        items: Box::new(literal(input())),
+        size: Box::new(int(2)),
+    });
+    assert_eq!(evaluate(&expression).unwrap(), expected);
+    assert_eq!(
+        run_query("windows(words, 2)", input(), &mut ample()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        run_query(
+            "[item for item in words] | windows(2)",
+            input(),
+            &mut ample()
+        )
+        .unwrap(),
+        expected
+    );
+    assert_eq!(
+        run_query("windows(words, 5)", input(), &mut ample()).unwrap(),
+        V::Array(vec![])
+    );
+    assert_eq!(
+        run_query("windows([], 1)", V::Absent, &mut ample()).unwrap(),
+        V::Array(vec![])
+    );
+}
+
+#[test]
+fn window_size_and_expansion_are_bounded() {
+    let error = run_query("windows([1, 2], 0)", V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("positive"), "{error}");
+    assert_eq!(error.location, Location::Query(16..17));
+    let input = || V::Array((1..=12).map(V::Integer).collect());
+    let result = |size| {
+        run_query(
+            &format!("windows(words, {size})"),
+            input(),
+            &mut budget(100_000, 100, 64),
+        )
+    };
+    assert!(result(1).is_ok());
+    let error = result(6).unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::ResultLimit);
+    assert!(
+        run_query("{1, 2} | windows(2)", V::Absent, &mut ample())
+            .unwrap_err()
+            .message
+            .contains("positional")
+    );
+}
+
+#[test]
+fn consecutive_runs_preserve_repetitions_and_structural_keys() {
+    let row = |key| V::Record(vec![("name".into(), key)]);
+    let rows = || {
+        V::Array(vec![
+            row(V::String("add".into())),
+            row(V::String("add".into())),
+            row(V::String("mul".into())),
+            row(V::String("add".into())),
+        ])
+    };
+    let group = |key: &str, count| {
+        V::Record(vec![
+            ("key".into(), V::String(key.into())),
+            (
+                "items".into(),
+                V::Array((0..count).map(|_| row(V::String(key.into()))).collect()),
+            ),
+        ])
+    };
+    let expected = V::Array(vec![group("add", 2), group("mul", 1), group("add", 1)]);
+    assert_eq!(
+        evaluate(&e(K::RunsBy {
+            rows: Box::new(literal(rows())),
+            field: Located::new("name".into(), 4..10)
+        }))
+        .unwrap(),
+        expected
+    );
+    assert_eq!(
+        run_query("runs_by(words, \"name\")", rows(), &mut ample()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        run_query(
+            "[row for row in words] | runs_by(\"name\")",
+            rows(),
+            &mut ample()
+        )
+        .unwrap(),
+        expected
+    );
+    let result = run_query(r#"runs_by([{"name": {1, 2}}, {"name": {2, 1}}, {"name": [1, 2]}], "name") | map(length(_.items))"#, V::Absent, &mut ample()).unwrap();
+    assert_eq!(result, V::Array(vec![V::Integer(2), V::Integer(1)]));
+    assert_eq!(
+        run_query("[] | runs_by(\"name\")", V::Absent, &mut ample()).unwrap(),
+        V::Array(vec![])
+    );
+    let error = run_query(
+        r#"runs_by([{"other": 1}], "name")"#,
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("missing record field"), "{error}");
+    assert_eq!(error.location, Location::Query(24..30));
+}

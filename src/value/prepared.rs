@@ -140,6 +140,14 @@ pub(crate) enum PreparedKind<'a, Q> {
         argument: Option<&'a Pattern>,
         body: Box<PreparedValue<'a, Q>>,
     },
+    Windows {
+        items: Box<PreparedValue<'a, Q>>,
+        size: Box<PreparedValue<'a, Q>>,
+    },
+    RunsBy {
+        rows: Box<PreparedValue<'a, Q>>,
+        field: &'a Located<String>,
+    },
     Sort {
         array: Box<PreparedValue<'a, Q>>,
         selector: Option<&'a Located<SortSelector>>,
@@ -589,6 +597,14 @@ impl<'a> Preparation<'a> {
                     budget,
                     &location,
                 )?,
+                ValueExpressionKind::Windows { items, size } => PreparedKind::Windows {
+                    items: Box::new(self.resolve(items, queries, budget)?),
+                    size: Box::new(self.resolve(size, queries, budget)?),
+                },
+                ValueExpressionKind::RunsBy { rows, field } => PreparedKind::RunsBy {
+                    rows: Box::new(self.resolve(rows, queries, budget)?),
+                    field,
+                },
                 ValueExpressionKind::Sort {
                     array,
                     selector,

@@ -570,3 +570,46 @@ guards propagate. Preflight still checks every written expression, and rejected
 candidates share the request's work limits. The [CSV example](values.md#select-matching-values)
 shows the same selection over mixed measurement records. [Consumer adoption](host-integration.md#selective-generator-adoption)
 requires the corresponding dependency and builder changes.
+
+## Windows and consecutive runs
+
+Build `ValueExpressionKind::Windows { items, size }` with two boxed expressions,
+or `ValueExpressionKind::RunsBy { rows, field }` with a boxed source and a
+`Located<String>` field selector. Both use the ordinary validation, free-name,
+type-discovery, evaluation and copy APIs. For example:
+
+```rust
+use zirql::{Bindings, Budget, ConstructedValue as V, Located, ProgramLimits,
+    ValueExpression as E, ValueExpressionKind as K, evaluate_value};
+fn node(kind: K) -> E { Located::new(kind, 0..1) }
+let expression = node(K::Windows {
+    items: Box::new(node(K::Literal(V::Array(vec![
+        V::Integer(1), V::Integer(2), V::Integer(3),
+    ])))),
+    size: Box::new(node(K::Literal(V::Integer(2)))),
+});
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000, results: 1_000, nesting: 16, stream_items: 100,
+});
+assert_eq!(evaluate_value(&expression, &Bindings::default(), &mut budget).unwrap(),
+    V::Array(vec![V::Array(vec![V::Integer(1), V::Integer(2)]),
+                  V::Array(vec![V::Integer(2), V::Integer(3)])]));
+```
+
+The [value guide](values.md#complete-windows-and-consecutive-runs) specifies
+positive sizes, complete stride-one windows, structural run keys and missing
+fields. The shared reader lowers calls and `windows(size)`/`runs_by("field")`
+suffixes to these same nodes. `ValueSuffix::Windows` retains a boxed size
+expression; `ValueSuffix::RunsBy` retains a located field label. Suffix lowering
+disposes consumed trees when it refuses a stage after terminal tally. Dispose
+other retained native trees with `dispose_native_value`.
+
+`FunctionRequest` uses existing positional and record views plus list/record
+constructors to retain native members and source coordinates. A field key can
+remain native when the host supplies its existing equality operation. Opaque
+native selections need an explicit positional projection first. Hosts still own
+handle admission, identity and rendering. No new public host hook is required.
+The [local examples](examples.md#compare-consecutive-runs-with-global-groups)
+run today; [consumer adoption](host-integration.md#sequence-neighbourhood-adoption)
+is a separate integration step. These are ordinary value operations and add no
+symbolic CP support.

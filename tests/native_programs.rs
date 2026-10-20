@@ -12618,3 +12618,126 @@ fn case_generator_does_not_suppress_unknown_native_guards() {
         matches!(error.error, EvaluationError::Core(ref e) if e.category == QueryErrorCategory::UnknownPredicate && e.location == Location::Query(61..62))
     );
 }
+
+#[test]
+fn sequence_neighbourhoods_retain_native_source_handles() {
+    use zirql::{ConstructedValue as V, FunctionLimits, FunctionRequest, ValueExpressionKind as K};
+    let source = String::from("ash apple birch");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 100,
+    });
+    let rows = [("same", 0..3), ("same", 4..9), ("other", 10..15)]
+        .into_iter()
+        .map(|(name, range)| {
+            SourceValue::Record(zirql::NativeCapture {
+                fields: vec![
+                    (
+                        "name".into(),
+                        SourceValue::Constructed(V::String(name.into())),
+                    ),
+                    ("node".into(), word_at(&source, range, 0)),
+                ],
+            })
+        })
+        .collect();
+    let bindings = Bindings::new([(
+        at("rows".into(), 0),
+        SourceValue::Sequence {
+            values: rows,
+            element: DeclaredType::Record(vec![
+                ("name".into(), DeclaredType::String),
+                ("node".into(), DeclaredType::Native(SourceKind::Words)),
+            ]),
+        },
+    )])
+    .unwrap();
+    let native = || {
+        worklist_value(K::NativeValue(Box::new(at(
+            ExpressionKind::Binding("rows".into()),
+            0,
+        ))))
+    };
+    let window = worklist_value(K::Windows {
+        items: Box::new(native()),
+        size: Box::new(worklist_value(K::Literal(V::Integer(2)))),
+    });
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&window, &bindings)
+    .unwrap();
+    let SourceValue::Sequence {
+        values: windows, ..
+    } = result
+    else {
+        panic!("native windows")
+    };
+    assert_eq!(windows.len(), 2);
+    for (window, ranges) in windows.iter().zip([[0..3, 4..9], [4..9, 10..15]]) {
+        let SourceValue::Sequence { values: rows, .. } = window else {
+            panic!("window items")
+        };
+        for (row, range) in rows.iter().zip(ranges) {
+            let SourceValue::Record(record) = row else {
+                panic!("original row")
+            };
+            let SourceValue::Words(words) = &record.fields[1].1 else {
+                panic!("native word")
+            };
+            assert_eq!(words[0].range, range.clone());
+            assert_eq!(words[0].text.as_ptr(), source[range].as_ptr());
+        }
+    }
+    let expression = worklist_value(K::RunsBy {
+        rows: Box::new(native()),
+        field: at("name".into(), 0),
+    });
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&expression, &bindings)
+    .unwrap();
+    let SourceValue::Sequence { values: runs, .. } = result else {
+        panic!("native runs")
+    };
+    assert_eq!(runs.len(), 2);
+    let SourceValue::Record(record) = &runs[0] else {
+        panic!("run record")
+    };
+    assert_eq!(
+        record.fields[0].1,
+        SourceValue::Constructed(V::String("same".into()))
+    );
+    let SourceValue::Sequence { values: rows, .. } = &record.fields[1].1 else {
+        panic!("run items")
+    };
+    assert_eq!(rows.len(), 2);
+    let SourceValue::Record(record) = &rows[1] else {
+        panic!("original row")
+    };
+    let SourceValue::Words(words) = &record.fields[1].1 else {
+        panic!("retained word")
+    };
+    assert_eq!(words[0].text.as_ptr(), source[4..9].as_ptr());
+    assert_eq!(words[0].range, 4..9);
+    zirql::dispose_native_value(window);
+    zirql::dispose_native_value(expression);
+}

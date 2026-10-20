@@ -1080,6 +1080,8 @@ pub fn is_common_value_call(name: &str) -> bool {
         "lookup"
             | "has_key"
             | "group_by"
+            | "windows"
+            | "runs_by"
             | "sort"
             | "sort_by"
             | "min"
@@ -1110,6 +1112,8 @@ pub enum ValueSuffix<Q = ()> {
     Filter(PredicateArgument<Q>),
     Map(PredicateArgument<Q>),
     FlatMap(PredicateArgument<Q>),
+    Windows(Box<ValueExpression<Q>>),
+    RunsBy(Located<String>),
     Count,
     Sort,
     Unique,
@@ -1127,14 +1131,17 @@ pub fn lower_value_suffix<S, O, E>(
 ) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
     if matches!(value.value, K::Tally(_)) {
         dispose_native_value(value);
-        if let ValueSuffix::Filter(predicate)
-        | ValueSuffix::Map(predicate)
-        | ValueSuffix::FlatMap(predicate) = stage.value
-        {
-            if let Some(pattern) = predicate.argument {
-                crate::dispose_pattern(pattern);
+        match stage.value {
+            ValueSuffix::Filter(predicate)
+            | ValueSuffix::Map(predicate)
+            | ValueSuffix::FlatMap(predicate) => {
+                if let Some(pattern) = predicate.argument {
+                    crate::dispose_pattern(pattern);
+                }
+                dispose_native_value(*predicate.body);
             }
-            dispose_native_value(*predicate.body);
+            ValueSuffix::Windows(size) => dispose_native_value(*size),
+            _ => {}
         }
         return Err(QueryError::query(
             stage.range,
@@ -1153,6 +1160,14 @@ pub fn lower_value_suffix<S, O, E>(
         ValueSuffix::FlatMap(argument) => K::FlatMap {
             argument,
             array: Box::new(value),
+        },
+        ValueSuffix::Windows(size) => K::Windows {
+            items: Box::new(value),
+            size,
+        },
+        ValueSuffix::RunsBy(field) => K::RunsBy {
+            rows: Box::new(value),
+            field,
         },
         ValueSuffix::Count => K::Reduce {
             operator: ValueReducer::Length,
@@ -2905,6 +2920,22 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                             field,
                         }
                     }
+                } else if name.value == "windows" {
+                    self.reader.expect(',')?;
+                    let size = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.reader.expect(')')?;
+                    K::Windows {
+                        items: Box::new(value.into_value()),
+                        size: Box::new(size.into_value()),
+                    }
+                } else if name.value == "runs_by" {
+                    self.reader.expect(',')?;
+                    let field = self.string()?;
+                    self.reader.expect(')')?;
+                    K::RunsBy {
+                        rows: Box::new(value.into_value()),
+                        field,
+                    }
                 } else if name.value == "group_by" {
                     self.reader.expect(',')?;
                     let field = self.string()?;
@@ -4481,6 +4512,19 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         _ => ValueSuffix::Filter(argument),
                     }
                 }
+                "windows" => {
+                    self.reader.expect('(')?;
+                    let size = ValueGuard::new(self.expression(0, depth + wrappers + 1)?);
+                    self.reader.expect(')')?;
+                    self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                    ValueSuffix::Windows(Box::new(size.into_value()))
+                }
+                "runs_by" => {
+                    self.reader.expect('(')?;
+                    let field = self.string()?;
+                    self.reader.expect(')')?;
+                    ValueSuffix::RunsBy(field)
+                }
                 "count" => ValueSuffix::Count,
                 "sort" => ValueSuffix::Sort,
                 "unique" => ValueSuffix::Unique,
@@ -4803,6 +4847,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::Unary { operand: child, .. }
             | K::Field { value: child, .. }
             | K::TupleAccess { value: child, .. }
+            | K::RunsBy { rows: child, .. }
             | K::GroupBy { rows: child, .. }
             | K::Reduce { array: child, .. }
             | K::Sort { array: child, .. }
@@ -4856,6 +4901,10 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
             | K::HasKey {
                 value: left,
                 key: right,
+            }
+            | K::Windows {
+                items: left,
+                size: right,
             }
             | K::ZipExact { left, right }
             | K::ArrayAccess {

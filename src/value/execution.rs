@@ -445,6 +445,14 @@ pub(crate) trait Host<'a, Q> {
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
         constructed_array(values, self, budget, location)
     }
+    fn finish_record(
+        &mut self,
+        fields: Vec<(String, ResultValue<'a, Self, Q>)>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        constructed_record(fields, self, budget, location)
+    }
     fn finish_dictionary(
         &mut self,
         entries: Vec<DictionaryEntry<'a, Self::Native, Self::Kind>>,
@@ -569,6 +577,20 @@ pub(crate) fn constructed_array<'a, Q, H: Host<'a, Q> + ?Sized>(
     }
     Ok(Value::constructed(RuntimeValue::Owned(
         ConstructedValue::Array(output),
+    )))
+}
+pub(crate) fn constructed_record<'a, Q, H: Host<'a, Q> + ?Sized>(
+    fields: Vec<(String, ResultValue<'a, H, Q>)>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let mut output = metadata_vec(fields.len(), budget, location)?;
+    for (label, value) in fields {
+        output.push((label, host.materialize(value, budget, location)?));
+    }
+    Ok(Value::constructed(RuntimeValue::Owned(
+        ConstructedValue::Record(output),
     )))
 }
 pub(crate) fn constructed_dictionary<'a, Q, H: Host<'a, Q> + ?Sized>(
@@ -1186,6 +1208,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Tuple(_)
                                             | PreparedKind::TupleAccess { .. }
                                             | PreparedKind::Tally { .. }
+                                            | PreparedKind::Windows { .. }
+                                            | PreparedKind::RunsBy { .. }
                                             | PreparedKind::Lookup { .. }
                                             | PreparedKind::HasKey { .. }
                                             | PreparedKind::Binary {
@@ -3110,7 +3134,7 @@ fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
                 let native = host.native_data(&owner, budget, cl)?;
                 let values = host
                     .native_list(native)
-                    .ok_or_else(|| error(cl, "map and flat_map need positional sequences"))?;
+                    .ok_or_else(|| error(cl, "operation needs positional sequences"))?;
                 budget.check_items(values.len(), cl.clone())?;
                 let mut items = metadata_vec(values.len(), budget, cl)?;
                 let element = contract.and_then(|contract| match contract {
@@ -3167,7 +3191,7 @@ fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
             };
             if positional {
                 let ConstructedValue::Array(elements) = value.as_ref() else {
-                    return Err(error(cl, "map and flat_map need positional sequences").into());
+                    return Err(error(cl, "operation needs positional sequences").into());
                 };
                 budget.check_items(elements.len(), cl.clone())?;
             }
@@ -3319,6 +3343,7 @@ fn operands<'a, Q>(
         | PreparedKind::HasKey { .. }
         | PreparedKind::ArrayAccess { .. }
         | PreparedKind::Range { .. }
+        | PreparedKind::Windows { .. }
         | PreparedKind::ZipExact { .. } => 2,
         _ => 1,
     };
@@ -3335,6 +3360,10 @@ fn operands<'a, Q>(
             item: right,
         }
         | PreparedKind::Binary { left, right, .. }
+        | PreparedKind::Windows {
+            items: left,
+            size: right,
+        }
         | PreparedKind::ZipExact { left, right } => result.extend([left.as_ref(), right.as_ref()]),
         PreparedKind::Lookup { value, key } | PreparedKind::HasKey { value, key } => {
             result.extend([value.as_ref(), key.as_ref()])
@@ -3358,6 +3387,7 @@ fn operands<'a, Q>(
         | PreparedKind::Reduce { array: value, .. }
         | PreparedKind::Sort { array: value, .. }
         | PreparedKind::Extremum { array: value, .. }
+        | PreparedKind::RunsBy { rows: value, .. }
         | PreparedKind::GroupBy { rows: value, .. } => result.push(value),
         _ => unreachable!("special control has no ordinary operands"),
     }
@@ -3371,16 +3401,10 @@ fn select_record_field<'a, Q, H: Host<'a, Q> + ?Sized>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ResultValue<'a, H, Q>, H::Error> {
-    let data = host.constructed(value, budget, location)?.ok_or_else(|| {
-        error(
-            location,
-            "native handles require an explicit scalar projection",
-        )
-    })?;
-    let ConstructedValue::Record(fields) = data.value.data() else {
-        return Err(error(location, "field access needs a record").into());
-    };
-    if let Some(DeclaredType::Record(fields)) = data.declaration.map(underlying) {
+    let data = host.constructed(value, budget, location)?;
+    if let Some(data) = &data
+        && let Some(DeclaredType::Record(fields)) = data.declaration.map(underlying)
+    {
         record_declaration(fields, label, budget, location)?;
     }
     if let Some(mut contract) = value.contract {
@@ -3391,23 +3415,156 @@ fn select_record_field<'a, Q, H: Host<'a, Q> + ?Sized>(
             record_declaration(fields, label, budget, location)?;
         }
     }
-    for (index, (candidate, _)) in fields.iter().enumerate() {
+    let index = match data {
+        Some(data) => {
+            let ConstructedValue::Record(fields) = data.value.data() else {
+                return Err(error(location, "field access needs a record").into());
+            };
+            record_field_position(
+                fields.iter().map(|(label, _)| label.as_str()),
+                label,
+                budget,
+                location,
+            )?
+        }
+        None => {
+            let Data::Native(view) = &value.data else {
+                unreachable!("native record")
+            };
+            let fields = &host
+                .native_record(host.native_data(view, budget, location)?)
+                .ok_or_else(|| error(location, "field access needs a record"))?
+                .fields;
+            record_field_position(
+                fields.iter().map(|(label, _)| label.as_str()),
+                label,
+                budget,
+                location,
+            )?
+        }
+    };
+    super::pattern::select(value, NativeStep::Record(index), host, budget, location)
+}
+
+fn record_field_position<'v>(
+    labels: impl Iterator<Item = &'v str>,
+    label: &str,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<usize, QueryError> {
+    for (index, candidate) in labels.enumerate() {
         budget.charge(
             sum(1, candidate.len().min(label.len()), location)?,
             location.clone(),
         )?;
         if candidate == label {
-            return super::pattern::select(
-                value,
-                NativeStep::Record(index),
-                host,
-                budget,
-                location,
-            );
+            return Ok(index);
         }
     }
     admit_diagnostic("missing record field: ", label, budget, location)?;
-    Err(error(location, format!("missing record field: {label}")).into())
+    Err(error(location, format!("missing record field: {label}")))
+}
+
+fn windows<'a, Q, H: Host<'a, Q> + ?Sized>(
+    items: ResultValue<'a, H, Q>,
+    size: ConstructedValue,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+    size_location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let size = integer(size, size_location)?;
+    if size <= 0 {
+        return Err(error(size_location, "window size must be positive").into());
+    }
+    let mut source = generator_source(items, true, host, budget, location)?;
+    let count = match usize::try_from(size) {
+        Ok(size) if size <= source.len() => source.len() - size + 1,
+        _ => 0,
+    };
+    budget.check_items(count, location.clone())?;
+    let mut windows = admit_container(count, budget, location)?;
+    if count > 0 {
+        let size = usize::try_from(size).expect("window fits input length");
+        for start in 0..count {
+            let window = budget.within_evaluation(1, location.clone(), |budget| {
+                budget.check_items(size, location.clone())?;
+                let mut items = admit_container(size, budget, location)?;
+                for index in start..start + size {
+                    items.push(source.child(index, budget, location)?);
+                }
+                host.finish_array(items, budget, location)
+            })?;
+            windows.push(window);
+        }
+    }
+    host.finish_array(windows, budget, location)
+}
+
+fn runs_by<'a, Q, H: Host<'a, Q> + ?Sized>(
+    rows: ResultValue<'a, H, Q>,
+    field: &Located<String>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let mut source = generator_source(rows, true, host, budget, location)?;
+    let selector = Location::Query(field.range.clone());
+    let mut runs = admit_container(0, budget, location)?;
+    let mut key = None;
+    let mut items = admit_container(0, budget, location)?;
+    for index in 0..source.len() {
+        let mut row = source.child(index, budget, location)?;
+        let next = select_record_field(&mut row, &field.value, host, budget, &selector)?;
+        if let Some(previous) = &key
+            && !host.collection_equal(previous, &next, budget, &selector)?
+        {
+            let run = finish_run(
+                key.take().expect("current run key"),
+                items,
+                host,
+                budget,
+                location,
+            )?;
+            budget.check_items(sum(runs.len(), 1, location)?, location.clone())?;
+            push_metadata(&mut runs, run, budget, location)?;
+            budget.charge_results(1, location.clone())?;
+            items = admit_container(0, budget, location)?;
+        }
+        if key.is_none() {
+            key = Some(next);
+        }
+        budget.check_items(sum(items.len(), 1, location)?, location.clone())?;
+        push_metadata(&mut items, row, budget, location)?;
+        budget.charge_results(1, location.clone())?;
+    }
+    if let Some(key) = key {
+        let run = finish_run(key, items, host, budget, location)?;
+        budget.check_items(sum(runs.len(), 1, location)?, location.clone())?;
+        push_metadata(&mut runs, run, budget, location)?;
+        budget.charge_results(1, location.clone())?;
+    }
+    host.finish_array(runs, budget, location)
+}
+
+fn finish_run<'a, Q, H: Host<'a, Q> + ?Sized>(
+    key: ResultValue<'a, H, Q>,
+    items: Vec<ResultValue<'a, H, Q>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        let items = budget.within_evaluation(1, location.clone(), |budget| {
+            host.finish_array(items, budget, location)
+        })?;
+        let mut fields = admit_container(2, budget, location)?;
+        for (label, value) in [("key", key), ("items", items)] {
+            budget.charge(label.len(), location.clone())?;
+            fields.push((label.into(), value));
+        }
+        host.finish_record(fields, budget, location)
+    })
 }
 
 fn constructed_access_declaration<K>(
@@ -3434,10 +3591,35 @@ fn constructed_access_declaration<K>(
 pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
     expression: &'a PreparedValue<'a, Q>,
     mut values: Vec<ResultValue<'a, H, Q>>,
-    host: &H,
+    host: &mut H,
     budget: &mut Budget,
 ) -> Result<ResultValue<'a, H, Q>, H::Error> {
     let location = Location::Query(expression.range.clone());
+    match &expression.value {
+        PreparedKind::Windows { size, .. } => {
+            let size_location = Location::Query(size.range.clone());
+            let size =
+                host.materialize(values.pop().expect("window size"), budget, &size_location)?;
+            return windows(
+                values.pop().expect("window input"),
+                size,
+                host,
+                budget,
+                &location,
+                &size_location,
+            );
+        }
+        PreparedKind::RunsBy { field, .. } => {
+            return runs_by(
+                values.pop().expect("run input"),
+                field,
+                host,
+                budget,
+                &location,
+            );
+        }
+        _ => {}
+    }
     if let PreparedKind::Field { field, .. } = &expression.value {
         return select_record_field(
             &mut values.pop().expect("field operand"),
