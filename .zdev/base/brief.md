@@ -1749,3 +1749,47 @@ host context, stale-handle, ownership and source-coordinate rules continue to
 apply. JSON may use tagged entry pairs; consumer adoption and its serialization
 policy remain separate work. These requirements supersede the earlier proposal
 to refuse collection-key ordering and authorize no consumer edits or release.
+
+## Everyday language exploration (2026-10-20)
+
+The user requested tasks for ten language ideas from the brainstorming session:
+constructing pipelines, selective patterns, neighbourhood operations, composed
+paths, immutable updates, value alignment, named queries, findings, query by
+example and a playground with holes. The emphasis is useful and enjoyable
+queries before CP integration. Task creation does not authorize execution now.
+
+The first bounded implementation slices cover map/flat_map, selective generators,
+windows/runs, record updates and full alignment. Their task contracts select
+small initial behaviours; later syntax and capability expansions remain separate.
+Paths, named queries, findings, native query templates and the playground need
+attended design tasks with concrete examples and a recorded user decision before
+implementation tasks are imported. Their proposals belong in zdev records, not
+public documentation that implies availability. Do not turn a design task into
+a framework or consumer implementation.
+
+Read the actual feature/gecode-cp branch's docs/constraint-programming.md and
+src/cp.rs when checking coherence. CP is a future optional expression returning
+ordinary values, not a prerequisite for these tasks. No task depends on its
+merge, native installation or publication. Preserve its separate ground and
+symbolic expression boundaries; new ordinary operations are not automatically
+symbolic operations. Its branch-local base-100 is unrelated to main's completed
+base-100/string-set-tally; refer to that branch by name, not by task dependency.
+Main's completed base-101 already supplies general sets/dictionaries and shared
+structural equality/hash/comparison; reuse those rather than restoring older
+string-only restrictions from historical background prose.
+
+Each implementation task includes reader/callable execution, a runnable local
+example, relevant language and embedding/API documentation, and a concrete
+Zincite or Zirium use. State actual host support: a core example does not imply
+consumer frontend support. Record necessary consumer adoption as scoped follow-up
+work; this bundle changes no consumer repository. Each design task updates this
+brief and its own retained design record with decisions, examples, documentation
+requirements and the smallest next implementation slice. Do not add speculative
+forms to public supported-syntax lists. No publication or site deployment is
+included.
+
+Use focused public-behaviour coverage and existing suites, following Testing
+and Validation above. New tests must distinguish meaningful ordering, binding,
+shape, ownership or error behaviour; no generic matrices or timing assertions.
+Documentation updates land with the feature, not in a final catch-up task.
+Documentation-only/design work needs diff and zdev checks, not Rust tests.
