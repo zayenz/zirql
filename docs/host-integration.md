@@ -824,7 +824,9 @@ owners and grouped candidate expansion.
 ## Pattern adapter contracts
 
 `PredicateArgument::argument` is `Option<Pattern>`. `ValueGenerator::In::binders`
-is `Vec<Pattern>`, and `ValueGenerator::Bind::binder` is one `Pattern`. A name uses
+is `Vec<Pattern>`, and `ValueGenerator::Bind::binder` is one `Pattern`.
+`ValueGenerator::In::case` is `false` for strict generators and `true` for
+selective generators. `Bind` has no selective form. A name uses
 `PatternKind::Name(Located<String>)`; a discard uses `Wildcard`. Update builders,
 free-name/scope walkers and iterative cleanup for the owned patterns. Preparation
 and execution use their names in written order. `ValueQueryHost::prepare_predicate`
@@ -1024,3 +1026,24 @@ the adapter retains its input kind and owner when rebuilding an empty extremum.
 default requires equal kinds. Override it to reject kinds without a native
 membership identity, including when an operand is empty or its branch is unused.
 Runtime combination still validates every retained owner and handle.
+
+## Selective generator adoption
+
+The shared reader, callable evaluator and local CSV/word examples in this
+checkout support `for case pattern in source` and `| case pattern in source`.
+The [measurement example](values.md#select-matching-values) demonstrates selecting
+present records from mixed input. This core support does not establish support
+in an installed Zirium or Zincite frontend.
+
+Each consumer needs a dependency revision containing `ValueGenerator::In::case`
+and callable builders updated with `case: false` for existing strict clauses.
+Builders that select matches set `case: true`; common-reader frontends receive
+the syntax through that reader. A host-owned surface must lower its selective
+form to the same clause. Native inputs use existing pattern views and admission
+checks; consumers retain their own handle, source-coordinate and rendering rules.
+
+A Zirium adoption could select report findings with a present source location.
+A Zincite adoption could select present model-backed measurement records before
+constructing a report. Those adapters must supply their domain data and adopt
+the dependency before advertising these examples. This feature changes no
+consumer frontend or Data edit policy and adds no symbolic CP operations.

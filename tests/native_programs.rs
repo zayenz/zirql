@@ -5383,6 +5383,7 @@ mod projection {
                 constructor: zirql::ValueConstructor::Array,
                 clauses: vec![super::at(
                     zirql::ValueGenerator::In {
+                        case: false,
                         binders: vec![super::at(
                             zirql::PatternKind::Name(super::at("row".into(), 21)),
                             21,
@@ -6354,6 +6355,7 @@ mod projection {
             constructor: ValueConstructor::Array,
             clauses: vec![Located::new(
                 ValueGenerator::In {
+                    case: false,
                     binders: vec![Located::new(
                         zirql::PatternKind::Name(Located::new("m".into(), 0..1)),
                         0..1,
@@ -6372,6 +6374,7 @@ mod projection {
             constructor: ValueConstructor::Array,
             clauses: vec![Located::new(
                 ValueGenerator::In {
+                    case: false,
                     binders: vec![Located::new(
                         zirql::PatternKind::Name(Located::new("n".into(), 0..1)),
                         0..1,
@@ -12012,6 +12015,7 @@ fn ordinary_native_sets_and_dictionary_keys_retain_identity_and_source() {
                 constructor: zirql::ValueConstructor::Array,
                 clauses: vec![at(
                     zirql::ValueGenerator::In {
+                        case: false,
                         binders: vec![at(zirql::PatternKind::Name(at("i".into(), 15)), 15)],
                         source: at(K::Literal(V::Array(vec![V::Integer(1), V::Integer(2)])), 15),
                         filter: None,
@@ -12041,6 +12045,7 @@ fn ordinary_native_sets_and_dictionary_keys_retain_identity_and_source() {
         K::DictionaryComprehension {
             clauses: vec![at(
                 zirql::ValueGenerator::In {
+                    case: false,
                     binders: vec![at(zirql::PatternKind::Name(at("node".into(), 15)), 15)],
                     source: pair(),
                     filter: None,
@@ -12548,4 +12553,68 @@ fn scoped_mapping_retains_native_handles_in_saved_nested_reports() {
         "{error:?}"
     );
     assert!(context.emissions.is_empty());
+}
+
+#[test]
+fn case_generator_does_not_suppress_unknown_native_guards() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, ValueConstructor,
+        ValueExpressionKind as K, ValueGenerator,
+    };
+    let source = String::from("ash");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let bindings = Bindings::new([(
+        at("input".into(), 1),
+        SourceValue::Words(vec![Word {
+            side: 0,
+            text: &source,
+            range: 0..3,
+        }]),
+    )])
+    .unwrap();
+    let expression = at(
+        K::Comprehension {
+            constructor: ValueConstructor::Array,
+            clauses: vec![at(
+                ValueGenerator::In {
+                    case: true,
+                    binders: vec![at(zirql::PatternKind::Literal(V::Integer(1)), 10)],
+                    source: at(K::Literal(V::Array(vec![V::Integer(0), V::Integer(1)])), 11),
+                    filter: Some(at(
+                        K::NativeValue(Box::new(sequence(
+                            at(ExpressionKind::Binding("input".into()), 60),
+                            vec![at(ExpressionStep::Stage(SourceStage::UnknownGuard), 61)],
+                        ))),
+                        60,
+                    )),
+                },
+                10,
+            )],
+            head: Box::new(at(K::Literal(V::Integer(1)), 12)),
+        },
+        10,
+    );
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 10_000,
+        nesting: 64,
+        ..limits()
+    });
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&expression, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(error.error, EvaluationError::Core(ref e) if e.category == QueryErrorCategory::UnknownPredicate && e.location == Location::Query(61..62))
+    );
 }

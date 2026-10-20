@@ -135,6 +135,13 @@ MiniZinc generators. That spelling also supports a single-value binding:
 `[total | x in [1, 2], total = x * 2 where total > 2]` returns `[4]`.
 The common spelling requires `for pattern in source`.
 
+Add `case` before a pattern to skip ordinary pattern mismatches:
+`[n for case present(n) in [1, null, 2]]` and
+`[n | case present(n) in [1, null, 2]]` both return `[1, 2]`.
+For grouped binders, the modifier selects whole combinations. `case` is not
+available with `pattern = value`. Errors and Unknown guards still fail; rejected
+candidates still spend work. See the [runnable mixed-record example](values.md#select-matching-values).
+
 Parentheses protect a native pipeline in a head or source. A pipe after the
 closing collection starts its suffix, as in `[x * 2 | x in [1, 2, 3] where x > 1] | count`.
 
@@ -331,8 +338,9 @@ optional presence. `[a, b]` requires exactly two list elements; `[a, b, ..]`
 discards a remainder after at least two. `[]` requires empty and `[..]` accepts
 any positional list. Tuples keep exact tuple arity; keyed arrays and sets do not
 match list patterns. Lets, typed parameters, predicate arguments and comprehension
-binders use these same patterns. Their mismatches are located errors; value-match
-arms try the next pattern. A native capture match enumerates correlated domain
+binders use these same patterns. Ordinary bindings report located mismatch
+errors. A `case` generator skips the candidate; value-match arms try the next
+pattern. A native capture match enumerates correlated domain
 objects; a value match selects one result. Their forms and results are different.
 
 The [functions and control flow chapter](functions-and-control-flow.md)

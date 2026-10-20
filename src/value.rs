@@ -645,6 +645,8 @@ pub struct ValueMatchArm<Q = ()> {
 #[derive(Debug, PartialEq)]
 pub enum ValueGenerator<Q = ()> {
     In {
+        /// Skip ordinary pattern mismatches; false keeps strict binding errors.
+        case: bool,
         binders: Vec<Pattern>,
         source: ValueExpression<Q>,
         filter: Option<ValueExpression<Q>>,
@@ -4389,6 +4391,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                     binders,
                     source,
                     filter,
+                    ..
                 } => {
                     if binders.is_empty() {
                         return Err(error(&clause_location, "in generator needs a binder"));

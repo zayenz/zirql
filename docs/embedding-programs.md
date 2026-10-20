@@ -527,3 +527,46 @@ projections before it can read model-backed values. Zirium retains MLIR kinds,
 handle identity and source coordinates. Each consumer also owns its rendering
 and JSON policy for retained handles. The ordinary mapping operations do not
 extend a symbolic expression subset.
+
+## Select matching generator candidates
+
+`ValueGenerator::In::case` chooses whether a pattern mismatch skips the candidate.
+Set it to `false` for ordinary strict generators and to `true` for the textual
+`for case` or `| case` forms. `ValueGenerator::Bind` remains strict. This callable
+example selects present integers:
+
+```rust
+use zirql::{
+    Bindings, Budget, ConstructedValue as V, Located, PatternKind as P,
+    ProgramLimits, ValueConstructor, ValueExpression, ValueExpressionKind as K,
+    ValueGenerator, evaluate_value,
+};
+
+let expression: ValueExpression = Located::new(K::Comprehension {
+    constructor: ValueConstructor::Array,
+    clauses: vec![Located::new(ValueGenerator::In {
+        case: true,
+        binders: vec![Located::new(P::Present(Box::new(Located::new(
+            P::Name(Located::new("n".into(), 18..19)), 18..19,
+        ))), 10..20)],
+        source: Located::new(K::Literal(V::Array(vec![
+            V::Integer(1), V::Absent, V::Integer(2),
+        ])), 24..36),
+        filter: None,
+    }, 3..36)],
+    head: Box::new(Located::new(K::Name("n".into()), 1..2)),
+}, 0..37);
+let result = evaluate_value(&expression, &Bindings::default(),
+    &mut Budget::for_program(ProgramLimits {
+        work: 10_000, results: 1_000, nesting: 16, stream_items: 100,
+    })).unwrap();
+assert_eq!(result, V::Array(vec![V::Integer(1), V::Integer(2)]));
+```
+
+The shared matcher retains native handles through the host's existing pattern
+views. Successful names are local to the candidate; mismatches skip its guard,
+later sources and head. Host/admission errors, runtime failures and Unknown
+guards propagate. Preflight still checks every written expression, and rejected
+candidates share the request's work limits. The [CSV example](values.md#select-matching-values)
+shows the same selection over mixed measurement records. [Consumer adoption](host-integration.md#selective-generator-adoption)
+requires the corresponding dependency and builder changes.

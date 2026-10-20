@@ -214,6 +214,7 @@ pub(crate) struct PreparedArm<'a, Q> {
 /// Grouped `In` evaluates its source once and varies the last binder fastest.
 pub(crate) enum PreparedGenerator<'a, Q> {
     In {
+        case: bool,
         binders: Vec<Option<&'a Pattern>>,
         positional: bool,
         source: PreparedValue<'a, Q>,
@@ -561,6 +562,7 @@ impl<'a> Preparation<'a> {
                     let mut clauses = metadata_vec(1, budget, &location)?;
                     clauses.push(Located::new(
                         PreparedGenerator::In {
+                            case: false,
                             binders,
                             positional: false,
                             source,
@@ -825,6 +827,7 @@ impl<'a> Preparation<'a> {
         binders.push(None);
         clauses.push(Located::new(
             PreparedGenerator::In {
+                case: false,
                 binders,
                 positional: true,
                 source,
@@ -837,6 +840,7 @@ impl<'a> Preparation<'a> {
             binders.push(None);
             clauses.push(Located::new(
                 PreparedGenerator::In {
+                    case: false,
                     binders,
                     positional: true,
                     source: scoped,
@@ -884,6 +888,7 @@ impl<'a> Preparation<'a> {
         for clause in clauses {
             let value = match &clause.value {
                 ValueGenerator::In {
+                    case,
                     binders,
                     source,
                     filter,
@@ -899,6 +904,7 @@ impl<'a> Preparation<'a> {
                         .map(|value| self.resolve(value, queries, budget))
                         .transpose()?;
                     PreparedGenerator::In {
+                        case: *case,
                         binders: names,
                         positional: false,
                         source,

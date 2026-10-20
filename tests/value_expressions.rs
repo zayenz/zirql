@@ -588,6 +588,7 @@ fn typed_and_cli_parameters_use_immutable_values_without_source_interpolation() 
         let shadowing = e(K::Comprehension {
             constructor: ValueConstructor::Array,
             clauses: vec![clause(G::In {
+                case: false,
                 binders: vec![binder("factor")],
                 source: e(K::Array(vec![])),
                 filter: None,
@@ -759,6 +760,7 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
         constructor: ValueConstructor::Array,
         clauses: vec![
             clause(G::In {
+                case: false,
                 binders: vec![binder("p")],
                 source: e(K::IndexSet(Box::new(Located::new(
                     K::Name("labels".into()),
@@ -767,6 +769,7 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
                 filter: None,
             }),
             clause(G::In {
+                case: false,
                 binders: vec![
                     pattern(zirql::PatternKind::Tuple(vec![
                         pattern_name("i"),
@@ -784,6 +787,7 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
                 filter: Some(binary(B::NotEqual, name("i"), name("j"))),
             }),
             clause(G::In {
+                case: false,
                 binders: vec![binder("k")],
                 source: e(K::Range {
                     lower: Box::new(int(1)),
@@ -806,6 +810,7 @@ fn positional_report_preserves_scopes_order_and_budgeted_host_sequence() {
                 filter: Some(binary(B::GreaterEqual, name("p"), int(1))),
             }),
             clause(G::In {
+                case: false,
                 binders: vec![Located::new(zirql::PatternKind::Wildcard, 12..13)],
                 source: e(K::Array(vec![literal(V::Boolean(true))])),
                 filter: None,
@@ -907,6 +912,7 @@ fn scope_refusals_are_located_before_generator_execution() {
     let expression = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("x")],
             source: Located::new(K::Name("x".into()), 30..31),
             filter: None,
@@ -920,6 +926,7 @@ fn scope_refusals_are_located_before_generator_execution() {
     let shadow = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![Located::new(
                 zirql::PatternKind::Name(Located::new("existing".into(), 11..19)),
                 11..19,
@@ -1031,6 +1038,7 @@ fn skipped_runtime_failures_still_receive_bounded_static_validation() {
     let heterogeneous = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("n")],
             source: name("mixed"),
             filter: Some(literal(V::Boolean(false))),
@@ -1195,6 +1203,7 @@ fn grouped_candidates_are_admitted_before_a_false_filter() {
         constructor: ValueConstructor::Array,
         clauses: vec![Located::new(
             G::In {
+                case: false,
                 binders: vec![binder("i"), binder("j")],
                 source: e(K::Range {
                     lower: Box::new(int(1)),
@@ -1467,6 +1476,7 @@ fn empty_keyed(sources: Option<Vec<E>>) -> E {
         declared_axis_sources: None,
         clauses: vec![
             clause(G::In {
+                case: false,
                 binders: vec![binder("i")],
                 source: e(K::Range {
                     lower: Box::new(int(2)),
@@ -1475,6 +1485,7 @@ fn empty_keyed(sources: Option<Vec<E>>) -> E {
                 filter: None,
             }),
             clause(G::In {
+                case: false,
                 binders: vec![binder("m")],
                 source: name("empty_members"),
                 filter: None,
@@ -1531,11 +1542,13 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
         declared_axis_sources: None,
         clauses: vec![
             clause(G::In {
+                case: false,
                 binders: vec![binder("i")],
                 source: e(K::Array(vec![int(9), int(3)])),
                 filter: None,
             }),
             clause(G::In {
+                case: false,
                 binders: vec![binder("m")],
                 source: Located::new(K::Name("members".into()), 20..27),
                 filter: Some(binary(
@@ -1654,6 +1667,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
     let iterated = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("v")],
             source: name("a"),
             filter: None,
@@ -1873,6 +1887,7 @@ fn nominal_keyed_report_preserves_identity_axes_order_and_all_five_apis() {
     let skipped_key = e(K::KeyedComprehension {
         declared_axis_sources: None,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("i")],
             source: e(K::Array(vec![int(1)])),
             filter: Some(literal(V::Boolean(false))),
@@ -2371,6 +2386,7 @@ fn host_value_policy_refuses_inline_sparse_sources_and_keeps_skipped_branches() 
     let expression = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("cell")],
             source: sparse(),
             filter: None,
@@ -2629,6 +2645,7 @@ fn summaries_keep_empty_identities_overflow_eager_heads_and_limits() {
         e(K::Comprehension {
             constructor: ValueConstructor::Array,
             clauses: vec![clause(G::In {
+                case: false,
                 binders: vec![binder("i")],
                 source: e(K::Array(vec![int(1), int(2)])),
                 filter: None,
@@ -2903,6 +2920,7 @@ fn optional_report_keeps_declared_omissions_stored_absence_and_sparse_membership
     let invalid = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("r")],
             source: literal(empty),
             filter: None,
@@ -2915,6 +2933,7 @@ fn optional_report_keeps_declared_omissions_stored_absence_and_sparse_membership
     let report = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("r")],
             source: literal(source),
             filter: None,
@@ -3075,6 +3094,7 @@ fn array_declarations_preserve_storage_and_deferred_element_contracts() {
     let expression = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("r")],
             source: name("rows"),
             filter: None,
@@ -3135,11 +3155,13 @@ fn array_declarations_preserve_storage_and_deferred_element_contracts() {
         constructor: ValueConstructor::Array,
         clauses: vec![
             clause(G::In {
+                case: false,
                 binders: vec![binder("inner")],
                 source: name("rows"),
                 filter: None,
             }),
             clause(G::In {
+                case: false,
                 binders: vec![binder("r")],
                 source: name("inner"),
                 filter: None,
@@ -3319,6 +3341,7 @@ fn shared_reads_keep_aliases_admit_new_data_and_release_failed_scopes() {
     let failure = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("n")],
             source: name("xs"),
             filter: None,
@@ -3561,6 +3584,7 @@ fn function_continuations_cover_branches_operands_and_comprehensions() {
     let entry = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("i")],
             source: e(K::Array(vec![call("relay", vec![int(500)]), int(2)])),
             filter: Some(binary(B::Equal, call("relay", vec![name("i")]), int(0))),
@@ -3783,6 +3807,7 @@ fn sets_keep_insertion_order_first_representatives_and_membership_after_sorting(
     let comprehension = e(K::Comprehension {
         constructor: ValueConstructor::Set,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("x")],
             source: e(K::Array(vec![int(3), int(1), int(3), int(2)])),
             filter: None,
@@ -4182,6 +4207,7 @@ fn ordering_uses_exact_scalar_types_nominal_order_and_retained_declarations() {
     let projected = e(K::Comprehension {
         constructor: ValueConstructor::Array,
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("row")],
             source: e(K::Array(vec![
                 record(vec![]),
@@ -4720,6 +4746,7 @@ fn general_collection_keys_lookup_deduplicate_and_sort_structurally() {
     );
     let empty_string_dictionary = e(K::DictionaryComprehension {
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("k")],
             source: literal(declared(V::Array(vec![]), D::Sequence(Box::new(D::String)))),
             filter: None,
@@ -4815,11 +4842,13 @@ fn brace_collections_share_order_scope_and_strict_dictionary_access() {
     let typed = e(K::DictionaryComprehension {
         clauses: vec![
             clause(G::In {
+                case: false,
                 binders: vec![binder("w")],
                 source: e(K::Array(vec![text("pear"), text("apple")])),
                 filter: None,
             }),
             clause(G::In {
+                case: false,
                 binders: vec![binder("k")],
                 source: e(K::Array(vec![
                     name("w"),
@@ -4832,6 +4861,7 @@ fn brace_collections_share_order_scope_and_strict_dictionary_access() {
         head: Box::new(e(K::Comprehension {
             constructor: ValueConstructor::Set,
             clauses: vec![clause(G::In {
+                case: false,
                 binders: vec![binder("n")],
                 source: e(K::Range {
                     lower: Box::new(int(1)),
@@ -6810,11 +6840,13 @@ fn declared_domains_keep_sparse_order_unused_keys_and_typed_empty_identity() {
     let comprehension = e(K::KeyedComprehension {
         clauses: vec![
             clause(G::In {
+                case: false,
                 binders: vec![binder("g")],
                 source: name("guests"),
                 filter: Some(binary(B::NotEqual, name("g"), member_expression(33, 7))),
             }),
             clause(G::In {
+                case: false,
                 binders: vec![binder("j")],
                 source: e(K::Array(vec![int(1), int(8)])),
                 filter: Some(binary(
@@ -7013,6 +7045,7 @@ fn declared_sources_fail_before_cells_and_generators_with_original_locations() {
     });
     let comprehension = e(K::KeyedComprehension {
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("i")],
             source: e(K::Array(vec![failing_cell()])),
             filter: None,
@@ -7064,6 +7097,7 @@ fn declared_sources_fail_before_cells_and_generators_with_original_locations() {
     );
     let own_name = e(K::KeyedComprehension {
         clauses: vec![clause(G::In {
+            case: false,
             binders: vec![binder("i")],
             source: e(K::Array(vec![int(1)])),
             filter: None,
@@ -7519,7 +7553,7 @@ fn scalar_predicate_operands_defer_compatible_kinds_and_keep_container_constrain
     );
 }
 
-fn run_mapping(source: &str, value: V, allowance: &mut Budget) -> Result<V, zirql::QueryError> {
+fn run_query(source: &str, value: V, allowance: &mut Budget) -> Result<V, zirql::QueryError> {
     let mut host = WordInput {
         value,
         unknown: false,
@@ -7604,9 +7638,9 @@ fn scoped_mapping_constructs_ordered_capacity_reports() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(run_mapping(r#"flat_map(c => _.demands | map({"capacity": c.name, "demand": _, "remaining": c.limit - _}))"#, capacities(), &mut ample()).unwrap(), expected);
+    assert_eq!(run_query(r#"flat_map(c => _.demands | map({"capacity": c.name, "demand": _, "remaining": c.limit - _}))"#, capacities(), &mut ample()).unwrap(), expected);
     assert_eq!(
-        run_mapping(
+        run_query(
             "map([_]) | flat_map(_) | map(demand => demand + 1)",
             V::Array(vec![V::Integer(2), V::Integer(3)]),
             &mut ample()
@@ -7625,38 +7659,38 @@ fn mapping_preflights_empty_bodies_and_refuses_non_sequences_and_excess_expansio
         )
     };
     assert_eq!(
-        run_mapping("map(_.demand + 1)", empty(), &mut ample()).unwrap(),
+        run_query("map(_.demand + 1)", empty(), &mut ample()).unwrap(),
         V::Array(vec![])
     );
-    let error = run_mapping("map(_.missing)", empty(), &mut ample()).unwrap_err();
+    let error = run_query("map(_.missing)", empty(), &mut ample()).unwrap_err();
     assert!(
         matches!(error.location, Location::Query(ref range) if *range == (4..13)),
         "{error}"
     );
-    let error = run_mapping("flat_map(_.demand)", empty(), &mut ample()).unwrap_err();
+    let error = run_query("flat_map(_.demand)", empty(), &mut ample()).unwrap_err();
     assert!(error.message.contains("positional"), "{error}");
-    let error = run_mapping(
+    let error = run_query(
         "map([first, second] => first)",
         V::Array(vec![V::Array(vec![V::Integer(1)])]),
         &mut ample(),
     )
     .unwrap_err();
     assert!(error.message.contains("pattern"), "{error}");
-    let error = run_mapping("[1] | flat_map({2, 3})", V::Array(vec![]), &mut ample()).unwrap_err();
+    let error = run_query("[1] | flat_map({2, 3})", V::Array(vec![]), &mut ample()).unwrap_err();
     assert!(error.message.contains("positional"), "{error}");
-    let error = run_mapping("{1, 2} | map(_)", V::Array(vec![]), &mut ample()).unwrap_err();
+    let error = run_query("{1, 2} | map(_)", V::Array(vec![]), &mut ample()).unwrap_err();
     assert!(error.message.contains("positional"), "{error}");
-    let error = run_mapping("[1] | flat_map([2: 3])", V::Array(vec![]), &mut ample()).unwrap_err();
+    let error = run_query("[1] | flat_map([2: 3])", V::Array(vec![]), &mut ample()).unwrap_err();
     assert!(error.message.contains("positional"), "{error}");
     assert!(
-        run_mapping(
+        run_query(
             "[1] | flat_map([i for i in 1..16])",
             V::Array(vec![]),
             &mut budget(100_000, 150, 64)
         )
         .is_ok()
     );
-    let error = run_mapping(
+    let error = run_query(
         "[1, 2] | flat_map([i for i in 1..16])",
         V::Array(vec![]),
         &mut budget(100_000, 150, 64),
@@ -7669,7 +7703,169 @@ fn mapping_preflights_empty_bodies_and_refuses_non_sequences_and_excess_expansio
         results: 10_000,
         nesting: 64,
     });
-    let error =
-        run_mapping("[1, 2] | flat_map([_, _])", V::Array(vec![]), &mut limited).unwrap_err();
+    let error = run_query("[1, 2] | flat_map([_, _])", V::Array(vec![]), &mut limited).unwrap_err();
     assert_eq!(error.category, zirql::QueryErrorCategory::ItemLimit);
+}
+
+#[test]
+fn case_generators_select_present_measurements_through_reader_and_callable_api() {
+    let measurements = || {
+        V::Array(vec![
+            V::Record(vec![
+                ("kind".into(), V::String("measurement".into())),
+                ("name".into(), V::String("ash".into())),
+                ("reading".into(), V::Integer(12)),
+                ("unit".into(), V::String("cm".into())),
+            ]),
+            V::Record(vec![
+                ("kind".into(), V::String("note".into())),
+                ("name".into(), V::String("memo".into())),
+                ("reading".into(), V::Integer(99)),
+            ]),
+            V::Record(vec![
+                ("kind".into(), V::String("measurement".into())),
+                ("name".into(), V::String("birch".into())),
+                ("reading".into(), V::Absent),
+            ]),
+            V::Integer(5),
+            V::Record(vec![
+                ("kind".into(), V::String("measurement".into())),
+                ("name".into(), V::String("oak".into())),
+                ("reading".into(), V::Integer(7)),
+            ]),
+        ])
+    };
+    let expected = V::Array(vec![
+        V::Record(vec![
+            ("name".into(), V::String("ash".into())),
+            ("reading".into(), V::Integer(12)),
+        ]),
+        V::Record(vec![
+            ("name".into(), V::String("oak".into())),
+            ("reading".into(), V::Integer(7)),
+        ]),
+    ]);
+    let expression = e(K::Comprehension {
+        constructor: ValueConstructor::Array,
+        clauses: vec![clause(G::In {
+            case: true,
+            binders: vec![record_pattern(
+                vec![
+                    (
+                        "kind",
+                        pattern(zirql::PatternKind::Literal(V::String("measurement".into()))),
+                    ),
+                    ("name", binder("name")),
+                    (
+                        "reading",
+                        pattern(zirql::PatternKind::Present(Box::new(binder("reading")))),
+                    ),
+                ],
+                true,
+            )],
+            source: literal(measurements()),
+            filter: None,
+        })],
+        head: Box::new(record(vec![
+            ("name", name("name")),
+            ("reading", name("reading")),
+        ])),
+    });
+    assert_eq!(evaluate(&expression).unwrap(), expected);
+    for source in [
+        r#"[{"name": name, "reading": reading} for case {kind: "measurement", name, reading: present(reading), ..} in words]"#,
+        r#"[{"name": name, "reading": reading} | case {kind: "measurement", name, reading: present(reading), ..} in words]"#,
+    ] {
+        assert_eq!(
+            run_query(source, measurements(), &mut ample()).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn case_generators_keep_candidate_scope_order_and_skip_unmatched_work() {
+    let source = r#"[(label, n, copy) for case [label, present(n)] in [["ash", 2], ["absent", null], ["short"], ["negative", -1], ["oak", 1]] if n > 0 for copy in 1..n]"#;
+    assert_eq!(
+        run_query(source, V::Absent, &mut ample()).unwrap(),
+        V::Array(vec![
+            V::Tuple(vec![V::String("ash".into()), V::Integer(2), V::Integer(1)]),
+            V::Tuple(vec![V::String("ash".into()), V::Integer(2), V::Integer(2)]),
+            V::Tuple(vec![V::String("oak".into()), V::Integer(1), V::Integer(1)]),
+        ])
+    );
+    assert_eq!(
+        run_query(
+            "[[a, b] | case present(a), present(b) in [1, null, 2] where a < b]",
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![V::Array(vec![V::Integer(1), V::Integer(2)])])
+    );
+    assert_eq!(
+        run_query(
+            "[1 div 0 for case 0 in [1, 2] if 1 div 0 == 0 for n in 1..(1 div 0)]",
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![])
+    );
+    assert_eq!(
+        run_query("[n for case present(n) in []]", V::Absent, &mut ample()).unwrap(),
+        V::Array(vec![])
+    );
+    assert_eq!(
+        run_query("['case' for 'case' in [3]]", V::Absent, &mut ample()).unwrap(),
+        V::Array(vec![V::Integer(3)])
+    );
+}
+
+#[test]
+fn case_generators_preserve_errors_preflight_and_rejected_candidate_budgets() {
+    let error =
+        run_query("[n for [n] in [[1], []] if false]", V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("generator pattern"), "{error}");
+    let error = run_query(
+        "if true { let [n] = []; n } else { 0 }",
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("pattern"), "{error}");
+    let error = run_query(
+        "[1 / n for case present(n) in [null, 0]]",
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("zero"), "{error}");
+    let error = run_query("[n | case n = 1]", V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("case"), "{error}");
+    let error = run_query("[true + 1 for case 0 in []]", V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("numeric"), "{error}");
+    let error = run_query("[0 for case 0 in [] if 1]", V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("Boolean"), "{error}");
+
+    let mut host = WordInput {
+        value: V::Absent,
+        unknown: false,
+    };
+    let expression = zirql::read_value_expression(
+        &mut zirql::ArgumentReader::new("[0 for case 0 in 1..5000]", 0).unwrap(),
+        &mut host,
+        &mut ample(),
+        64,
+    )
+    .unwrap();
+    let error = zirql::evaluate_query_value(
+        &expression,
+        &BTreeMap::new(),
+        &mut host,
+        &mut budget(1000, 100_000, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    zirql::dispose_native_value(expression);
 }

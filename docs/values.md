@@ -183,7 +183,8 @@ after its closing bracket.
 Later generators can use earlier names. Each source is evaluated before its
 own pattern names become available; its filter can use those names. For example,
 `[a + b for [a, b, ..] in [[1, 2, 3], [4, 5]]]` returns `[3, 9]`. A
-pattern mismatch is an error even when a later filter would be false. The rightmost
+pattern mismatch in an ordinary generator is an error even when a later filter
+would be false. Use `case` below when mismatches should skip candidates. The rightmost
 generator varies fastest:
 
 ```zirql
@@ -197,6 +198,57 @@ without introducing a name.
 Arrays assign fresh one-based positions. Filtering positions 1, 2 and 4 does
 not retain a gap at 3. All candidates cost work, including rejected ones, and
 the result is fully constructed before an enclosing reducer runs.
+
+## Select matching values
+
+Use `for case pattern in source` to select values by their structure, literal
+fields or optional presence. This CSV example selects present measurements from
+mixed records. Run it from this Zirql checkout:
+
+```sh
+cargo run --locked --example csv -- '
+let records = [
+  {"kind": "measurement", "name": "ash", "reading": 12},
+  {"kind": "note", "name": "memo", "reading": 99},
+  {"kind": "measurement", "name": "birch", "reading": null},
+  5,
+  {"kind": "measurement", "name": "oak", "reading": 7}
+];
+[{"name": name, "reading": reading}
+ for case {kind: "measurement", name, reading: present(reading), ..} in records]
+' examples/csv/people.csv
+```
+
+The JSON result is:
+
+```json
+[{"name":"ash","reading":12},{"name":"oak","reading":7}]
+```
+
+The note fails the literal pattern, birch has an absent reading and the scalar
+has the wrong shape. The MiniZinc spelling selects the same values from
+`records`:
+
+```zirql
+[{"name": name, "reading": reading}
+ | case {kind: "measurement", name, reading: present(reading), ..} in records]
+```
+
+A mismatch skips that candidate's filter, later sources and head. Successful
+bindings stay local to the candidate and follow the ordinary evaluation order.
+For grouped binders, `case` applies to the whole clause: a mismatch in any binder
+skips that combination. The single-value `pattern = value` generator, ordinary
+`in` generators and `let` bindings keep strict pattern errors.
+
+Only pattern mismatches are skipped. Host inspection, admission and runtime
+errors still fail, as do Unknown guards. Every written source, filter and head
+receives the usual scope, type and purity checks, including when no candidate
+matches. Rejected candidates spend work; grouped expansion is charged before
+matching. Work and result limits fail the request without a partial report.
+
+These forms run through the CSV and word examples in this checkout and through
+`ValueGenerator::In { case: true, .. }`. Consumer dependency and builder changes
+are described under [selective generator adoption](host-integration.md#selective-generator-adoption).
 
 ## Array summaries and requirements
 

@@ -1574,12 +1574,19 @@ impl PatternReader<'_, '_, '_> {
     }
 }
 
+struct GeneratorHeader {
+    patterns: Vec<PatternGuard>,
+    binding: bool,
+    case: bool,
+}
+
 fn generator_header(
     reader: &mut ArgumentReader<'_>,
     budget: &mut Budget,
     nesting: usize,
     alternate: bool,
-) -> Result<(Vec<PatternGuard>, bool), QueryError> {
+) -> Result<GeneratorHeader, QueryError> {
+    let case = reader.keyword("case");
     let mut patterns = Vec::new();
     loop {
         patterns.push(PatternGuard(Some(read_pattern(reader, budget, nesting)?)));
@@ -1588,10 +1595,18 @@ fn generator_header(
         }
     }
     if reader.keyword("in") {
-        return Ok((patterns, false));
+        return Ok(GeneratorHeader {
+            patterns,
+            binding: false,
+            case,
+        });
     }
     if alternate && patterns.len() == 1 && reader.consume('=') {
-        return Ok((patterns, true));
+        return Ok(GeneratorHeader {
+            patterns,
+            binding: true,
+            case,
+        });
     }
     Err(reader.error(if alternate {
         "expected `in` or single-pattern `=` generator"
@@ -3341,12 +3356,19 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         return Err(self.reader.error("expected `for`"));
                     }
                     let clause_start = self.reader.position();
-                    let (mut patterns, binding) = generator_header(
+                    let GeneratorHeader {
+                        mut patterns,
+                        binding,
+                        case,
+                    } = generator_header(
                         self.reader,
                         self.budget,
                         self.nesting.saturating_sub(depth + 1),
                         alternate,
                     )?;
+                    if binding && case {
+                        return Err(self.reader.error("case requires an `in` generator"));
+                    }
                     let source_start = self.reader.position();
                     let source = ValueGuard::new(self.expression(0, depth + 1)?);
                     let source_range = source_start..self.reader.position();
@@ -3382,6 +3404,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         }
                     } else {
                         ValueGenerator::In {
+                            case,
                             binders: patterns
                                 .into_iter()
                                 .map(PatternGuard::into_pattern)
@@ -3732,7 +3755,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         self.nesting.saturating_sub(depth),
                         alternate,
                     ) {
-                        Ok((patterns, _)) => {
+                        Ok(GeneratorHeader { patterns, .. }) => {
                             self.budget.charge(
                                 header.position() - probe.position(),
                                 Location::Query(probe.position()..header.position()),
@@ -4947,6 +4970,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                     binders,
                     source,
                     filter,
+                    ..
                 } => {
                     for pattern in binders {
                         crate::dispose_pattern(pattern);

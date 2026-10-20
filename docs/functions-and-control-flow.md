@@ -117,7 +117,21 @@ These return `[[1, 3]]` and `[[1, 3, 99]]`. A predicate's `_` reads its whole
 subject even when the pattern binds parts. Nested predicates rebind `_`; written
 outer names remain lexical captures. A wildcard inside a pattern discards only
 that component. A short list is a located error in a binding, parameter,
-predicate or generator. Only a value-match arm tries the next pattern.
+predicate or ordinary generator. An explicit `case` generator skips a mismatched
+candidate, and a value-match arm tries the next pattern.
+
+To select matching list shapes explicitly, write:
+
+```zirql
+[a + b for case [a, b, ..] in [[1, 3], [9], [2, 4, 99]]]
+```
+
+This returns `[4, 6]`. The short list is skipped before the guard, later sources
+or head execute. The MiniZinc form uses `| case pattern in source`. Both forms
+skip only structural, literal and presence mismatches; guard errors, Unknown
+truth, inspection failures and budget exhaustion still fail the request. See
+[select matching values](values.md#select-matching-values) for a record/optional
+example and the strict binding rules.
 
 Local `let` bindings can use these patterns too:
 

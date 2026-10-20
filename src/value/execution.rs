@@ -1912,13 +1912,20 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 match &clause.value {
                                     PreparedGenerator::Bind { binder, filter, .. } => {
                                         budget.charge(1, cl.clone())?;
-                                        install_pattern(
+                                        if !install_pattern(
                                             &mut frame.locals,
                                             binder,
                                             value,
                                             host,
                                             budget,
-                                        )?;
+                                        )? {
+                                            let location = Location::Query(binder.range.clone());
+                                            return Err(error(
+                                                &location,
+                                                "generator pattern does not match its value",
+                                            )
+                                            .into());
+                                        }
                                         push!(Pending::Restore(saved));
                                         if let Some(filter) = filter {
                                             push!(Pending::Filter(
@@ -1982,17 +1989,14 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     return Ok(());
                                 }
                                 let clause = &c.clauses[index];
-                                let PreparedGenerator::In {
-                                    binders, filter, ..
-                                } = &clause.value
-                                else {
+                                let PreparedGenerator::In { filter, .. } = &clause.value else {
                                     unreachable!()
                                 };
                                 let cl = Location::Query(clause.range.clone());
                                 let len = source.len();
-                                install_candidate(
+                                let matched = install_candidate(
                                     &mut frame.locals,
-                                    binders,
+                                    &clause.value,
                                     &mut source,
                                     &positions,
                                     host,
@@ -2015,6 +2019,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     positions,
                                     count - 1
                                 ));
+                                if !matched {
+                                    frame.locals.truncate(saved);
+                                    return Ok(());
+                                }
                                 if let Some(filter) = filter {
                                     push!(Pending::Filter(
                                         Rc::clone(&c),
@@ -3182,7 +3190,7 @@ fn install_pattern<'a, Q, H: Host<'a, Q> + ?Sized>(
     value: Value<'a, H::Native, H::Kind>,
     host: &mut H,
     budget: &mut Budget,
-) -> Result<(), H::Error> {
+) -> Result<bool, H::Error> {
     let location = Location::Query(pattern.range.clone());
     if !matches!(
         pattern.value,
@@ -3190,36 +3198,50 @@ fn install_pattern<'a, Q, H: Host<'a, Q> + ?Sized>(
     ) {
         host.inspect_pattern(&value, budget, &location)?;
     }
-    let bindings = super::pattern::bind(
+    let Some(bindings) = super::pattern::bind(
         super::pattern::PatternRef::Pattern(pattern),
         value,
         host,
         budget,
     )?
-    .ok_or_else(|| error(&location, "generator pattern does not match its value"))?;
+    else {
+        return Ok(false);
+    };
     for binding in bindings {
         push_metadata(locals, binding, budget, &location)?;
     }
-    Ok(())
+    Ok(true)
 }
 fn install_candidate<'a, Q, H: Host<'a, Q> + ?Sized>(
     locals: &mut Vec<(&'a str, ResultValue<'a, H, Q>)>,
-    binders: &[Option<&'a super::Pattern>],
+    clause: &PreparedGenerator<'a, Q>,
     source: &mut GeneratorSource<'a, H::Native, H::Kind>,
     positions: &[usize],
     host: &mut H,
     budget: &mut Budget,
     location: &Location,
-) -> Result<(), H::Error> {
+) -> Result<bool, H::Error> {
+    let PreparedGenerator::In { binders, case, .. } = clause else {
+        unreachable!("candidate belongs to an in generator")
+    };
     for (binder, position) in binders.iter().zip(positions) {
         let value = source.child(*position, budget, location)?;
         if let Some(pattern) = binder {
-            install_pattern(locals, pattern, value, host, budget)?;
+            if !install_pattern(locals, pattern, value, host, budget)? {
+                if *case {
+                    return Ok(false);
+                }
+                return Err(error(
+                    &Location::Query(pattern.range.clone()),
+                    "generator pattern does not match its value",
+                )
+                .into());
+            }
         } else {
             push_metadata(locals, (super::PREDICATE_SUBJECT, value), budget, location)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn install_predicate<'a, Q, H: Host<'a, Q> + ?Sized>(

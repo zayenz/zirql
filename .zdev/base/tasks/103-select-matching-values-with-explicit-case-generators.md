@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-103"
 key = "selective-generators"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -27,10 +27,10 @@ List/record/optional patterns already exist; generator mismatches currently fail
 
 ## Done when
 
-- [ ] The shared reader and callable representation support an explicit case modifier on a generator in both comprehension spellings; only a structural, literal or presence pattern mismatch skips that candidate.
-- [ ] Ordinary generators and let bindings retain strict mismatch errors. Successful match bindings are local to that candidate; later sources, guards and heads retain current scope/order. Errors and unknown guards are not treated as mismatches.
-- [ ] One compact record/optional selection example and focused strict-versus-selective and runtime-error controls establish behaviour, including empty results and budgeted rejected candidates.
-- [ ] Update the relevant public language guide and callable/embedding documentation with the implemented contract, supported host/example entry point, limitations and a runnable example with expected output. Document necessary consumer adoption separately.
+- [x] The shared reader and callable representation support an explicit case modifier on a generator in both comprehension spellings; only a structural, literal or presence pattern mismatch skips that candidate.
+- [x] Ordinary generators and let bindings retain strict mismatch errors. Successful match bindings are local to that candidate; later sources, guards and heads retain current scope/order. Errors and unknown guards are not treated as mismatches.
+- [x] One compact record/optional selection example and focused strict-versus-selective and runtime-error controls establish behaviour, including empty results and budgeted rejected candidates.
+- [x] Update the relevant public language guide and callable/embedding documentation with the implemented contract, supported host/example entry point, limitations and a runnable example with expected output. Document necessary consumer adoption separately.
 
 ## Validation
 
@@ -40,3 +40,12 @@ List/record/optional patterns already exist; generator mismatches currently fail
 - cargo test --workspace
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Implemented explicit case generators in both textual comprehension forms and the callable API, reusing the shared matcher with mismatch-only skipping. Updated language and embedding guides. Independent verification passed without findings at W085fa0c68164b9e1.
+
+Validation:
+
+- Formatting, fatal workspace Clippy, all 172 tests, diff whitespace and zdev consistency checks passed.
+- Focused selective/strict, dependent-order, presence, Unknown and rejected-budget controls passed; documented CSV output matched exactly; final snapshot comparison equal.
