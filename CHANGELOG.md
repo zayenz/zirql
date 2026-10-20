@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3
+
+- Allow tuples, lists, sets and dictionaries as dictionary keys and set elements,
+  including mixed and nested values. Tally returns dictionaries with actual keys.
+- Add structural comparison and hashing, indexed construction and tally, and
+  cached dictionary lookup and set membership.
+- Let host adapters retain native domain values in general collections using
+  host identity, comparison and collection hooks.
+- Expand general dictionaries at the JSON boundary while preserving ordinary
+  string-key objects. Retain declared types and empty collection behavior.
+
 ## 0.1.2
 
 - Support insertion-ordered string sets, typed empty sets and `set<string>`

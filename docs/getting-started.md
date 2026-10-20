@@ -11,11 +11,11 @@ The two small trait implementations in the example form its adapter to Zirql.
 ## Run the example
 
 Use Rust 1.88 or newer. The published crate includes both example sources and
-their CSV fixtures. Extract `zirql-0.1.2.crate` and run commands from its
-`zirql-0.1.2` directory, or check out the matching release:
+their CSV fixtures. Extract `zirql-0.1.3.crate` and run commands from its
+`zirql-0.1.3` directory, or check out the matching release:
 
 ```sh
-git clone --branch v0.1.2 --depth 1 https://github.com/zayenz/zirql.git
+git clone --branch v0.1.3 --depth 1 https://github.com/zayenz/zirql.git
 cd zirql
 ```
 
@@ -122,22 +122,22 @@ and rendering in that accounting; see [budget and diagnostic APIs](runtime-limit
 
 ## Use Zirql in another Rust project
 
-Add the 0.1.2 registry dependency to your manifest:
+Add the 0.1.3 registry dependency to your manifest:
 
 ```toml
 [dependencies]
-zirql = "0.1.2"
+zirql = "0.1.3"
 ```
 
 Or use Cargo to add the same requirement:
 
 ```sh
-cargo add zirql@0.1.2
+cargo add zirql@0.1.3
 ```
 
-These guides describe Zirql 0.1.2. The earlier `0.1.0-alpha.5` registry package
+These guides describe Zirql 0.1.3. The earlier `0.1.0-alpha.5` registry package
 has a smaller language and API. Use the matching
-[Rust API reference](https://docs.rs/zirql/0.1.2/zirql/), or generate documentation
+[Rust API reference](https://docs.rs/zirql/0.1.3/zirql/), or generate documentation
 for the dependency selected in your lockfile:
 
 ```sh
