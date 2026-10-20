@@ -9,7 +9,7 @@ evaluator runs.
 
 ## Dependency and toolchain
 
-Add Zirql to a Rust crate with Cargo. Zirql 0.1.3 uses edition 2024 and requires
+Add Zirql to a Rust crate with Cargo. Zirql 0.2.0 uses edition 2024 and requires
 Rust 1.88 or newer. The
 [setup guide](getting-started.md#use-zirql-in-another-rust-project)
 shows the registry dependency and a complete executable. Generate API
@@ -499,7 +499,7 @@ receive no automatic rollback from Zirql. Source-edit safety and transaction
 rules belong to the host.
 
 For signatures and budget charging helpers, use [the Rust API
-reference](https://docs.rs/zirql/0.1.3/zirql/) or `cargo doc
+reference](https://docs.rs/zirql/0.2.0/zirql/) or `cargo doc
 --open` for your selected dependency. The [budget and diagnostic
 reference](runtime-limits.md) explains how to translate errors and account for
 host work.

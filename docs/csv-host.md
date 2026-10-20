@@ -12,8 +12,8 @@ excerpts omit imports and some error and budget handling.
 
 ## 1. Start with a runnable application
 
-Use Rust 1.88 or newer. From a Zirql `v0.1.3` checkout or extracted
-`zirql-0.1.3` crate, create a sibling application and copy the example and its
+Use Rust 1.88 or newer. From a Zirql `v0.2.0` checkout or extracted
+`zirql-0.2.0` crate, create a sibling application and copy the example and its
 fixtures:
 
 ```sh
@@ -22,7 +22,7 @@ cp examples/csv.rs ../csv-query/src/main.rs
 mkdir -p ../csv-query/examples
 cp -R examples/csv ../csv-query/examples/csv
 cd ../csv-query
-cargo add zirql@0.1.3 csv@1.4 serde_json@1
+cargo add zirql@0.2.0 csv@1.4 serde_json@1
 ```
 
 In the copied `src/main.rs`, change the usage message in `main` to name your
@@ -40,7 +40,7 @@ The application's dependencies are:
 
 ```toml
 [dependencies]
-zirql = "0.1.3"
+zirql = "0.2.0"
 csv = "1.4"
 serde_json = "1"
 ```

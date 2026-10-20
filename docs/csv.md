@@ -5,8 +5,8 @@ fields, using its first row as column names. You can filter rows, select fields
 and combine named files in a report. To build an application like this one, follow
 [Build the CSV host](csv-host.md).
 
-These commands run from the root of a `v0.1.3` checkout or the extracted
-`zirql-0.1.3` crate with Rust 1.88 or later. The
+These commands run from the root of a `v0.2.0` checkout or the extracted
+`zirql-0.2.0` crate with Rust 1.88 or later. The
 [setup guide](getting-started.md#run-the-example) describes both. This is a Cargo
 example executable; installing the library does not install a CSV command.
 

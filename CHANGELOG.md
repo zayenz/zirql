@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.1.3
+## 0.2.0
+
+This release changes public collection types. Hosts adopting 0.2 must update
+exhaustive value/type matches, set storage and general-dictionary rendering.
 
 - Allow tuples, lists, sets and dictionaries as dictionary keys and set elements,
   including mixed and nested values. Tally returns dictionaries with actual keys.
