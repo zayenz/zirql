@@ -1327,6 +1327,9 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     matches!(value.value, ValueExpressionKind::FlatMap { .. }),
                     budget,
                 )?,
+                ValueExpressionKind::With { .. } => {
+                    self.updated_record_declaration(value, budget)?
+                }
                 ValueExpressionKind::Record(fields) => {
                     let mut types = Vec::new();
                     for (name, field) in fields {
@@ -1362,6 +1365,52 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 _ => self.local_kind(value, budget)?.map(DeclaredType::Native),
             })
         })
+    }
+
+    fn updated_record_declaration(
+        &mut self,
+        value: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Option<DeclaredType<Kind<C, H>>>, QueryError> {
+        let ValueExpressionKind::With { record, fields } = &value.value else {
+            unreachable!("record update expression")
+        };
+        let Some(base) = self.value_declaration(record, budget)? else {
+            return Ok(None);
+        };
+        let mut types = match base {
+            DeclaredType::Record(types) => types,
+            DeclaredType::Native(kind) => {
+                let Some(view) = self.host.capture_record_kind(&kind) else {
+                    return Ok(None);
+                };
+                let mut types = Vec::new();
+                for (label, kind) in &view.fields {
+                    budget_name(label, budget, &record.range)?;
+                    crate::projection::admit_slots::<(String, DeclaredType<Kind<C, H>>)>(
+                        1,
+                        budget,
+                        &record.range,
+                    )?;
+                    types.push((label.clone(), DeclaredType::Native(kind.clone())));
+                }
+                types
+            }
+            _ => return Ok(None),
+        };
+        for (label, field) in fields {
+            let index = execution::record_field_position(
+                types.iter().map(|(label, _)| label.as_str()),
+                &label.value,
+                budget,
+                &Location::Query(label.range.clone()),
+            )?;
+            let Some(declaration) = self.value_declaration(field, budget)? else {
+                return Ok(None);
+            };
+            types[index].1 = declaration;
+        }
+        Ok(Some(DeclaredType::Record(types)))
     }
 
     fn positional_element_kind(
@@ -1706,6 +1755,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 | ValueExpressionKind::Insert { .. }
                 | ValueExpressionKind::Array(_)
                 | ValueExpressionKind::Record(_)
+                | ValueExpressionKind::With { .. }
                 | ValueExpressionKind::Map { .. }
                 | ValueExpressionKind::FlatMap { .. }
                 | ValueExpressionKind::Windows { .. }

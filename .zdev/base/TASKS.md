@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 111
-- Ready: 7
+- Ready: 6
 - Blocked: 0
-- Done: 104
+- Done: 105
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -114,7 +114,7 @@
 | [base-103](tasks/103-select-matching-values-with-explicit-case-generators.md) | Select matching values with explicit case generators | done | — |
 | [base-104](tasks/104-inspect-complete-windows-and-consecutive-runs.md) | Inspect complete windows and consecutive runs | done | — |
 | [base-105](tasks/105-design-composed-relationship-paths-and-intermediate-captures.md) | Design composed relationship paths and intermediate captures | ready | — |
-| [base-106](tasks/106-construct-modified-records-with-immutable-with-expressions.md) | Construct modified records with immutable with expressions | ready | — |
+| [base-106](tasks/106-construct-modified-records-with-immutable-with-expressions.md) | Construct modified records with immutable with expressions | done | — |
 | [base-107](tasks/107-align-two-record-sequences-by-unique-keys.md) | Align two record sequences by unique keys | ready | — |
 | [base-108](tasks/108-design-reusable-named-pipeline-queries.md) | Design reusable named pipeline queries | ready | — |
 | [base-109](tasks/109-design-explanatory-finding-records-for-small-linters.md) | Design explanatory finding records for small linters | ready | — |

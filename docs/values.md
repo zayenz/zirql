@@ -39,13 +39,56 @@ Strings are scalar values. Array operations such as `length` do not implicitly
 operate on their characters. A host can expose a byte count or another text
 measure when its model needs one.
 
+## Reuse a record with changed fields
+
+`record with {field: expression, ...}` returns a record with replacements for
+existing string fields. Labels are static names or double-quoted strings.
+Replacement order does not move fields in the result. The original record and
+any aliases keep their values, including native children and source coordinates.
+
+The base evaluates once, followed by each replacement in written order. All
+replacements use the surrounding scope. A label in the update list introduces no
+binding, and later replacements cannot read an earlier replacement by its label.
+Use the original record's name to read its old fields. Repeated or missing target
+labels fail. The result must satisfy any retained explicit record schema,
+including its field contracts. Ordinary structural fields can change type.
+An empty update returns the same layout.
+
+### Compare capacity scenarios
+
+Run this complete report with the local CSV host:
+
+```sh
+cargo run --locked --example csv -- '
+let original = {"name": "cpu", "limit": 8, "used": 6};
+let expanded = original with {limit: original.limit + 4};
+{"original": original, "expanded": expanded,
+ "remaining": [c.limit - c.used for c in [original, expanded]]}
+' examples/csv/people.csv
+```
+
+```json
+{"original":{"name":"cpu","limit":8,"used":6},"expanded":{"name":"cpu","limit":12,"used":6},"remaining":[2,6]}
+```
+
+This report compares two ordinary values. It does not change source data.
+Updates support the existing string-field record representation only. They cannot
+insert or remove fields, update a general dictionary or replace keyed-array
+cells. Keyed capacity updates remain a separate design question, including how
+keys, missing cells and declared axes should behave.
+
+The shared reader, callable evaluator and local word/CSV hosts support `with`
+in this development checkout. Installed Zincite and Zirium frontends need
+[consumer adoption](host-integration.md#immutable-record-adoption) before they can
+advertise this syntax. This ordinary value operation adds no symbolic CP form.
+
 ## Operators and precedence
 
 The common reader applies these precedence levels, strongest first:
 
 | Level | Operations |
 | --- | --- |
-| Access | `a[i]`, `a[i, j]`, `tuple.1`, `row.field` |
+| Access and record updates | `a[i]`, `a[i, j]`, `tuple.1`, `row.field`, `row with {field: value}` |
 | Optional fallback | `default` |
 | Prefix | `not`, unary `+` and `-` |
 | Multiplication and division | `*`, `/`, `div`, `mod` |

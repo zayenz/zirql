@@ -75,6 +75,10 @@ pub(crate) enum PreparedKind<'a, Q> {
     Array(Vec<PreparedValue<'a, Q>>),
     Tuple(Vec<PreparedValue<'a, Q>>),
     Record(Vec<(&'a Located<String>, PreparedValue<'a, Q>)>),
+    With {
+        record: Box<PreparedValue<'a, Q>>,
+        fields: Vec<(&'a Located<String>, PreparedValue<'a, Q>)>,
+    },
     Dictionary(Vec<(PreparedValue<'a, Q>, PreparedValue<'a, Q>)>),
     DictionaryComprehension {
         general_keys: bool,
@@ -465,6 +469,17 @@ impl<'a> Preparation<'a> {
                         children.push((label, self.resolve(child, queries, budget)?));
                     }
                     PreparedKind::Record(children)
+                }
+                ValueExpressionKind::With { record, fields } => {
+                    let record = Box::new(self.resolve(record, queries, budget)?);
+                    let mut children = metadata_vec(fields.len(), budget, &location)?;
+                    for (label, child) in fields {
+                        children.push((label, self.resolve(child, queries, budget)?));
+                    }
+                    PreparedKind::With {
+                        record,
+                        fields: children,
+                    }
                 }
                 ValueExpressionKind::Dictionary(entries) => {
                     let mut children = metadata_vec(entries.len(), budget, &location)?;

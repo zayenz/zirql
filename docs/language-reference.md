@@ -65,6 +65,14 @@ fields as the dictionary example above. Indexed values accept `a[i, j]` as
 `[3: 7, 8]` gives its cells keys `3` and `4`. See [keyed arrays](values.md#keyed-arrays)
 for explicit keys and empty shapes.
 
+`row with {limit: row.limit + 4}` replaces an existing string field in an
+immutable record. Static labels may also be quoted, as in `{"limit": 12}`.
+The base runs once, then replacements run in written order in surrounding
+scope. Field order, aliases, native children and declared contracts are retained.
+Missing or duplicate target fields fail. General dictionaries, keyed arrays and
+field insertion/removal are outside this form. The [capacity scenario](values.md#compare-capacity-scenarios)
+runs through the local CSV host and shows both original and updated records.
+
 ## Save intermediate results
 
 A `let` gives a calculated value an immutable name. Later expressions can reuse

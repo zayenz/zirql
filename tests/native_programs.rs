@@ -12741,3 +12741,128 @@ fn sequence_neighbourhoods_retain_native_source_handles() {
     zirql::dispose_native_value(window);
     zirql::dispose_native_value(expression);
 }
+
+#[test]
+fn record_updates_retain_native_children_and_declared_contracts() {
+    use zirql::{
+        ConstructedValue as V, FunctionDeclaration, FunctionLimits, FunctionParameter,
+        FunctionRequest, ValueExpressionKind as K,
+    };
+    let source = String::from("ash apple");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let bindings = Bindings::new([(
+        at("original".into(), 0),
+        SourceValue::Record(zirql::NativeCapture {
+            fields: vec![
+                ("node".into(), word_at(&source, 0..3, 0)),
+                ("limit".into(), SourceValue::Constructed(V::Integer(8))),
+            ],
+        }),
+    )])
+    .unwrap();
+    let v = worklist_value;
+    let n = worklist_name;
+    let updated = |base, replacement| {
+        v(K::With {
+            record: Box::new(base),
+            fields: vec![(at("limit".into(), 10), replacement)],
+        })
+    };
+    let expression = v(K::Block {
+        bindings: vec![(
+            at(zirql::PatternKind::Name(at("alias".into(), 1)), 1),
+            n("original"),
+        )],
+        value: Box::new(v(K::Tuple(vec![
+            updated(n("original"), v(K::Literal(V::Integer(10)))),
+            n("alias"),
+            n("original"),
+        ]))),
+    });
+    let mut budget = Budget::for_program(worklist_limits());
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&expression, &bindings)
+    .unwrap();
+    let SourceValue::Tuple(records) = result else {
+        panic!("native tuple")
+    };
+    for (record, limit) in records.iter().zip([10, 8, 8]) {
+        let SourceValue::Record(record) = record else {
+            panic!("native record")
+        };
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            ["node", "limit"]
+        );
+        assert_eq!(
+            record.fields[1].1,
+            SourceValue::Constructed(V::Integer(limit))
+        );
+        let SourceValue::Words(words) = &record.fields[0].1 else {
+            panic!("native child")
+        };
+        assert_eq!(words[0].range, 0..3);
+        assert_eq!(words[0].text.as_ptr(), source[..3].as_ptr());
+    }
+    let contract = || {
+        DeclaredType::Record(vec![
+            ("node".into(), DeclaredType::Native(SourceKind::Words)),
+            ("limit".into(), DeclaredType::Integer),
+        ])
+    };
+    let functions = vec![FunctionDeclaration {
+        name: at("wrong".into(), 1),
+        parameters: vec![at(
+            FunctionParameter {
+                name: at("row".into(), 1),
+                declaration: contract(),
+            },
+            1,
+        )],
+        result: at(DeclaredType::Native(SourceKind::Words), 1),
+        bindings: vec![],
+        value: v(K::Field {
+            value: Box::new(updated(n("row"), v(K::Literal(V::String("wrong".into()))))),
+            field: at("node".into(), 1),
+        }),
+    }];
+    let call = v(K::Call {
+        function: at("wrong".into(), 1),
+        arguments: vec![n("original")],
+    });
+    let mut budget = Budget::for_program(worklist_limits());
+    let result = FunctionRequest::prepare(
+        &functions,
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&call, &bindings);
+    assert!(result.is_err());
+    let original = bindings.get("original", 0..1).unwrap();
+    let SourceValue::Record(original) = original else {
+        panic!("original record")
+    };
+    assert_eq!(
+        original.fields[1].1,
+        SourceValue::Constructed(V::Integer(8))
+    );
+    zirql::dispose_native_value(expression);
+}

@@ -1205,6 +1205,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Insert { .. }
                                             | PreparedKind::Array(_)
                                             | PreparedKind::Record(_)
+                                            | PreparedKind::With { .. }
                                             | PreparedKind::Tuple(_)
                                             | PreparedKind::TupleAccess { .. }
                                             | PreparedKind::Tally { .. }
@@ -2841,7 +2842,7 @@ fn infer_state_element(
     Ok(expected)
 }
 
-fn admit<'a, Q, H: Host<'a, Q>>(
+fn admit<'a, Q, H: Host<'a, Q> + ?Sized>(
     value: &mut ResultValue<'a, H, Q>,
     expected: &'a DeclaredType<H::Kind>,
     host: &mut H,
@@ -3336,6 +3337,7 @@ fn operands<'a, Q>(
     let count = match &expression.value {
         PreparedKind::Array(v) | PreparedKind::Tuple(v) | PreparedKind::Set(v) => v.len(),
         PreparedKind::Record(v) => v.len(),
+        PreparedKind::With { fields, .. } => sum(fields.len(), 1, location)?,
         PreparedKind::PushBackAll { .. }
         | PreparedKind::Insert { .. }
         | PreparedKind::Binary { .. }
@@ -3351,6 +3353,10 @@ fn operands<'a, Q>(
     match &expression.value {
         PreparedKind::Array(v) | PreparedKind::Tuple(v) | PreparedKind::Set(v) => result.extend(v),
         PreparedKind::Record(v) => result.extend(v.iter().map(|(_, value)| value)),
+        PreparedKind::With { record, fields } => {
+            result.push(record.as_ref());
+            result.extend(fields.iter().map(|(_, value)| value));
+        }
         PreparedKind::PushBackAll {
             queue: left,
             items: right,
@@ -3446,7 +3452,7 @@ fn select_record_field<'a, Q, H: Host<'a, Q> + ?Sized>(
     super::pattern::select(value, NativeStep::Record(index), host, budget, location)
 }
 
-fn record_field_position<'v>(
+pub(crate) fn record_field_position<'v>(
     labels: impl Iterator<Item = &'v str>,
     label: &str,
     budget: &mut Budget,
@@ -3567,6 +3573,105 @@ fn finish_run<'a, Q, H: Host<'a, Q> + ?Sized>(
     })
 }
 
+fn replace_record_fields<'a, Q, H: Host<'a, Q> + ?Sized>(
+    mut record: ResultValue<'a, H, Q>,
+    updates: &[(&Located<String>, PreparedValue<'a, Q>)],
+    replacements: impl Iterator<Item = ResultValue<'a, H, Q>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let data = host.constructed(&record, budget, location)?;
+    let declaration = data
+        .as_ref()
+        .and_then(|data| data.declaration)
+        .map(|declaration| copy_declaration(declaration, budget, location))
+        .transpose()?;
+    let labels = match data {
+        Some(data) => {
+            let ConstructedValue::Record(fields) = data.value.data() else {
+                return Err(error(location, "with needs a record").into());
+            };
+            copy_record_labels(
+                fields.iter().map(|(label, _)| label.as_str()),
+                budget,
+                location,
+            )?
+        }
+        None => {
+            let Data::Native(view) = &record.data else {
+                unreachable!("native record")
+            };
+            let labels = host
+                .native_record(host.native_data(view, budget, location)?)
+                .ok_or_else(|| error(location, "with needs a record"))?
+                .fields
+                .iter()
+                .map(|(label, _)| label.as_str());
+            copy_record_labels(labels, budget, location)?
+        }
+    };
+    let mut fields = admit_container(labels.len(), budget, location)?;
+    for label in labels {
+        fields.push((label, None));
+    }
+    for ((label, _), value) in updates.iter().zip(replacements) {
+        let field_location = Location::Query(label.range.clone());
+        let index = record_field_position(
+            fields.iter().map(|(label, _)| label.as_str()),
+            &label.value,
+            budget,
+            &field_location,
+        )?;
+        if fields[index].1.is_some() {
+            return Err(error(&field_location, "duplicate update field").into());
+        }
+        fields[index].1 = Some(value);
+    }
+    let mut output = admit_container(fields.len(), budget, location)?;
+    for (index, (label, replacement)) in fields.into_iter().enumerate() {
+        let value = match replacement {
+            Some(value) => value,
+            None => super::pattern::select(
+                &mut record,
+                NativeStep::Record(index),
+                host,
+                budget,
+                location,
+            )?,
+        };
+        output.push((label, value));
+    }
+    let mut result = host.finish_record(output, budget, location)?;
+    if let Some(expected) = record.contract {
+        admit(&mut result, expected, host, budget, location)?;
+    }
+    if let Some(declaration) = declaration {
+        let value = host.materialize(result, budget, location)?;
+        result = Value::constructed(RuntimeValue::Owned(annotate(
+            value,
+            declaration,
+            budget,
+            location,
+        )?));
+        result.contract = record.contract;
+    }
+    Ok(result)
+}
+
+fn copy_record_labels<'v>(
+    labels: impl ExactSizeIterator<Item = &'v str>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<String>, QueryError> {
+    let mut result = metadata_vec(labels.len(), budget, location)?;
+    for label in labels {
+        budget.charge(label.len(), location.clone())?;
+        result.push(label.to_owned());
+    }
+    Ok(result)
+}
+
 fn constructed_access_declaration<K>(
     contract: Option<&DeclaredType<K>>,
     data: &RuntimeValue,
@@ -3596,6 +3701,17 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
 ) -> Result<ResultValue<'a, H, Q>, H::Error> {
     let location = Location::Query(expression.range.clone());
     match &expression.value {
+        PreparedKind::With { fields, .. } => {
+            let mut values = values.into_iter();
+            return replace_record_fields(
+                values.next().expect("record base"),
+                fields,
+                values,
+                host,
+                budget,
+                &location,
+            );
+        }
         PreparedKind::Windows { size, .. } => {
             let size_location = Location::Query(size.range.clone());
             let size =

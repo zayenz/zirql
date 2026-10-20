@@ -613,3 +613,52 @@ The [local examples](examples.md#compare-consecutive-runs-with-global-groups)
 run today; [consumer adoption](host-integration.md#sequence-neighbourhood-adoption)
 is a separate integration step. These are ordinary value operations and add no
 symbolic CP support.
+
+## Immutable record expressions
+
+Build `ValueExpressionKind::With { record, fields }` with a boxed base expression
+and ordered `(Located<String>, ValueExpression)` replacements. The labels are
+static existing string fields. This callable example returns a new capacity:
+
+```rust
+use zirql::{Bindings, Budget, ConstructedValue as V, Located, ProgramLimits,
+    ValueExpression as E, ValueExpressionKind as K, evaluate_value};
+fn node(kind: K) -> E { Located::new(kind, 0..1) }
+let expression = node(K::With {
+    record: Box::new(node(K::Literal(V::Record(vec![
+        ("limit".into(), V::Integer(8)),
+        ("used".into(), V::Integer(6)),
+    ])))),
+    fields: vec![(Located::new("limit".into(), 0..1),
+                  node(K::Literal(V::Integer(12))))],
+});
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000, results: 1_000, nesting: 16, stream_items: 100,
+});
+assert_eq!(evaluate_value(&expression, &Bindings::default(), &mut budget).unwrap(),
+    V::Record(vec![("limit".into(), V::Integer(12)),
+                  ("used".into(), V::Integer(6))]));
+```
+
+The common reader lowers `record with {field: expression, ...}` to this node.
+Validation, free-name discovery, type discovery and execution use the ordinary
+value APIs. Preflight checks every replacement without installing field names
+as locals. Runtime evaluates the base once and replacements in written order,
+then rebuilds the base layout and admits the result against retained contracts.
+The [value guide](values.md#reuse-a-record-with-changed-fields) describes refusals
+and includes a runnable original/updated report.
+
+`FunctionRequest` uses the existing constructed views or
+`ProgramHost::capture_record` to select actual children.
+`ProgramHost::construct_record` builds a native result when needed. Unchanged
+children retain their owners and source coordinates through those boundaries;
+no native handle is converted to text. `ProjectionHost::capture_record_kind`
+and declaration kinds describe the result for later field use. No new public
+host hook is required. Traversal, metadata, construction and copies share the
+active budget; failure returns no partial record. Retained native expression
+trees use the existing `dispose_native_value` path.
+
+This form replaces existing fields only. General dictionaries, keyed arrays,
+source edits and symbolic CP lowering require separate support. See
+[consumer adoption](host-integration.md#immutable-record-adoption) for Zincite
+and Zirium integration requirements.

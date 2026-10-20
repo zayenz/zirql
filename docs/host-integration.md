@@ -1066,3 +1066,27 @@ and record views and list/record constructors. Keep native ownership, source
 coordinates and output conversion with the adapter. Zincite can adopt the calls
 for positional reports; Data edit admission remains its own policy. Consumer
 repositories are unchanged by this core slice.
+
+## Immutable record adoption
+
+The shared reader, callable evaluator and local CSV/word hosts in this development
+checkout support `record with {field: expression, ...}`. The
+[capacity scenario](values.md#compare-capacity-scenarios) compares original and
+expanded capacity records through the local CSV executable. Installed consumer
+frontends have their own dependency and syntax support.
+
+Zincite and Zirium need a dependency revision containing `ValueExpressionKind::With`
+and updates to exhaustive AST visitors and callable builders. Common-reader
+frontends receive the spelling through that reader. A host-owned reader must
+lower its static field list to the same shared node and retain the surface ranges.
+Native record adapters use their existing record value/kind views and constructors;
+whole record and field contracts must survive that boundary.
+
+A Zincite report can project a model-backed capacity into a record, create a
+larger-capacity scenario and compare both. Model facts, MiniZinc type admission
+and Data edit policy remain host responsibilities. Updating capacities stored as
+keyed-array cells is deferred. That design still needs to choose missing-cell
+behaviour and preservation of axes; `with` does not provide keyed updates.
+Zirium can retain a native operation beside changed report fields using its
+existing handle and source-coordinate rules. This core slice changes neither
+consumer repository and adds no symbolic CP operation.

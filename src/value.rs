@@ -440,6 +440,12 @@ pub enum ValueExpressionKind<Q = ()> {
     Array(Vec<ValueExpression<Q>>),
     Tuple(Vec<ValueExpression<Q>>),
     Record(Vec<(Located<String>, ValueExpression<Q>)>),
+    /// Replace existing string fields, preserving layout and retained contracts.
+    /// The base and replacements evaluate once in written order in outer scope.
+    With {
+        record: Box<ValueExpression<Q>>,
+        fields: Vec<(Located<String>, ValueExpression<Q>)>,
+    },
     /// Computed string keys run before their values and retain insertion order.
     Dictionary(Vec<(ValueExpression<Q>, ValueExpression<Q>)>),
     DictionaryComprehension {
@@ -3473,6 +3479,9 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 }
                 Ok(types)
             }
+            ValueExpressionKind::With { record, fields } => {
+                self.updated_record_types(record, fields, budget, location)
+            }
             ValueExpressionKind::Dictionary(entries) => {
                 let mut keys = Vec::new();
                 let mut values = Vec::new();
@@ -4555,6 +4564,69 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             }
         }
         Ok(())
+    }
+
+    fn updated_record_types(
+        &mut self,
+        record: &'a ValueExpression<Q>,
+        fields: &'a [(Located<String>, ValueExpression<Q>)],
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let records = self.walk(record, budget)?;
+        let replacements =
+            self.positions(fields.iter().map(|(_, value)| value), budget, location)?;
+        for (index, (label, _)) in fields.iter().enumerate() {
+            for (previous, _) in &fields[..index] {
+                budget.charge(
+                    1 + label.value.len().min(previous.value.len()),
+                    location.clone(),
+                )?;
+                if label.value == previous.value {
+                    return Err(QueryError::query(
+                        label.range.clone(),
+                        "duplicate update field",
+                    ));
+                }
+            }
+        }
+        let mut result = Vec::new();
+        for record in records {
+            for replacement in &replacements {
+                let declaration = match &record {
+                    ValueType::Declared { declaration, .. } => {
+                        Some(copy_declaration(declaration, budget, location)?)
+                    }
+                    _ => None,
+                };
+                let shape = shape_type(copy_type(&record, budget, location)?, budget, location)?;
+                let mut shape = match shape {
+                    ValueType::Record(mut types) => {
+                        for ((label, _), ty) in fields.iter().zip(replacement) {
+                            let index = execution::record_field_position(
+                                types.iter().map(|(label, _)| label.as_str()),
+                                &label.value,
+                                budget,
+                                &Location::Query(label.range.clone()),
+                            )?;
+                            types[index].1 = copy_type(ty, budget, location)?;
+                        }
+                        ValueType::Record(types)
+                    }
+                    ValueType::RecordKind | ValueType::Unestablished => ValueType::RecordKind,
+                    _ => return Err(error(location, "with needs a record")),
+                };
+                if let Some(declaration) = declaration {
+                    check_known_type(&shape, &declaration, budget, location)?;
+                    shape = ValueType::Declared {
+                        actual: Box::new(shape),
+                        declaration,
+                    };
+                }
+                push_metadata(&mut result, shape, budget, location)?;
+            }
+        }
+        Ok(result)
     }
 
     fn condition(

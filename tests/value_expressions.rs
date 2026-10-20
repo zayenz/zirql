@@ -7994,3 +7994,145 @@ fn consecutive_runs_preserve_repetitions_and_structural_keys() {
     assert!(error.message.contains("missing record field"), "{error}");
     assert_eq!(error.location, Location::Query(24..30));
 }
+
+#[test]
+fn record_updates_keep_layout_aliases_and_surrounding_scope() {
+    let expression = e(K::Block {
+        bindings: vec![
+            (
+                binder("original"),
+                record(vec![("limit", int(8)), ("used", int(3))]),
+            ),
+            (binder("alias"), name("original")),
+            (binder("limit"), int(20)),
+            (
+                binder("changed"),
+                e(K::With {
+                    record: Box::new(name("original")),
+                    fields: vec![
+                        (Located::new("used".into(), 10..14), name("limit")),
+                        (
+                            Located::new("limit".into(), 20..25),
+                            binary(B::Add, field(name("original"), "limit"), int(2)),
+                        ),
+                    ],
+                }),
+            ),
+        ],
+        value: Box::new(e(K::Array(vec![
+            name("original"),
+            name("alias"),
+            name("changed"),
+        ]))),
+    });
+    let row = |limit, used| {
+        V::Record(vec![
+            ("limit".into(), V::Integer(limit)),
+            ("used".into(), V::Integer(used)),
+        ])
+    };
+    let expected = V::Array(vec![row(8, 3), row(8, 3), row(10, 20)]);
+    assert_eq!(evaluate(&expression).unwrap(), expected);
+    assert_eq!(
+        run_query(
+            r#"if true {
+        let original = {"limit": 8, "used": 3};
+        let alias = original;
+        let limit = 20;
+        let changed = original with {used: limit, "limit": original.limit + 2};
+        [original, alias, changed]
+    } else { [] }"#,
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap(),
+        expected
+    );
+    assert_eq!(
+        run_query(
+            r#"({"limit": 8} with {limit: 10}).limit"#,
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap(),
+        V::Integer(10)
+    );
+    assert_eq!(
+        run_query(
+            r#"({"limit": 8} with {limit: "large"}).limit"#,
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap(),
+        V::String("large".into())
+    );
+}
+
+#[test]
+fn record_updates_refuse_missing_duplicate_and_incompatible_fields() {
+    let error =
+        run_query(r#"{"limit": 8} with {missing: 1}"#, V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("missing record field"), "{error}");
+    assert_eq!(error.location, Location::Query(19..26));
+    let error = run_query(
+        r#"{"limit": 8} with {limit: 9, "limit": 10}"#,
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("duplicate update field"), "{error}");
+    assert_eq!(error.location, Location::Query(29..36));
+    let error = run_query("[1, 2] with {}", V::Absent, &mut ample()).unwrap_err();
+    assert!(error.message.contains("with needs a record"), "{error}");
+    let base = declared(
+        V::Record(vec![("limit".into(), V::Integer(8))]),
+        D::Record(vec![("limit".into(), D::Integer)]),
+    );
+    let expression = e(K::With {
+        record: Box::new(literal(base)),
+        fields: vec![(
+            Located::new("limit".into(), 5..10),
+            literal(V::String("wrong".into())),
+        )],
+    });
+    assert!(evaluate(&expression).is_err());
+    let result = run_query(
+        "words with {limit: 10}",
+        declared(
+            V::Record(vec![("limit".into(), V::Integer(8))]),
+            D::Record(vec![("limit".into(), D::Integer)]),
+        ),
+        &mut ample(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.data(),
+        &V::Record(vec![("limit".into(), V::Integer(10))])
+    );
+    assert!(matches!(result, V::Declared { .. }));
+}
+
+#[test]
+fn record_update_failures_follow_written_evaluation_order() {
+    let error = run_query(
+        r#"(require(false, {"a": 1, "b": 2}, "base")) with {b: 1 div 0}"#,
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("base"), "{error}");
+    let error = run_query(
+        r#"{"a": 1, "b": 2} with {b: require(false, 1, "first"), a: 1 div 0}"#,
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("first"), "{error}");
+    let error = run_query(
+        r#"{"a": 1, "b": 2} with {a: 1, b: a}"#,
+        V::Absent,
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("undefined binding: a"), "{error}");
+}

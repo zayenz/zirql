@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-106"
 key = "immutable-record-updates"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -27,10 +27,10 @@ Record rebuilding is currently explicit. Start at src/value.rs, src/value/execut
 
 ## Done when
 
-- [ ] Textual record with {field: expression, ...} and its callable equivalent replace existing string fields only, preserve field order and leave the original value and retained aliases unchanged.
-- [ ] Evaluate the base once, then update expressions in written order in surrounding scope; updates do not create sequential field bindings. Missing or duplicate target fields fail. Result admission respects established record contracts.
-- [ ] An example reuses both original and updated capacity records. Focused coverage demonstrates order, alias preservation including native fields, and missing/duplicate/type refusal.
-- [ ] Update the relevant public language guide and callable/embedding documentation with the implemented contract, supported host/example entry point, limitations and a runnable example with expected output. Document necessary consumer adoption separately.
+- [x] Textual record with {field: expression, ...} and its callable equivalent replace existing string fields only, preserve field order and leave the original value and retained aliases unchanged.
+- [x] Evaluate the base once, then update expressions in written order in surrounding scope; updates do not create sequential field bindings. Missing or duplicate target fields fail. Result admission respects established record contracts.
+- [x] An example reuses both original and updated capacity records. Focused coverage demonstrates order, alias preservation including native fields, and missing/duplicate/type refusal.
+- [x] Update the relevant public language guide and callable/embedding documentation with the implemented contract, supported host/example entry point, limitations and a runnable example with expected output. Document necessary consumer adoption separately.
 
 ## Validation
 
@@ -40,3 +40,12 @@ Record rebuilding is currently explicit. Start at src/value.rs, src/value/execut
 - cargo test --workspace
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Implemented immutable textual/callable record updates with ordered evaluation, original field order, alias/native retention and explicit schema admission. Added capacity and API documentation. Independent verification passed without findings at Wf14bbf541f30a221.
+
+Validation:
+
+- Formatting, fatal workspace Clippy, workspace tests, diff whitespace and zdev consistency checks passed.
+- Focused order/alias/native/missing/duplicate/schema controls passed; exact documented capacity output reproduced; final snapshot comparison equal.

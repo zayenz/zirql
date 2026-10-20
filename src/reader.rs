@@ -2444,7 +2444,17 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let mut chain = 0;
         loop {
             self.reader.skip_trivia()?;
-            if minimum <= 10 && self.reader.consume('[') {
+            if minimum <= 10 && self.reader.keyword("with") {
+                let start = left.value().range.start;
+                let fields = self.update_fields(depth + chain + 1)?;
+                left = ValueGuard::new(self.node(
+                    K::With {
+                        record: Box::new(left.into_value()),
+                        fields,
+                    },
+                    start..self.reader.position(),
+                )?);
+            } else if minimum <= 10 && self.reader.consume('[') {
                 let index = ValueGuard::new(self.expression(0, depth + 1)?);
                 let index = if self.reader.consume(',') {
                     let start = index.value().range.start;
@@ -3097,6 +3107,39 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             range,
         );
         self.native_tail(source, depth, true)
+    }
+    fn update_fields(
+        &mut self,
+        depth: usize,
+    ) -> Result<crate::ProjectionFields<ReadExpression<H>>, QueryError> {
+        let start = self.reader.position();
+        self.reader.expect('{')?;
+        let mut record = ValueGuard::new(Located::new(K::Record(Vec::new()), start..start));
+        if !self.reader.consume('}') {
+            loop {
+                self.reader.skip_trivia()?;
+                let label = if self.reader.remaining().starts_with('"') {
+                    self.string()?
+                } else {
+                    self.name()?
+                };
+                self.reader.expect(':')?;
+                let value = ValueGuard::new(self.expression(0, depth + 1)?);
+                self.slots::<(Located<String>, ValueExpression<ReadExpression<H>>)>(1)?;
+                let K::Record(fields) = &mut record.value_mut().value else {
+                    unreachable!("retained update fields")
+                };
+                fields.push((label, value.into_value()));
+                if self.reader.consume('}') {
+                    break;
+                }
+                self.reader.expect(',')?;
+            }
+        }
+        let K::Record(fields) = record.into_value().value else {
+            unreachable!("retained update fields")
+        };
+        Ok(fields)
     }
     fn fields(
         &mut self,
@@ -4932,6 +4975,11 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 arguments: values, ..
             } => {
                 pending.extend(values);
+                continue;
+            }
+            K::With { record, fields } => {
+                pending.push(*record);
+                pending.extend(fields.into_iter().map(|(_, value)| value));
                 continue;
             }
             K::Record(fields) => {
