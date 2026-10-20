@@ -2,5 +2,6 @@ schema_version = 1
 tag = "base"
 title = "Purpose-built query languages"
 objective = "Share bounded query execution and comprehension semantics between Zirium and Zincite while retaining natural host syntax and native results."
-mode = "trunk"
+branch = "feature/extensions"
 lifecycle = "open"
+base_commit = "a472b50fc56bc97e382beff9d904d7af06500a31"
