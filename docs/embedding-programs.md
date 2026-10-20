@@ -461,3 +461,69 @@ State and iteration locals release on transfer, normal exit and failure.
 Immutable outer aliases and selected native children keep their original owners.
 A failed operand or admission never installs a partial next state. Work and
 result spending remain cumulative; releasing state does not refund either.
+
+## Scoped mapping in Rust
+
+`ValueExpressionKind::Map` and `FlatMap` take an `array` expression and an
+`argument: PredicateArgument<Q>`. The argument's optional pattern matches each
+item strictly. Its body is an ordinary value expression; the enclosing stage
+sets its result contract. `Map` accepts any supported value, while `FlatMap`
+requires positional sequence results. `PredicateArgument` is a scoped body,
+not a first-class function value.
+
+This callable example maps two integers without a text frontend:
+
+```rust
+use zirql::{
+    Bindings, Budget, ConstructedValue as V, Located, PredicateArgument,
+    ProgramLimits, ValueExpression, ValueExpressionKind as K, evaluate_value,
+};
+
+let expression: ValueExpression = Located::new(K::Map {
+    array: Box::new(Located::new(K::Literal(V::Array(vec![
+        V::Integer(2), V::Integer(3),
+    ])), 0..6)),
+    argument: PredicateArgument {
+        argument: None,
+        body: Box::new(Located::new(K::PredicateSubject, 13..14)),
+    },
+}, 0..15);
+let result = evaluate_value(&expression, &Bindings::default(),
+    &mut Budget::for_program(ProgramLimits {
+        work: 10_000, results: 1_000, nesting: 16, stream_items: 100,
+    })).unwrap();
+assert_eq!(result, V::Array(vec![V::Integer(2), V::Integer(3)]));
+```
+
+Use `ValueSuffix::Map` or `FlatMap` with `lower_value_suffix` when a host already
+has a source value tree. `read_value_suffix` reads their common textual forms,
+including pattern headers and lexical captures. Preserve the supplied ranges
+and remaining nesting allowance. Bare `map(...)` and `flat_map(...)` use the
+constructed current-input hooks.
+
+Native function requests require `ProjectionHost::positional_view_kind` and
+`ProgramHost::positional_view` to agree on positional sequence storage and its
+element kind. Opaque native selections have no implicit positional meaning.
+`FunctionHost::construct_list` and `ProgramHost::construct_record` retain native
+children in mapped reports. Bodies run once per item through the shared subject
+scope and comprehension runner; nested scopes rebind `_` while explicit outer
+names retain their handles and source coordinates. Saved reports retain the
+kinds needed by later native expressions. Every body receives preflight even
+when its input is empty. Iteration, intermediate construction, copies and output
+append operations share one budget; stream limits bound the expanded result.
+A failed request returns no partial report.
+
+## Consumer adoption
+
+The word and CSV examples expose these stages through the common value reader.
+Zincite and Zirium need frontend routing to the shared `Map`/`FlatMap` nodes
+before their query surfaces can advertise the same syntax. Their adapters must
+supply positional type/value views and native construction hooks for their own
+sequences and report values. Domain projections remain explicit.
+
+Zincite retains MiniZinc types, model facts and its Data expression/edit policy.
+A capacity report like the local example needs the host's capacity and demand
+projections before it can read model-backed values. Zirium retains MLIR kinds,
+handle identity and source coordinates. Each consumer also owns its rendering
+and JSON policy for retained handles. The ordinary mapping operations do not
+extend a symbolic expression subset.

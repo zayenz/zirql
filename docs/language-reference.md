@@ -199,7 +199,7 @@ not turn its construction into a lazy traversal.
 
 ## Constructed pipelines
 
-The common reader accepts constructed filter/count and collection stages:
+The common reader accepts constructed filtering, mapping and collection stages:
 
 ```zirql
 {"beginning_with_a": filter(starts_with(_, "a")) | count, "total": count}
@@ -235,6 +235,31 @@ This returns `[[2,3]]`; grouping `outer.items` gives the same result. A nested
 filter gives `_` its current element and keeps named outer arguments available.
 Native fields retain their host's stage meanings and native values. See [collection pipelines](values.md#constructed-collection-pipelines)
 for supported scalar kinds, empty results and grouping in larger expressions.
+
+### Map and flat_map
+
+`map(pattern => expression)` transforms each positional item once. The unnamed
+form accepts an expression using `_` in the same scope. For example,
+`[2, 3] | map(_ + 1)` returns `[3, 4]`. A body can return a scalar, record,
+collection or supported native value.
+
+`flat_map` requires each body result to be a positional sequence and concatenates
+one level in source order: `[2, 3] | flat_map([_, _ + 10])` returns
+`[2, 12, 3, 13]`. Neither stage implicitly iterates sets, dictionaries, keyed
+arrays, tuples or opaque native selections. Native sequences need explicit
+positional host views. Both stages return eager positional sequences.
+
+Nested arguments rebind `_`; named outer arguments remain lexical. Patterns use
+the existing strict mismatch and no-shadowing rules. Every written body receives
+scope, type and purity checks before iteration, including on empty input. Source
+traversal, body construction and appended results spend the same request budget;
+stream limits also apply to the expanded output. Failure returns no partial
+result. Bare `map(...)` and `flat_map(...)` use the host's constructed input.
+
+The [capacity report](values.md#construct-a-capacity-report) runs with the word
+example; the [CSV report](csv.md#map-people-within-each-team) uses named tables.
+These are Zirql entry points. Consumer frontend adoption is described separately
+in [embedding programs](embedding-programs.md#consumer-adoption).
 
 ## Pipelines and native data
 

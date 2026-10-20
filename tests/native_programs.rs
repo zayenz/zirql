@@ -12389,3 +12389,163 @@ fn constructed_dictionary_children_of_native_values_support_all_lookup_forms() {
     assert_eq!(values[2].data(), &V::Boolean(true));
     zirql::dispose_native_value(entry);
 }
+
+#[test]
+fn scoped_mapping_retains_native_handles_in_saved_nested_reports() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, PatternKind as P,
+        PredicateArgument, ValueExpressionKind as K,
+    };
+    let source = String::from("ash apple");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 1_000_000,
+        results: 100_000,
+        nesting: 64,
+        stream_items: 100,
+    });
+    let bindings = Bindings::new([
+        (
+            at("nodes".into(), 1),
+            SourceValue::Sequence {
+                values: vec![word_at(&source, 4..9, 0), word_at(&source, 0..3, 0)],
+                element: DeclaredType::Native(SourceKind::Words),
+            },
+        ),
+        (
+            at("empty".into(), 2),
+            SourceValue::Sequence {
+                values: vec![],
+                element: DeclaredType::Native(SourceKind::Words),
+            },
+        ),
+        (at("opaque".into(), 3), word_at(&source, 0..3, 0)),
+    ])
+    .unwrap();
+    let v = worklist_value;
+    let n = worklist_name;
+    let native = |name: &str| {
+        v(K::NativeValue(Box::new(at(
+            ExpressionKind::Binding(name.into()),
+            5,
+        ))))
+    };
+    let field = |value, name: &str| {
+        v(K::Field {
+            value: Box::new(value),
+            field: at(name.into(), 6),
+        })
+    };
+    let subject = || v(K::PredicateSubject);
+    let mapped = v(K::Map {
+        array: Box::new(native("nodes")),
+        argument: PredicateArgument {
+            argument: None,
+            body: Box::new(v(K::Record(vec![(at("native".into(), 7), subject())]))),
+        },
+    });
+    let expression = v(K::Block {
+        bindings: vec![(at(P::Name(at("report".into(), 10)), 10), mapped)],
+        value: Box::new(v(K::FlatMap {
+            array: Box::new(n("report")),
+            argument: PredicateArgument {
+                argument: Some(at(P::Name(at("row".into(), 11)), 11)),
+                body: Box::new(v(K::Map {
+                    array: Box::new(v(K::Array(vec![
+                        v(K::Literal(V::Integer(2))),
+                        v(K::Literal(V::Integer(1))),
+                    ]))),
+                    argument: PredicateArgument {
+                        argument: None,
+                        body: Box::new(v(K::Record(vec![
+                            (at("original".into(), 12), field(n("row"), "native")),
+                            (at("copy".into(), 13), subject()),
+                        ]))),
+                    },
+                })),
+            },
+        })),
+    });
+    let result = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&expression, &bindings)
+    .unwrap();
+    let SourceValue::Sequence { values, .. } = result else {
+        panic!("native report sequence")
+    };
+    assert_eq!(values.len(), 4);
+    for (value, (range, copy)) in values
+        .iter()
+        .zip([(4..9, 2), (4..9, 1), (0..3, 2), (0..3, 1)])
+    {
+        let SourceValue::Record(record) = value else {
+            panic!("native record")
+        };
+        let SourceValue::Words(words) = &record.fields[0].1 else {
+            panic!("retained native word")
+        };
+        assert_eq!(words[0].range, range.clone());
+        assert_eq!(words[0].text.as_ptr(), source[range].as_ptr());
+        assert_eq!(words[0].side, 0);
+        assert_eq!(
+            record.fields[1].1,
+            SourceValue::Constructed(V::Integer(copy))
+        );
+    }
+    let invalid = v(K::Reduce {
+        operator: zirql::ValueReducer::Length,
+        array: Box::new(v(K::FlatMap {
+            array: Box::new(native("empty")),
+            argument: PredicateArgument {
+                argument: None,
+                body: Box::new(native("opaque")),
+            },
+        })),
+    });
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&invalid, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(&error.error, EvaluationError::Core(error) if error.message.contains("positional")),
+        "{error:?}"
+    );
+    let invalid = v(K::Map {
+        array: Box::new(native("opaque")),
+        argument: PredicateArgument {
+            argument: None,
+            body: Box::new(subject()),
+        },
+    });
+    let error = FunctionRequest::prepare(
+        &[],
+        &SourceHost,
+        &mut context,
+        &mut budget,
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&invalid, &bindings)
+    .unwrap_err();
+    assert!(
+        matches!(&error.error, EvaluationError::Core(error) if error.message.contains("positional")),
+        "{error:?}"
+    );
+    assert!(context.emissions.is_empty());
+}

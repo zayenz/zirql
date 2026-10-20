@@ -1282,6 +1282,29 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         .map(|d| DeclaredType::Sequence(Box::new(d))),
                     None => None,
                 },
+                ValueExpressionKind::Map { array, argument }
+                | ValueExpressionKind::FlatMap { array, argument } => self.mapping_declaration(
+                    array,
+                    argument,
+                    matches!(value.value, ValueExpressionKind::FlatMap { .. }),
+                    budget,
+                )?,
+                ValueExpressionKind::Record(fields) => {
+                    let mut types = Vec::new();
+                    for (name, field) in fields {
+                        let Some(declaration) = self.value_declaration(field, budget)? else {
+                            return Ok(None);
+                        };
+                        budget_name(&name.value, budget, &name.range)?;
+                        crate::projection::admit_slots::<(String, DeclaredType<Kind<C, H>>)>(
+                            1,
+                            budget,
+                            &name.range,
+                        )?;
+                        types.push((name.value.clone(), declaration));
+                    }
+                    Some(DeclaredType::Record(types))
+                }
                 ValueExpressionKind::Tuple(values) => {
                     let mut types = Vec::new();
                     for v in values {
@@ -1301,6 +1324,86 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 _ => self.local_kind(value, budget)?.map(DeclaredType::Native),
             })
         })
+    }
+
+    fn positional_element_kind(
+        &self,
+        kind: &Kind<C, H>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Kind<C, H>, QueryError> {
+        if let Some(element) = self.host.positional_view_kind(kind, budget, range)? {
+            return Ok(element);
+        }
+        let location = Location::Query(range.clone());
+        let types = self
+            .host
+            .scalar_types(kind, budget, range)?
+            .ok_or_else(|| {
+                QueryError::query(range.clone(), "map and flat_map need positional sequences")
+            })?;
+        let mut elements = Vec::new();
+        for ty in types {
+            for element in crate::value::positional_elements(ty, budget, &location)? {
+                crate::projection::admit_slots::<ValueType>(1, budget, range)?;
+                elements.push(element);
+            }
+        }
+        Ok(self.host.constructed_kind(elements))
+    }
+
+    fn mapping_declaration(
+        &mut self,
+        array: &ValueExpression<Query<C, H>>,
+        argument: &crate::PredicateArgument<Query<C, H>>,
+        flatten: bool,
+        budget: &mut Budget,
+    ) -> Result<Option<DeclaredType<Kind<C, H>>>, QueryError> {
+        let kind = self.local_kind(array, budget)?;
+        let element = match kind {
+            Some(kind) => Some(self.positional_element_kind(&kind, budget, &array.range)?),
+            None => match self.value_declaration(array, budget)? {
+                Some(DeclaredType::Sequence(element) | DeclaredType::Array(element)) => {
+                    Some(self.host.declaration_kind(&element, budget, &array.range)?)
+                }
+                _ => None,
+            },
+        };
+        self.enter_scope(budget, &argument.body.range)?;
+        let result = (|| {
+            let internal = crate::value::PREDICATE_SUBJECT;
+            self.scope.remove(internal);
+            self.generator_kinds.remove(internal);
+            self.contracts.remove(internal);
+            if let Some(element) = &element {
+                budget_name(internal, budget, &array.range)?;
+                self.scope.insert(internal.to_owned(), element.clone());
+            }
+            if let Some(pattern) = &argument.argument {
+                self.pattern_kind(PatternRef::Pattern(pattern), element, None, budget)?;
+            }
+            self.value_declaration(&argument.body, budget)
+        })();
+        self.leave_scope();
+        let Some(body) = result? else { return Ok(None) };
+        let element =
+            if flatten {
+                match body {
+                    DeclaredType::Sequence(element) | DeclaredType::Array(element) => *element,
+                    DeclaredType::Native(kind) => DeclaredType::Native(
+                        self.positional_element_kind(&kind, budget, &argument.body.range)?,
+                    ),
+                    _ => {
+                        return Err(QueryError::query(
+                            argument.body.range.clone(),
+                            "flat_map body needs a positional sequence",
+                        ));
+                    }
+                }
+            } else {
+                body
+            };
+        Ok(Some(DeclaredType::Sequence(Box::new(element))))
     }
 
     // Retain already-known native kinds through the same selected-value forms.
@@ -1564,6 +1667,9 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 | ValueExpressionKind::PushBackAll { .. }
                 | ValueExpressionKind::Insert { .. }
                 | ValueExpressionKind::Array(_)
+                | ValueExpressionKind::Record(_)
+                | ValueExpressionKind::Map { .. }
+                | ValueExpressionKind::FlatMap { .. }
                 | ValueExpressionKind::Tuple(_) => match self.value_declaration(value, budget)? {
                     Some(d)
                         if crate::runtime_types::contains_native(
@@ -1812,6 +1918,15 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
                 let (id, _) = self.function(step, budget)?;
                 let d = accumulator_state(&self.declarations[id], step, budget)?;
                 self.expect(initial, d, budget)?;
+            }
+            ValueExpressionKind::Map { array, argument }
+            | ValueExpressionKind::FlatMap { array, argument } => {
+                self.mapping_declaration(
+                    array,
+                    argument,
+                    matches!(expression.value, ValueExpressionKind::FlatMap { .. }),
+                    budget,
+                )?;
             }
             ValueExpressionKind::Loop { states, body } => {
                 let mut types = Vec::new();
@@ -2146,6 +2261,34 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
             )?),
         };
         let internal = crate::value::PREDICATE_SUBJECT;
+        budget_name(internal, budget, &source.range)?;
+        self.scope.insert(internal.to_owned(), kind.clone());
+        self.generator_kinds
+            .insert(internal.to_owned(), kind.clone());
+        if let Some(pattern) = argument {
+            self.pattern_kind(PatternRef::Pattern(pattern), Some(kind), None, budget)?;
+        }
+        Ok(())
+    }
+    fn prepare_mapping(
+        &mut self,
+        argument: Option<&Pattern>,
+        source: &ValueExpression<Query<C, H>>,
+        types: &[ValueType],
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let kind = match self.local_kind(source, budget)? {
+            Some(kind) => self.positional_element_kind(&kind, budget, &source.range)?,
+            None => self.host.constructed_kind(copy_value_types(
+                types,
+                budget,
+                Location::Query(source.range.clone()),
+            )?),
+        };
+        let internal = crate::value::PREDICATE_SUBJECT;
+        self.scope.remove(internal);
+        self.generator_kinds.remove(internal);
+        self.contracts.remove(internal);
         budget_name(internal, budget, &source.range)?;
         self.scope.insert(internal.to_owned(), kind.clone());
         self.generator_kinds
@@ -3442,6 +3585,27 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
             }
             PreparedKind::Array(_) => {
                 return execution::Host::finish_array(self, values, budget, &location);
+            }
+            PreparedKind::Record(fields) => {
+                let mut native = false;
+                for value in &values {
+                    native |=
+                        execution::Host::constructed(self, value, budget, &location)?.is_none();
+                }
+                if !native {
+                    return execution::apply(expression, values, self, budget);
+                }
+                crate::projection::admit_slots::<(String, H::Value)>(values.len(), budget, range)?;
+                let mut output = Vec::with_capacity(values.len());
+                for ((name, _), value) in fields.iter().zip(values) {
+                    budget_name(&name.value, budget, &name.range)?;
+                    output.push((
+                        name.value.clone(),
+                        self.finish_value(value, budget, &location)?,
+                    ));
+                }
+                self.host
+                    .construct_record(output, self.context, budget, range)?
             }
             PreparedKind::Tuple(_) if values.iter().any(|v| matches!(v.data, Data::Native(_))) => {
                 let mut native = false;

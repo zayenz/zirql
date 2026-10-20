@@ -7518,3 +7518,158 @@ fn scalar_predicate_operands_defer_compatible_kinds_and_keep_container_constrain
         .is_err()
     );
 }
+
+fn run_mapping(source: &str, value: V, allowance: &mut Budget) -> Result<V, zirql::QueryError> {
+    let mut host = WordInput {
+        value,
+        unknown: false,
+    };
+    let mut reader = zirql::ArgumentReader::new(source, 0)?;
+    let expression = zirql::read_value_expression(&mut reader, &mut host, allowance, 64)?;
+    assert!(reader.remaining().trim().is_empty(), "{source}");
+    let types = BTreeMap::from([(
+        "words".into(),
+        vec![constructed_value_type(
+            &host.value,
+            allowance,
+            Location::Query(0..1),
+        )?],
+    )]);
+    let result = zirql::evaluate_query_value(&expression, &types, &mut host, allowance);
+    zirql::dispose_native_value(expression);
+    result
+}
+
+#[test]
+fn scoped_mapping_constructs_ordered_capacity_reports() {
+    let capacities = || {
+        V::Array(vec![
+            V::Record(vec![
+                ("name".into(), V::String("cpu".into())),
+                ("limit".into(), V::Integer(8)),
+                (
+                    "demands".into(),
+                    V::Array(vec![V::Integer(2), V::Integer(3)]),
+                ),
+            ]),
+            V::Record(vec![
+                ("name".into(), V::String("gpu".into())),
+                ("limit".into(), V::Integer(6)),
+                ("demands".into(), V::Array(vec![V::Integer(4)])),
+            ]),
+        ])
+    };
+    let report = || {
+        record(vec![
+            ("capacity", field(name("c"), "name")),
+            ("demand", e(K::PredicateSubject)),
+            (
+                "remaining",
+                binary(
+                    B::Subtract,
+                    field(name("c"), "limit"),
+                    e(K::PredicateSubject),
+                ),
+            ),
+        ])
+    };
+    let expression = e(K::FlatMap {
+        array: Box::new(literal(capacities())),
+        argument: zirql::PredicateArgument {
+            argument: Some(binder("c")),
+            body: Box::new(e(K::Map {
+                array: Box::new(field(e(K::PredicateSubject), "demands")),
+                argument: zirql::PredicateArgument {
+                    argument: None,
+                    body: Box::new(report()),
+                },
+            })),
+        },
+    });
+    let expected = V::Array(
+        [("cpu", 2, 6), ("cpu", 3, 5), ("gpu", 4, 2)]
+            .into_iter()
+            .map(|(capacity, demand, remaining)| {
+                V::Record(vec![
+                    ("capacity".into(), V::String(capacity.into())),
+                    ("demand".into(), V::Integer(demand)),
+                    ("remaining".into(), V::Integer(remaining)),
+                ])
+            })
+            .collect(),
+    );
+    assert_eq!(evaluate(&expression).unwrap(), expected);
+    assert!(
+        free_value_names(&expression, &BTreeMap::new(), &mut ample())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(run_mapping(r#"flat_map(c => _.demands | map({"capacity": c.name, "demand": _, "remaining": c.limit - _}))"#, capacities(), &mut ample()).unwrap(), expected);
+    assert_eq!(
+        run_mapping(
+            "map([_]) | flat_map(_) | map(demand => demand + 1)",
+            V::Array(vec![V::Integer(2), V::Integer(3)]),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![V::Integer(3), V::Integer(4)])
+    );
+}
+
+#[test]
+fn mapping_preflights_empty_bodies_and_refuses_non_sequences_and_excess_expansion() {
+    let empty = || {
+        declared(
+            V::Array(vec![]),
+            D::Sequence(Box::new(D::Record(vec![("demand".into(), D::Integer)]))),
+        )
+    };
+    assert_eq!(
+        run_mapping("map(_.demand + 1)", empty(), &mut ample()).unwrap(),
+        V::Array(vec![])
+    );
+    let error = run_mapping("map(_.missing)", empty(), &mut ample()).unwrap_err();
+    assert!(
+        matches!(error.location, Location::Query(ref range) if *range == (4..13)),
+        "{error}"
+    );
+    let error = run_mapping("flat_map(_.demand)", empty(), &mut ample()).unwrap_err();
+    assert!(error.message.contains("positional"), "{error}");
+    let error = run_mapping(
+        "map([first, second] => first)",
+        V::Array(vec![V::Array(vec![V::Integer(1)])]),
+        &mut ample(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("pattern"), "{error}");
+    let error = run_mapping("[1] | flat_map({2, 3})", V::Array(vec![]), &mut ample()).unwrap_err();
+    assert!(error.message.contains("positional"), "{error}");
+    let error = run_mapping("{1, 2} | map(_)", V::Array(vec![]), &mut ample()).unwrap_err();
+    assert!(error.message.contains("positional"), "{error}");
+    let error = run_mapping("[1] | flat_map([2: 3])", V::Array(vec![]), &mut ample()).unwrap_err();
+    assert!(error.message.contains("positional"), "{error}");
+    assert!(
+        run_mapping(
+            "[1] | flat_map([i for i in 1..16])",
+            V::Array(vec![]),
+            &mut budget(100_000, 150, 64)
+        )
+        .is_ok()
+    );
+    let error = run_mapping(
+        "[1, 2] | flat_map([i for i in 1..16])",
+        V::Array(vec![]),
+        &mut budget(100_000, 150, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::ResultLimit);
+    let mut limited = Budget::for_program(ProgramLimits {
+        stream_items: 3,
+        work: 100_000,
+        results: 10_000,
+        nesting: 64,
+    });
+    let error =
+        run_mapping("[1, 2] | flat_map([_, _])", V::Array(vec![]), &mut limited).unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::ItemLimit);
+}

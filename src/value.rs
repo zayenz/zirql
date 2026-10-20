@@ -281,13 +281,19 @@ pub enum SortSelector {
 
 pub type ValueExpression<Q = ()> = Located<ValueExpressionKind<Q>>;
 
+enum SubjectSource {
+    Value,
+    Filter,
+    Map,
+}
+
 // This slot cannot be written as an ordinary language identifier.
 pub(crate) const PREDICATE_SUBJECT: &str = "\0predicate";
 
-/// One scoped body with an optional pattern for the current predicate subject.
-/// Predicates require a Boolean; existing domain leaf arguments retain their
-/// own scalar contract through `bind_value`. `_` reads the nearest subject frame,
-/// including inside ordinary guards.
+/// One scoped expression body with an optional pattern for its current subject.
+/// Predicates require a Boolean; map bodies and domain leaf arguments retain
+/// their own result contract through the same subject scope. `_` reads the
+/// nearest subject frame, including inside ordinary guards.
 #[derive(Debug, PartialEq)]
 pub struct PredicateArgument<Q = ()> {
     /// Match the subject once and install all successful names together.
@@ -405,9 +411,9 @@ pub enum ValueExpressionKind<Q = ()> {
     /// Extract exactly one positional child without copying it.
     One(Box<ValueExpression<Q>>),
     Name(String),
-    /// Read the nearest predicate subject. Ordinary bindings cannot supply it.
+    /// Read the nearest scoped argument subject. Ordinary bindings cannot supply it.
     PredicateSubject,
-    /// Scope an existing native predicate leaf's non-Boolean value argument.
+    /// Evaluate a scoped expression body with one subject and optional pattern.
     SubjectScope {
         subject: Box<ValueExpression<Q>>,
         argument: PredicateArgument<Q>,
@@ -499,6 +505,16 @@ pub enum ValueExpressionKind<Q = ()> {
     Filter {
         array: Box<ValueExpression<Q>>,
         predicate: PredicateArgument<Q>,
+    },
+    /// Transform every positional item with a scoped expression, in input order.
+    Map {
+        array: Box<ValueExpression<Q>>,
+        argument: PredicateArgument<Q>,
+    },
+    /// Concatenate positional body results exactly one level, in input order.
+    FlatMap {
+        array: Box<ValueExpression<Q>>,
+        argument: PredicateArgument<Q>,
     },
     /// Stably sort an array, set or dictionary, retaining its kind.
     /// Without a selector, arrays/sets use values and dictionaries use keys.
@@ -879,6 +895,17 @@ pub trait ValueQueryHost<Q> {
         _budget: &mut Budget,
     ) -> Result<(), QueryError> {
         Ok(())
+    }
+    /// Retain explicit positional element kinds for map and flat_map scopes.
+    /// Native hosts distinguish positional views from opaque selections here.
+    fn prepare_mapping(
+        &mut self,
+        argument: Option<&Pattern>,
+        source: &ValueExpression<Q>,
+        types: &[ValueType],
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        self.prepare_predicate(argument, source, types, true, budget)
     }
     fn query_types(
         &mut self,
@@ -3160,7 +3187,12 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         location: &Location,
         transfer: Option<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
-        self.queries.prepare_computation(expression, budget)?;
+        if !matches!(
+            expression.value,
+            ValueExpressionKind::Map { .. } | ValueExpressionKind::FlatMap { .. }
+        ) {
+            self.queries.prepare_computation(expression, budget)?;
+        }
         match &expression.value {
             ValueExpressionKind::Queue { items, .. } => {
                 self.walk(items, budget)?;
@@ -3335,11 +3367,12 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             }
             ValueExpressionKind::SubjectScope { subject, argument } => {
                 let types = self.walk(subject, budget)?;
-                self.scoped_types(argument, subject, &types, false, budget)
+                self.scoped_types(argument, subject, &types, SubjectSource::Value, budget)
             }
             ValueExpressionKind::PredicateScope { subject, predicate } => {
                 let types = self.walk(subject, budget)?;
-                let result = self.scoped_types(predicate, subject, &types, false, budget)?;
+                let result =
+                    self.scoped_types(predicate, subject, &types, SubjectSource::Value, budget)?;
                 predicate_types(&result, budget, &predicate.body.range)?;
                 one_type(ValueType::Boolean, budget, location)
             }
@@ -3884,10 +3917,48 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 if elements.is_empty() {
                     push_metadata(&mut elements, ValueType::Unestablished, budget, location)?;
                 }
-                let result = self.scoped_types(predicate, array, &elements, true, budget)?;
+                let result =
+                    self.scoped_types(predicate, array, &elements, SubjectSource::Filter, budget)?;
                 predicate_types(&result, budget, &predicate.body.range)?;
                 one_type(
                     ValueType::Array(ArrayType::Elements(elements)),
+                    budget,
+                    location,
+                )
+            }
+            ValueExpressionKind::Map { array, argument }
+            | ValueExpressionKind::FlatMap { array, argument } => {
+                let mut elements = Vec::new();
+                for ty in self.walk(array, budget)? {
+                    append_types(
+                        &mut elements,
+                        positional_elements(ty, budget, location)?,
+                        budget,
+                        location,
+                    )?;
+                }
+                if elements.is_empty() {
+                    push_metadata(&mut elements, ValueType::Unestablished, budget, location)?;
+                }
+                let result =
+                    self.scoped_types(argument, array, &elements, SubjectSource::Map, budget)?;
+                let mut output = Vec::new();
+                if matches!(expression.value, ValueExpressionKind::FlatMap { .. }) {
+                    let body_location = Location::Query(argument.body.range.clone());
+                    for ty in result {
+                        append_types(
+                            &mut output,
+                            positional_elements(ty, budget, &body_location)?,
+                            budget,
+                            &body_location,
+                        )?;
+                    }
+                } else {
+                    output = result;
+                }
+                self.queries.prepare_computation(expression, budget)?;
+                one_type(
+                    ValueType::Array(ArrayType::Elements(output)),
                     budget,
                     location,
                 )
@@ -4235,7 +4306,7 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         predicate: &'a PredicateArgument<Q>,
         source: &'a ValueExpression<Q>,
         types: &[ValueType],
-        element: bool,
+        source_kind: SubjectSource,
         budget: &mut Budget,
     ) -> Result<Vec<ValueType>, QueryError> {
         let range = &predicate.body.range;
@@ -4252,13 +4323,21 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             if let Some(pattern) = &predicate.argument {
                 self.pattern(pattern, types, true, budget)?;
             }
-            self.queries.prepare_predicate(
-                predicate.argument.as_ref(),
-                source,
-                types,
-                element,
-                budget,
-            )?;
+            match source_kind {
+                SubjectSource::Map => self.queries.prepare_mapping(
+                    predicate.argument.as_ref(),
+                    source,
+                    types,
+                    budget,
+                )?,
+                SubjectSource::Value | SubjectSource::Filter => self.queries.prepare_predicate(
+                    predicate.argument.as_ref(),
+                    source,
+                    types,
+                    matches!(source_kind, SubjectSource::Filter),
+                    budget,
+                )?,
+            }
             self.walk(&predicate.body, budget)
         })();
         self.locals.truncate(saved);
@@ -5911,6 +5990,22 @@ fn group_by(
         items.push(row);
     }
     Ok(ConstructedValue::Array(groups))
+}
+
+pub(crate) fn positional_elements(
+    ty: ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    match shape_type(ty, budget, location)? {
+        ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
+        | ValueType::ArrayKind(elements) => Ok(elements),
+        ValueType::Unestablished => one_type(ValueType::Unestablished, budget, location),
+        _ => Err(error(
+            location,
+            "map and flat_map need positional sequences",
+        )),
+    }
 }
 
 // Filtering loses positions while preserving established element facts.

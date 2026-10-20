@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 111
-- Ready: 10
+- Ready: 9
 - Blocked: 0
-- Done: 101
+- Done: 102
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -110,7 +110,7 @@
 | [base-099](tasks/099-share-retained-csv-tables-through-the-existing-binding-api.md) | Share retained CSV tables through the existing binding API | done | — |
 | [base-100](tasks/100-tally-unordered-string-sets-in-constructed-word-queries.md) | Tally unordered string sets in constructed word queries | done | — |
 | [base-101](tasks/101-return-set-keyed-dictionaries-from-tally.md) | Return set-keyed dictionaries from tally | done | — |
-| [base-102](tasks/102-construct-sequence-results-with-scoped-map-and-flat-map-stag.md) | Construct sequence results with scoped map and flat_map stages | ready | — |
+| [base-102](tasks/102-construct-sequence-results-with-scoped-map-and-flat-map-stag.md) | Construct sequence results with scoped map and flat_map stages | done | — |
 | [base-103](tasks/103-select-matching-values-with-explicit-case-generators.md) | Select matching values with explicit case generators | ready | — |
 | [base-104](tasks/104-inspect-complete-windows-and-consecutive-runs.md) | Inspect complete windows and consecutive runs | ready | — |
 | [base-105](tasks/105-design-composed-relationship-paths-and-intermediate-captures.md) | Design composed relationship paths and intermediate captures | ready | — |

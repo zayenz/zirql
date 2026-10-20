@@ -1108,6 +1108,8 @@ pub fn is_common_value_call(name: &str) -> bool {
 #[derive(Debug, PartialEq)]
 pub enum ValueSuffix<Q = ()> {
     Filter(PredicateArgument<Q>),
+    Map(PredicateArgument<Q>),
+    FlatMap(PredicateArgument<Q>),
     Count,
     Sort,
     Unique,
@@ -1125,7 +1127,10 @@ pub fn lower_value_suffix<S, O, E>(
 ) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
     if matches!(value.value, K::Tally(_)) {
         dispose_native_value(value);
-        if let ValueSuffix::Filter(predicate) = stage.value {
+        if let ValueSuffix::Filter(predicate)
+        | ValueSuffix::Map(predicate)
+        | ValueSuffix::FlatMap(predicate) = stage.value
+        {
             if let Some(pattern) = predicate.argument {
                 crate::dispose_pattern(pattern);
             }
@@ -1139,6 +1144,14 @@ pub fn lower_value_suffix<S, O, E>(
     let kind = match stage.value {
         ValueSuffix::Filter(predicate) => K::Filter {
             predicate,
+            array: Box::new(value),
+        },
+        ValueSuffix::Map(argument) => K::Map {
+            argument,
+            array: Box::new(value),
+        },
+        ValueSuffix::FlatMap(argument) => K::FlatMap {
+            argument,
             array: Box::new(value),
         },
         ValueSuffix::Count => K::Reduce {
@@ -1157,7 +1170,7 @@ pub fn lower_value_suffix<S, O, E>(
 }
 
 /// Continue a lowered value with common constructed collection stages.
-/// Lexical names and host syntax remain available inside scoped filters.
+/// Lexical names and host syntax remain available inside scoped stage bodies.
 ///
 /// # Errors
 /// Invalid stages, predicate syntax and exhausted allowances retain query ranges.
@@ -2704,7 +2717,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             return self.value_match(depth);
         }
         if !local && !self.host.is_binding(word.value) && !self.host.is_stage(word.value) {
-            if word.value == "filter" && probe.remaining().starts_with('(') {
+            if matches!(word.value, "filter" | "map" | "flat_map")
+                && probe.remaining().starts_with('(')
+            {
                 let name = self.name()?;
                 self.reader.expect('(')?;
                 let mut predicate =
@@ -2714,9 +2729,19 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 self.depth(depth + 1)?;
                 let input = self.node(K::CurrentInput, name.range)?;
                 return self.node(
-                    K::Filter {
-                        array: Box::new(input),
-                        predicate,
+                    match name.value.as_str() {
+                        "map" => K::Map {
+                            array: Box::new(input),
+                            argument: predicate,
+                        },
+                        "flat_map" => K::FlatMap {
+                            array: Box::new(input),
+                            argument: predicate,
+                        },
+                        _ => K::Filter {
+                            array: Box::new(input),
+                            predicate,
+                        },
                     },
                     start..self.reader.position(),
                 );
@@ -4420,13 +4445,18 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 ));
             }
             let suffix = match stage.value.as_str() {
-                "filter" => {
+                "filter" | "map" | "flat_map" => {
                     self.reader.expect('(')?;
                     let mut predicate = PredicateArgumentGuard(Some(
                         self.predicate_argument(depth + wrappers + 1)?,
                     ));
                     self.reader.expect(')')?;
-                    ValueSuffix::Filter(predicate.0.take().expect("retained predicate argument"))
+                    let argument = predicate.0.take().expect("retained scoped argument");
+                    match stage.value.as_str() {
+                        "map" => ValueSuffix::Map(argument),
+                        "flat_map" => ValueSuffix::FlatMap(argument),
+                        _ => ValueSuffix::Filter(argument),
+                    }
                 }
                 "count" => ValueSuffix::Count,
                 "sort" => ValueSuffix::Sort,
@@ -4758,6 +4788,14 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::Filter { array, predicate }
+            | K::Map {
+                array,
+                argument: predicate,
+            }
+            | K::FlatMap {
+                array,
+                argument: predicate,
+            }
             | K::PredicateScope {
                 subject: array,
                 predicate,

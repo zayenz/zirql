@@ -103,6 +103,37 @@ selected | count
 
 This prints `3`.
 
+## Map people within each team
+
+Use a checkout containing the mapping stages. This command visits teams in
+`teams.csv` order, filters matching active people, and maps each person to a
+report record. The inner `_` denotes a person; `t` captures the outer team.
+
+```sh
+cargo run --locked --example csv -- '
+teams | flat_map(t =>
+  people
+  | filter(_.team == t.id and _.active == "yes")
+  | map({"team": t.label, "person": _.name})
+)
+' \
+  people=examples/csv/people.csv teams=examples/csv/teams.csv
+```
+
+The exact output is:
+
+```json
+[{"team":"Runtime","person":"Barbara Liskov"},{"team":"Compiler","person":"Grace Hopper"},{"team":"Compiler","person":"Ada, Lovelace"}]
+```
+
+`flat_map` concatenates the per-team positional results once. Operations has no
+matching people and contributes no records; the two Compiler people retain
+file order. `map` alone would retain a nested sequence per team. Both stages
+are eager, validate written bodies on empty input, and share the request and
+stream limits. Their inputs and `flat_map` results must be positional sequences.
+The [capacity example](values.md#construct-a-capacity-report) uses the same stages
+on nested numeric data.
+
 ## Use your own CSV file
 
 Replace the fixture path with your file. Counting rows needs no column names:

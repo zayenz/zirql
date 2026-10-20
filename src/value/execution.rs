@@ -1182,6 +1182,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::PushBackAll { .. }
                                             | PreparedKind::Insert { .. }
                                             | PreparedKind::Array(_)
+                                            | PreparedKind::Record(_)
                                             | PreparedKind::Tuple(_)
                                             | PreparedKind::TupleAccess { .. }
                                             | PreparedKind::Tally { .. }
@@ -1938,8 +1939,18 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             ));
                                         }
                                     }
-                                    PreparedGenerator::In { binders, .. } => {
-                                        let value = generator_source(value, host, budget, &cl)?;
+                                    PreparedGenerator::In {
+                                        binders,
+                                        positional,
+                                        ..
+                                    } => {
+                                        let value = generator_source(
+                                            value,
+                                            *positional,
+                                            host,
+                                            budget,
+                                            &cl,
+                                        )?;
                                         let len = value.len();
                                         let mut count = 1usize;
                                         for _ in binders {
@@ -2131,6 +2142,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     }
                                 } else if let Output::Array(elements) = &mut *c.output.borrow_mut()
                                 {
+                                    budget.check_items(
+                                        sum(elements.len(), 1, &location)?,
+                                        location.clone(),
+                                    )?;
                                     budget.charge_results(1, location.clone())?;
                                     push_metadata(elements, value, budget, &location)?;
                                 } else {
@@ -3074,6 +3089,7 @@ fn append<Q, N, K>(
 
 fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
     mut value: ResultValue<'a, H, Q>,
+    positional: bool,
     host: &mut H,
     budget: &mut Budget,
     cl: &Location,
@@ -3082,6 +3098,28 @@ fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
     let contract = value.contract;
     Ok(match value.data {
         Data::Native(owner) => {
+            if positional {
+                let native = host.native_data(&owner, budget, cl)?;
+                let values = host
+                    .native_list(native)
+                    .ok_or_else(|| error(cl, "map and flat_map need positional sequences"))?;
+                budget.check_items(values.len(), cl.clone())?;
+                let mut items = metadata_vec(values.len(), budget, cl)?;
+                let element = contract.and_then(|contract| match contract {
+                    DeclaredType::Sequence(element) | DeclaredType::Array(element) => {
+                        Some(element.as_ref())
+                    }
+                    _ => None,
+                });
+                for index in 0..values.len() {
+                    budget.charge_results(1, cl.clone())?;
+                    items.push(Value {
+                        data: Data::Native(owner.child(NativeStep::List(index), budget, cl)?),
+                        contract: element,
+                    });
+                }
+                return Ok(GeneratorSource::Native(items));
+            }
             let values = host.subjects(owner, budget, cl)?;
             budget.check_items(values.len(), cl.clone())?;
             let mut items = metadata_vec(values.len(), budget, cl)?;
@@ -3119,6 +3157,12 @@ fn generator_source<'a, Q, H: Host<'a, Q> + ?Sized>(
             } else {
                 value
             };
+            if positional {
+                let ConstructedValue::Array(elements) = value.as_ref() else {
+                    return Err(error(cl, "map and flat_map need positional sequences").into());
+                };
+                budget.check_items(elements.len(), cl.clone())?;
+            }
             if !matches!(
                 value.as_ref(),
                 ConstructedValue::Array(_)

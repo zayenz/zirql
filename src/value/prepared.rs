@@ -210,11 +210,12 @@ pub(crate) struct PreparedArm<'a, Q> {
 }
 
 /// Ordered generator clauses. A missing `In` pattern is the private subject slot
-/// used to lower constructed filtering; user discards are wildcard patterns.
+/// used to lower filtering and mapping; user discards are wildcard patterns.
 /// Grouped `In` evaluates its source once and varies the last binder fastest.
 pub(crate) enum PreparedGenerator<'a, Q> {
     In {
         binders: Vec<Option<&'a Pattern>>,
+        positional: bool,
         source: PreparedValue<'a, Q>,
         filter: Option<PreparedValue<'a, Q>>,
     },
@@ -561,6 +562,7 @@ impl<'a> Preparation<'a> {
                     clauses.push(Located::new(
                         PreparedGenerator::In {
                             binders,
+                            positional: false,
                             source,
                             filter: Some(filter),
                         },
@@ -576,6 +578,15 @@ impl<'a> Preparation<'a> {
                         )),
                     }
                 }
+                ValueExpressionKind::Map { array, argument }
+                | ValueExpressionKind::FlatMap { array, argument } => self.mapping(
+                    array,
+                    argument,
+                    matches!(expression.value, ValueExpressionKind::FlatMap { .. }),
+                    queries,
+                    budget,
+                    &location,
+                )?,
                 ValueExpressionKind::Sort {
                     array,
                     selector,
@@ -782,6 +793,72 @@ impl<'a> Preparation<'a> {
             .transpose()
     }
 
+    fn mapping<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        array: &'a ValueExpression<Q>,
+        argument: &'a PredicateArgument<Q>,
+        flatten: bool,
+        queries: &mut H,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<PreparedKind<'a, Q>, QueryError> {
+        let source = self.resolve(array, queries, budget)?;
+        let saved = self.locals.len();
+        push_metadata(&mut self.locals, PREDICATE_SUBJECT, budget, location)?;
+        let subject = Located::new(
+            PreparedKind::Name(ReadSlot::Local(saved)),
+            array.range.clone(),
+        );
+        let body = self.predicate(argument, queries, budget, location)?;
+        self.locals.truncate(saved);
+        let scoped = Located::new(
+            PreparedKind::SubjectScope {
+                subject: Box::new(subject),
+                predicate: false,
+                argument: argument.argument.as_ref(),
+                body: Box::new(body),
+            },
+            argument.body.range.clone(),
+        );
+        let mut clauses = metadata_vec(if flatten { 2 } else { 1 }, budget, location)?;
+        let mut binders = metadata_vec(1, budget, location)?;
+        binders.push(None);
+        clauses.push(Located::new(
+            PreparedGenerator::In {
+                binders,
+                positional: true,
+                source,
+                filter: None,
+            },
+            array.range.clone(),
+        ));
+        let head = if flatten {
+            let mut binders = metadata_vec(1, budget, location)?;
+            binders.push(None);
+            clauses.push(Located::new(
+                PreparedGenerator::In {
+                    binders,
+                    positional: true,
+                    source: scoped,
+                    filter: None,
+                },
+                argument.body.range.clone(),
+            ));
+            Located::new(
+                PreparedKind::Name(ReadSlot::Local(saved + 1)),
+                argument.body.range.clone(),
+            )
+        } else {
+            scoped
+        };
+        Ok(PreparedKind::Comprehension {
+            constructor: ValueConstructor::Array,
+            retain_declaration: false,
+            clauses,
+            head: Box::new(head),
+        })
+    }
+
     fn predicate<Q, H: ValueQueryHost<Q> + ?Sized>(
         &mut self,
         predicate: &'a PredicateArgument<Q>,
@@ -823,6 +900,7 @@ impl<'a> Preparation<'a> {
                         .transpose()?;
                     PreparedGenerator::In {
                         binders: names,
+                        positional: false,
                         source,
                         filter,
                     }

@@ -386,6 +386,49 @@ any pipeline result before using it in a larger expression, for example
 collection stage fails at that stage. The richer `sort(a, descending=true)` and
 `sort_by` call forms keep their existing contracts.
 
+## Construct a capacity report
+
+A capacity has a name, a limit and a sequence of demands. `flat_map` visits the
+capacities in order; its inner `map` constructs one record per demand. The outer
+name `c` stays available while the inner `_` denotes the current demand.
+
+Run this command from a checkout containing the mapping stages:
+
+```sh
+cargo run --locked --example words -- '
+[
+  {"name": "cpu", "limit": 8, "demands": [2, 3]},
+  {"name": "gpu", "limit": 6, "demands": [4]}
+]
+| flat_map(c => _.demands | map({
+    "capacity": c.name,
+    "demand": _,
+    "remaining": c.limit - _
+  }))
+'
+```
+
+The word example prints Rust value notation:
+
+```text
+Array([Record([("capacity", String("cpu")), ("demand", Integer(2)), ("remaining", Integer(6))]), Record([("capacity", String("cpu")), ("demand", Integer(3)), ("remaining", Integer(5))]), Record([("capacity", String("gpu")), ("demand", Integer(4)), ("remaining", Integer(2))])])
+```
+
+`map` retains one result for each input item. `flat_map` concatenates one level
+of positional results, including empty results, without changing their order.
+For example, `[1, 2] | map([_])` returns `[[1], [2]]`, whereas
+`[1, 2] | flat_map([_])` returns `[1, 2]`. A scalar or set body result is an error
+for `flat_map`; use an explicit positional construction when needed. Sets,
+dictionaries, keyed arrays and tuples are also refused as stage inputs.
+
+Bodies use the same pure expressions and strict patterns as scoped filters,
+without a Boolean requirement. Empty inputs still receive full body preflight.
+Nested arguments bind `_` anew, and named captures remain lexical. The eager
+result is buffered under the shared work, result, allocation and stream limits.
+Native values retain their owners when the host supplies positional views and
+native report construction. The [embedding guide](embedding-programs.md#scoped-mapping-in-rust)
+explains those hooks and the separate consumer integration requirements.
+
 ## Nominal members and sets
 
 A nominal type gives its members an identity as well as a name. A host might use
