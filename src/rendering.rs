@@ -37,6 +37,8 @@ pub enum RenderContext {
     Value,
     /// Hosts may preserve a native capture's scalar projection here.
     CaptureField,
+    /// A retained scalar wrapper is rendered as its actual dictionary key.
+    DictionaryKey,
 }
 
 /// A borrowed report node. Constructed nodes retain their type and selected
@@ -46,6 +48,8 @@ pub enum RenderView<'a, V> {
     Constructed(&'a ConstructedValue, JsonRepresentation),
     Sequence(&'a [V]),
     Record(&'a [(String, V)]),
+    /// Ordered actual keys and values, projected recursively only for output.
+    Dictionary(&'a [(V, V)]),
     Capture(&'a crate::NativeCapture<V>),
     Captures(&'a [crate::NativeCapture<V>]),
     /// Transparent retained or host-annotated value.
@@ -118,6 +122,23 @@ fn report_value<H: RenderHost>(
                     )?);
                 }
                 Ok(Value::Array(output))
+            }
+            RenderView::Dictionary(entries) => {
+                allocation::<(Value, Value)>(entries.len(), location).map_err(Core)?;
+                budget
+                    .charge(entries.len().saturating_add(1), location.clone())
+                    .map_err(Core)?;
+                budget
+                    .charge_results(entries.len().saturating_add(1), location.clone())
+                    .map_err(Core)?;
+                let mut pairs = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let key =
+                        report_value(host, key, RenderContext::DictionaryKey, budget, location)?;
+                    let value = report_value(host, value, RenderContext::Value, budget, location)?;
+                    pairs.push((key, value));
+                }
+                report_dictionary_json(pairs, budget, location).map_err(Core)
             }
             RenderView::Record(fields) => {
                 report_record(host, fields, RenderContext::Value, budget, location)
@@ -576,4 +597,33 @@ fn failure(location: &Location, message: impl Into<String>) -> QueryError {
         message: message.into(),
         category: QueryErrorCategory::Other,
     }
+}
+
+fn report_dictionary_json(
+    pairs: Vec<(Value, Value)>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value, QueryError> {
+    let mut conversion = JsonConversion { budget, location };
+    if pairs.iter().all(|(key, _)| key.is_string()) {
+        let mut output = conversion.object(pairs.len())?;
+        for (key, value) in pairs {
+            let Value::String(key) = key else {
+                unreachable!("checked string keys")
+            };
+            // The key's bytes were admitted while projecting it.
+            output.insert(key, value);
+        }
+        return Ok(Value::Object(output));
+    }
+    let mut output = conversion.tag("dictionary", 2)?;
+    let mut entries = conversion.array(pairs.len())?;
+    for (key, value) in pairs {
+        let mut entry = conversion.object(2)?;
+        conversion.insert(&mut entry, "key", key)?;
+        conversion.insert(&mut entry, "value", value)?;
+        entries.push(Value::Object(entry));
+    }
+    conversion.insert(&mut output, "entries", Value::Array(entries))?;
+    Ok(Value::Object(output))
 }

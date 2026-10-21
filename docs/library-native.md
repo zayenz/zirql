@@ -36,15 +36,10 @@ APIs accept runtime expressions. See [predicate subjects](native-programs.md#pre
 
 ## Native unique and tally
 
-`selection | unique`; `selection | tally`
-
-Retain first occurrences by host identity, or count projected
-keys in first-seen order. Incoming native identities `a, a, b` give unique `a, b`; tally depends on the host's key projection, which can give
-different keys from identity. Empty unique is empty. Empty
-tally retains its host result kind. The small pipeline representation makes
-count/tally terminal; richer hosts own result and output transitions.
-Native values are not converted to printed names for identity comparison.
-See [pipeline order](shared-concepts.md#keep-order-explicit).
+Read the shared [unique](library-pipelines.md#unique) and
+[tally](library-pipelines.md#tally) contracts. Native subjects retain exact
+owners, source coordinates and diff sides. Use an explicit scalar projection
+when the intended key is a name or another domain property.
 
 ## Native ordering
 

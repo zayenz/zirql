@@ -572,8 +572,7 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
         refusal("rows;", &people(), "final value");
         refusal("rows trailing", &people(), "expected");
-        let error = refusal("rows | unique", &people(), "unique");
-        assert_eq!(error.error.location, Location::Query(7..13));
+        assert_eq!(text("rows | unique | count", &people()), "4\n");
         refusal(
             "rows | names",
             &people(),

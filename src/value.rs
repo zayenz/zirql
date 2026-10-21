@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write};
 use std::mem::size_of;
 
@@ -4303,6 +4303,15 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 let mut set_type = None;
                 let mut homogeneous_sets = true;
                 for ty in self.walk(array, budget)? {
+                    let key_declaration = match &ty {
+                        ValueType::Declared { declaration, .. } => match underlying(declaration) {
+                            DeclaredType::Array(element) | DeclaredType::Sequence(element) => {
+                                Some(copy_declaration(element, budget, location)?)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
                     let elements = tally_elements(ty, budget, location)?;
                     homogeneous_sets &= !elements.is_empty();
                     for element in &elements {
@@ -4326,6 +4335,16 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             keys: elements,
                             values: one_type(ValueType::Integer, budget, location)?,
                         }
+                    };
+                    let ty = match key_declaration {
+                        Some(key) => ValueType::Declared {
+                            actual: Box::new(ty),
+                            declaration: DeclaredType::Dictionary(
+                                Box::new(key),
+                                Box::new(DeclaredType::Integer),
+                            ),
+                        },
+                        None => ty,
                     };
                     push_metadata(&mut result, ty, budget, location)?;
                 }
@@ -6667,31 +6686,6 @@ fn unique_elements(
         ValueType::Unestablished => return one_type(ValueType::Unestablished, budget, location),
         _ => return Err(error(location, "collection stage needs a positional array")),
     };
-    let mut element_type = None;
-    for element in &elements {
-        budget.charge(1, location.clone())?;
-        let ty = shape_type(copy_type(element, budget, location)?, budget, location)?;
-        if matches!(ty, ValueType::Unestablished) {
-            continue;
-        }
-        if !matches!(
-            ty,
-            ValueType::Boolean
-                | ValueType::Integer
-                | ValueType::Float
-                | ValueType::String
-                | ValueType::Member(_)
-        ) {
-            return Err(error(location, "unique needs homogeneous scalar elements"));
-        }
-        if element_type
-            .as_ref()
-            .is_some_and(|previous| previous != &ty)
-        {
-            return Err(error(location, "unique needs homogeneous scalar elements"));
-        }
-        element_type = Some(ty);
-    }
     Ok(elements)
 }
 
@@ -6700,13 +6694,7 @@ pub(crate) fn unique_value(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
-    if declaration(&array).is_some() {
-        unique_elements(
-            constructed_value_type(&array, budget, location.clone())?,
-            budget,
-            location,
-        )?;
-    }
+    crate::admit_constructed(&array, &DeclaredType::<()>::Value, budget, location.clone())?;
     let mut data = &mut array;
     while let ConstructedValue::Declared { value, .. } = data {
         data = value;
@@ -6714,66 +6702,19 @@ pub(crate) fn unique_value(
     let ConstructedValue::Array(rows) = data else {
         return Err(error(location, "unique needs a positional array"));
     };
-    let mut element_type = None;
     let mut retained = 0;
-    let mut strings = HashSet::new();
+    let mut hashes = identity::HashIndex::default();
     for index in 0..rows.len() {
-        budget.charge(1, location.clone())?;
-        let ty = match rows[index].data() {
-            ConstructedValue::Boolean(_) => ValueType::Boolean,
-            ConstructedValue::Integer(_) => ValueType::Integer,
-            ConstructedValue::Float(value) => {
-                finite(*value, location)?;
-                ValueType::Float
+        let hash = identity::hash_admitted(&rows[index], budget, location)?;
+        let mut duplicate = false;
+        for &previous in hashes.candidates(hash) {
+            if key_equal(&rows[previous], &rows[index], budget, location)? {
+                duplicate = true;
+                break;
             }
-            ConstructedValue::String(_) => ValueType::String,
-            ConstructedValue::Member(member) => {
-                member_bytes(member, budget, location)?;
-                ValueType::Member(member.type_id)
-            }
-            _ => return Err(error(location, "unique needs homogeneous scalar elements")),
-        };
-        if element_type
-            .as_ref()
-            .is_some_and(|previous| previous != &ty)
-        {
-            return Err(error(location, "unique needs homogeneous scalar elements"));
         }
-        element_type = Some(ty);
-        let duplicate = if let ConstructedValue::String(key) = rows[index].data() {
-            if declaration(&rows[index]).is_some() {
-                constructed_value_type(&rows[index], budget, location.clone())?;
-            }
-            if index == 0 {
-                // Reserve once so growing the index never rehashes earlier keys.
-                allocation::<String>(rows.len(), location)?;
-                budget.charge(rows.len() * size_of::<String>(), location.clone())?;
-                strings
-                    .try_reserve(rows.len())
-                    .map_err(|_| error(location, "unique index allocation failed"))?;
-            }
-            budget.charge(sum(1, key.len(), location)?, location.clone())?;
-            if strings.contains(key) {
-                true
-            } else {
-                allocation::<u8>(key.len(), location)?;
-                // Copy the new key, hash it for insertion, and retain its row.
-                let bytes = sum(key.len(), key.len(), location)?;
-                budget.charge(sum(2, bytes, location)?, location.clone())?;
-                strings.insert(key.clone());
-                false
-            }
-        } else {
-            let mut duplicate = false;
-            for previous in &rows[..retained] {
-                if equal_values(previous, &rows[index], budget, location)? {
-                    duplicate = true;
-                    break;
-                }
-            }
-            duplicate
-        };
         if !duplicate {
+            hashes.insert(hash, retained, budget, location)?;
             rows.swap(retained, index);
             retained += 1;
         }
@@ -6808,6 +6749,12 @@ pub(crate) fn tally_value(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    let key_declaration = match declaration(&array).map(underlying) {
+        Some(DeclaredType::Array(element) | DeclaredType::Sequence(element)) => {
+            Some(copy_declaration(element, budget, location)?)
+        }
+        _ => None,
+    };
     let facts = constructed_value_type(&array, budget, location.clone())?;
     let elements = tally_elements(facts, budget, location)?;
     let general = general || elements.iter().any(|ty| !matches!(ty, ValueType::String));
@@ -6863,11 +6810,19 @@ pub(crate) fn tally_value(
             )?;
         }
     }
-    if groups.is_empty() && general {
-        Ok(ConstructedValue::Dictionary(groups.into()))
+    let retain_keys = general || groups.iter().any(|(key, _)| declaration(key).is_some());
+    let value = if retain_keys {
+        ConstructedValue::Dictionary(groups.into())
     } else {
-        finish_dictionary(groups, budget, location)
-    }
+        finish_dictionary(groups, budget, location)?
+    };
+    Ok(match key_declaration {
+        Some(key) => ConstructedValue::Declared {
+            value: Box::new(value),
+            declaration: DeclaredType::Dictionary(Box::new(key), Box::new(DeclaredType::Integer)),
+        },
+        None => value,
+    })
 }
 
 fn dictionary_type(

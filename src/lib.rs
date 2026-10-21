@@ -49,9 +49,9 @@ pub use matching::{
     evaluate_match_with_arguments, match_types,
 };
 pub use native_collections::{
-    construct_native_dictionary, construct_native_set, lookup_native_dictionary,
-    native_set_contains, native_value_hash, native_values_compare, native_values_equal,
-    tally_native_values,
+    construct_native_dictionary, construct_native_set, evaluate_native_unique_tally,
+    lookup_native_dictionary, native_set_contains, native_value_hash, native_values_compare,
+    native_values_equal, tally_native_values, unique_native_values,
 };
 pub use ordering::{NativeOrder, NativeOrderKey, NativeOrdering, order_native_by};
 pub use parser::{ArgumentReader, parse_pipeline};
@@ -96,8 +96,8 @@ pub use rendering::{
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, ScalarType, TypeFactPolicy,
-    admit_constructed, admit_scalar_type, admit_value, checked_invoke, contains_native,
-    copy_declaration, declare_constructed, nonnegative_integer_to_usize,
+    admit_constructed, admit_scalar_type, admit_type_facts, admit_value, checked_invoke,
+    contains_native, copy_declaration, declare_constructed, nonnegative_integer_to_usize,
 };
 pub use sets::{NativeSetOperator, combine_native_set};
 pub use value::identity::{compare_constructed_values, constructed_value_hash};

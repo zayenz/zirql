@@ -644,6 +644,21 @@ fn equal<C, H: FunctionHost<C>>(
 ) -> Result<bool, EvaluationError<H::Error>> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
+        let left_data = match left {
+            Node::Host(value) if host.constructed_value(value).is_none() => {
+                host.ordinary_value(value, context, budget, range(location))?
+            }
+            _ => None,
+        };
+        let right_data = match right {
+            Node::Host(value) if host.constructed_value(value).is_none() => {
+                host.ordinary_value(value, context, budget, range(location))?
+            }
+            _ => None,
+        };
+        let left = left_data.as_ref().map_or(left, Node::Data);
+        let right = right_data.as_ref().map_or(right, Node::Data);
+
         if let (Some(a), Some(b)) = (left.data(host), right.data(host)) {
             return Ok(crate::value::key_equal(a, b, budget, location)?);
         }
@@ -738,13 +753,10 @@ fn equal<C, H: FunctionHost<C>>(
         let range = range(location);
         let a_kind = host.kind(a, budget, range)?;
         let b_kind = host.kind(b, budget, range)?;
-        if a_kind != b_kind {
-            return Ok(false);
-        }
-        for value in [a, b] {
+        for (value, kind) in [(a, &a_kind), (b, &b_kind)] {
             crate::admit_value(
                 value,
-                &DeclaredType::Native(a_kind.clone()),
+                &DeclaredType::Native(kind.clone()),
                 host,
                 context,
                 budget,
@@ -771,6 +783,13 @@ fn hash<C, H: FunctionHost<C>>(
     use crate::value::identity::{self, hash_parts, hash_unordered};
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
+        let projected = match value {
+            Node::Host(value) if host.constructed_value(value).is_none() => {
+                host.ordinary_value(value, context, budget, range(location))?
+            }
+            _ => None,
+        };
+        let value = projected.as_ref().map_or(value, Node::Data);
         if let Some(data) = value.data(host) {
             return Ok(identity::hash_admitted(data, budget, location)?);
         }
@@ -855,6 +874,21 @@ fn compare<C, H: FunctionHost<C>>(
     use std::cmp::Ordering;
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
+        let left_data = match left {
+            Node::Host(value) if host.constructed_value(value).is_none() => {
+                host.ordinary_value(value, context, budget, range(location))?
+            }
+            _ => None,
+        };
+        let right_data = match right {
+            Node::Host(value) if host.constructed_value(value).is_none() => {
+                host.ordinary_value(value, context, budget, range(location))?
+            }
+            _ => None,
+        };
+        let left = left_data.as_ref().map_or(left, Node::Data);
+        let right = right_data.as_ref().map_or(right, Node::Data);
+
         if let (Some(a), Some(b)) = (left.data(host), right.data(host)) {
             return Ok(identity::compare_admitted(a, b, budget, location)?);
         }
@@ -937,6 +971,14 @@ fn validate<C, H: FunctionHost<C>>(
     if let Some(data) = host.constructed_value(value) {
         return Ok(crate::admit_constructed(
             data,
+            &DeclaredType::<()>::Value,
+            budget,
+            location.clone(),
+        )?);
+    }
+    if let Some(data) = host.ordinary_value(value, context, budget, range(location))? {
+        return Ok(crate::admit_constructed(
+            &data,
             &DeclaredType::<()>::Value,
             budget,
             location.clone(),
@@ -1030,6 +1072,21 @@ pub fn construct_native_set<C, H: FunctionHost<C>>(
     budget: &mut Budget,
     location: Location,
 ) -> Result<H::Value, EvaluationError<H::Error>> {
+    let output = unique_native_values(values, host, context, budget, location.clone())?;
+    host.construct_set(output, context, budget, range(&location))
+}
+
+/// Retain first equal values in incoming order, preserving their native owners.
+///
+/// # Errors
+/// Invalid values, unsupported identity and exhausted budgets propagate.
+pub fn unique_native_values<C, H: FunctionHost<C>>(
+    values: Vec<H::Value>,
+    host: &H,
+    context: &mut C,
+    budget: &mut Budget,
+    location: Location,
+) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
     crate::projection::admit_slots::<H::Value>(values.len(), budget, range(&location))?;
     let mut output = Vec::with_capacity(values.len());
     let mut membership = crate::value::identity::HashIndex::default();
@@ -1054,7 +1111,53 @@ pub fn construct_native_set<C, H: FunctionHost<C>>(
             output.push(value);
         }
     }
-    host.construct_set(output, context, budget, range(&location))
+    Ok(output)
+}
+
+/// Execute full-program unique/tally using structural identity and actual keys.
+///
+/// # Errors
+/// Invalid positional input, owners, declarations or budgets are refused.
+pub fn evaluate_native_unique_tally<C, H: FunctionHost<C>>(
+    operation: &crate::Stage<()>,
+    input: H::Value,
+    host: &H,
+    context: &mut C,
+    budget: &mut Budget,
+    range: &std::ops::Range<usize>,
+) -> Result<H::Value, EvaluationError<H::Error>> {
+    let location = Location::Query(range.clone());
+    let items = if let Some(values) = host.positional_view(&input) {
+        validate(&input, host, context, budget, &location)?;
+        crate::projection::admit_slots::<H::Value>(values.len(), budget, range)?;
+        let mut copied = Vec::with_capacity(values.len());
+        for value in values {
+            copied.push(host.copy_value(value, context, budget, range)?);
+        }
+        copied
+    } else {
+        let kind = host.kind(&input, budget, range)?;
+        host.collection_kind(operation, &kind, budget, range)?;
+        host.selection_items(&input, context, budget, range)?
+    };
+    match operation {
+        crate::Stage::Unique => {
+            let items = unique_native_values(items, host, context, budget, location)?;
+            host.restore_selection(
+                input,
+                items,
+                crate::SelectionShape::Preserve,
+                context,
+                budget,
+                range,
+            )
+        }
+        crate::Stage::Tally => {
+            let entries = tally_native_entries(items, host, context, budget, location)?;
+            host.restore_dictionary(input, entries, context, budget, range)
+        }
+        _ => Err(QueryError::query(range.clone(), "expected unique or tally").into()),
+    }
 }
 
 /// Construct an insertion-ordered host dictionary with arbitrary value keys.
@@ -1104,6 +1207,18 @@ pub fn tally_native_values<C, H: FunctionHost<C>>(
     budget: &mut Budget,
     location: Location,
 ) -> Result<H::Value, EvaluationError<H::Error>> {
+    let output = tally_native_entries(values, host, context, budget, location.clone())?;
+    host.construct_dictionary(output, context, budget, range(&location))
+}
+
+#[allow(clippy::type_complexity)]
+fn tally_native_entries<C, H: FunctionHost<C>>(
+    values: Vec<H::Value>,
+    host: &H,
+    context: &mut C,
+    budget: &mut Budget,
+    location: Location,
+) -> Result<Vec<(H::Value, H::Value)>, EvaluationError<H::Error>> {
     crate::projection::admit_slots::<(H::Value, i64)>(values.len(), budget, range(&location))?;
     let mut counts: Vec<(H::Value, i64)> = Vec::with_capacity(values.len());
     let mut membership = crate::value::identity::HashIndex::default();
@@ -1140,7 +1255,7 @@ pub fn tally_native_values<C, H: FunctionHost<C>>(
             host.lift_constructed(value, facts, context, budget, range(&location))?,
         ));
     }
-    host.construct_dictionary(output, context, budget, range(&location))
+    Ok(output)
 }
 
 /// Look up an arbitrary key in a host dictionary, copying the retained host value.

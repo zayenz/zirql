@@ -493,18 +493,18 @@ such as `["apple", "birch"] | filter(w => starts_with(w, "a")) | count`, returns
 
 The `sort` suffix applies the same ascending sort to arrays, sets and
 dictionaries, retaining their kind. Positional arrays also support stable
-`unique` and terminal `tally`:
+`unique` and `tally`:
 
 ```zirql
 [w for w in words if starts_with(w, "a")] | sort | unique
 ```
 
 This returns `["apple", "ash"]`. Without sorting, `| unique` retains
-`["ash", "apple"]`. Unique accepts homogeneous Booleans, integers, finite
-floats, strings or members of one nominal type. Floating `-0.0` and `0.0`
-compare equal. Native handles, absence, records, tuples, nested collections,
-keyed arrays and sets are unsupported elements. Values are never converted to
-strings implicitly.
+`["ash", "apple"]`. Unique uses structural identity for mixed scalars,
+absence, records, tuples and nested collections. Floating `-0.0` and `0.0`
+compare equal. Native leaves retain their exact host identity. See the
+[shared unique contract](library-pipelines.md#unique). Values are never
+converted to strings implicitly.
 
 ```zirql
 [w for w in words if starts_with(w, "a")] | tally
@@ -512,8 +512,9 @@ strings implicitly.
 
 Tally accepts constructed values and returns a dictionary of checked signed
 integer counts. String input gives `{"ash": 1, "apple": 2}` with fields in
-first-seen order. No further stage may follow tally. Empty untyped arrays yield
-`[]` for sort/unique and `{}` for tally. Unique retains its scalar-only rules.
+first-seen order. Continue with dictionary operations, for example
+`| reverse | head(1)`. Empty untyped arrays yield `[]` for sort/unique and `{}`
+for tally. Declared empty input retains its key/value contract.
 
 Collections can be tally keys:
 

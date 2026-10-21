@@ -87,26 +87,38 @@ scalar. A scalar result cannot feed a collection stage.
 
 ## unique
 
-`items | unique -> positional array`
+`items | unique -> positional sequence or native stream`
 
-Keep each first occurrence in a homogeneous array of Booleans, integers, finite
-floats, strings or members of one nominal type. `[3, 1, 3] | unique` gives
-`[3, 1]`. Empty input gives `[]`; floating signed zeros compare equal.
-Absence, mixed kinds, records, tuples, nested collections and native handles
-are unsupported constructed elements. Native unique uses host identity instead.
+Keep the first equal value in incoming order. Positional data may contain mixed
+scalars, absence, records, tuples and nested collections. Lists and tuples use
+positional identity; sets use membership and dictionaries use associations.
+Different constructed kinds stay distinct, and floating signed zeros compare
+equal. Declared element contracts remain available on empty results.
+
+Native leaves use exact host identity, including source owner and diff side.
+Two operations or declarations with the same displayed name remain distinct.
+Project `names` explicitly to deduplicate spellings. Dictionaries and keyed
+arrays require an explicit positional conversion before unique or tally.
 
 ## tally
 
 `items | tally -> dictionary of int`
 
-Count positional constructed values by structural key identity. Counts use
-checked signed integers. `["ash", "apple", "ash"] | tally` returns
-`{"ash": 2, "apple": 1}`. Keys and their first representations follow first-seen
-order; sets compare by membership and dictionaries by associations. Mixed scalars,
-absence and nested collections can be keys. Empty input gives an empty dictionary;
-ambiguous `[]` keeps `{}`. General non-string keys need a host-chosen output
-encoding. Tally ends a constructed suffix pipeline; no further stage may follow.
-Native tally uses the host's projected key and result rules.
+Count the same positional values or native subjects admitted by `unique`.
+Keys retain their first actual representatives and first-seen order; counts
+use checked signed integers. `["ash", "apple", "ash"] | tally` returns
+`{"ash": 2, "apple": 1}`. Empty input returns a dictionary with any available
+key declaration and integer value declaration.
+
+Full expressions compose according to that dictionary result. For example,
+`["ash", "apple", "ash"] | tally | reverse | head(1)` gives `{"apple": 1}`.
+Dictionary filter, count, length, bounds, check and `sort_by(value)` keep their
+ordinary contracts. Scalar counts refuse collection continuations. The small
+`Pipeline`/`parse_pipeline` API retains its terminal count/tally representation.
+
+String keys render as ordinary ordered objects. Other keys use the shared
+[tagged entry encoding](library-rendering.md), with native leaves projected
+only for output. Names and rendered descriptors never determine identity.
 
 ## Other collection suffixes
 

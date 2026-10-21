@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-132"
 key = "coherent-unique-tally"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -28,14 +28,23 @@ Read the brief's paired-operation coherence decision. src/value.rs unique_elemen
 
 ## Done when
 
-- [ ] Constructed unique accepts admitted mixed scalars, absence, records, tuples and nested collections under the same structural identity already used by general sets/tally. It keeps the first original representative and incoming order, with retained declared element contracts on empty output.
-- [ ] Native/value unique handles admitted positional sequences and existing native stream subjects through the same equality/hash contract, retaining native owners and source/diff identity. Textual and typed builders accept the same supported data; remove reject_string_unique and accidental literal/scalar-container restrictions.
-- [ ] Tally accepts the same admitted positional/native values as keys, counts structurally or by exact native leaf identity, retains actual first key representatives and first-seen key order, and returns an ordered dictionary with checked counts. Empty tally remains a dictionary with available declared key/value schema.
-- [ ] Both hosts retain general/native tally keys and values through copies, saved results and lookup, with explicit rendering using their established native leaf projection and shared dictionary encoding. String-key tallies keep ordinary dictionary output.
-- [ ] Full value/program pipelines may apply dictionary operations such as reverse/head/check/sort_by(value) to a tally result under the preceding collection task's contracts. Scalar count results refuse inappropriate collection continuation by kind; the primitive small reader remains explicitly documented.
-- [ ] Update unique/tally reference entries together for native/value input, library/API embedding docs, and affected host guides/examples. Explain structural identity versus explicit domain projection without duplicating operation contracts.
+- [x] Constructed unique accepts admitted mixed scalars, absence, records, tuples and nested collections under the same structural identity already used by general sets/tally. It keeps the first original representative and incoming order, with retained declared element contracts on empty output.
+- [x] Native/value unique handles admitted positional sequences and existing native stream subjects through the same equality/hash contract, retaining native owners and source/diff identity. Textual and typed builders accept the same supported data; remove reject_string_unique and accidental literal/scalar-container restrictions.
+- [x] Tally accepts the same admitted positional/native values as keys, counts structurally or by exact native leaf identity, retains actual first key representatives and first-seen key order, and returns an ordered dictionary with checked counts. Empty tally remains a dictionary with available declared key/value schema.
+- [x] Both hosts retain general/native tally keys and values through copies, saved results and lookup, with explicit rendering using their established native leaf projection and shared dictionary encoding. String-key tallies keep ordinary dictionary output.
+- [x] Full value/program pipelines may apply dictionary operations such as reverse/head/check/sort_by(value) to a tally result under the preceding collection task's contracts. Scalar count results refuse inappropriate collection continuation by kind; the primitive small reader remains explicitly documented.
+- [x] Update unique/tally reference entries together for native/value input, library/API embedding docs, and affected host guides/examples. Explain structural identity versus explicit domain projection without duplicating operation contracts.
 
 ## Validation
 
 - Reuse general-set/dictionary/tally/native identity suites. Add a compact public control combining nested/mixed duplicate values, first representations and a tally continuation; add one native control distinguishing equal names from different owner/side identities and one textual/typed unique acceptance case.
 - Run the brief's required Rust checks in each changed repository and affected host/Python checks. Run affected documented examples and docs content/link checks; git diff --check and zdev check base --format json for records. Retain separate framework/consumer commits and reviewed Zirql dependency pins.
+
+## Result
+
+Shared structural unique/tally retain first representatives, native owners/source/diff-side identities, actual dictionary keys and declared empty schemas through copies, typed functions, saved lookup and dictionary continuation. Shared rendering handles actual keys; diff execution reuses PreparedProgram. Replaced host string-only tally/unique restrictions and duplicate diff scope execution. Domain operations, source/edit admission, completeness and emission remain host-owned. Consumer commits Zincite8c58749cd7e5774a0b8750f75af993356e261227 and Zirium93225eb36318e127543ba8bf15e7b50673efb818, canonical Zirql pin49c30dac58ed2614fb9d6ba97dafe1432fa7a9cc.
+
+Validation:
+
+- Independent full review, all3findings independently reproduced, correction1 and fresh focused PASS atW465bb430417009d4; exact core and consumer4fields equal.
+- All3Rustfmt/Clippy/fullsuites pass; Ziriumalltargets/allfeatures/doctests/warningsdocs; rebuiltPython/Ruff/ty181passed2existingskips; examples/sites6434/1248/897local and253crosslinks; existingquery_profile smoke pass.

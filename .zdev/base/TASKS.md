@@ -4,8 +4,8 @@
 
 - Total: 133
 - Ready: 1
-- Blocked: 1
-- Done: 131
+- Blocked: 0
+- Done: 132
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -131,7 +131,7 @@
 | [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | done | base-118 |
 | [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | done | base-119, base-120 |
 | [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | done | — |
-| [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122, base-128, base-129, base-130, base-131, base-132, base-133 |
+| [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | ready | base-117, base-115, base-121, base-122, base-128, base-129, base-130, base-131, base-132, base-133 |
 | [base-124](tasks/124-own-value-sources-and-projection-stages-in-zirql-and-migrate.md) | Own value sources and projection stages in Zirql and migrate both hosts | done | base-116 |
 | [base-125](tasks/125-own-remaining-shared-composition-stages-and-remove-host-disp.md) | Own remaining shared composition stages and remove host dispatch | done | base-124 |
 | [base-126](tasks/126-declare-ordinary-native-functions-once-and-share-call-admiss.md) | Declare ordinary native functions once and share call admission | done | base-114 |
@@ -140,5 +140,5 @@
 | [base-129](tasks/129-add-explicit-scalar-conversions-with-csv-and-consumer-exampl.md) | Add explicit scalar conversions with CSV and consumer examples | done | base-115 |
 | [base-130](tasks/130-use-one-structural-ordering-contract-for-value-and-native-op.md) | Use one structural ordering contract for value and native operations | done | base-125 |
 | [base-131](tasks/131-align-collection-selection-and-cardinality-across-native-and.md) | Align collection selection and cardinality across native and value paths | done | base-125 |
-| [base-132](tasks/132-share-structural-unique-and-tally-semantics-across-value-and.md) | Share structural unique and tally semantics across value and native collections | ready | base-125, base-131 |
+| [base-132](tasks/132-share-structural-unique-and-tally-semantics-across-value-and.md) | Share structural unique and tally semantics across value and native collections | done | base-125, base-131 |
 | [base-133](tasks/133-align-infix-comparison-admission-for-native-and-constructed.md) | Align infix comparison admission for native and constructed data | done | base-125 |

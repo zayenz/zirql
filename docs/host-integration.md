@@ -159,7 +159,7 @@ reader. `has_named_value_postfix` identifies a grouped or bare name followed by
 field access; `has_native_field_pipeline` recognizes capture fields continued
 by a pipeline. The host chooses their native or constructed meaning from its
 existing kind facts. `ValueSuffixKind::named` classifies constructed suffixes,
-including terminal `tally`. Read them with `read_value_suffix`, or map an
+including `tally`. Read them with `read_value_suffix`, or map an
 already parsed host payload to `ValueSuffix` and use `lower_value_suffix`.
 Zincite retains that payload mapping for forward functions whose result kind
 becomes known after their bodies have been read.
@@ -342,7 +342,7 @@ each filter also sees its current binder.
 A caller holding a constructed prefix can call `read_value_suffix` with its
 host, enclosing lexical names and cursor at the first outer pipe. The shared reader
 wraps that value in the existing `Filter`, `Sort`, `Unique` and `Tally` nodes, keeping
-stage locations and rejecting any stage after `tally`. Pass the active parsing
+stage locations. Preparation checks each continuation against the actual result kind. Pass the active parsing
 budget and the nesting allowance remaining for suffix wrappers. The shared
 expression reader already owns both collection spellings and their generator
 pipes. A host with known
@@ -842,7 +842,8 @@ kinds used for native declarations must identify the complete native contract.
 Native kind equality must agree with the host's declaration identity.
 
 For ordinary sets and dictionaries containing native values, implement
-`FunctionHost::{set_view, dictionary_view, construct_set, construct_dictionary}`.
+`FunctionHost::{set_view, construct_set}` and
+`ProjectionHost::{dictionary_view, construct_dictionary, restore_dictionary}`.
 Views expose retained values; constructors retain their owners without rendering.
 `construct_native_set`, `construct_native_dictionary` and `tally_native_values`
 provide hash-indexed collection construction, while `lookup_native_dictionary`
@@ -1082,8 +1083,12 @@ Native ordering keys use the same structural contract as constructed keys.
 Lower native `head`, `tail`, `reverse`, `check`, `count`, `unique` and `tally`
 to `ExpressionStep::Collection` with the existing `Stage<()>` operation.
 Computed bounds use `Head`, `Tail` or `Check` value steps. The native hooks admit
-collection kinds, expose identity or tally keys and restore result shapes; the
-core owns iteration, stable deduplication, counting and bounds. `Stage::Filter`
+collection kinds and restore result shapes. Implement `collection_unique_tally`
+by calling `evaluate_native_unique_tally` on the existing `FunctionHost`. That
+helper uses runtime admission, structural hash buckets and exact native identities.
+`ordinary_value` exposes only a scalar/literal wrapper's actual data while retaining
+the original wrapper as representative. Borrowed dictionary views support common
+selection and sorting; `restore_dictionary` preserves empty contracts. `Stage::Filter`
 and `Stage::Host` are not collection tags. Native filter uses its direct
 `ExpressionStep::Filter` and shared `Predicate<Stage>` tree.
 
@@ -1287,6 +1292,11 @@ as constructed in its local admission logic; that classification cannot use
 this structural test. Zirium uses the shared structural inspection directly.
 Both development adapters use the shared copy operation while retaining their
 `Rc` and `Arc` storage respectively.
+
+`admit_type_facts` checks retained structured facts against a declaration,
+including a dictionary's key and value contracts when it has no entries. It
+uses the existing declaration rules; hosts still admit actual native kinds,
+owners and values through `admit_value` and `RuntimeTypeHost::admit_native`.
 
 `admit_scalar_type` checks Boolean, integer, float or string facts through the
 existing runtime type checker. `TypeFactPolicy::Strict` requires established

@@ -822,9 +822,8 @@ The [value guide](values.md#complete-windows-and-consecutive-runs) specifies
 positive sizes, complete stride-one windows, structural run keys and missing
 fields. The shared reader lowers calls and `windows(size)`/`runs_by("field")`
 suffixes to these same nodes. `ValueSuffix::Windows` retains a boxed size
-expression; `ValueSuffix::RunsBy` retains a located field label. Suffix lowering
-disposes consumed trees when it refuses a stage after terminal tally. Dispose
-other retained native trees with `dispose_native_value`.
+expression; `ValueSuffix::RunsBy` retains a located field label. Suffix lowering retains dictionary continuations after tally; preparation
+checks their kinds. Dispose retained native trees with `dispose_native_value`.
 
 `FunctionRequest` uses existing positional and record views plus list/record
 constructors to retain native members and source coordinates. A field key can
@@ -964,3 +963,9 @@ cargo run --locked --example words -- \
 
 It returns `[3, 3]`. The [collection reference](library-pipelines.md#filter)
 defines empty behavior and the explicit keyed-array conversion boundary.
+
+Native unique and tally use `evaluate_native_unique_tally` through the
+`ProjectionHost::collection_unique_tally` delegation. Keep actual keys in the
+host dictionary view and expose that storage through `RenderView::Dictionary`
+when rendering. A source owner or diff side stays with each native key through
+saved bindings, copies, lookup and dictionary continuations.

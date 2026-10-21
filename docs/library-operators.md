@@ -142,6 +142,6 @@ Apply stages left to right to a completed expression. `[3, 1, 3] | unique | coun
 returns `2`. Explicit sources supply their own input; bare constructed
 filter/map/flat_map/count use the host's immutable constructed input.
 Native stages use the host's current native input and type rules. A scalar count
-cannot feed a collection stage, and constructed tally is terminal. The generator
+cannot feed a collection stage. Tally returns a composable dictionary. The generator
 pipe in `[x | x in source]` is a separate comprehension delimiter.
 See [constructed pipelines](library-pipelines.md) and [native forms](library-native.md).

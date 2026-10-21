@@ -554,16 +554,20 @@ pub trait FunctionHost<C>:
     {
         Ok(None)
     }
+    /// Expose ordinary scalar/literal data in a host wrapper. The wrapper stays
+    /// the retained representative; this temporary data never identifies a native leaf.
+    fn ordinary_value(
+        &self,
+        _value: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Option<ConstructedValue>, EvaluationError<Self::Error>> {
+        Ok(None)
+    }
     /// Expose an ordinary host-owned set. Its elements retain native handles;
     /// iteration order is insertion order and equality uses membership.
     fn set_view<'v>(&self, _value: &'v Self::Value) -> Option<&'v [Self::Value]> {
-        None
-    }
-    /// Expose an ordinary dictionary with arbitrary value keys.
-    fn dictionary_view<'v>(
-        &self,
-        _value: &'v Self::Value,
-    ) -> Option<&'v [(Self::Value, Self::Value)]> {
         None
     }
     /// Consult a retained native set index using ordinary structural identity.
@@ -606,21 +610,6 @@ pub trait FunctionHost<C>:
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         Err(QueryError::query(range.clone(), "native set construction is unsupported").into())
-    }
-    /// Retain admitted dictionary entries and their native owners in insertion
-    /// order. The shared runner checks duplicate keys before calling this hook.
-    fn construct_dictionary(
-        &self,
-        _entries: Vec<(Self::Value, Self::Value)>,
-        _context: &mut C,
-        _budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
-        Err(QueryError::query(
-            range.clone(),
-            "native dictionary construction is unsupported",
-        )
-        .into())
     }
     /// Map an explicit signature to the host's existing preflight kinds.
     fn declaration_kind(
@@ -3915,22 +3904,22 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                 }
                 .map(Some);
             }
-            PreparedKind::Tally { .. } if matches!(&values[0].data, Data::Native(view) if self.host.positional_view(native_view::<C,H>(view, self.host)).is_some()) =>
+            PreparedKind::Tally { .. } | PreparedKind::Unique(_) if matches!(&values[0].data, Data::Native(view) if self.host.positional_view(native_view::<C,H>(view, self.host)).is_some()) =>
             {
                 let source =
-                    self.finish_value(values.pop().expect("tally input"), budget, &location)?;
-                let source = self.host.positional_view(&source).expect("native sequence");
-                crate::projection::admit_slots::<H::Value>(source.len(), budget, range)?;
-                let mut items = Vec::with_capacity(source.len());
-                for value in source {
-                    items.push(self.host.copy_value(value, self.context, budget, range)?);
-                }
-                crate::tally_native_values(
-                    items,
+                    self.finish_value(values.pop().expect("collection input"), budget, &location)?;
+                let operation = if matches!(expression.value, PreparedKind::Unique(_)) {
+                    crate::Stage::Unique
+                } else {
+                    crate::Stage::Tally
+                };
+                crate::evaluate_native_unique_tally(
+                    &operation,
+                    source,
                     self.host,
                     self.context,
                     budget,
-                    location.clone(),
+                    range,
                 )?
             }
             _ => return Ok(None),
@@ -5078,7 +5067,10 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
             None => self.prepared,
         };
         let operand = &prepared[&(query as *const _ as usize)];
-        if projected || host.scalar_types(&operand.kind, budget, range)?.is_some() {
+        if projected
+            || (host.dictionary_view(&value).is_none()
+                && host.scalar_types(&operand.kind, budget, range)?.is_some())
+        {
             let value = host.project_value(value, self.context, budget, range)?;
             crate::value::admitted_constructed_facts(
                 &value,

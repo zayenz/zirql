@@ -158,14 +158,12 @@ support. `present` is a pattern.
 | `sum` | [Collections and reductions](library-collections.md#sum) |
 | `tail` | [Shared native forms](library-pipelines.md#head-and-tail) |
 | `tally` | [Collection pipeline stages](library-pipelines.md#tally) |
-| `tally (native)` | [Shared native forms](library-native.md#native-unique-and-tally) |
 | `to_json_value` (Rust) | [JSON rendering](library-rendering.md#to_json_value) |
 | `to_report_json_value` (Rust) | [Mixed native reports](library-rendering.md#mixed-native-reports) |
 | `to_string` | [Scalars and strings](library-strings.md#to_string) |
 | `tuple` | [Collections and reductions](library-collections.md#arrays-and-tuples) |
 | `union` | [Shared native forms](library-native.md#native-set-operators) |
 | `unique` | [Collection pipeline stages](library-pipelines.md#unique) |
-| `unique (native)` | [Shared native forms](library-native.md#native-unique-and-tally) |
 | `where` | [Collections and reductions](library-collections.md#comprehensions) |
 | `where_exists` | [Shared native forms](library-native.md#where_exists) |
 | `windows` | [Grouping and neighbourhoods](library-grouping.md#windows) |

@@ -1165,9 +1165,6 @@ impl ValueSuffixKind {
             _ => return None,
         })
     }
-    pub fn is_terminal(self) -> bool {
-        self == Self::Tally
-    }
     /// Lower a suffix without arguments. Argument-bearing kinds need their
     /// parsed payload and return `None`.
     pub fn without_arguments<Q>(self) -> Option<ValueSuffix<Q>> {
@@ -1674,40 +1671,11 @@ pub enum ValueSuffix<Q = ()> {
 /// Parsing and tree-allocation allowances remain with the caller.
 ///
 /// # Errors
-/// A suffix after a terminal tally is refused at the suffix range.
+/// Returns a located expression for the suffix; preparation checks its input kind.
 pub fn lower_value_suffix<S, O, E>(
     value: ValueExpression<Expression<S, O, E>>,
     stage: Located<ValueSuffix<Expression<S, O, E>>>,
 ) -> Result<ValueExpression<Expression<S, O, E>>, QueryError> {
-    if matches!(value.value, K::Tally(_)) {
-        dispose_native_value(value);
-        match stage.value {
-            ValueSuffix::Filter(predicate)
-            | ValueSuffix::Map(predicate)
-            | ValueSuffix::FlatMap(predicate) => {
-                if let Some(pattern) = predicate.argument {
-                    crate::dispose_pattern(pattern);
-                }
-                dispose_native_value(*predicate.body);
-            }
-            ValueSuffix::Windows(size) | ValueSuffix::Head(size) | ValueSuffix::Tail(size) => {
-                dispose_native_value(*size)
-            }
-            ValueSuffix::Check { operand, message } => {
-                if let Some(v) = operand {
-                    dispose_native_value(*v);
-                }
-                if let Some(v) = message {
-                    dispose_native_value(*v);
-                }
-            }
-            _ => {}
-        }
-        return Err(QueryError::query(
-            stage.range,
-            "tally must be the terminal stage",
-        ));
-    }
     let kind = match stage.value {
         ValueSuffix::Filter(predicate) => K::Filter {
             predicate,
@@ -5167,12 +5135,6 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         while self.reader.consume('|') {
             self.depth(depth + wrappers + 1)?;
             let stage = self.name()?;
-            if matches!(value.value().value, K::Tally(_)) {
-                return Err(QueryError::query(
-                    stage.range,
-                    "tally must be the terminal stage",
-                ));
-            }
             let suffix = match ValueSuffixKind::named(&stage.value) {
                 Some(ValueSuffixKind::Filter | ValueSuffixKind::Map | ValueSuffixKind::FlatMap) => {
                     self.reader.expect('(')?;

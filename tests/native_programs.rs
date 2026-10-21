@@ -899,6 +899,25 @@ fn runtime_refusal(
 }
 
 impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
+    fn dictionary_view<'v>(
+        &self,
+        value: &'v SourceValue<'a>,
+    ) -> Option<&'v [(SourceValue<'a>, SourceValue<'a>)]> {
+        match value {
+            SourceValue::Dictionary(entries) => Some(entries),
+            _ => None,
+        }
+    }
+    fn construct_dictionary(
+        &self,
+        entries: Vec<(SourceValue<'a>, SourceValue<'a>)>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(SourceValue::Dictionary(entries))
+    }
     type Kind = SourceKind;
     fn selection_items(
         &self,
@@ -1233,15 +1252,7 @@ impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
             _ => None,
         }
     }
-    fn dictionary_view<'v>(
-        &self,
-        value: &'v SourceValue<'a>,
-    ) -> Option<&'v [(SourceValue<'a>, SourceValue<'a>)]> {
-        match value {
-            SourceValue::Dictionary(entries) => Some(entries),
-            _ => None,
-        }
-    }
+
     fn construct_set(
         &self,
         values: Vec<SourceValue<'a>>,
@@ -1251,16 +1262,6 @@ impl<'a> zirql::FunctionHost<SourceContext<'a>> for SourceHost {
     ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
         budget.charge_results(1, Location::Query(range.clone()))?;
         Ok(SourceValue::Set(values))
-    }
-    fn construct_dictionary(
-        &self,
-        entries: Vec<(SourceValue<'a>, SourceValue<'a>)>,
-        _: &mut SourceContext<'a>,
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
-        budget.charge_results(1, Location::Query(range.clone()))?;
-        Ok(SourceValue::Dictionary(entries))
     }
 
     fn prepare_computational(
@@ -7509,7 +7510,8 @@ mod projection {
                 zirql::dispose_native_value(value);
             }
         }
-        for (source, stage) in [("[] | tally | sort", "sort"), ("[] | mystery", "mystery")] {
+        {
+            let (source, stage) = ("[] | mystery", "mystery");
             let mut allowance = budget();
             let error = zirql::read_value_expression(
                 &mut zirql::ArgumentReader::new(source, 0).unwrap(),

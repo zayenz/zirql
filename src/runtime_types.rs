@@ -663,13 +663,36 @@ pub enum ScalarType {
     String,
 }
 
-/// Whether incomplete scalar facts may defer admission until runtime.
+/// Whether incomplete type facts may defer admission until runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeFactPolicy {
     /// Require established facts, including the actual facts in declared wrappers.
     Strict,
     /// Permit `Unestablished` and `ScalarKind`; actual values still need admission.
     Deferred,
+}
+
+/// Check retained type facts against an existing declaration.
+/// Declared wrappers and nested collection facts use runtime admission's rules.
+/// Native kinds and actual values still require host admission.
+///
+/// # Errors
+/// Returns a located declaration mismatch or budget refusal. Deferred facts may
+/// remain unestablished; they do not establish a native owner's validity.
+pub fn admit_type_facts<K>(
+    actual: &ValueType,
+    expected: &DeclaredType<K>,
+    policy: TypeFactPolicy,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    check_type_facts(
+        actual,
+        expected,
+        policy == TypeFactPolicy::Deferred,
+        budget,
+        location,
+    )
 }
 
 /// Check scalar facts with the same rules as runtime declaration admission.
@@ -692,13 +715,7 @@ pub fn admit_scalar_type(
         ScalarType::Float => DeclaredType::Float,
         ScalarType::String => DeclaredType::String,
     };
-    check_type_facts(
-        actual,
-        &expected,
-        policy == TypeFactPolicy::Deferred,
-        budget,
-        location,
-    )
+    admit_type_facts(actual, &expected, policy, budget, location)
 }
 
 /// Extract a nonnegative integer that fits the platform's `usize`.

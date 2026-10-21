@@ -4675,7 +4675,10 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
     let empty_strings = literal(declared(V::Array(vec![]), D::Sequence(Box::new(D::String))));
     assert_eq!(
         evaluate(&e(K::Tally(Box::new(empty_strings)))).unwrap(),
-        V::Record(vec![])
+        declared(
+            V::Record(vec![]),
+            D::Dictionary(Box::new(D::String), Box::new(D::Integer))
+        )
     );
     let empty_sets = literal(declared(
         V::Array(vec![]),
@@ -4683,7 +4686,13 @@ fn neighbouring_word_sets_tally_unordered_keys_in_first_seen_order() {
     ));
     assert_eq!(
         evaluate(&e(K::Tally(Box::new(empty_sets)))).unwrap(),
-        V::Dictionary(vec![].into())
+        declared(
+            V::Dictionary(vec![].into()),
+            D::Dictionary(
+                Box::new(D::Set(SetElementType::String)),
+                Box::new(D::Integer)
+            )
+        )
     );
     assert_eq!(
         evaluate(&e(K::Tally(Box::new(e(K::Array(vec![])))))).unwrap(),
@@ -5265,19 +5274,6 @@ fn prefix_filter_keeps_order_duplicates_empty_contracts_and_shared_value_analysi
 
 #[test]
 fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
-    for bad in [
-        e(K::Array(vec![int(1), text("bad")])),
-        e(K::Array(vec![record(vec![])])),
-        literal(declared(
-            V::Array(vec![]),
-            D::Sequence(Box::new(D::Tuple(vec![D::Integer]))),
-        )),
-    ] {
-        let expression = e(K::Unique(Box::new(bad)));
-        let error = evaluate(&choose(expression)).unwrap_err();
-        assert_eq!(error.location, Location::Query(0..1));
-        assert_eq!(error.category, zirql::QueryErrorCategory::Other);
-    }
     let contradictory = e(K::Unique(Box::new(e(K::Array(vec![
         member_expression(20, 1),
         member_expression(20, 2),
@@ -5329,10 +5325,11 @@ fn scalar_pipeline_refusals_preserve_preflight_runtime_and_budget_boundaries() {
         matches!(zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample()).unwrap(), V::Dictionary(ref entries) if entries.len() == 2)
     );
     let expression = e(K::Unique(Box::new(name("words"))));
-    let error = zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
-        .unwrap_err();
-    assert_eq!(error.message, "unique needs homogeneous scalar elements");
-    assert_eq!(error.location, Location::Query(0..1));
+    assert_eq!(
+        zirql::evaluate_query_value(&expression, &unknown, &mut UnknownWords, &mut ample())
+            .unwrap(),
+        V::Array(vec![V::String("ash".into()), V::Integer(2)])
+    );
 
     for (expression, result_refusal) in [
         (
@@ -8725,4 +8722,54 @@ fn collection_selection_keeps_kinds_keys_and_declared_empty_schemas() {
         })))))
         .is_err()
     );
+}
+
+#[test]
+fn structural_unique_and_tally_keep_first_representatives_and_compose() {
+    let values = || {
+        V::Array(vec![
+            declared(V::Float(-0.0), D::Float),
+            V::Float(0.0),
+            V::Array(vec![V::Integer(1)]),
+            V::Array(vec![V::Integer(1)]),
+            V::Tuple(vec![V::Integer(1)]),
+            V::Absent,
+            V::Absent,
+            V::Record(vec![("x".into(), V::Integer(2))]),
+            V::Record(vec![("x".into(), V::Integer(2))]),
+        ])
+    };
+    let unique = evaluate(&e(K::Unique(Box::new(literal(values()))))).unwrap();
+    let V::Array(rows) = unique else {
+        panic!("array")
+    };
+    assert_eq!(rows.len(), 5);
+    assert!(
+        matches!(&rows[0], V::Declared { value, .. } if matches!(value.data(), V::Float(value) if value.is_sign_negative()))
+    );
+    let tally = e(K::Tally(Box::new(literal(values()))));
+    let V::Dictionary(entries) = evaluate(&tally).unwrap() else {
+        panic!("dictionary")
+    };
+    assert_eq!(
+        entries.iter().map(|(_, value)| value).collect::<Vec<_>>(),
+        [
+            &V::Integer(2),
+            &V::Integer(2),
+            &V::Integer(1),
+            &V::Integer(2),
+            &V::Integer(2)
+        ]
+    );
+    assert!(
+        matches!(&entries[0].0, V::Declared { value, .. } if matches!(value.data(), V::Float(value) if value.is_sign_negative()))
+    );
+    let continued = e(K::Head {
+        collection: Box::new(e(K::Reverse(Box::new(tally)))),
+        count: Box::new(int(1)),
+    });
+    let V::Dictionary(entries) = evaluate(&continued).unwrap() else {
+        panic!("dictionary continuation")
+    };
+    assert_eq!(entries[0].0, V::Record(vec![("x".into(), V::Integer(2))]));
 }

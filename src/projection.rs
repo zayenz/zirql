@@ -469,23 +469,54 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
             "native collections are unsupported",
         ))
     }
-    fn collection_identity(
+    /// Execute unique/tally through the shared structural runtime. Lightweight
+    /// projection hosts without runtime admission refuse these full-program steps.
+    fn collection_unique_tally(
         &self,
-        _item: &Self::Value,
+        _operation: &crate::Stage<()>,
+        _input: Self::Value,
         _context: &mut C,
         _budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<crate::NativeCollectionKey, EvaluationError<Self::Error>> {
-        Err(QueryError::query(range.clone(), "native collection identity is unsupported").into())
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(
+            range.clone(),
+            "structural collections require runtime admission",
+        )
+        .into())
     }
-    fn collection_tally_key(
+    /// Expose an ordinary dictionary with arbitrary value keys.
+    fn dictionary_view<'v>(
         &self,
-        _item: Self::Value,
+        _value: &'v Self::Value,
+    ) -> Option<&'v [(Self::Value, Self::Value)]> {
+        None
+    }
+    /// Retain admitted dictionary entries and their native owners in insertion
+    /// order. The shared runner checks duplicate keys before calling this hook.
+    fn construct_dictionary(
+        &self,
+        _entries: Vec<(Self::Value, Self::Value)>,
         _context: &mut C,
         _budget: &mut Budget,
         range: &Range<usize>,
-    ) -> Result<String, EvaluationError<Self::Error>> {
-        Err(QueryError::query(range.clone(), "native tally keys are unsupported").into())
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(
+            range.clone(),
+            "native dictionary construction is unsupported",
+        )
+        .into())
+    }
+    /// Preserve an existing dictionary's declared empty key/value contracts.
+    fn restore_dictionary(
+        &self,
+        _input: Self::Value,
+        entries: Vec<(Self::Value, Self::Value)>,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        self.construct_dictionary(entries, context, budget, range)
     }
     fn restore_collection(
         &self,
@@ -1024,11 +1055,8 @@ pub(crate) fn expression_kind_with_arguments<'q, C, H: ProjectionHost<C>>(
                 let source_wrapper = matches!(source.value, ExpressionKind::Input)
                     && steps.first().is_some_and(|step| crate::composition::explicit_source(&step.value) || matches!(&step.value, ExpressionStep::Stage(stage) if host.is_explicit_source(stage)));
                 let mut kind = if source_wrapper { input.cloned() } else { Some(expression_kind_with_arguments(source, host, input, scope, allow_effects, value_kind, arguments.as_deref_mut(), budget)?) };
-                let mut terminal=crate::composition::ends_constructed_tally(source) && kind.as_ref().is_some_and(|kind|host.is_constructed_kind(kind));
                 for step in steps {
                     budget.charge(1, Location::Query(step.range.clone()))?;
-                    if terminal && !matches!(step.value,ExpressionStep::Emit{..}) { return Err(QueryError::query(step.range.clone(),"tally must be the terminal stage")); }
-                    terminal=matches!(step.value,ExpressionStep::Collection(crate::Stage::Tally)) && kind.as_ref().is_some_and(|kind|host.is_constructed_kind(kind));
                     let argument_input = kind.clone();
                     kind = Some(match &step.value {
                         ExpressionStep::Value(value) => value_kind(value, scope, kind, allow_effects && matches!(value.value, crate::ValueExpressionKind::NativeValue(_)), budget)?,

@@ -611,6 +611,42 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
                 )?;
                 return host.lift_constructed(value, types, arguments.parts().0, budget, range);
             }
+            if host.dictionary_view(&input).is_some() {
+                let entries = copy_dictionary(&input, host, arguments.parts().0, budget, range)?;
+                let bindings =
+                    arguments
+                        .parts()
+                        .1
+                        .with_shared_values(BTreeMap::new(), budget, range)?;
+                crate::projection::admit_slots::<(H::Value, H::Value)>(
+                    entries.len(),
+                    budget,
+                    range,
+                )?;
+                let mut selected = Vec::with_capacity(entries.len());
+                for (key, item) in entries {
+                    let truth = crate::eval::evaluate_predicate(
+                        predicate,
+                        crate::Nesting::Nodes,
+                        budget,
+                        |guard, budget, range| {
+                            host.evaluate_guard_leaf_with_arguments(
+                                guard, &item, &bindings, arguments, budget, range,
+                            )
+                        },
+                    )?;
+                    if host.filter_truth(truth, arguments.parts().0, budget, &predicate.range)? {
+                        selected.push((key, item));
+                    }
+                }
+                return host.restore_dictionary(
+                    input,
+                    selected,
+                    arguments.parts().0,
+                    budget,
+                    range,
+                );
+            }
             if host.is_map_kind(&host.kind(&input, budget, range)?) {
                 let copy = host.copy_value(&input, arguments.parts().0, budget, range)?;
                 let entries = host.map_entries(copy, arguments.parts().0, budget, range)?;
@@ -687,6 +723,27 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
                     )?];
                     return host.lift_constructed(value, types, arguments.parts().0, budget, range);
                 }
+                if host.dictionary_view(&input).is_some() {
+                    let entries =
+                        copy_dictionary(&input, host, arguments.parts().0, budget, range)?;
+                    let entries = order_native_by(
+                        entries,
+                        NativeOrder::Sort,
+                        budget,
+                        Location::Query(range.clone()),
+                        |(key, _), budget| {
+                            let key = host.copy_value(key, arguments.parts().0, budget, range)?;
+                            host.ordering_key(key, arguments.parts().0, budget, range)
+                        },
+                    )?;
+                    return host.restore_dictionary(
+                        input,
+                        entries,
+                        arguments.parts().0,
+                        budget,
+                        range,
+                    );
+                }
                 if host.is_map_kind(&host.kind(&input, budget, range)?) {
                     let entries = host.map_entries(
                         host.copy_value(&input, arguments.parts().0, budget, range)?,
@@ -754,6 +811,20 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
             host.construct_map(entries, arguments.parts().0, budget, range)
         }
         ExpressionStep::MapSorting => {
+            if host.dictionary_view(&input).is_some() {
+                let entries = copy_dictionary(&input, host, arguments.parts().0, budget, range)?;
+                let entries = order_native_by(
+                    entries,
+                    NativeOrder::Sort,
+                    budget,
+                    Location::Query(range.clone()),
+                    |(_, value), budget| {
+                        let value = host.copy_value(value, arguments.parts().0, budget, range)?;
+                        host.ordering_key(value, arguments.parts().0, budget, range)
+                    },
+                )?;
+                return host.restore_dictionary(input, entries, arguments.parts().0, budget, range);
+            }
             let copied = host.copy_value(&input, arguments.parts().0, budget, range)?;
             let entries = host.map_entries(copied, arguments.parts().0, budget, range)?;
             let entries = sort_map_by_value(
@@ -1251,7 +1322,9 @@ pub fn collection_value_types(
         budget,
     )
 }
-struct Collections<'h, H>(&'h H);
+struct Collections<'h, H> {
+    _host: &'h H,
+}
 impl<C, H: ProjectionHost<C>> Host<H::Value, &mut C, ()> for Collections<'_, H> {
     type Error = H::Error;
     type Key = NativeCollectionKey;
@@ -1276,24 +1349,6 @@ impl<C, H: ProjectionHost<C>> Host<H::Value, &mut C, ()> for Collections<'_, H> 
             "collection filters use direct core predicates",
         )
         .into())
-    }
-    fn identity_key(
-        &self,
-        item: &H::Value,
-        context: &mut &mut C,
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Self::Key, EvaluationError<Self::Error>> {
-        self.0.collection_identity(item, context, budget, range)
-    }
-    fn tally_key(
-        &self,
-        item: H::Value,
-        context: &mut &mut C,
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<String, EvaluationError<Self::Error>> {
-        self.0.collection_tally_key(item, context, budget, range)
     }
 }
 fn run_collection<C, H: ProjectionHost<C>>(
@@ -1349,6 +1404,45 @@ fn run_collection<C, H: ProjectionHost<C>>(
             return host.lift_constructed(value, types, context, budget, range);
         }
     }
+    if matches!(operation, Stage::Unique | Stage::Tally) {
+        return host.collection_unique_tally(operation, input, context, budget, range);
+    }
+    if let Some(entries) = host.dictionary_view(&input) {
+        let len = entries.len();
+        match operation {
+            Stage::Count => {
+                return host.restore_collection(
+                    input,
+                    NativeValue::Count(len),
+                    context,
+                    budget,
+                    range,
+                );
+            }
+            Stage::Check { expected, message } => {
+                crate::check_cardinality(len, *expected, message.as_deref(), range.clone())?;
+                return Ok(input);
+            }
+            _ => {}
+        }
+        let mut entries = copy_dictionary(&input, host, context, budget, range)?;
+        match operation {
+            Stage::Head(n) => entries.truncate(*n),
+            Stage::Tail(n) => {
+                let skip = entries.len().saturating_sub(*n);
+                entries.drain(..skip);
+            }
+            Stage::Reverse => entries.reverse(),
+            _ => {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "unsupported dictionary collection stage",
+                )
+                .into());
+            }
+        }
+        return host.restore_dictionary(input, entries, context, budget, range);
+    }
     if host.is_map_kind(&host.kind(&input, budget, range)?)
         && matches!(
             operation,
@@ -1402,19 +1496,8 @@ fn run_collection<C, H: ProjectionHost<C>>(
     )?;
     let admitted =
         NativeInput::from_admitted(context, items, budget, Location::Query(range.clone()))?;
-    let result = evaluate(&pipeline, &Collections(host), admitted, budget)?;
+    let result = evaluate(&pipeline, &Collections { _host: host }, admitted, budget)?;
     host.restore_collection(input, result.value, result.context, budget, range)
-}
-
-pub(crate) fn ends_constructed_tally<S, O, E>(expression: &Expression<S, O, E>) -> bool {
-    match &expression.value {
-        ExpressionKind::Group(value) => ends_constructed_tally(value),
-        ExpressionKind::Sequence { input, steps } => steps.last().map_or_else(
-            || ends_constructed_tally(input),
-            |step| matches!(step.value, ExpressionStep::Collection(Stage::Tally)),
-        ),
-        _ => false,
-    }
 }
 
 fn validate_fixed_point_leaves<C, H: ProjectionHost<C>>(
@@ -1438,4 +1521,24 @@ fn validate_fixed_point_leaves<C, H: ProjectionHost<C>>(
         }
         Ok(())
     })
+}
+
+#[allow(clippy::type_complexity)]
+fn copy_dictionary<C, H: ProjectionHost<C>>(
+    value: &H::Value,
+    host: &H,
+    context: &mut C,
+    budget: &mut Budget,
+    range: &Range<usize>,
+) -> Result<Vec<(H::Value, H::Value)>, EvaluationError<H::Error>> {
+    let entries = host.dictionary_view(value).expect("borrowed dictionary");
+    crate::projection::admit_slots::<(H::Value, H::Value)>(entries.len(), budget, range)?;
+    let mut copied = Vec::with_capacity(entries.len());
+    for (key, value) in entries {
+        copied.push((
+            host.copy_value(key, context, budget, range)?,
+            host.copy_value(value, context, budget, range)?,
+        ));
+    }
+    Ok(copied)
 }

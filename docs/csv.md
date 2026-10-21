@@ -665,3 +665,18 @@ and keyed arrays use their explicit tagged encoding to retain names and shape.
 loading a table to returning JSON. The [host integration guide](host-integration.md)
 explains the adapter traits; [embedding programs](embedding-programs.md) covers
 the larger native-program API.
+
+## Keep distinct rows and count repeated rows
+
+Rows use structural equality, including each field name and value. `unique`
+retains the first row in each group and its incoming position. `tally` retains
+the first row as the dictionary key and counts its occurrences. Dictionary
+results support the usual selection and ordering operations.
+
+```sh
+cargo run --locked --example csv -- 'rows | unique | count' examples/csv/people.csv
+cargo run --locked --example csv -- 'rows | tally | reverse | head(1)' examples/csv/people.csv
+```
+
+The first command returns `4`; the second keeps the last distinct row and its
+count. Row keys remain records rather than becoming rendered strings.

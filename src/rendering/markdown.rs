@@ -110,6 +110,7 @@ enum Report<'a> {
     Projected(serde_json::Value),
     Sequence(Vec<Report<'a>>),
     Record(Vec<(&'a str, Report<'a>)>),
+    Dictionary(Vec<(Report<'a>, Report<'a>)>),
 }
 
 fn report<'a, H: super::RenderHost>(
@@ -133,6 +134,24 @@ fn report<'a, H: super::RenderHost>(
                 RenderView::Projected(value) => {
                     super::visit_json(&value, budget, location).map_err(Core)?;
                     Report::Projected(value)
+                }
+                RenderView::Dictionary(entries) => {
+                    slots::<(Report<'_>, Report<'_>)>(entries.len(), budget, location)
+                        .map_err(Core)?;
+                    let mut output = Vec::with_capacity(entries.len());
+                    for (key, value) in entries {
+                        output.push((
+                            report(
+                                host,
+                                key,
+                                super::RenderContext::DictionaryKey,
+                                budget,
+                                location,
+                            )?,
+                            report(host, value, super::RenderContext::Value, budget, location)?,
+                        ));
+                    }
+                    Report::Dictionary(output)
                 }
                 RenderView::Sequence(values) => {
                     slots::<Report<'_>>(values.len(), budget, location).map_err(Core)?;
@@ -249,6 +268,7 @@ impl<'a> Data<'a> {
             Self::Constructed(V::Dictionary(entries)) => Some(Entries::Dictionary(entries)),
             Self::Json(serde_json::Value::Object(fields)) => Some(Entries::Json(fields)),
             Self::Report(Report::Record(fields)) => Some(Entries::Report(fields)),
+            Self::Report(Report::Dictionary(entries)) => Some(Entries::ReportDictionary(entries)),
             _ => None,
         }
     }
@@ -272,6 +292,17 @@ impl<'a> Data<'a> {
                     output.push(Self::Report(value).json(budget, location)?);
                 }
                 Ok(Value::Array(output))
+            }
+            Self::Report(Report::Dictionary(entries)) => {
+                slots::<(Value, Value)>(entries.len(), budget, location)?;
+                let mut pairs = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    pairs.push((
+                        Self::Report(key).json(budget, location)?,
+                        Self::Report(value).json(budget, location)?,
+                    ));
+                }
+                super::report_dictionary_json(pairs, budget, location)
             }
             Self::Report(Report::Record(fields)) => {
                 let mut output = super::JsonConversion { budget, location }.object(fields.len())?;
@@ -345,6 +376,7 @@ enum Entries<'a> {
     Dictionary(&'a [(V, V)]),
     Json(&'a serde_json::Map<String, serde_json::Value>),
     Report(&'a [(&'a str, Report<'a>)]),
+    ReportDictionary(&'a [(Report<'a>, Report<'a>)]),
 }
 impl<'a> Entries<'a> {
     fn len(self) -> usize {
@@ -353,6 +385,7 @@ impl<'a> Entries<'a> {
             Self::Dictionary(entries) => entries.len(),
             Self::Json(fields) => fields.len(),
             Self::Report(fields) => fields.len(),
+            Self::ReportDictionary(entries) => entries.len(),
         }
     }
     fn iter(self) -> EntryIter<'a> {
@@ -361,6 +394,7 @@ impl<'a> Entries<'a> {
             Self::Dictionary(entries) => EntryIter::Dictionary(entries.iter()),
             Self::Json(fields) => EntryIter::Json(fields.iter()),
             Self::Report(fields) => EntryIter::Report(fields.iter()),
+            Self::ReportDictionary(entries) => EntryIter::ReportDictionary(entries.iter()),
         }
     }
     fn fields(self) -> impl Iterator<Item = (&'a str, Data<'a>)> {
@@ -372,7 +406,13 @@ impl<'a> Entries<'a> {
         })
     }
     fn is_record(self) -> bool {
-        !matches!(self, Self::Dictionary(_))
+        match self {
+            Self::Dictionary(_) => false,
+            Self::ReportDictionary(entries) => entries
+                .iter()
+                .all(|(key, _)| Data::Report(key).text().is_some()),
+            _ => true,
+        }
     }
 }
 
@@ -381,6 +421,7 @@ enum EntryIter<'a> {
     Dictionary(std::slice::Iter<'a, (V, V)>),
     Json(serde_json::map::Iter<'a>),
     Report(std::slice::Iter<'a, (&'a str, Report<'a>)>),
+    ReportDictionary(std::slice::Iter<'a, (Report<'a>, Report<'a>)>),
 }
 impl<'a> Iterator for EntryIter<'a> {
     type Item = (Key<'a>, Data<'a>);
@@ -395,6 +436,14 @@ impl<'a> Iterator for EntryIter<'a> {
             Self::Json(fields) => fields
                 .next()
                 .map(|(key, value)| (Key::Label(key), Data::Json(value))),
+            Self::ReportDictionary(entries) => entries.next().map(|(key, value)| {
+                (
+                    Data::Report(key)
+                        .text()
+                        .map_or(Key::Value(Data::Report(key)), Key::Label),
+                    Data::Report(value),
+                )
+            }),
             Self::Report(fields) => fields
                 .next()
                 .map(|(key, value)| (Key::Label(key), Data::Report(value))),
