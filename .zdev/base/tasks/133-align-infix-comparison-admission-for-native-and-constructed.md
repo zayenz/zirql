@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-133"
 key = "coherent-infix-comparisons"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -27,13 +27,23 @@ Read the brief's Coherent native and constructed operations decision and the exi
 
 ## Done when
 
-- [ ] Existing relational operators accept present signed integers and finite floats with the same exactness rules in both representations; mixed numeric comparisons still require exactly representable integer conversion. Native list/tuple/other ordinary container wrappers do not bypass the ordinary refusal for nonnumeric operands.
-- [ ] Existing equality aliases and inequality enforce the same compatible underlying-type admission for equivalent ordinary data in either representation. Preserve positional array/tuple equality, set membership, dictionary associations, record field compatibility, declared optional absence and nominal/keyed-shape rules.
-- [ ] Unavailable native facts defer validation rather than waive it. Runtime checks use the active budget and located errors, preserve genuinely native identity, and do not evaluate an untaken lazy branch merely to discover its values.
-- [ ] Text and callable/typed paths that expose these existing forms agree; both consumer adapters use the corrected common behavior where applicable, with no per-frontend or per-host legacy-policy flag.
-- [ ] Update the comparison/equality reference and Rust embedding/API documentation, plus affected host support notes. Explain that numeric infix relations and structural sorting have different operator contracts, while neither changes merely because ordinary data is carried natively.
+- [x] Existing relational operators accept present signed integers and finite floats with the same exactness rules in both representations; mixed numeric comparisons still require exactly representable integer conversion. Native list/tuple/other ordinary container wrappers do not bypass the ordinary refusal for nonnumeric operands.
+- [x] Existing equality aliases and inequality enforce the same compatible underlying-type admission for equivalent ordinary data in either representation. Preserve positional array/tuple equality, set membership, dictionary associations, record field compatibility, declared optional absence and nominal/keyed-shape rules.
+- [x] Unavailable native facts defer validation rather than waive it. Runtime checks use the active budget and located errors, preserve genuinely native identity, and do not evaluate an untaken lazy branch merely to discover its values.
+- [x] Text and callable/typed paths that expose these existing forms agree; both consumer adapters use the corrected common behavior where applicable, with no per-frontend or per-host legacy-policy flag.
+- [x] Update the comparison/equality reference and Rust embedding/API documentation, plus affected host support notes. Explain that numeric infix relations and structural sorting have different operator contracts, while neither changes merely because ordinary data is carried natively.
 
 ## Validation
 
 - Reuse existing numeric/equality, native identity and lazy-branch controls. Add a compact public regression using the existing native SourceHost fixture for one ordinary compound relational refusal and incompatible equality refusal, alongside an accepted equivalent comparison. No new fixture framework or representation/container matrix.
 - Run the brief's required Rust checks and affected host/Python checks only in changed repositories. Run affected docs/example/link checks, git diff --check and coordinator zdev check base --format json; retain separate consumer commits and accepted Zirql pins if integrations change.
+
+## Result
+
+Aligned native ordinary-data infix numeric and compatible-type equality admission, retaining deferred/optional/empty schemas and exact opaque native identity. Shared Runtime owns admission; hosts retain domain views and owners. Canonical Zirql b2b7a9e37584cf30079fabea98558f0c750f2fce; Zincite 6d7943b147009e33a2512fb1c19525ff0f7dba83; Zirium 466ae7e67f105cd6afeba72f82ab2d0e961cee92.
+
+Validation:
+
+- Independent full review, one vetted empty structured-schema correction, fresh focused PASS at W9b467a4c190ce47b; final core comparison equal and all four consumer Git fields equal before consumer commits.
+- All three required offline/locked Rust formatting, Clippy, workspace tests and documentation pass, including Zirium all-target/all-feature single-thread tests and doctests.
+- All three documentation checks/builds and production-boundary links pass; 6454/1238/891 local links and changed cross-site anchors verified.

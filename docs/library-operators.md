@@ -67,7 +67,10 @@ by membership and dictionaries by key/value associations. Thus
 `{1, 2} == {2, 1}` is `true`. Keyed arrays also retain their typed axes and
 present cells. Two absences compare equal; absence differs from a present value.
 Declared optional types must remain compatible even when both values are absent.
-Native equality remains the host's identity contract. Structural collection-key
+Ordinary lists, tuples, records, sets and dictionaries keep this admission when
+carried by a native wrapper. Deferred compatibility is checked only when the
+comparison executes, including pairs after an earlier unequal value. Opaque
+native leaves retain the host's exact identity contract. Structural collection-key
 identity keeps distinct value kinds separate. See [collection equality](values.md#dictionaries-and-collection-order).
 
 ## Ordered comparisons
@@ -79,7 +82,9 @@ integer/float comparisons require an exactly representable integer. Strings,
 nominal members, Booleans, absence and collection operands fail. String and
 nominal ordering are available through sort/extrema instead. These numeric
 expressions do not use the structural order used by set and dictionary-key
-sorting.
+sorting. Native wrappers around ordinary data follow the same numeric rule;
+wrapping `[1]` and `[2]` natively does not admit `[1] < [2]`. Genuinely native
+operands without an ordinary data view retain their explicit domain comparison.
 
 ## Membership
 

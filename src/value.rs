@@ -1537,14 +1537,14 @@ impl ConstructedValue {
     }
 }
 
-fn declaration(value: &ConstructedValue) -> Option<&DeclaredType<()>> {
+pub(crate) fn declaration(value: &ConstructedValue) -> Option<&DeclaredType<()>> {
     match value {
         ConstructedValue::Declared { declaration, .. } => Some(declaration),
         _ => None,
     }
 }
 
-fn underlying<K>(mut declaration: &DeclaredType<K>) -> &DeclaredType<K> {
+pub(crate) fn underlying<K>(mut declaration: &DeclaredType<K>) -> &DeclaredType<K> {
     while let DeclaredType::Optional(child) = declaration {
         declaration = child;
     }
@@ -1730,7 +1730,7 @@ fn shape_type(
     })
 }
 
-fn record_declaration<'a, K>(
+pub(crate) fn record_declaration<'a, K>(
     fields: &'a [(String, DeclaredType<K>)],
     label: &str,
     budget: &mut Budget,
@@ -2027,7 +2027,7 @@ fn optional_position(
     }
 }
 
-fn error(location: &Location, message: impl Into<String>) -> QueryError {
+pub(crate) fn error(location: &Location, message: impl Into<String>) -> QueryError {
     QueryError {
         location: location.clone(),
         message: message.into(),
@@ -5113,7 +5113,7 @@ fn set_value_type(ty: Option<SetElementType>) -> ValueType {
     }
 }
 
-fn merge_set_types(
+pub(crate) fn merge_set_types(
     element_type: &mut Option<SetElementType>,
     types: &[ValueType],
     budget: &mut Budget,
@@ -5328,7 +5328,7 @@ fn compatible_keyed_elements(
     Ok(true)
 }
 
-fn binary_type(
+pub(crate) fn binary_type(
     operator: ValueBinaryOperator,
     left: &ValueType,
     right: &ValueType,
@@ -5813,7 +5813,7 @@ fn membership_ref(
     )
 }
 
-fn binary(
+pub(crate) fn binary(
     operator: ValueBinaryOperator,
     left: ConstructedValue,
     right: ConstructedValue,

@@ -978,6 +978,18 @@ must retain coherent declared type evidence, including typed empty containers.
 `_` remains the original subject, and native match captures stay separate bindings.
 Inside an active function request, keep using its declared argument runner.
 
+Ordinary native views also retain the [infix operator contract](library-operators.md#equality).
+A native positional list holding `1, 2` can equal constructed `[1, 2]`, while
+`[1, 2] == [9, true]` fails compatible-type admission in either representation.
+Relations require present numeric operands; exposing a list view does not give
+that list a structural infix order. Sorting uses its separate structural order.
+
+The evaluator checks deferred operands only when their comparison executes.
+Untaken conditional and Boolean branches retain their lazy behavior. Explicit
+optional declarations and empty element schemas remain available during admission;
+opaque native leaves keep the adapter's owner, source and diff-side identity.
+Hosts need no comparison policy flag for their ordinary views.
+
 ## Native computational values
 
 A `FunctionHost` opts in with `prepare_computational`, which checks constructor

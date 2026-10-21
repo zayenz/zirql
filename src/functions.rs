@@ -532,6 +532,11 @@ pub type NativeFunctionImplementation<C, H> =
 
 /// Missing concrete function hooks over the existing projection/admission APIs.
 /// Existing hosts opt in only when they expose named functions.
+///
+/// Ordinary tuple, list, set and record views keep ordinary infix admission:
+/// relations require numbers and equality requires compatible underlying types.
+/// Deferred checks run only when the operands execute. Opaque leaves retain the
+/// host's identity; key equality and structural sorting remain separate operations.
 pub trait FunctionHost<C>:
     ProjectionHost<C> + RuntimeTypeHost<C, Kind = <Self as ProjectionHost<C>>::Kind>
 {
@@ -3799,71 +3804,23 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                 ))));
             }
             PreparedKind::Binary {
-                operator: crate::ValueBinaryOperator::Equal | crate::ValueBinaryOperator::NotEqual,
-                ..
-            } if values
-                .iter()
-                .any(|value| matches!(value.data, Data::Native(_))) =>
-            {
-                let right =
-                    self.finish_value(values.pop().expect("right operand"), budget, &location)?;
-                let left =
-                    self.finish_value(values.pop().expect("left operand"), budget, &location)?;
-                let equal = crate::native_values_equal(
-                    &left,
-                    &right,
-                    self.host,
-                    self.context,
-                    budget,
-                    location.clone(),
-                )?;
-                return self
-                    .boolean_value(
-                        equal
-                            == matches!(
-                                expression.value,
-                                PreparedKind::Binary {
-                                    operator: crate::ValueBinaryOperator::Equal,
-                                    ..
-                                }
-                            ),
-                        budget,
-                        &location,
-                    )
-                    .map(Some);
-            }
-            PreparedKind::Binary {
                 operator:
-                    operator @ (crate::ValueBinaryOperator::Less
+                    operator @ (crate::ValueBinaryOperator::Equal
+                    | crate::ValueBinaryOperator::NotEqual
+                    | crate::ValueBinaryOperator::Less
                     | crate::ValueBinaryOperator::LessEqual
                     | crate::ValueBinaryOperator::Greater
                     | crate::ValueBinaryOperator::GreaterEqual),
                 ..
             } if values
                 .iter()
-                .any(|value| matches!(value.data, Data::Native(_))) =>
+                .any(|value| matches!(value.data, Data::Native(_)) || value.contract.is_some()) =>
             {
-                let right =
-                    self.finish_value(values.pop().expect("right operand"), budget, &location)?;
-                let left =
-                    self.finish_value(values.pop().expect("left operand"), budget, &location)?;
-                let order = crate::native_values_compare(
-                    &left,
-                    &right,
-                    self.host,
-                    self.context,
-                    budget,
-                    location.clone(),
-                )?;
-                use crate::ValueBinaryOperator as B;
-                let found = match operator {
-                    B::Less => order.is_lt(),
-                    B::LessEqual => order.is_le(),
-                    B::Greater => order.is_gt(),
-                    B::GreaterEqual => order.is_ge(),
-                    _ => unreachable!(),
-                };
-                return self.boolean_value(found, budget, &location).map(Some);
+                let right = values.pop().expect("right operand");
+                let left = values.pop().expect("left operand");
+                return self
+                    .infix(*operator, left, right, budget, &location)
+                    .map(Some);
             }
             PreparedKind::Lookup { .. }
             | PreparedKind::HasKey { .. }
@@ -4545,6 +4502,151 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
             },
             budget,
         )
+    }
+    fn infix(
+        &mut self,
+        operator: crate::ValueBinaryOperator,
+        left: HostValue<'a, C, H>,
+        right: HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
+        use crate::ValueBinaryOperator as B;
+        if matches!(operator, B::Equal | B::NotEqual) {
+            let left = self.infix_value(left, budget, location)?;
+            let right = self.infix_value(right, budget, location)?;
+            crate::native_collections::admit_infix_equality(
+                self.infix_operand(&left),
+                self.infix_operand(&right),
+                self.host,
+                budget,
+                location,
+            )?;
+            let left = self.finish_value(left, budget, location)?;
+            let right = self.finish_value(right, budget, location)?;
+            let equal = crate::native_values_equal(
+                &left,
+                &right,
+                self.host,
+                self.context,
+                budget,
+                location.clone(),
+            )?;
+            return self.boolean_value(equal == (operator == B::Equal), budget, location);
+        }
+        let a = self.infix_number(&left, budget, location)?;
+        let b = self.infix_number(&right, budget, location)?;
+        match (a, b) {
+            (Some(a), Some(b)) => {
+                return Ok(Value::constructed(RuntimeValue::Owned(
+                    crate::value::binary(operator, a, b, budget, location)?,
+                )));
+            }
+            (None, None) => {}
+            _ => {
+                return Err(crate::value::error(
+                    location,
+                    "native handles require an explicit scalar projection",
+                )
+                .into());
+            }
+        }
+        let left = self.finish_value(left, budget, location)?;
+        let right = self.finish_value(right, budget, location)?;
+        let order = crate::native_values_compare(
+            &left,
+            &right,
+            self.host,
+            self.context,
+            budget,
+            location.clone(),
+        )?;
+        let found = match operator {
+            B::Less => order.is_lt(),
+            B::LessEqual => order.is_le(),
+            B::Greater => order.is_gt(),
+            B::GreaterEqual => order.is_ge(),
+            _ => unreachable!("relational infix"),
+        };
+        self.boolean_value(found, budget, location)
+    }
+    fn infix_number(
+        &mut self,
+        value: &HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Option<ConstructedValue>, EvaluationError<H::Error>> {
+        let number = |data: &ConstructedValue| match data.data() {
+            ConstructedValue::Integer(n) => Ok(ConstructedValue::Integer(*n)),
+            ConstructedValue::Float(n) => Ok(ConstructedValue::Float(*n)),
+            _ => Err(crate::value::error(
+                location,
+                "operation needs numeric operands",
+            )),
+        };
+        if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
+            return Ok(Some(number(data.value)?));
+        }
+        let Data::Native(view) = &value.data else {
+            unreachable!("constructed view handled")
+        };
+        let native = native_view::<C, H>(view, self.host);
+        if self.host.tuple_view(native).is_some()
+            || self.host.positional_view(native).is_some()
+            || self.host.capture_record(native).is_some()
+            || self.host.set_view(native).is_some()
+            || self.host.dictionary_view(native).is_some()
+        {
+            return Err(crate::value::error(location, "operation needs numeric operands").into());
+        }
+        let range = match location {
+            Location::Query(r) | Location::Source(r) => r,
+        };
+        let kind = self.host.kind(native, budget, range)?;
+        if self.host.scalar_types(&kind, budget, range)?.is_some() {
+            let native = self.host.copy_value(native, self.context, budget, range)?;
+            let data = self
+                .host
+                .project_value(native, self.context, budget, range)?;
+            return Ok(Some(number(&data)?));
+        }
+        Ok(None)
+    }
+    fn infix_operand<'v>(
+        &self,
+        value: &'v HostValue<'a, C, H>,
+    ) -> crate::native_collections::InfixOperand<'v, H::Value, Kind<C, H>> {
+        use crate::native_collections::{InfixOperand, Node};
+        InfixOperand {
+            node: match &value.data {
+                Data::Constructed(data) => Node::Data(data.as_ref()),
+                Data::Native(view) => Node::Host(native_view::<C, H>(view, self.host)),
+            },
+            declaration: value.contract,
+        }
+    }
+    fn infix_value(
+        &mut self,
+        value: HostValue<'a, C, H>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
+        let mut value = execution::Host::normalize(self, value, budget, location)?;
+        if let Data::Native(view) = &value.data {
+            let range = match location {
+                Location::Query(r) | Location::Source(r) => r,
+            };
+            let native = native_view::<C, H>(view, self.host);
+            let kind = self.host.kind(native, budget, range)?;
+            if self.host.scalar_types(&kind, budget, range)?.is_some() {
+                let native = self.host.copy_value(native, self.context, budget, range)?;
+                let data = self
+                    .host
+                    .project_value(native, self.context, budget, range)?;
+                value.data = Data::Constructed(RuntimeValue::Owned(data));
+            }
+        }
+        Ok(value)
     }
     fn finish_value(
         &mut self,

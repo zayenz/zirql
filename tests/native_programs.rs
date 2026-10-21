@@ -12162,6 +12162,184 @@ fn nested_native_collections_have_structural_hashes_comparison_and_admission() {
 }
 
 #[test]
+fn native_ordinary_infix_operands_keep_numeric_and_equality_admission() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, ValueBinaryOperator as B,
+        ValueExpressionKind as K,
+    };
+    let mut context = SourceContext {
+        source: "",
+        prefix: "",
+        emissions: vec![],
+    };
+    let bindings = Bindings::new([
+        (
+            at("left".into(), 0),
+            SourceValue::List(vec![
+                SourceValue::Constructed(V::Integer(1)),
+                SourceValue::Constructed(V::Integer(2)),
+            ]),
+        ),
+        (
+            at("right".into(), 0),
+            SourceValue::List(vec![
+                SourceValue::Constructed(V::Integer(9)),
+                SourceValue::Constructed(V::Boolean(true)),
+            ]),
+        ),
+        (
+            at("empty_int".into(), 0),
+            SourceValue::Sequence {
+                values: vec![],
+                element: DeclaredType::Tuple(vec![DeclaredType::Integer]),
+            },
+        ),
+        (
+            at("empty_bool".into(), 0),
+            SourceValue::Sequence {
+                values: vec![],
+                element: DeclaredType::Tuple(vec![DeclaredType::Boolean]),
+            },
+        ),
+    ])
+    .unwrap();
+    let native = |name: &str| {
+        at(
+            K::NativeValue(Box::new(at(ExpressionKind::Binding(name.into()), 0))),
+            0,
+        )
+    };
+    let comparison = |operator, right| {
+        Located::new(
+            K::Binary {
+                operator,
+                left: Box::new(native("left")),
+                right: Box::new(right),
+            },
+            20..40,
+        )
+    };
+    let mut run = |entry| {
+        let mut budget = Budget::for_program(limits());
+        let result = FunctionRequest::prepare(
+            &[],
+            &SourceHost,
+            &mut context,
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&entry, &bindings);
+        zirql::dispose_native_value(entry);
+        result
+    };
+    for (operator, message) in [(B::Less, "numeric"), (B::Equal, "compatible")] {
+        let error = run(comparison(operator, native("right"))).unwrap_err();
+        assert!(
+            matches!(&error.error, EvaluationError::Core(QueryError { location: Location::Query(range), message: actual, category: QueryErrorCategory::Other }) if range == &(20..40) && actual.contains(message)),
+            "{error:?}"
+        );
+    }
+    let equivalent = at(K::Literal(V::Array(vec![V::Integer(1), V::Integer(2)])), 0);
+    assert!(
+        matches!(run(comparison(B::Equal, equivalent)).unwrap(), SourceValue::Constructed(value) if value.data() == &V::Boolean(true))
+    );
+    let lazy = at(
+        K::Conditional {
+            branches: vec![(
+                at(K::Literal(V::Boolean(true)), 0),
+                at(K::Literal(V::Boolean(true)), 0),
+            )],
+            otherwise: Box::new(comparison(B::NotEqual, native("right"))),
+        },
+        0,
+    );
+    assert!(
+        matches!(run(lazy).unwrap(), SourceValue::Constructed(value) if value.data() == &V::Boolean(true))
+    );
+    let empty_comparison = |right| {
+        Located::new(
+            K::Binary {
+                operator: B::Equal,
+                left: Box::new(native("empty_int")),
+                right: Box::new(right),
+            },
+            20..40,
+        )
+    };
+    let error = run(empty_comparison(native("empty_bool"))).unwrap_err();
+    assert!(
+        matches!(&error.error, EvaluationError::Core(QueryError { location: Location::Query(range), message, category: QueryErrorCategory::Other }) if range == &(20..40) && message.contains("compatible")),
+        "{error:?}"
+    );
+    let declared_empty = |element| {
+        at(
+            K::Literal(V::Declared {
+                value: Box::new(V::Array(vec![])),
+                declaration: DeclaredType::Sequence(Box::new(DeclaredType::Tuple(vec![element]))),
+            }),
+            0,
+        )
+    };
+    let error = run(empty_comparison(declared_empty(DeclaredType::Boolean))).unwrap_err();
+    assert!(
+        matches!(&error.error, EvaluationError::Core(QueryError { location: Location::Query(range), message, category: QueryErrorCategory::Other }) if range == &(20..40) && message.contains("Boolean")),
+        "{error:?}"
+    );
+    assert!(
+        matches!(run(empty_comparison(declared_empty(DeclaredType::Integer))).unwrap(), SourceValue::Constructed(value) if value.data() == &V::Boolean(true))
+    );
+    // Absence must not erase different declared native underlying types.
+    let declaration = zirql::FunctionDeclaration {
+        name: at("same_optional".into(), 0),
+        parameters: [("a", SourceKind::Words), ("b", SourceKind::Count)]
+            .into_iter()
+            .map(|(name, kind)| {
+                at(
+                    zirql::FunctionParameter {
+                        name: at(name.into(), 0),
+                        declaration: DeclaredType::Optional(Box::new(DeclaredType::Native(kind))),
+                    },
+                    0,
+                )
+            })
+            .collect(),
+        result: at(DeclaredType::Boolean, 0),
+        bindings: vec![],
+        value: Located::new(
+            K::Binary {
+                operator: B::Equal,
+                left: Box::new(at(K::Name("a".into()), 0)),
+                right: Box::new(at(K::Name("b".into()), 0)),
+            },
+            20..40,
+        ),
+    };
+    let entry = at(
+        K::Call {
+            function: at("same_optional".into(), 0),
+            arguments: vec![at(K::Literal(V::Absent), 0), at(K::Literal(V::Absent), 0)],
+        },
+        0,
+    );
+    let error = FunctionRequest::prepare(
+        &[declaration],
+        &SourceHost,
+        &mut context,
+        &mut Budget::for_program(limits()),
+        FunctionLimits { active_depth: 1 },
+    )
+    .unwrap()
+    .evaluate(&entry, &Bindings::default())
+    .unwrap_err();
+    assert!(
+        matches!(&error.error, EvaluationError::Core(QueryError { location: Location::Query(range), message, .. }) if range == &(20..40) && message.contains("compatible")),
+        "{error:?}"
+    );
+    zirql::dispose_native_value(entry);
+}
+
+#[test]
 fn constructed_dictionary_children_of_native_values_support_all_lookup_forms() {
     use zirql::{
         ConstructedValue as V, DeclaredType as D, FunctionLimits, FunctionRequest,

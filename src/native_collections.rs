@@ -5,7 +5,7 @@ use crate::{
     QueryError,
 };
 
-enum Node<'a, T> {
+pub(crate) enum Node<'a, T> {
     Host(&'a T),
     Data(&'a V),
     Text(&'a str),
@@ -129,6 +129,511 @@ fn text<'a, C, H: FunctionHost<C>>(node: Node<'a, H::Value>, host: &H) -> Option
         },
     }
 }
+// Infix compatibility is separate from key identity. Keep only supplied
+// declarations and borrowed values; do not infer a schema for every native row.
+pub(crate) struct InfixOperand<'a, T, K> {
+    pub node: Node<'a, T>,
+    pub declaration: Option<&'a DeclaredType<K>>,
+}
+
+enum InfixDeclaration<'a, K> {
+    Host(&'a DeclaredType<K>),
+    Data(&'a DeclaredType<()>),
+}
+impl<K> Copy for InfixDeclaration<'_, K> {}
+impl<K> Clone for InfixDeclaration<'_, K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'a, K> InfixDeclaration<'a, K> {
+    fn child(
+        self,
+        index: usize,
+        label: Option<&str>,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<Option<Self>, QueryError> {
+        fn child<'a, K>(
+            d: &'a DeclaredType<K>,
+            index: usize,
+            label: Option<&str>,
+            budget: &mut Budget,
+            location: &Location,
+        ) -> Result<Option<&'a DeclaredType<K>>, QueryError> {
+            budget.charge(1, location.clone())?;
+            Ok(match crate::value::underlying(d) {
+                DeclaredType::Array(d) | DeclaredType::Sequence(d) => Some(d),
+                DeclaredType::Tuple(ds) => ds.get(index),
+                DeclaredType::Record(ds) => Some(crate::value::record_declaration(
+                    ds,
+                    label.expect("record child label"),
+                    budget,
+                    location,
+                )?),
+                _ => None,
+            })
+        }
+        match self {
+            Self::Host(d) => child(d, index, label, budget, location).map(|d| d.map(Self::Host)),
+            Self::Data(d) => child(d, index, label, budget, location).map(|d| d.map(Self::Data)),
+        }
+    }
+    fn compatible(
+        self,
+        other: Self,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<bool, QueryError>
+    where
+        K: PartialEq,
+    {
+        match (self, other) {
+            (Self::Host(a), Self::Host(b)) => {
+                crate::runtime_types::compatible_state(a, b, budget, location)
+            }
+            (Self::Data(a), Self::Data(b)) => {
+                crate::runtime_types::compatible_declarations(a, b, budget, location)
+            }
+            (Self::Data(a), Self::Host(b)) | (Self::Host(b), Self::Data(a)) => {
+                crate::runtime_types::compatible_declarations(a, b, budget, location)
+            }
+        }
+    }
+}
+
+fn infix_fact<C, H: FunctionHost<C>>(
+    node: Node<'_, H::Value>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<crate::ValueType, QueryError> {
+    use crate::{ArrayType, ValueType as T};
+    if let Some(data) = node.data(host) {
+        return Ok(match data {
+            V::Array(_) => T::Array(ArrayType::Positions(vec![])),
+            V::Tuple(_) => T::TupleKind,
+            V::Record(_) => T::RecordKind,
+            V::Dictionary(_) => T::Dictionary {
+                keys: vec![],
+                values: vec![],
+            },
+            _ => crate::constructed_value_type(data, budget, location.clone())?,
+        });
+    }
+    if text(node, host).is_some() {
+        return Ok(T::String);
+    }
+    if items(node, host, 0).is_some() {
+        return Ok(T::TupleKind);
+    }
+    if items(node, host, 1).is_some() {
+        if let Node::Host(value) = node {
+            let kind = host.kind(value, budget, range(location))?;
+            if let Some(element) = host.positional_view_kind(&kind, budget, range(location))? {
+                return Ok(T::Array(ArrayType::Elements(infix_kind_facts(
+                    &element, host, budget, location,
+                )?)));
+            }
+        }
+        return Ok(T::Array(ArrayType::Positions(vec![])));
+    }
+    if let Some(values) = items(node, host, 2) {
+        let mut family = None;
+        for i in 0..values.len() {
+            let value = values.get(i);
+            let fact = match value.data(host) {
+                Some(
+                    data @ (V::Boolean(_)
+                    | V::Integer(_)
+                    | V::Float(_)
+                    | V::String(_)
+                    | V::Member(_)),
+                ) => crate::constructed_value_type(data, budget, location.clone())?,
+                _ if text(value, host).is_some() => T::String,
+                _ => T::TupleKind, // A collection or opaque native leaf is a general member.
+            };
+            crate::value::merge_set_types(&mut family, &[fact], budget, location)?;
+        }
+        return Ok(T::Set(family));
+    }
+    if let Some(values) = entries(node, host) {
+        return Ok(if matches!(values, Entries::Capture(_)) {
+            T::RecordKind
+        } else {
+            T::Dictionary {
+                keys: vec![],
+                values: vec![],
+            }
+        });
+    }
+    Ok(T::Unestablished)
+}
+
+// These are supplied kind schemas, including an empty sequence's element;
+// discovery must not depend on there being a row to inspect.
+fn infix_kind_facts<C, H: FunctionHost<C>>(
+    kind: &<H as crate::ProjectionHost<C>>::Kind,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<crate::ValueType>, QueryError> {
+    use crate::{ArrayType, ValueType as T};
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        if let Some(facts) = host.scalar_types(kind, budget, range(location))? {
+            return Ok(facts);
+        }
+        if let Some(children) = host.tuple_view_kind(kind) {
+            let mut positions = crate::value::metadata_vec(1, budget, location)?;
+            positions.push(vec![]);
+            for child in children {
+                let facts = infix_kind_facts(child, host, budget, location)?;
+                positions =
+                    crate::value::extend_type_positions(&positions, &facts, budget, location)?;
+            }
+            let mut facts = crate::value::metadata_vec(positions.len(), budget, location)?;
+            for position in positions {
+                facts.push(T::Tuple(position));
+            }
+            return Ok(facts);
+        }
+        if let Some(record) = host.capture_record_kind(kind) {
+            let mut positions = crate::value::metadata_vec(1, budget, location)?;
+            positions.push(vec![]);
+            for (_, child) in &record.fields {
+                let facts = infix_kind_facts(child, host, budget, location)?;
+                positions =
+                    crate::value::extend_type_positions(&positions, &facts, budget, location)?;
+            }
+            let mut facts = crate::value::metadata_vec(positions.len(), budget, location)?;
+            for position in positions {
+                let mut fields = crate::value::metadata_vec(record.fields.len(), budget, location)?;
+                for ((label, _), fact) in record.fields.iter().zip(position) {
+                    budget.charge(label.len(), location.clone())?;
+                    fields.push((label.clone(), fact));
+                }
+                facts.push(T::Record(fields));
+            }
+            return Ok(facts);
+        }
+        let fact =
+            if let Some(element) = host.positional_view_kind(kind, budget, range(location))? {
+                T::Array(ArrayType::Elements(infix_kind_facts(
+                    &element, host, budget, location,
+                )?))
+            } else {
+                T::Unestablished
+            };
+        let mut facts = crate::value::metadata_vec(1, budget, location)?;
+        facts.push(fact);
+        Ok(facts)
+    })
+}
+
+fn equality_refusal(location: &Location) -> QueryError {
+    crate::value::error(location, "equality needs compatible underlying types")
+}
+
+fn admit_infix_contract<C, H: FunctionHost<C>, K>(
+    node: Node<'_, H::Value>,
+    declaration: &DeclaredType<K>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        if let Some(data) = node.data(host) {
+            if matches!(data, V::Absent) {
+                return Ok(());
+            }
+            return crate::admit_constructed(data, declaration, budget, location.clone());
+        }
+        let d = crate::value::underlying(declaration);
+        match d {
+            DeclaredType::Native(_) => Ok(()), // The host admits and identifies opaque leaves.
+            DeclaredType::Array(child) | DeclaredType::Sequence(child) => {
+                let values = items(node, host, 1).ok_or_else(|| equality_refusal(location))?;
+                let actual = infix_fact(node, host, budget, location)?;
+                crate::runtime_types::check_type_facts(&actual, d, true, budget, location)?;
+                for i in 0..values.len() {
+                    admit_infix_contract(values.get(i), child, host, budget, location)?;
+                }
+                Ok(())
+            }
+            DeclaredType::Tuple(children) => {
+                let values = items(node, host, 0).ok_or_else(|| equality_refusal(location))?;
+                if values.len() != children.len() {
+                    return Err(equality_refusal(location));
+                }
+                for (i, child) in children.iter().enumerate() {
+                    admit_infix_contract(values.get(i), child, host, budget, location)?;
+                }
+                Ok(())
+            }
+            DeclaredType::Record(fields) => {
+                let values = entries(node, host).ok_or_else(|| equality_refusal(location))?;
+                for (label, child) in fields {
+                    let mut found = None;
+                    for i in 0..values.len() {
+                        budget.charge(1 + label.len(), location.clone())?;
+                        let (key, value) = values.get(i);
+                        if text(key, host) == Some(label.as_str()) {
+                            found = Some(value);
+                            break;
+                        }
+                    }
+                    if let Some(value) = found {
+                        admit_infix_contract(value, child, host, budget, location)?;
+                    } else if !matches!(child, DeclaredType::Optional(_)) {
+                        return Err(equality_refusal(location));
+                    }
+                }
+                for i in 0..values.len() {
+                    let (key, _) = values.get(i);
+                    budget.charge(fields.len(), location.clone())?;
+                    if !fields
+                        .iter()
+                        .any(|(label, _)| text(key, host) == Some(label.as_str()))
+                    {
+                        return Err(equality_refusal(location));
+                    }
+                }
+                Ok(())
+            }
+            DeclaredType::Dictionary(key, value) => {
+                let values = entries(node, host).ok_or_else(|| equality_refusal(location))?;
+                for i in 0..values.len() {
+                    let (k, v) = values.get(i);
+                    admit_infix_contract(k, key, host, budget, location)?;
+                    admit_infix_contract(v, value, host, budget, location)?;
+                }
+                Ok(())
+            }
+            DeclaredType::Set(family) => {
+                let actual = infix_fact(node, host, budget, location)?;
+                crate::value::binary_type(
+                    crate::ValueBinaryOperator::Equal,
+                    &actual,
+                    &crate::ValueType::Set(Some(*family)),
+                    budget,
+                    location,
+                )?;
+                Ok(())
+            }
+            DeclaredType::String if text(node, host).is_some() => Ok(()),
+            DeclaredType::Value => {
+                for kind in 0..3 {
+                    if let Some(values) = items(node, host, kind) {
+                        for i in 0..values.len() {
+                            admit_infix_contract(values.get(i), d, host, budget, location)?;
+                        }
+                        return Ok(());
+                    }
+                }
+                if let Some(values) = entries(node, host) {
+                    for i in 0..values.len() {
+                        let (k, v) = values.get(i);
+                        admit_infix_contract(k, d, host, budget, location)?;
+                        admit_infix_contract(v, d, host, budget, location)?;
+                    }
+                    return Ok(());
+                }
+                if text(node, host).is_some() {
+                    Ok(())
+                } else {
+                    Err(equality_refusal(location))
+                }
+            }
+            _ => Err(equality_refusal(location)),
+        }
+    })
+}
+
+pub(crate) fn admit_infix_equality<C, H: FunctionHost<C>>(
+    left: InfixOperand<'_, H::Value, <H as crate::ProjectionHost<C>>::Kind>,
+    right: InfixOperand<'_, H::Value, <H as crate::ProjectionHost<C>>::Kind>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    admit_equality_pair(
+        left.node,
+        right.node,
+        left.declaration.map(InfixDeclaration::Host),
+        right.declaration.map(InfixDeclaration::Host),
+        host,
+        budget,
+        location,
+    )
+}
+
+fn admit_equality_pair<C, H: FunctionHost<C>>(
+    left: Node<'_, H::Value>,
+    right: Node<'_, H::Value>,
+    left_d: Option<InfixDeclaration<'_, <H as crate::ProjectionHost<C>>::Kind>>,
+    right_d: Option<InfixDeclaration<'_, <H as crate::ProjectionHost<C>>::Kind>>,
+    host: &H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        fn declaration<'a, C, H: FunctionHost<C>>(
+            node: Node<'a, H::Value>,
+            host: &H,
+        ) -> Option<&'a DeclaredType<()>> {
+            match node {
+                Node::Data(v) => crate::value::declaration(v),
+                Node::Host(v) => host
+                    .constructed_value(v)
+                    .and_then(crate::value::declaration),
+                Node::Text(_) => None,
+            }
+        }
+        let left_fact = infix_fact(left, host, budget, location)?;
+        let right_fact = infix_fact(right, host, budget, location)?;
+        let ordinary_contract = |d, fact: &crate::ValueType| match d {
+            InfixDeclaration::Host(d)
+                if matches!(crate::value::underlying(d), DeclaredType::Native(_)) =>
+            {
+                matches!(
+                    fact,
+                    crate::ValueType::Absent | crate::ValueType::Unestablished
+                )
+            }
+            _ => true,
+        };
+        let left_d = left_d
+            .filter(|d| ordinary_contract(*d, &left_fact))
+            .or_else(|| declaration(left, host).map(InfixDeclaration::Data));
+        let right_d = right_d
+            .filter(|d| ordinary_contract(*d, &right_fact))
+            .or_else(|| declaration(right, host).map(InfixDeclaration::Data));
+        crate::value::binary_type(
+            crate::ValueBinaryOperator::Equal,
+            &left_fact,
+            &right_fact,
+            budget,
+            location,
+        )?;
+        match (left_d, right_d) {
+            (Some(a), Some(b)) => {
+                if !a.compatible(b, budget, location)? {
+                    return Err(equality_refusal(location));
+                }
+            }
+            (Some(d), None) | (None, Some(d)) => {
+                let node = if left_d.is_some() { right } else { left };
+                match d {
+                    InfixDeclaration::Host(d) => {
+                        admit_infix_contract(node, d, host, budget, location)?
+                    }
+                    InfixDeclaration::Data(d) => {
+                        admit_infix_contract(node, d, host, budget, location)?
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let (Some(a), Some(b)) = (left.data(host), right.data(host)) {
+            let a = crate::constructed_value_type(a, budget, location.clone())?;
+            let b = crate::constructed_value_type(b, budget, location.clone())?;
+            crate::value::binary_type(crate::ValueBinaryOperator::Equal, &a, &b, budget, location)?;
+            return Ok(());
+        }
+        for kind in 0..2 {
+            if let (Some(a), Some(b)) = (items(left, host, kind), items(right, host, kind)) {
+                if kind == 0 && a.len() != b.len() {
+                    return Err(equality_refusal(location));
+                }
+                for i in 0..a.len().min(b.len()) {
+                    admit_equality_pair(
+                        a.get(i),
+                        b.get(i),
+                        left_d
+                            .map(|d| d.child(i, None, budget, location))
+                            .transpose()?
+                            .flatten(),
+                        right_d
+                            .map(|d| d.child(i, None, budget, location))
+                            .transpose()?
+                            .flatten(),
+                        host,
+                        budget,
+                        location,
+                    )?;
+                }
+                // A retained element declaration also governs unmatched rows.
+                for (values, fact) in [(&a, &right_fact), (&b, &left_fact)] {
+                    if let crate::ValueType::Array(crate::ArrayType::Elements(facts)) = fact {
+                        for fact in facts {
+                            if let Some(d) =
+                                crate::worklists::fact_contract::<()>(fact, budget, location)?
+                            {
+                                for i in 0..values.len() {
+                                    admit_infix_contract(
+                                        values.get(i),
+                                        &d,
+                                        host,
+                                        budget,
+                                        location,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+        let records = |node| {
+            matches!(node, Node::Host(v) if host.capture_record(v).is_some())
+                || matches!(node.data(host), Some(V::Record(_)))
+        };
+        if records(left) && records(right) {
+            let a = entries(left, host).expect("record view");
+            let b = entries(right, host).expect("record view");
+            if left_d.is_none() && right_d.is_none() && a.len() != b.len() {
+                return Err(equality_refusal(location));
+            }
+            for i in 0..a.len() {
+                let (key, value) = a.get(i);
+                let label = text(key, host).expect("record label");
+                let mut found = false;
+                for j in 0..b.len() {
+                    budget.charge(1 + label.len(), location.clone())?;
+                    let (other, other_value) = b.get(j);
+                    if text(other, host) == Some(label) {
+                        admit_equality_pair(
+                            value,
+                            other_value,
+                            left_d
+                                .map(|d| d.child(i, Some(label), budget, location))
+                                .transpose()?
+                                .flatten(),
+                            right_d
+                                .map(|d| d.child(j, Some(label), budget, location))
+                                .transpose()?
+                                .flatten(),
+                            host,
+                            budget,
+                            location,
+                        )?;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found && left_d.is_none() && right_d.is_none() {
+                    return Err(equality_refusal(location));
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 fn equal<C, H: FunctionHost<C>>(
     left: Node<'_, H::Value>,
     right: Node<'_, H::Value>,
