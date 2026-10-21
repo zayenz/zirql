@@ -6,7 +6,7 @@ application then handles the result. The [complete Rust
 example](getting-started.md) shows this integration.
 
 For an application over files, [Build the CSV host](csv-host.md) explains how to
-load typed rows, expose bindings and evaluate a query before writing JSON.
+load declared rows, expose bindings and run a program before writing JSON or Markdown.
 Its [usage guide](csv.md) shows the input tables, queries, results and commands
 together.
 
@@ -36,6 +36,7 @@ The library has several entry points, each suited to a different integration:
 
 | Entry point | Use |
 | --- | --- |
+| `ConstructedBinding` / `ConstructedProgram` | Admit declared data, bind names/current input and run common programs without native traits |
 | `read_value_expression`, `read_value_expression_in_scope` and `ValueReaderHost` | Parse shared expressions and delegate domain syntax |
 | `evaluate_query_value` and `ValueQueryHost` | Evaluate constructed data with explicit binding reads and native leaves |
 | `parse_pipeline` and `Host` | Embed the small filter/head/count pipeline reader |
@@ -43,10 +44,15 @@ The library has several entry points, each suited to a different integration:
 | Located Rust expression and program types | Integrate an existing parser or build queries directly |
 | `FunctionRequest` / `PreparedFunctions` | Prepare typed pure functions and evaluate them with the active host |
 
-The word example uses the first two rows. Its reader knows one binding, and its
-value adapter supplies that binding under the same budget as evaluation. Add the
-other interfaces when your application needs native pipelines, programs or named
-functions.
+Words and CSV use `ConstructedBinding` and `ConstructedProgram`. Supply each
+value with its declaration, read the common program, then evaluate with borrowed
+bindings, optional current input and `ParameterInputs`. Compact schema facts
+retain declared empty fields and positional meaning. The
+[minimal example](embedding-programs.md#constructed-data-programs) shows the call
+sequence. This facade is a development API newer than registry 0.2.0.
+
+Use the native interfaces for handles, domain operations and host effects.
+Functions in both routes receive all values through explicit arguments.
 
 [Embedding in Rust](host-integration.md) describes hook obligations, native
 ownership, validation and projection. [Construct programs in Rust](embedding-programs.md)

@@ -6,10 +6,9 @@ patterns and functions express those choices. Bindings are immutable, and
 functions receive outer data through explicit arguments.
 
 Conditions and value matches below run in the [word
-example](getting-started.md). Function declarations need a host that registers
-and prepares functions before evaluating a call. The common reader parses those
-declarations, but the small word executable accepts one expression and does not
-install functions.
+example](getting-started.md). In the development checkout, words and CSV use
+`ConstructedProgram` to read and prepare named functions as well. Functions
+receive their data through explicit arguments.
 
 The expression spelling `if condition then value elseif condition then value
 else value endif` uses the same conditional rules as the block form below.
@@ -33,8 +32,16 @@ functions in programs supplied with `--program` or `--program-file`; its
 [query guide](https://zayenz.se/zincite/guides/queries/) uses MiniZinc source
 selections and values.
 
-The word executable accepts one expression. The CSV executable adds ordered
-lets and a final expression, but does not register named functions.
+The development word executable can run the same pure calculation directly:
+
+```sh
+cargo run --locked --example words -- 'fn twice(n: int) -> int { n * 2 } twice(3)'
+```
+
+CSV also accepts typed parameters and named functions through the constructed
+program API, with repeated `--param name=value` inputs. See the
+[orders report](csv.md#calculate-with-numeric-cells). These example APIs are
+newer than registry Zirql 0.2.0.
 
 ## Conditions and local bindings
 

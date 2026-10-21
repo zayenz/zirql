@@ -7,9 +7,10 @@ of related native objects, and its statements execute in written order.
 
 Zirql's `read_program` owns common declaration collection, lexical names and
 statement assembly. The host supplies native syntax, admission and output
-handling, or translates its typed builder into the same program representation. The [word
-executable](getting-started.md) accepts one expression; it does not parse the
-complete programs or native extensions shown here.
+handling, or translates its typed builder into the same program representation.
+The [word executable](getting-started.md) and [CSV example](csv.md) use
+`ConstructedProgram` for constructed data with functions, parameters and ordered
+lets. Native extensions require the corresponding native host interfaces.
 
 ## Statements and scope
 
@@ -37,16 +38,15 @@ Each statement starts with the original top-level input. A previous statement
 does not replace that input. Bind its result and refer to the binding explicitly
 when a later statement should use it.
 
-Larger frontends also support parameters, functions and explicit output
-statements. The host defines what `report` does with the result, including
+Native frontends also support explicit output statements. The host defines what `report` does with the result, including
 formatting and whether it produces output for a library call. Zirium supports
 pass-through emitters; Zincite's output stages are terminal. Their
 [Zirium](https://zayenz.se/zirium/guides/query-language/) and
 [Zincite](https://zayenz.se/zincite/guides/queries/) guides document the actual
-commands. [Build the CSV host](csv-host.md#6-read-lets-and-a-final-expression)
-explains how its frontend reads lets into a shared value block.
-CSV's final expression renders JSON or Markdown. It accepts no final semicolon,
-`report`, parameter declaration or named function declaration. Native hosts
+commands. [Build the CSV host](csv-host.md#5-read-prepare-and-run)
+explains how its constructed-program API reads and prepares the common program.
+CSV's final expression renders JSON or Markdown. It accepts typed parameters and
+named functions, with no final semicolon or `report` statement. Native hosts
 accept an optional final semicolon; every binding and parameter requires one.
 
 A Rust embedding lowers parameter declarations to `Statement::Parameter` and

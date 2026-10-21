@@ -3,23 +3,16 @@
 The word-analysis example is a Rust application that supplies an array of strings
 as current input and as the binding `words`. It is the host: the application
 that embeds Zirql and supplies its data. Zirql reads and evaluates the
-expression; the host prints the result.
+program; the host prints the result.
 
 This guide connects the [word tutorial](examples.md) to its Rust implementation.
-The two small trait implementations in the example form its adapter to Zirql.
+`ConstructedBinding` and `ConstructedProgram` provide its data and program boundary.
 
 ## Run the example
 
-Use Rust 1.88 or newer. The published crate includes both example sources and
-their CSV fixtures. Extract `zirql-0.2.0.crate` and run commands from its
-`zirql-0.2.0` directory, or check out the matching release:
-
-```sh
-git clone --branch v0.2.0 --depth 1 https://github.com/zayenz/zirql.git
-cd zirql
-```
-
-From either directory:
+Use Rust 1.88 or newer and run from this working checkout. Its constructed-program
+API is newer than registry Zirql 0.2.0. The published crate and `v0.2.0` tag also
+include word and CSV examples, using their matching release APIs.
 
 ```sh
 cargo run --locked --example words
@@ -73,8 +66,7 @@ cargo run --locked --example words -- '[{"position": i, "word": (words[i], i).1}
 ```
 
 This returns one dictionary per word, with positions `1` through `4`. The default
-adjacent-pair expression also uses `index_set(words)`, keeping only keys with
-a following word.
+adjacent-pair expression uses `windows(2)` to visit neighbouring words.
 
 The [complete source](../examples/words.rs) is small enough to adapt directly.
 This is a repository example executable; the library itself does not install
@@ -86,33 +78,39 @@ The application calls Rust's `split_whitespace` and converts each slice to a
 `ConstructedValue::String`. It stores those strings in a `ConstructedValue::Array`.
 There is no normalization, punctuation removal or case folding.
 
-The host exposes the array under the name `words` and supplies it as immutable
-current input. It also supplies type facts so Zirql can check the expression
-before running it. The reference calls this check preflight validation. Zirql
-owns filtering, counting, sorting, stable unique and tally.
+The application gives that array and a positional string-sequence declaration
+to `ConstructedBinding::new`. Admission checks actual data and retains compact
+facts from the declaration, including the element type for an empty array. The
+same immutable binding supplies the name `words` and optional current input.
+Zirql owns filtering, counting, sorting, stable unique and tally.
 
-## Read and evaluate an expression
+## Read and evaluate a program
 
-The example implements two interfaces:
+The example calls `ConstructedProgram::read` with the source and initial name
+`words`, then evaluates it with the borrowed binding and current input:
 
-- `ValueReaderHost` identifies `words` as a binding and declares that this host
-  has no native stages or domain predicates.
-- `ValueQueryHost` supplies the binding's value, current-input facts through
-  `current_input_types`, and the input through `read_current_input`. Zirql
-  retains one admitted input per invocation. The host copies constructed data
-  through `copy_constructed_value`, which accounts for the copy in the request
-  budget. Native queries are rejected because this model does not define them.
+```rust
+let program = ConstructedProgram::read(&query, &["words"], &mut budget, 64)?;
+let result = program.evaluate(
+    &[("words", &words)],
+    Some(&words),
+    ParameterInputs::Cli(&[]),
+    FunctionLimits { active_depth: 32 },
+    &mut budget,
+)?;
+```
 
-The application calls `read_value_expression`, checks that the reader consumed
-the whole expression, then calls `evaluate_query_value`. It passes the same
-`Budget` through parsing, type discovery, binding reads and evaluation. This
-budget tracks work and result allocations against the host's chosen limits. A
-failed parse or evaluation returns a `QueryError` with its source or query
-location.
+The same `Budget` covers splitting, allocation, admission, reading, preparation
+and execution. The program may contain typed parameters, named functions,
+ordered pattern lets and one final expression. The word executable supplies no
+external parameter values, so a program requiring them receives a missing-value
+error. Function arguments are explicit; bodies cannot capture `words` or current
+input. The [CSV example](csv.md) also collects repeated `--param` arguments.
 
-After evaluation, `dispose_native_value` releases the expression tree. The
-returned `ConstructedValue` belongs to the caller. The example prints it with
-`Debug`; an application can inspect the dictionaries or choose its own output format.
+`ConstructedProgram` disposes its parsed trees when dropped. The returned
+`ConstructedValue` belongs to the caller, and failures retain query locations
+and function-call frames. Words prints with `Debug`; an application can inspect
+the records or call a [shared renderer](library-rendering.md).
 
 The explicit limits in the example are tutorial choices. Set limits that fit
 your application's input and expected queries. Include host scanning, allocation
@@ -135,17 +133,25 @@ Or use Cargo to add the same requirement:
 cargo add zirql@0.2.0
 ```
 
-These guides describe Zirql 0.2.0. The earlier `0.1.0-alpha.5` registry package
+The registry API reference describes Zirql 0.2.0. The earlier `0.1.0-alpha.5` registry package
 has a smaller language and API. Use the matching
 [Rust API reference](https://docs.rs/zirql/0.2.0/zirql/), or generate documentation
-for the dependency selected in your lockfile:
+for the dependency selected in your lockfile. For the constructed-program API
+used above, depend on this checkout instead:
+
+```toml
+[dependencies]
+zirql = { path = "../zirql" }
+```
+
+Generate its local API documentation with:
 
 ```sh
 cargo doc --open
 ```
 
 To work with files and named tables, [query CSV files](csv.md), then follow
-[Build the CSV host](csv-host.md). That tutorial uses the same value interfaces
-and adds header types, saved bindings and buffered JSON output. The
+[Build the CSV host](csv-host.md). That tutorial uses the same constructed-program API
+and adds header declarations, named tables, parameters and buffered JSON/Markdown output. The
 [implementation reference](implementation-reference.md) covers other data
 models and the native interfaces.

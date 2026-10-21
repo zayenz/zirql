@@ -526,9 +526,79 @@ fn admit_constructed_value<K>(
             }
             return admit_constructed_value(value, expected, budget, location);
         }
-        // These facts are freshly discovered from actual data, never supplied tags.
-        let actual = constructed_value_type(value, budget, location.clone())?;
-        check_type(&actual, expected, budget, &location)
+        budget.charge(1, location.clone())?;
+        match (value, expected) {
+            (ConstructedValue::Absent, DeclaredType::Optional(_)) => Ok(()),
+            (_, DeclaredType::Optional(element)) => {
+                admit_constructed_value(value, element, budget, location)
+            }
+            (
+                ConstructedValue::Array(values),
+                DeclaredType::Array(element) | DeclaredType::Sequence(element),
+            ) => {
+                let label = if matches!(expected, DeclaredType::Sequence(_)) {
+                    "sequence element"
+                } else {
+                    "array element"
+                };
+                for (index, value) in values.iter().enumerate() {
+                    admit_constructed_value(value, element, budget, location.clone())
+                        .map_err(|error| nested_error(error, label, Some(index), budget))?;
+                }
+                Ok(())
+            }
+            (ConstructedValue::Record(actual), DeclaredType::Record(expected)) => {
+                for (index, (label, _)) in actual.iter().enumerate() {
+                    for (previous, _) in &actual[..index] {
+                        budget.charge(1 + label.len().min(previous.len()), location.clone())?;
+                        if label == previous {
+                            return Err(refusal("duplicate record label", budget, &location)?);
+                        }
+                    }
+                    let mut declared = false;
+                    for (candidate, _) in expected {
+                        budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
+                        declared |= label == candidate;
+                    }
+                    if !declared {
+                        return Err(refusal(
+                            "record label outside declared schema",
+                            budget,
+                            &location,
+                        )?);
+                    }
+                }
+                for (label, expected) in expected {
+                    let mut found = None;
+                    for (candidate, actual) in actual {
+                        budget.charge(1 + label.len().min(candidate.len()), location.clone())?;
+                        if label == candidate {
+                            found = Some(actual);
+                            break;
+                        }
+                    }
+                    let Some(actual) = found else {
+                        if matches!(expected, DeclaredType::Optional(_)) {
+                            continue;
+                        }
+                        return Err(nested_error(
+                            refusal("missing declared record field", budget, &location)?,
+                            label,
+                            None,
+                            budget,
+                        ));
+                    };
+                    admit_constructed_value(actual, expected, budget, location.clone())
+                        .map_err(|error| nested_error(error, label, None, budget))?;
+                }
+                Ok(())
+            }
+            _ => {
+                // Other shapes use actual discovery, including nominal/keyed/set invariants.
+                let actual = constructed_value_type(value, budget, location.clone())?;
+                check_type(&actual, expected, budget, &location)
+            }
+        }
     })
 }
 

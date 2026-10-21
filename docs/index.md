@@ -1,6 +1,6 @@
 # Zirql
 
-These guides describe Zirql 0.2.0. See [setup](getting-started.md) for the Rust
+These guides cover Zirql 0.2.0 and marked development APIs. See [setup](getting-started.md) for the Rust
 dependency and runnable word and CSV examples.
 
 Zirql lets users write analyses that an application's built-in reports do not
@@ -111,8 +111,8 @@ Record fields can contain expressions and nested collections.
 <!-- examples:end -->
 
 [Work through the word analysis](examples.md), or [run these expressions from
-Rust](getting-started.md). The examples use Zirql 0.2.0; the setup guide describes the packaged examples
-and matching checkout.
+Rust](getting-started.md). The setup guide distinguishes the packaged 0.2.0 examples from the development
+constructed-program API.
 
 ## Learn the language
 
@@ -131,7 +131,9 @@ application.
 ## Embed Zirql
 
 For this word model, the application splits text and supplies a string array
-named `words`. Zirql parses and evaluates the analysis. An application working
+named `words` through `ConstructedBinding` and `ConstructedProgram`.
+The [minimal Rust example](embedding-programs.md#constructed-data-programs) shows
+that boundary. Zirql parses and evaluates the analysis. An application working
 with source code can instead supply native nodes, projections and navigation.
 Those nodes keep their identity and connection to the source. The application
 chooses which operations queries may use and sets limits on their work and

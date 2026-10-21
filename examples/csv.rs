@@ -3,20 +3,15 @@
 //! [Query examples](https://zayenz.se/zirql/guides/csv/) show the inputs and results.
 //! [Build the CSV host](https://zayenz.se/zirql/guides/csv-host/) explains this adapter.
 use std::{
-    collections::BTreeMap,
     fmt,
     fs::File,
     io::{self, Read, Write},
-    ops::Range,
     path::PathBuf,
-    sync::Arc,
 };
 use zirql::{
-    ArgumentReader, ArrayType, Budget, ConstructedValue as V, DeclaredType, ExpressionStep,
-    JsonLayout, JsonRepresentation, Located, Location, ProgramLimits, QueryError, ReadExpression,
-    ValueExpression, ValueQueryHost, ValueReaderHost, ValueType, copy_constructed_value,
-    declare_constructed, dispose_native_value, evaluate_query_value, read_value_expression,
-    render_json, render_markdown,
+    Budget, ConstructedBinding, ConstructedProgram, ConstructedValue as V, DeclaredType,
+    FunctionLimits, JsonLayout, JsonRepresentation, Location, ParameterInputs, ProgramLimits,
+    QueryError, render_json, render_markdown,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -75,11 +70,16 @@ enum OutputFormat {
     Markdown,
 }
 
-fn output_arguments(
-    arguments: impl Iterator<Item = String>,
-) -> Result<(OutputFormat, Vec<InputSpec>), String> {
+struct Arguments {
+    format: OutputFormat,
+    inputs: Vec<InputSpec>,
+    parameters: Vec<String>,
+}
+
+fn parse_arguments(arguments: impl Iterator<Item = String>) -> Result<Arguments, String> {
     let mut format = OutputFormat::Json;
     let mut inputs = Vec::new();
+    let mut parameters = Vec::new();
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         if argument == "--format" {
@@ -88,29 +88,39 @@ fn output_arguments(
                 Some("markdown") => OutputFormat::Markdown,
                 _ => return Err("--format requires json or markdown".into()),
             };
+        } else if argument == "--param" {
+            parameters.push(arguments.next().ok_or("--param requires name=value")?);
         } else {
             inputs.push(InputSpec::parse(argument));
         }
     }
-    Ok((format, inputs))
+    Ok(Arguments {
+        format,
+        inputs,
+        parameters,
+    })
 }
 
 fn main() {
     let mut arguments = std::env::args().skip(1);
     let Some(query) = arguments.next() else {
         eprintln!(
-            "usage: cargo run --example csv -- 'QUERY' [--format json|markdown] FILE.csv | name=FILE.csv ..."
+            "usage: cargo run --example csv -- 'QUERY' [--format json|markdown] [--param name=value] FILE.csv | name=FILE.csv ..."
         );
         std::process::exit(1);
     };
-    let (format, inputs) = match output_arguments(arguments) {
+    let Arguments {
+        format,
+        inputs,
+        parameters,
+    } = match parse_arguments(arguments) {
         Ok(arguments) => arguments,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
         }
     };
-    match run(&query, &inputs, format, LIMITS) {
+    match run(&query, &inputs, &parameters, format, LIMITS) {
         Ok(output) => {
             if let Err(error) = io::stdout().lock().write_all(&output) {
                 eprintln!("writing output: {error}");
@@ -127,6 +137,7 @@ fn main() {
 fn run(
     query: &str,
     inputs: &[InputSpec],
+    parameters: &[String],
     format: OutputFormat,
     limits: ProgramLimits,
 ) -> Result<Vec<u8>, CsvError> {
@@ -158,36 +169,54 @@ fn run(
         })?;
         tables.push(table);
     }
-    let mut host = CsvHost { tables, inputs };
-    let mut types = BTreeMap::new();
-    for (index, input) in inputs.iter().enumerate() {
-        if let Some(name) = &input.name {
+    let mut named = Vec::new();
+    let mut names = vec!["rows"];
+    for (input, table) in inputs.iter().zip(&tables) {
+        if let Some(name) = input.name.as_deref() {
             budget
                 .charge(name.len() + 1, Location::Query(0..query.len()))
                 .map_err(query_error)?;
-            types.insert(
-                name.clone(),
-                host.tables[index]
-                    .types(&mut budget, Location::Query(0..query.len()))
-                    .map_err(query_error)?,
-            );
+            named.push((name, table));
+            names.push(name);
         }
     }
-    budget
-        .charge(5, Location::Query(0..query.len()))
-        .map_err(query_error)?;
-    let rows_types = if host.tables.len() == 1 {
-        host.tables[0]
-            .types(&mut budget, Location::Query(0..query.len()))
-            .map_err(query_error)?
+    let current = if tables.len() == 1 {
+        named.push(("rows", &tables[0]));
+        Some(&tables[0])
     } else {
-        vec![ValueType::Unestablished]
+        None
     };
-    types.insert("rows".into(), rows_types);
-    let expression = csv_program(query, &host, &mut budget, limits.nesting).map_err(query_error)?;
-    let result = evaluate_query_value(&expression, &types, &mut host, &mut budget);
-    dispose_native_value(expression);
-    let result = result.map_err(query_error)?;
+    let program = ConstructedProgram::read(query, &names, &mut budget, limits.nesting)
+        .map_err(query_error)?;
+    let result = program
+        .evaluate(
+            &named,
+            current,
+            ParameterInputs::Cli(parameters),
+            FunctionLimits { active_depth: 32 },
+            &mut budget,
+        )
+        .map_err(|failure| {
+            let mut error = failure.error;
+            if tables.len() > 1
+                && (error.message == "constructed current input is unavailable"
+                    || error.message == "undefined binding: rows")
+            {
+                error.message = format!(
+                    "implicit CSV input is ambiguous; choose a named table: {}",
+                    inputs
+                        .iter()
+                        .filter_map(|input| input.name.as_deref())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            let mut context = context();
+            for call in failure.calls {
+                context.push_str(&format!("; in {} at {:?}", call.function, call.range));
+            }
+            CsvError { context, error }
+        })?;
     let location = Location::Query(0..query.len());
     let output = match format {
         OutputFormat::Json => {
@@ -255,29 +284,7 @@ fn is_table_name(name: &str) -> bool {
     zirql::is_unquoted_binding_name(name) && !zirql::is_common_keyword(name) && name != "rows"
 }
 
-#[derive(Debug)]
-struct Table {
-    headers: Vec<String>,
-    rows: Arc<V>,
-}
-impl Table {
-    fn types(&self, budget: &mut Budget, location: Location) -> Result<Vec<ValueType>, QueryError> {
-        budget.charge(self.headers.len() + 3, location.clone())?;
-        let mut fields = Vec::new();
-        let mut declaration = Vec::new();
-        for header in &self.headers {
-            budget.charge(header.len() * 2 + 2, location.clone())?;
-            fields.push((header.clone(), ValueType::String));
-            declaration.push((header.clone(), DeclaredType::String));
-        }
-        // A declared header schema rejects unknown columns even with no rows.
-        let row = ValueType::Declared {
-            actual: Box::new(ValueType::Record(fields)),
-            declaration: DeclaredType::Record(declaration),
-        };
-        Ok(vec![ValueType::Array(ArrayType::Elements(vec![row]))])
-    }
-}
+type Table = ConstructedBinding;
 
 fn load_table(
     input: &InputSpec,
@@ -364,18 +371,12 @@ fn decode_table(bytes: &[u8], budget: &mut Budget) -> Result<Table, QueryError> 
         }
         rows.push(V::Record(fields));
     }
-    let rows = declare_constructed(
+    ConstructedBinding::new(
         V::Array(rows),
-        DeclaredType::Array(Box::new(DeclaredType::Record(declaration))),
+        DeclaredType::Sequence(Box::new(DeclaredType::Record(declaration))),
         budget,
-        header_location.clone(),
-    )?;
-    budget.charge(1, header_location.clone())?;
-    budget.charge_results(1, header_location)?;
-    Ok(Table {
-        headers,
-        rows: Arc::new(rows),
-    })
+        header_location,
+    )
 }
 
 fn csv_location(position: Option<&csv::Position>) -> Location {
@@ -406,196 +407,6 @@ fn csv_position(position: Option<&csv::Position>) -> String {
         .unwrap_or_else(|| "unknown CSV position".into())
 }
 
-struct CsvHost<'a> {
-    tables: Vec<Table>,
-    inputs: &'a [InputSpec],
-}
-impl CsvHost<'_> {
-    fn binding(&self, name: &str, range: &Range<usize>) -> Result<&Table, QueryError> {
-        if name == "rows" {
-            return self.implicit(range);
-        }
-        self.inputs
-            .iter()
-            .position(|input| input.name.as_deref() == Some(name))
-            .map(|index| &self.tables[index])
-            .ok_or_else(|| QueryError::query(range.clone(), format!("unknown CSV table {name:?}")))
-    }
-    fn implicit(&self, range: &Range<usize>) -> Result<&Table, QueryError> {
-        if self.tables.len() == 1 {
-            return Ok(&self.tables[0]);
-        }
-        Err(QueryError::query(
-            range.clone(),
-            format!(
-                "implicit CSV input is ambiguous; choose a named table: {}",
-                self.inputs
-                    .iter()
-                    .filter_map(|input| input.name.as_deref())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ))
-    }
-}
-// Each expression borrows the common driver's complete lexical name slice.
-// The reader has no table ownership or independent name progression.
-struct CsvReader<'a> {
-    names: &'a [&'a str],
-}
-type CsvExpression = zirql::Expression<(), (), ()>;
-impl ValueReaderHost for CsvReader<'_> {
-    type Stage = ();
-    type SetOperator = ();
-    type Emitter = ();
-
-    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
-        zirql::FieldPipelineSource::Constructed
-    }
-    fn is_binding(&self, name: &str) -> bool {
-        self.names.contains(&name)
-    }
-    fn is_constructed_binding(&self, name: &str) -> bool {
-        self.is_binding(name)
-    }
-
-    fn is_stage(&self, _: &str) -> bool {
-        false
-    }
-    fn parse_stage(
-        &mut self,
-        reader: &mut ArgumentReader<'_>,
-        _: &mut Budget,
-    ) -> Result<ExpressionStep<(), ()>, QueryError> {
-        Err(reader
-            .error("unknown CSV table or unavailable native stage; use a named table or rows"))
-    }
-    fn parse_predicate_leaf(
-        &mut self,
-        reader: &mut ArgumentReader<'_>,
-        _: &mut Budget,
-    ) -> Result<(), QueryError> {
-        Err(reader.error("use a scoped row expression in filter"))
-    }
-
-    fn set_operator(&self, _: &str) -> Option<()> {
-        None
-    }
-}
-impl ValueQueryHost<CsvExpression> for CsvHost<'_> {
-    type Error = QueryError;
-    fn current_input_types(
-        &mut self,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<Vec<ValueType>, QueryError> {
-        self.implicit(range)?
-            .types(budget, Location::Query(range.clone()))
-    }
-    fn read_current_input(
-        &mut self,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<V, QueryError> {
-        copy_constructed_value(
-            &self.implicit(range)?.rows,
-            budget,
-            Location::Query(range.clone()),
-        )
-    }
-    fn query_types(
-        &mut self,
-        _: &CsvExpression,
-        _: &[(&str, Vec<ValueType>)],
-        _: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Vec<ValueType>, QueryError> {
-        Err(QueryError::query(
-            range.clone(),
-            "native queries are unavailable in the CSV host",
-        ))
-    }
-    fn evaluate_query(
-        &mut self,
-        query: &CsvExpression,
-        _: &[(&str, V)],
-        _: &mut Budget,
-    ) -> Result<V, QueryError> {
-        Err(QueryError::query(
-            query.range.clone(),
-            "native queries are unavailable in the CSV host",
-        ))
-    }
-    fn read_binding(
-        &mut self,
-        name: &str,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<V, QueryError> {
-        let table = self.binding(name, range)?;
-        copy_constructed_value(&table.rows, budget, Location::Query(range.clone()))
-    }
-    fn read_shared_binding(
-        &mut self,
-        name: &str,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<Option<Arc<V>>, QueryError> {
-        let table = self.binding(name, range)?;
-        // Share the retained owner; Zirql still admits the full table value.
-        budget.charge(1, Location::Query(range.clone()))?;
-        Ok(Some(Arc::clone(&table.rows)))
-    }
-    fn validate_name(
-        &mut self,
-        name: &str,
-        range: &Range<usize>,
-        _: &mut Budget,
-    ) -> Result<(), QueryError> {
-        if name == "rows" {
-            self.implicit(range)?;
-        }
-        Ok(())
-    }
-}
-
-impl zirql::ProgramReaderHost for CsvReader<'_> {
-    fn read_program_expression(
-        &mut self,
-        reader: &mut ArgumentReader<'_>,
-        names: &[&str],
-        _: zirql::ProgramExpression,
-        budget: &mut Budget,
-        nesting: usize,
-    ) -> Result<ReadExpression<Self>, QueryError> {
-        let mut expression_host = CsvReader { names };
-        let value = read_value_expression(reader, &mut expression_host, budget, nesting)?;
-        let range = value.range.clone();
-        Ok(Located::new(
-            zirql::ExpressionKind::Sequence {
-                input: Box::new(Located::new(zirql::ExpressionKind::Input, range.clone())),
-                steps: vec![Located::new(
-                    ExpressionStep::Value(value.into()),
-                    range.clone(),
-                )],
-            },
-            range,
-        ))
-    }
-}
-
-fn csv_program(
-    query: &str,
-    host: &CsvHost<'_>,
-    budget: &mut Budget,
-    nesting: usize,
-) -> Result<ValueExpression<zirql::Expression<(), (), ()>>, QueryError> {
-    let mut names = vec!["rows"];
-    names.extend(host.inputs.iter().filter_map(|input| input.name.as_deref()));
-    let mut reader = CsvReader { names: &names };
-    zirql::read_value_program(query, &names, &mut reader, budget, nesting)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,10 +430,10 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         .collect()
     }
     fn text(query: &str, inputs: &[InputSpec]) -> String {
-        String::from_utf8(run(query, inputs, OutputFormat::Json, LIMITS).unwrap()).unwrap()
+        String::from_utf8(run(query, inputs, &[], OutputFormat::Json, LIMITS).unwrap()).unwrap()
     }
     fn refusal(query: &str, inputs: &[InputSpec], message: &str) -> CsvError {
-        let error = run(query, inputs, OutputFormat::Json, LIMITS).unwrap_err();
+        let error = run(query, inputs, &[], OutputFormat::Json, LIMITS).unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
         assert!(error.context.contains(&format!("{query:?}")));
         assert!(matches!(error.error.location, Location::Query(_)));
@@ -743,7 +554,7 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         let short = "let [a,b,..] = [1]; [a,b]";
         let error = refusal(short, &people(), "pattern did not match");
         assert_eq!(error.error.location, Location::Query(4..12));
-        refusal("fn f(x: int) -> int { x } f(1)", &people(), "expected");
+        assert_eq!(text("fn f(x: int) -> int { x } f(1)", &people()), "1\n");
         assert_eq!(
             text(
                 r#"/* fn hidden() -> int { 1 } */ let label = "fn inside() -> int { 2 }"; label"#,
@@ -759,8 +570,8 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
             &people(),
             "later",
         );
-        refusal("rows;", &people(), "expected the end");
-        refusal("rows trailing", &people(), "expected the end");
+        refusal("rows;", &people(), "final value");
+        refusal("rows trailing", &people(), "expected");
         let error = refusal("rows | unique", &people(), "unique");
         assert_eq!(error.error.location, Location::Query(7..13));
         refusal(
@@ -825,7 +636,7 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
 
         let table = decode_table(b"full name, team\nAda,compiler\n", &mut budget).unwrap();
-        let V::Array(rows) = table.rows.data() else {
+        let V::Array(rows) = table.value().data() else {
             panic!("CSV table is an array")
         };
         assert_eq!(
@@ -836,26 +647,23 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
             ])]
         );
         let empty = decode_table(b"name,team\n", &mut budget).unwrap();
-        let inputs = people();
-        let mut host = CsvHost {
-            tables: vec![empty],
-            inputs: &inputs,
-        };
-        let types = BTreeMap::from([(
-            "rows".into(),
-            host.tables[0]
-                .types(&mut budget, Location::Query(0..1))
-                .unwrap(),
-        )]);
-        let expression = csv_program(
+        let program = ConstructedProgram::read(
             "rows | filter(_.missing == \"yes\")",
-            &host,
+            &["rows"],
             &mut budget,
             LIMITS.nesting,
         )
         .unwrap();
-        let error = evaluate_query_value(&expression, &types, &mut host, &mut budget).unwrap_err();
-        dispose_native_value(expression);
+        let error = program
+            .evaluate(
+                &[("rows", &empty)],
+                Some(&empty),
+                ParameterInputs::Cli(&[]),
+                FunctionLimits { active_depth: 32 },
+                &mut budget,
+            )
+            .unwrap_err()
+            .error;
         assert!(error.message.contains("declared schema"), "{error}");
     }
 
@@ -884,33 +692,31 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         let error = refusal("1..100001", &people(), "result limit exceeded");
         assert_eq!(error.error.category, QueryErrorCategory::ResultLimit);
         let names = ["rows", "alpha", "beta"];
-        let mut reader = CsvReader { names: &names };
         let source = format!("/* {} */ 1", "a".repeat(128));
-        let error = zirql::read_value_program(
+        let error = ConstructedProgram::read(
             &source,
             &names,
-            &mut reader,
             &mut Budget::for_program(ProgramLimits { work: 64, ..LIMITS }),
             LIMITS.nesting,
         )
-        .unwrap_err();
+        .err()
+        .unwrap();
         assert_eq!(error.category, QueryErrorCategory::WorkLimit);
-        let error = zirql::read_value_program(
+        let error = ConstructedProgram::read(
             "1",
             &names,
-            &mut reader,
             &mut Budget::for_program(ProgramLimits {
                 results: 2,
                 ..LIMITS
             }),
             LIMITS.nesting,
         )
-        .unwrap_err();
+        .err()
+        .unwrap();
         assert_eq!(error.category, QueryErrorCategory::ResultLimit);
-        let value = zirql::read_value_program(
+        ConstructedProgram::read(
             &source,
             &names,
-            &mut reader,
             &mut Budget::new(zirql::Limits {
                 work: 64,
                 items: LIMITS.stream_items,
@@ -919,7 +725,6 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
             LIMITS.nesting,
         )
         .unwrap();
-        dispose_native_value(value);
         let mut budget = Budget::for_program(LIMITS);
         assert!(admit_inputs(&[InputSpec::parse("rows=no.csv".into())], &mut budget).is_err());
         assert!(admit_inputs(&[InputSpec::parse("for=no.csv".into())], &mut budget).is_err());
@@ -954,6 +759,36 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
                 &mut budget
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn parameters_and_named_functions_keep_cli_inputs_separate() {
+        let Arguments {
+            format,
+            inputs,
+            parameters,
+        } = parse_arguments(
+            [
+                "--param",
+                "minimum=2",
+                "orders=examples/csv/orders.csv",
+                "--format",
+                "markdown",
+                "--param",
+                "label=kept=exact",
+            ]
+            .into_iter()
+            .map(String::from),
+        )
+        .unwrap();
+        assert!(matches!(format, OutputFormat::Markdown));
+        assert_eq!(inputs[0].name.as_deref(), Some("orders"));
+        let query = "param minimum: int; param label: string; fn selected(xs: sequence<record {item: string, quantity: string, price: string}>, n: int) -> int { length([x for x in xs if parse_int(x.quantity) >= n]) } {\"count\": selected(orders, minimum), \"label\": label}";
+        let output = run(query, &inputs, &parameters, OutputFormat::Json, LIMITS).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"count\":2,\"label\":\"kept=exact\"}\n"
         );
     }
 

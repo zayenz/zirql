@@ -7568,6 +7568,25 @@ pub(crate) fn extend_type_positions(
     Ok(expanded)
 }
 
+// Declared immutable inputs need their compact contract, not a fact per row.
+// Actual data is still admitted; public actual-type discovery stays positional.
+pub(crate) fn admitted_constructed_facts(
+    value: &ConstructedValue,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Vec<ValueType>, QueryError> {
+    if let Some(declaration) = declaration(value) {
+        crate::admit_constructed(value, declaration, budget, location.clone())?;
+        function_facts(declaration, budget, location)
+    } else {
+        one_type(
+            constructed_value_type(value, budget, location.clone())?,
+            budget,
+            location,
+        )
+    }
+}
+
 pub(crate) fn function_facts<K>(
     declaration: &DeclaredType<K>,
     budget: &mut Budget,

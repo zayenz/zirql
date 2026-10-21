@@ -1,14 +1,55 @@
 # Construct programs in Rust
 
-The word executable reads a single expression. A host that supports several
-statements can use `read_program` to read the common language into located
-`Statement` forms, then prepare them with `PreparedProgram` and execute them
-with its existing native host.
-A typed query builder can construct that same representation directly in Rust.
+For constructed data, bind an admitted value and declaration with
+`ConstructedBinding`, then read and evaluate through `ConstructedProgram`.
+For native handles and domain operations, build or read the located core
+`Statement` forms and prepare them with `PreparedProgram` and your native host.
+Both routes use the same common reader, scope rules, functions and evaluator.
+A typed query builder can construct the core representation directly in Rust.
 
-The examples below are adapter fragments. They assume the host types and context
-described in [embedding in Rust](host-integration.md); they are not queries for
-the word executable.
+## Constructed data programs
+
+This minimal example needs no native host traits. The producer owns input
+allocation; the continuing budget covers admission and the submitted program:
+
+```rust
+use zirql::{Budget, ConstructedBinding, ConstructedProgram, ConstructedValue as V,
+            DeclaredType as D, FunctionLimits, Location, ParameterInputs, ProgramLimits};
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 100_000, results: 10_000, nesting: 64, stream_items: 100,
+});
+let numbers = ConstructedBinding::new(
+    V::Array(vec![V::Integer(3), V::Integer(5)]),
+    D::Sequence(Box::new(D::Integer)), &mut budget, Location::Source(0..0),
+)?;
+let program = ConstructedProgram::read("numbers | count", &["numbers"], &mut budget, 64)?;
+let result = program.evaluate(
+    &[("numbers", &numbers)], Some(&numbers), ParameterInputs::Cli(&[]),
+    FunctionLimits { active_depth: 16 }, &mut budget,
+)?;
+assert_eq!(result, V::Integer(2));
+```
+
+A `ConstructedBinding` stores its admitted value and compact declaration facts.
+Use `Sequence` for positional data; empty values retain their element schema.
+Reuse the same borrowed binding under several names or as current input.
+`ConstructedProgram::read` accepts functions, typed parameters, ordered pattern
+lets and one final value expression. `evaluate` admits `ParameterInputs` and
+prepares the common program before execution. Functions receive all values
+explicitly and cannot capture ambient bindings, parameters or current input.
+Failures return located `FunctionError<QueryError>` values with bounded call
+frames. Render a completed result explicitly with the shared
+[JSON or Markdown renderer](library-rendering.md).
+
+This API is newer than registry Zirql 0.2.0. Use the working checkout described
+in [setup](getting-started.md#use-zirql-in-another-rust-project).
+[Build the CSV host](csv-host.md) follows file loading, declaration, binding,
+program execution and rendering. The
+[parameterized orders report](csv.md#calculate-with-numeric-cells) demonstrates
+named functions and repeated CLI parameter values.
+
+The remaining examples are native adapter fragments. They assume the host types
+and context described in [embedding in Rust](host-integration.md).
 
 ## Read text programs
 
@@ -38,22 +79,10 @@ legacy headers, and select implicit output. They do not maintain another common
 statement loop. Zincite's callback retains its atomic edit grammar; Zirium's
 retains `do`, legacy bindings and pass-through emission.
 
-For a constructed-value host, `read_value_program` runs the same progression and
-returns an existing `ValueExpression::Block`, or the plain final expression when
-there are no lets. Its expression callback supplies a single core `Value` step.
-The [complete CSV adapter](csv-host.md#6-read-lets-and-a-final-expression) shows
-this bounded let-plus-expression entry. CSV deliberately disables functions,
-parameters and `report`, and refuses a semicolon after its final expression.
-These development APIs are newer than registry Zirql 0.2.0; use the matching
-checkout described in [setup](getting-started.md#use-zirql-in-another-rust-project).
-
-Run that adapter without an entry point or parameter preamble:
-
-```sh
-cargo run --locked --example csv -- \
-  'let chosen = rows | filter(_.active == "yes"); [p.name for p in chosen]' \
-  examples/csv/people.csv
-```
+For a constructed data application, use `ConstructedProgram` above to connect
+these steps. The lower-level `read_value_program` entry remains available for
+adapters that deliberately need only pattern lets and a final value expression;
+it does not admit functions, parameters or `report` statements.
 
 ## A native binding in Rust
 

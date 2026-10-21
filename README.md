@@ -20,7 +20,8 @@ zirql = "0.2.0"
 ```
 
 The [setup guide](https://zayenz.se/zirql/guides/getting-started/) explains how to run the examples from
-an extracted crate or a `v0.2.0` checkout. From that directory:
+an extracted crate or a matching checkout. The current constructed-program
+examples below run from this working checkout:
 
 ```sh
 cargo run --locked --example words
@@ -53,11 +54,15 @@ Compatible tail calls reuse their activation. Native queues and identity sets
 retain handles through worklist computations; direct rendering and serialization
 of those computational values are unsupported. The common reader recognizes
 these forms; each host connects its native types, operations and program syntax.
-The word executable accepts one expression. CSV accepts immutable `let` bindings
-and one final expression, without named function declarations.
+The word and CSV executables use `ConstructedBinding` and `ConstructedProgram`
+for declared data, typed parameters, named functions, pattern lets and one final
+value. Functions receive data explicitly. This constructed-program API and the
+shared JSON/Markdown renderers are development APIs newer than registry 0.2.0;
+use the working checkout for them.
 
 | Integration | Public entry points |
 | --- | --- |
+| Constructed data programs | `ConstructedBinding`, `ConstructedProgram`, `ParameterInputs` |
 | Shared expressions | `ValueReaderHost`, `read_value_expression`, `read_value_expression_in_scope`, `ValueQueryHost`, `evaluate_query_value` |
 | Typed value trees | `ValueExpression`, `evaluate_value`, `evaluate_value_with_host_validation` |
 | Native pipelines and programs | `Host`, `ProgramHost`, `ProjectionHost`, `evaluate`, `evaluate_program` |

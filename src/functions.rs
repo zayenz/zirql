@@ -2287,6 +2287,18 @@ fn no_ambient_input<C, H: ProjectionHost<C>>(
 }
 impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C, H> {
     type Error = EvaluationError<H::Error>;
+    fn current_input_types(
+        &mut self,
+        range: &Range<usize>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let kind = self.relative.as_ref().ok_or_else(|| {
+            QueryError::query(range.clone(), "constructed current input is unavailable")
+        })?;
+        self.host.scalar_types(kind, budget, range)?.ok_or_else(|| {
+            QueryError::query(range.clone(), "current input is not constructed data")
+        })
+    }
     fn prepare_computation(
         &mut self,
         expression: &ValueExpression<Query<C, H>>,
@@ -4258,7 +4270,7 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
         };
         if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
             let data = copy_constructed_value(data.value, budget, location.clone())?;
-            let facts = vec![constructed_value_type(&data, budget, location.clone())?];
+            let facts = crate::value::admitted_constructed_facts(&data, budget, location)?;
             return self
                 .host
                 .lift_constructed(data, facts, self.context, budget, range);
@@ -4287,7 +4299,7 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
         };
         if execution::Host::constructed(self, &wrapped, budget, &at)?.is_some() {
             let value = execution::Host::materialize(self, wrapped, budget, &at)?;
-            let types = vec![constructed_value_type(&value, budget, at)?];
+            let types = crate::value::admitted_constructed_facts(&value, budget, &at)?;
             crate::projection::admit_slots::<H::Value>(1, budget, range)?;
             return Ok(std::sync::Arc::new(self.host.lift_constructed(
                 value,
@@ -4331,7 +4343,11 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                     Location::Query(range.clone()),
                 )?),
             };
-            constructed_value_type(value.as_ref(), budget, Location::Query(range.clone()))?;
+            crate::value::admitted_constructed_facts(
+                value.as_ref(),
+                budget,
+                &Location::Query(range.clone()),
+            )?;
             Ok(Value::constructed(value))
         } else {
             Ok(Value {
@@ -4398,11 +4414,11 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                     let value = data
                         .share(budget, &Location::Query(range.clone()))?
                         .into_shared(budget, &Location::Query(range.clone()))?;
-                    let types = vec![constructed_value_type(
+                    let types = crate::value::admitted_constructed_facts(
                         &value,
                         budget,
-                        Location::Query(range.clone()),
-                    )?];
+                        &Location::Query(range.clone()),
+                    )?;
                     std::sync::Arc::new(self.host.lift_shared_constructed(
                         value,
                         types,
@@ -4711,7 +4727,7 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
             && execution::Host::constructed(self, &value, budget, location)?.is_some()
         {
             let value = execution::Host::materialize(self, value, budget, location)?;
-            let types = vec![constructed_value_type(&value, budget, location.clone())?];
+            let types = crate::value::admitted_constructed_facts(&value, budget, location)?;
             return self
                 .host
                 .lift_constructed(value, types, self.context, budget, range);
@@ -4730,7 +4746,7 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                     contract: value.contract,
                 }
                 .materialize(budget, location)?;
-                let types = vec![constructed_value_type(&value, budget, location.clone())?];
+                let types = crate::value::admitted_constructed_facts(&value, budget, location)?;
                 self.host
                     .lift_constructed(value, types, self.context, budget, range)
             }
@@ -4748,7 +4764,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         location: &Location,
     ) -> Result<(), Self::Error> {
         if let Some(data) = execution::Host::constructed(self, value, budget, location)? {
-            constructed_value_type(data.value, budget, location.clone())?;
+            crate::value::admitted_constructed_facts(data.value, budget, location)?;
             if let Some(d) = data.declaration {
                 crate::admit_constructed(data.value, d, budget, location.clone())?;
             }
@@ -4996,6 +5012,32 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     fn retains_native_admission(&self) -> bool {
         self.host.retains_native_admission()
     }
+    fn current_input(
+        &mut self,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        let input = self.relative.ok_or_else(|| {
+            QueryError::query(range.clone(), "constructed current input is unavailable")
+        })?;
+        let owner = self
+            .host
+            .share_constructed(input, self.context, budget, range)?;
+        if let Some(owner) = owner {
+            crate::value::admitted_constructed_facts(
+                &owner,
+                budget,
+                &Location::Query(range.clone()),
+            )?;
+            return Ok(Value::constructed(RuntimeValue::shared(owner)));
+        }
+        let input = self.host.copy_value(input, self.context, budget, range)?;
+        let value = self
+            .host
+            .project_value(input, self.context, budget, range)?;
+        crate::value::admitted_constructed_facts(&value, budget, &Location::Query(range.clone()))?;
+        Ok(Value::constructed(RuntimeValue::Owned(value)))
+    }
     fn predicate_subject(
         &mut self,
         budget: &mut Budget,
@@ -5038,7 +5080,11 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         let operand = &prepared[&(query as *const _ as usize)];
         if projected || host.scalar_types(&operand.kind, budget, range)?.is_some() {
             let value = host.project_value(value, self.context, budget, range)?;
-            constructed_value_type(&value, budget, Location::Query(range.clone()))?;
+            crate::value::admitted_constructed_facts(
+                &value,
+                budget,
+                &Location::Query(range.clone()),
+            )?;
             Ok(Value::constructed(RuntimeValue::Owned(value)))
         } else {
             self.retained(std::sync::Arc::new(value), budget, range)
@@ -5541,7 +5587,8 @@ impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {
                     &location,
                 )? {
                     let value = data.materialize(budget, &location)?;
-                    let types = vec![constructed_value_type(&value, budget, location.clone())?];
+                    let types =
+                        crate::value::admitted_constructed_facts(&value, budget, &location)?;
                     crate::projection::admit_slots::<H::Value>(1, budget, range)?;
                     std::sync::Arc::new(self.host.lift_constructed(
                         value,
@@ -5568,7 +5615,7 @@ impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {
                     contract: value.contract,
                 }
                 .materialize(budget, &location)?;
-                let types = vec![constructed_value_type(&value, budget, location)?];
+                let types = crate::value::admitted_constructed_facts(&value, budget, &location)?;
                 crate::projection::admit_slots::<H::Value>(1, budget, range)?;
                 std::sync::Arc::new(self.host.lift_constructed(
                     value,

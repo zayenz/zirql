@@ -3411,7 +3411,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             || (word.value == "input" && !local)
             || (probe.remaining().starts_with('|')
                 && !matches!(word.value, "true" | "false" | "null")
-                && (local || !self.host.is_constructed_binding(word.value)))
+                && ((local
+                    && self.host.field_pipeline_source() != FieldPipelineSource::Constructed)
+                    || (!local && !self.host.is_constructed_binding(word.value))))
         {
             return self.native(depth);
         }

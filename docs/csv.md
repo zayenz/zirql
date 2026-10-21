@@ -6,7 +6,7 @@ and combine named files in a report. To build an application like this one, foll
 [Build the CSV host](csv-host.md).
 
 These commands run from the root of this working checkout with Rust 1.88 or
-later. Its shared JSON and Markdown renderers are newer than published Zirql 0.2.0. This is a
+later. Its constructed-program API and shared JSON and Markdown renderers are newer than published Zirql 0.2.0. This is a
 Cargo example executable; installing the library does not install a CSV command.
 
 Use the tabs to compare a query, its input and its result, or copy a command.
@@ -14,11 +14,13 @@ The commands pass a multiline query as one quoted shell argument. Results below
 are indented for reading; the executable writes compact JSON by default. Pass `--format json` or
 `--format markdown` after the query to choose the output format.
 
-The common program reader accepts pattern `let` bindings followed by one final
-expression. Lets require `;`; the final expression must end the query without a
-semicolon. Names become visible after their initializer, and duplicate or forward
-bindings fail. This example intentionally has no typed parameters, named
-functions or `report` statements. `rows` and implicit `count` select the sole
+The common program reader accepts typed `param` declarations, named functions,
+and pattern `let` bindings followed by one final expression. Lets and parameters
+require `;`; the final expression has no semicolon. Names become visible after
+their declarations, and duplicate or forward bindings fail. Functions receive
+tables and thresholds as explicit arguments; they cannot capture ambient data.
+Use repeated `--param name=value` arguments to supply required scalar inputs.
+`report` statements are unavailable in this example. `rows` and implicit `count` select the sole
 input; with several inputs, choose a table by name. Header declarations remain
 available even when a CSV contains no data rows.
 
@@ -198,7 +200,7 @@ The input must be comma-separated UTF-8 with a header row. Headers must be
 nonempty and unique, and every data row must have the header's field count.
 The example accepts at most 64 KiB across all input files and at most 1,000 data
 rows per table. These are application limits; the
-[host tutorial](csv-host.md#7-evaluate-under-one-budget) explains where to change
+[host tutorial](csv-host.md#5-read-prepare-and-run) explains where to change
 them.
 
 An identifier header supports access such as `p.name`. For a header containing
@@ -233,28 +235,64 @@ pears,10,2.5
 plums,1,3
 ```
 
-Convert quantity for numeric filtering and an integer sum, and convert decimal
-price text for line totals. `to_string` builds a label from the parsed quantity.
-The saved query is `examples/csv/numeric-orders.zirql`:
+The saved `examples/csv/numeric-orders.zirql` declares a minimum quantity and a
+report label. Its named function receives the table, threshold and label
+explicitly, parses quantity for filtering and summation, and parses price for
+line totals:
 
 ```zirql
-let selected = rows | filter(parse_int(_.quantity) >= 2);
-{
-  "quantity": sum([parse_int(row.quantity) for row in selected]),
-  "lines": [{
-    "item": row.item,
-    "total": parse_float(row.quantity) * parse_float(row.price),
-    "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
-  } for row in selected]
+param minimum_quantity: int;
+param report_label: string;
+fn report_orders(
+  orders: sequence<record {item: string, quantity: string, price: string}>,
+  minimum: int,
+  label: string
+) -> record {label: string, quantity: int, lines: sequence<record {item: string, total: float, label: string}>} {
+  let selected = orders | filter(parse_int(_.quantity) >= minimum);
+  {
+    "label": label,
+    "quantity": sum([parse_int(row.quantity) for row in selected]),
+    "lines": [{
+      "item": row.item,
+      "total": parse_float(row.quantity) * parse_float(row.price),
+      "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
+    } for row in selected]
+  }
 }
+report_orders(rows, minimum_quantity, report_label)
 ```
+
+Run the sole input through `rows`, with both required parameter values:
 
 ```sh
 cargo run --locked --example csv -- \
-  "$(cat examples/csv/numeric-orders.zirql)" examples/csv/orders.csv
+  "$(cat examples/csv/numeric-orders.zirql)" \
+  --param minimum_quantity=2 --param report_label=orders \
+  --format json examples/csv/orders.csv
+cargo run --locked --example csv -- \
+  "$(cat examples/csv/numeric-orders.zirql)" \
+  --param minimum_quantity=2 --param report_label=orders \
+  --format markdown examples/csv/orders.csv
 ```
 
-This returns quantity `12`, with line totals `25.0` and labels `"apples: 2"` and
+To call the same function with a named table, change only the final call's input:
+
+```sh
+cargo run --locked --example csv -- \
+  "$(sed 's/report_orders(rows,/report_orders(orders,/' examples/csv/numeric-orders.zirql)" \
+  --param minimum_quantity=2 --param report_label=orders \
+  --format json orders=examples/csv/orders.csv
+cargo run --locked --example csv -- \
+  "$(sed 's/report_orders(rows,/report_orders(orders,/' examples/csv/numeric-orders.zirql)" \
+  --param minimum_quantity=2 --param report_label=orders \
+  --format markdown orders=examples/csv/orders.csv
+```
+
+The parameter strings are values, not query fragments. `name=FILE` arguments
+still select files; `--param name=value` supplies parameters. Missing, duplicate,
+unknown or mistyped parameters fail before execution.
+
+The report has label `"orders"` and quantity `12`, with line totals `25.0` and labels `"apples: 2"` and
 `"pears: 10"`. The original `"02"` and exponent spelling remain in their CSV cells.
 The [scalar reference](library-strings.md#parse_int) defines both decimal grammars.
 Whitespace is rejected without trimming; `" 2"` fails just like malformed or empty

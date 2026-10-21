@@ -13475,3 +13475,65 @@ fn prepared_program_combines_functions_parameters_patterns_and_current_input() {
         vec![("mark", SourceValue::Words(Vec::new()))]
     );
 }
+
+#[test]
+fn constructed_programs_share_declared_bindings_parameters_patterns_and_current_input() {
+    use zirql::{
+        ConstructedBinding, ConstructedProgram, ConstructedValue as V, DeclaredType as D,
+        FunctionLimits, ParameterInputs,
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 100_000,
+        results: 10_000,
+        ..limits()
+    });
+    let numbers = ConstructedBinding::new(
+        V::Array(vec![V::Integer(1), V::Integer(3), V::Integer(5)]),
+        D::Sequence(Box::new(D::Integer)),
+        &mut budget,
+        Location::Source(0..0),
+    )
+    .unwrap();
+    let program = ConstructedProgram::read(
+        "param minimum: int; fn above(xs: sequence<int>, n: int) -> sequence<int> { [x for x in xs if x > n] } let [first, ..] = above(numbers, minimum); {\"first\": first, \"count\": count}",
+        &["numbers"], &mut budget, 64,
+    ).unwrap();
+    let result = program
+        .evaluate(
+            &[("numbers", &numbers)],
+            Some(&numbers),
+            ParameterInputs::Cli(&["minimum=2".into()]),
+            FunctionLimits { active_depth: 16 },
+            &mut budget,
+        )
+        .unwrap();
+    let json = zirql::render_json(
+        &result,
+        zirql::JsonRepresentation::Ordinary,
+        zirql::JsonLayout::Compact,
+        &mut budget,
+        Location::Query(0..0),
+    )
+    .unwrap();
+    assert_eq!(json, br#"{"first":3,"count":3}"#);
+
+    // Function bodies have no entry input, even when the caller supplies one.
+    let program = ConstructedProgram::read(
+        "fn captured() -> int { count } captured()",
+        &["numbers"],
+        &mut budget,
+        64,
+    )
+    .unwrap();
+    let error = program
+        .evaluate(
+            &[("numbers", &numbers)],
+            Some(&numbers),
+            ParameterInputs::Cli(&[]),
+            FunctionLimits { active_depth: 16 },
+            &mut budget,
+        )
+        .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(23..28));
+    assert!(error.error.message.contains("current input is unavailable"));
+}

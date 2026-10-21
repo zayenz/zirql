@@ -1,21 +1,20 @@
 # Build the CSV host
 
-The CSV host turns files into arrays of records and makes them available to
-Zirql by name. Zirql reads and evaluates the query, then its shared renderer
-converts the result to JSON or Markdown. This tutorial follows that implementation
-so you can adapt it to your own application. The [CSV guide](csv.md) shows what
-its users can query.
+The CSV example loads files into declared sequences of records, binds those
+values by name, then asks Zirql to read and run a program. Its last step renders
+the completed value into a JSON or Markdown buffer. The application owns file
+access and CSV rules; Zirql owns the common program machinery.
 
-The complete implementation is [examples/csv.rs](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs). Code
-blocks below are excerpts from that file, with the surrounding responsibilities
-explained at each step. Use the complete file for a runnable application; the
-excerpts omit imports and some error and budget handling.
+The [complete implementation](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs)
+is a runnable starting point. The [CSV guide](csv.md) shows its queries and
+results. `ConstructedBinding`, `ConstructedProgram` and the shared renderers are
+development APIs newer than registry Zirql 0.2.0. Use this working checkout and
+Rust 1.88 or newer.
 
 ## 1. Start with a runnable application
 
-Use Rust 1.88 or newer and this working Zirql checkout. The shared rendering
-APIs are newer than published Zirql 0.2.0. With the checkout directory named
-`zirql`, create a sibling application and copy the matching example and fixtures:
+From the Zirql checkout, create a sibling application and copy the example and
+fixtures:
 
 ```sh
 cargo new --bin --edition 2024 ../csv-query
@@ -28,375 +27,137 @@ cargo add csv@1.4
 cargo add --dev serde_json@1
 ```
 
-In the copied `src/main.rs`, change the usage message in `main` to name your
-application:
-
-```rust
-eprintln!("usage: csv-query 'QUERY' [--format json|markdown] FILE.csv | name=FILE.csv ...");
-```
-
-The original message names the repository's Cargo example. The copied test
-module also uses the fixture paths under `examples/csv`, so keep that directory
-if you keep the tests.
-
-The application's dependencies are:
-
-```toml
-[dependencies]
-zirql = { path = "../zirql" }
-csv = "1.4"
-
-[dev-dependencies]
-serde_json = "1"
-```
-
-In Zirql's own manifest, `csv` is a development dependency because it serves an
-example. Your application needs it as an ordinary dependency. `csv` decodes
-quoted records. Zirql reads and evaluates the query language and renders JSON or
-Markdown. The copied tests use `serde_json` to inspect results; the application itself
-does not call it.
-
-Run a selection through your new application:
+Change the usage message in `main` to name your application. The copied tests
+use the fixture paths under `examples/csv`. `csv` belongs in ordinary application
+dependencies; Zirql's manifest lists it as a development dependency because it
+serves an example. `serde_json` is used only by the copied tests.
 
 ```sh
 cargo run -- '
 let selected = rows | filter(_.active == "yes");
 [p.name for p in selected]
-' \
-  examples/csv/people.csv
+' examples/csv/people.csv
 ```
 
-It prints `["Grace Hopper","Ada, Lovelace","Barbara Liskov"]`. The application
-accepts its query as the first argument, followed by one file or named files:
+This prints `["Grace Hopper","Ada, Lovelace","Barbara Liskov"]`. The query is
+the first argument. The remaining arguments select the input files, optional
+`--format json|markdown`, and repeated `--param name=value` inputs.
 
-```sh
-cargo run -- \
-  '{"people": length(people), "teams": length(teams)}' \
-  people=examples/csv/people.csv \
-  teams=examples/csv/teams.csv
-```
+## 2. Load exact cells
 
-This prints `{"people":4,"teams":3}`. The rest of the tutorial explains how to
-adapt this working application to another input source.
+`InputSpec`, `load_table` and `decode_table` belong to the application. The loader
+reads bounded chunks and enforces a 64 KiB aggregate limit across files. The CSV
+decoder handles quoting, embedded newlines and UTF-8. Headers must be nonempty
+and unique, and each record must have the header's field count.
 
-## 2. Choose the value representation
+Each cell becomes `ConstructedValue::String`, preserving its decoded contents.
+An empty cell is an empty string. A quantity such as `02` remains `"02"`.
+No trimming or numeric inference occurs. Each row becomes a `Record` in header
+order, and the table becomes an `Array` in file order.
 
-A CSV table fits an array of records. Each record stores header/value pairs in
-header order, and each cell is a string:
+Charge file scans, string bytes, labels and containers before allocating them.
+The example checks row and column counts against the request's stream allowance.
+Decoder errors retain their record, line and byte position where available.
+
+## 3. Declare and bind the table
+
+Build one declaration from the headers: each field has `DeclaredType::String`.
+After decoding, give the value and declaration to `ConstructedBinding::new`:
 
 ```rust
-use std::sync::Arc;
-use zirql::ConstructedValue as V;
-
-struct Table {
-    headers: Vec<String>,
-    rows: Arc<V>,
-}
-```
-
-For example, the first row of `people.csv` becomes a record with `id = "2"`,
-`name = "Grace Hopper"`, `team = "compiler"`, `active = "yes"` and
-`note = "Said \"hello\""`. Empty cells become `V::String(String::new())`.
-Numeric-looking text keeps its exact spelling. The host retains the immutable
-table in an `Arc`, which lets the evaluator share its ownership without copying
-all rows when it first reads a binding. Each invocation owns its own tables.
-
-This representation gives Zirql access to ordinary fields and collection
-operations. CSV rows do not need native handles, custom predicates or a native
-pipeline evaluator. Choose native values when queries must retain objects from
-an existing model or navigate domain relationships; see
-[choosing a data model](implementation-reference.md#choose-a-data-model).
-
-## 3. Load and declare each table
-
-The [load_table and decode_table functions](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L277)
-read bounded chunks, enforce an aggregate 64 KiB limit across files, then decode
-the bytes. The CSV decoder handles quoting, embedded newlines and UTF-8. The
-loader requires a nonempty header, unique nonempty labels and the same field
-count in each record. It does not trim or infer cell types.
-
-The inner decoding loop constructs each record after charging for its fields:
-
-```rust
-budget.charge(size, location.clone())?;
-fields.push((header.clone(), V::String(cell.to_owned())));
-```
-
-The row and table containers are then built with `V::Record(fields)` and
-`V::Array(rows)`. The complete loop also checks row counts, charges result
-allocations and checks the field-size sum before allocating.
-
-Attach the header declaration to the table's stored value:
-
-```rust
-let rows = declare_constructed(
+let table = ConstructedBinding::new(
     V::Array(rows),
-    DeclaredType::Array(Box::new(DeclaredType::Record(declaration))),
+    DeclaredType::Sequence(Box::new(DeclaredType::Record(declaration))),
     budget,
-    header_location.clone(),
+    header_location,
 )?;
-budget.charge(1, header_location.clone())?;
-budget.charge_results(1, header_location)?;
-Ok(Table {
-    headers,
-    rows: Arc::new(rows),
-})
 ```
 
-Here `declaration` contains one `(header, DeclaredType::String)` pair per column.
-Keep the declaration even for a header-only file. A table without data still
-has known columns. Charge the shared owner allocation before wrapping the
-declared value in `Arc::new`.
+A sequence declaration establishes positional storage and its element schema,
+even for a header-only file. Zirql checks actual values against that declaration
+and derives compact preparation facts from it. The application does not maintain
+another header schema or one type entry per row. A query that reads an unknown
+column is refused even when there are no rows to visit.
 
-The evaluator also needs type facts before it reads binding values. The
-[Table::types method](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L259) derives those facts from headers:
+The binding retains an immutable shared owner. Reusing it as a named table,
+`rows`, and current input shares that owner. It does not allocate another table.
+Copies produced by an operation still spend the active request allowance.
+`ConstructedBinding::value()` borrows the admitted data for application inspection.
 
-```rust
-impl Table {
-    fn types(
-        &self,
-        budget: &mut Budget,
-        location: Location,
-    ) -> Result<Vec<ValueType>, QueryError> {
-        budget.charge(self.headers.len() + 3, location.clone())?;
-        let mut fields = Vec::new();
-        let mut declaration = Vec::new();
-        for header in &self.headers {
-            budget.charge(header.len() * 2 + 2, location.clone())?;
-            fields.push((header.clone(), ValueType::String));
-            declaration.push((header.clone(), DeclaredType::String));
-        }
-        let row = ValueType::Declared {
-            actual: Box::new(ValueType::Record(fields)),
-            declaration: DeclaredType::Record(declaration),
-        };
-        Ok(vec![ValueType::Array(ArrayType::Elements(vec![row]))])
-    }
-}
-```
+## 4. Select names and current input
 
-The header schema makes `p.missing` an error even if a comprehension has no
-rows to visit. Both the stored declaration and the type facts describe the same
-array of string records. For another data source, change them together.
+The example accepts exactly one unnamed file or one or more named files.
+`admit_inputs` checks external table names with `is_unquoted_binding_name` and
+`is_common_keyword`, excludes `rows`, and rejects duplicates. For example,
+`people=people.csv` is a named input; `for=people.csv` is refused.
 
-## 4. Expose names to the reader
+With one file, the application supplies the same binding as `rows` and current
+input. A sole named file also retains its chosen name. Both `rows | count` and
+bare `count` then count its rows.
 
-`CsvHost` retains loaded tables and their input names. The common program reader
-owns names introduced by lets:
+With several named files, only their explicit names have values. `rows` and
+implicit operations fail with a located diagnostic listing the available table
+names. This table-selection rule stays in CSV's request boundary. The common
+constructed API simply accepts an optional current input.
 
-```rust
-struct CsvHost<'a> {
-    tables: Vec<Table>,
-    inputs: &'a [InputSpec],
-}
-```
+## 5. Read, prepare and run
 
-`InputSpec` stores an optional name and a path. `admit_inputs` checks table
-names with `is_unquoted_binding_name` and `is_common_keyword`, then excludes
-the host's `rows` alias. This external-name context rejects `for` and `input`,
-while `lookup` remains a valid table name. It also rejects duplicates or a
-mixture of named and unnamed inputs. With one table,
-`implicit` returns it; with several, it returns a diagnostic asking the user to
-choose a named table.
-
-`CsvReader` borrows the lexical names supplied by the common driver; it owns no
-tables or scope progression. Implement `ValueReaderHost` on that reader:
-
-```rust
-fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
-    zirql::FieldPipelineSource::Constructed
-}
-
-fn is_binding(&self, name: &str) -> bool {
-    self.names.contains(&name)
-}
-
-fn is_constructed_binding(&self, name: &str) -> bool {
-    self.is_binding(name)
-}
-```
-
-`FieldPipelineSource::Constructed` lets a field such as `g.members` feed
-shared collection stages, as in `g.members | sort`. The same reader owns field
-access, comparisons, predicates, comprehensions and sorting.
-
-The remaining [reader methods](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L437) declare the host's
-unsupported native operations. `Stage`, `SetOperator`, `Emitter` and `Predicate`
-are `()`. `is_stage` returns `false`, `set_operator` returns `None`, and the
-native stage and predicate parsers return located errors. The required native
-`filter` and `projection` constructors have empty bodies because this reader
-never admits those native forms. Shared constructed filters and projections
-continue to work.
-
-## 5. Supply values and current input
-
-Implement `ValueQueryHost<CsvExpression>` for `CsvHost`, where `CsvExpression`
-is `zirql::Expression<(), (), ()>`, with `type Error = QueryError`. This trait connects
-binding names to their data and defines the optional implicit input.
-
-The `binding` helper resolves `rows` through `implicit`; other names select the
-corresponding table in `inputs`. The shared hook returns a reference-counted
-owner of that table:
-
-```rust
-fn read_shared_binding(
-    &mut self,
-    name: &str,
-    range: &Range<usize>,
-    budget: &mut Budget,
-) -> Result<Option<Arc<V>>, QueryError> {
-    let table = self.binding(name, range)?;
-    // Share the retained owner; Zirql still admits the full table value.
-    budget.charge(1, Location::Query(range.clone()))?;
-    Ok(Some(Arc::clone(&table.rows)))
-}
-```
-
-This path serves named bindings such as `people` and the implicit table alias
-`rows`. Cloning the `Arc` shares the table; it does not copy its contents.
-Zirql still performs full runtime admission when it first reads the binding in
-this evaluation, checking the table under the request's active budget. Sharing
-removes the initial owned copy while retaining those checks.
-
-Keep `read_binding` as the owned fallback. It uses the same `binding` helper and
-returns `copy_constructed_value(&table.rows, budget, location)`, charging for
-the copy. Hosts without a retained immutable owner can leave
-`read_shared_binding` at its default `Ok(None)` to use that owned path.
-Zirql resolves saved `let` bindings internally; these hooks supply only table
-data.
-
-The two current-input hooks use the same table and schema:
-
-```rust
-fn current_input_types(
-    &mut self,
-    range: &Range<usize>,
-    budget: &mut Budget,
-) -> Result<Vec<ValueType>, QueryError> {
-    self.implicit(range)?
-        .types(budget, Location::Query(range.clone()))
-}
-
-fn read_current_input(
-    &mut self,
-    range: &Range<usize>,
-    budget: &mut Budget,
-) -> Result<V, QueryError> {
-    copy_constructed_value(
-        &self.implicit(range)?.rows,
-        budget,
-        Location::Query(range.clone()),
-    )
-}
-```
-
-A shorthand query such as `count` reads current input through the owned
-`read_current_input` hook. The existing API has no shared current-input hook.
-Write `rows | count` to use the shared binding path. Both forms return the same
-count and keep copies or sharing within the same request allowance.
-
-The other hooks have small, explicit roles:
-
-| Hook | CSV implementation |
-| --- | --- |
-| `validate_name` | Reject ambiguous `rows` access before execution |
-| `query_types` | Return an error for native query leaves |
-| `evaluate_query` | Return an error for native query execution |
-
-## 6. Read lets and a final expression
-
-Implement `ProgramReaderHost` for `CsvReader` and call `read_value_program` with
-`rows` and the input table names. The common driver introduces let names after
-each initializer and returns the final expression directly, or one existing
-`ValueExpression::Block` when there are lets. It also disposes partial patterns
-and expressions on failure. The adapter maintains no let-name list or statement
-loop.
-
-The value-program entry refuses trailing separators, functions, parameters and
-`report`. Its expression hook uses the lexical names provided by the driver:
-
-```rust
-let mut expression_host = CsvReader { names };
-let value = read_value_expression(reader, &mut expression_host, budget, nesting)?;
-let range = value.range.clone();
-Ok(Located::new(zirql::ExpressionKind::Sequence {
-    input: Box::new(Located::new(zirql::ExpressionKind::Input, range.clone())),
-    steps: vec![Located::new(ExpressionStep::Value(value.into()), range.clone())],
-}, range))
-```
-
-The expression reader borrows that complete name slice as constructed bindings.
-`FieldPipelineSource::Constructed` also keeps dotted fields on common collection
-pipelines. Native hosts instead choose their native result policy.
-Pass the original query, one budget and the remaining nesting allowance through
-each call. The [program embedding guide](embedding-programs.md#read-text-programs)
-describes the full native reader contract.
-
-## 7. Evaluate under one budget
-
-The [run function](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L94) shows the complete request order:
+The request follows this order:
 
 ```text
 admit input arguments
-  → load tables and their header declarations
-  → build binding type facts
-  → read the query
-  → evaluate the value
-  → render into a buffer
-  → return the completed bytes
+  → load and declare tables
+  → read the common program
+  → admit parameters and prepare functions/statements
+  → evaluate the final value
+  → render a complete buffer
 ```
 
-Create one budget at the beginning:
+Create one `Budget` before loading data. Use it through reading, parameter
+admission, preparation, evaluation and rendering. The CSV limits are 1,000,000
+work units, 100,000 result units, nesting 64, and 1,000 stream items.
+The separate input byte limit bounds decoder buffers before values exist.
+
+The public call sequence is small:
 
 ```rust
-let mut budget = Budget::for_program(limits);
+let program = ConstructedProgram::read(query, &names, &mut budget, limits.nesting)?;
+let result = program.evaluate(
+    &named,
+    current,
+    ParameterInputs::Cli(parameters),
+    FunctionLimits { active_depth: 32 },
+    &mut budget,
+)?;
 ```
 
-Use it for input loading, type facts, parsing, owner allocation and sharing,
-value copies, evaluation and rendering. In `run`, the `types` map contains each
-named table and `rows`. With one input, `rows` has that table's schema. With several inputs, it has
-`ValueType::Unestablished`; the host refuses actual implicit access through
-`validate_name` and the current-input hooks.
+`names` contains the initial binding names. `named` borrows `(name, binding)`
+pairs, and `current` is an optional borrowed binding. `parameters` contains raw
+CLI strings collected by repeated `--param`; it is separate from `name=FILE`
+arguments. Library callers can use `ParameterInputs::Typed` with exact scalar
+values. Zirql's `admit_parameters` handles required, duplicate, unknown and
+mistyped values without substituting text into the query.
 
-The evaluation and cleanup sequence is:
+`ConstructedProgram` uses `read_program`, borrowed function signatures,
+`PreparedFunctions` and `PreparedProgram`. Those components own forward function
+names, parameter positions, ordered lets, destructuring, scope and execution.
+The example implements no native reader or value-query traits.
 
-```rust
-let expression =
-    csv_program(query, &host, &mut budget, limits.nesting)
-        .map_err(query_error)?;
-let result = evaluate_query_value(&expression, &types, &mut host, &mut budget);
-dispose_native_value(expression);
-let result = result.map_err(query_error)?;
-```
+A program contains functions, typed `param` declarations, pattern lets and one
+final value expression. Lets and parameters require semicolons; the final value
+has none. Parameters become visible at their written declarations. Functions
+receive all data explicitly: their bodies cannot capture tables, program
+parameters or current input. Existing pattern parameters, recursive calls and
+active-depth limits use the common function runtime. Failures retain query
+locations and bounded function-call frames.
 
-Here `query_error` adds the submitted query and table paths to a `QueryError`.
-Disposing the expression before propagating the evaluation error handles both
-success and failure. The returned constructed value belongs to the caller.
+The [parameterized orders report](csv.md#calculate-with-numeric-cells) passes its
+table and threshold into a named function and runs with either implicit or
+explicitly named input.
 
-The example chooses these limits:
+## 6. Render the completed value
 
-```rust
-const LIMITS: ProgramLimits = ProgramLimits {
-    work: 1_000_000,
-    results: 100_000,
-    nesting: 64,
-    stream_items: 1_000,
-};
-```
-
-Choose limits that fit your application. `stream_items` also limits the loader
-to 1,000 rows per table and 1,000 columns per header. The separate
-`MAX_INPUT_BYTES` constant caps source bytes at 64 KiB across all files, bounding
-decoder buffers before Zirql values exist.
-
-The core charges its own operations; the host charges its file reads, metadata,
-allocations and copies. The shared renderers charge conversion, table expansion
-and output.
-[Budget and diagnostic APIs](runtime-limits.md) describes that accounting.
-
-## 8. Render only a completed result
-
-Call a shared [renderer](library-rendering.md) after evaluation. The JSON branch is:
+Rendering is an explicit step after successful evaluation:
 
 ```rust
 let location = Location::Query(0..query.len());
@@ -406,75 +167,37 @@ let mut output = render_json(
     JsonLayout::Compact,
     &mut budget,
     location.clone(),
-)
-.map_err(query_error)?;
-budget.charge(1, location.clone()).map_err(query_error)?;
-budget.charge_results(1, location).map_err(query_error)?;
+)?;
+budget.charge(1, location.clone())?;
+budget.charge_results(1, location)?;
 output.push(b'\n');
 ```
 
-Import `render_json`, `JsonRepresentation` and `JsonLayout` from `zirql`.
-Ordinary output keeps record fields and dictionary entries in stored order.
-Absence becomes `null`; tuples and sets become arrays. General dictionaries use
-recursive key/value entry pairs. Nominal members and keyed arrays use the
-explicit tagged representation, including declared axes and present cells.
-The [direct keyed-data command](csv.md#inspect-an-indexed-value) returns an
-unused declared key as well as the two present cells.
+For Markdown, use `render_markdown(&result, &mut budget, location)`. Both
+renderers charge conversion, table expansion and escaped bytes to the remaining
+request budget. See [JSON and Markdown rendering](library-rendering.md) for the
+representations and supported table layouts.
 
-Zirql checks constructed data, applies the active nesting/reentry guard and
-charges conversion, copied text and escaped output bytes. Rendering returns a
-complete buffer or the original located failure, including its budget category.
-The JSON branch adds its framing newline under the same budget.
+`run` returns the complete `Vec<u8>`. `main` writes it only after success.
+Parsing, parameter admission, conversion, evaluation or rendering failure
+therefore leaves stdout empty, with diagnostics on stderr. An I/O failure while
+writing a completed buffer remains possible.
 
-For `--format markdown`, call `render_markdown(&result, &mut budget, location)`
-instead. Import it from `zirql`. It returns a complete buffer with its own blank
-line framing. The same constructed rows become a table; nested cells use compact
-shared JSON. Table expansion and escaped bytes spend the remaining request
-budget, and errors retain the supplied query range. The small `output_arguments`
-function selects `json` or `markdown` after the positional query while preserving
-both positional and named file inputs.
+## Adapt the loader
 
-`run` builds all output in a `Vec<u8>`, including its framing. `main`
-writes that buffer only after the request succeeds. Parsing, evaluation and
-rendering failures leave stdout empty; diagnostics go to stderr. An I/O error
-while writing the completed buffer is still possible.
+For another CSV file, pass its path; the headers define its fields. For a new
+input source, replace the file and decoding functions and supply the value with
+its declaration. An application with data already in memory can start directly
+at `ConstructedBinding::new`. The [minimal Rust example](embedding-programs.md#constructed-data-programs)
+shows that path without CSV.
 
-CSV diagnostics retain a decoder record, line and byte position where available.
-Query diagnostics use `Location::Query` ranges from the shared reader. Keep
-these input coordinates when adapting the example so errors can identify the
-offending query text or input record.
+Keep decoded CSV columns string-valued when following this example. Queries use
+[`parse_int`, `parse_float` and `to_string`](library-strings.md#parse_int) for
+explicit numeric work. A loader that chooses typed columns must construct those
+actual values, declare their types and report malformed cells at their source
+positions.
 
-## Adapt it to your own input
-
-To query another CSV file with the same rules, pass its path; headers become
-fields automatically. No Rust changes are needed. For a different source of
-tabular data, replace `InputSpec`, `load_table` and `decode_table`, then update
-`Table::types` and the stored declaration to match your fields. Keep the reader
-and value-query interfaces while your data fits
-constructed arrays and records. If your application already has typed data in
-memory, start at the value construction step and omit CSV decoding.
-
-For typed CSV columns, make conversion a loader decision. For example, parse an
-`amount` column as an integer and store `V::Integer`. Use `DeclaredType::Integer`
-for that column in both `decode_table` and `Table::types`; the latter also needs
-`ValueType::Integer` for its value facts. Report a bad cell at its CSV record
-position. Decide how empty cells behave before changing their representation;
-the example preserves them as empty strings.
-
-Decide which names users can reference, whether one source can be implicit and
-how callers receive the final value. A library API can return the constructed
-value directly. A command-line tool can select either shared buffered renderer.
-
-Reuse Zirql's grammar and evaluator for filters, saved values, correlated
-iteration and collection operations. Add native interfaces when your domain
-needs retained handles, identity or navigation. The
-[host integration guide](host-integration.md) describes those obligations.
-
-## Numeric report cells
-
-Keep decoded cells and declared columns string-valued. Queries can use the common
-[`parse_int`, `parse_float` and `to_string`](library-strings.md#parse_int) calls for
-numeric filtering, calculations and labels, as shown in the [orders recipe](csv.md#calculate-with-numeric-cells).
-These calls run in Zirql's evaluator with the existing budget and locations; the
-CSV host needs no numeric inference or conversion helpers. Empty and malformed
-cells remain strings until a query explicitly parses them.
+For native nodes, model objects, source coordinates or domain operations, use
+the [native embedding interfaces](host-integration.md). Those interfaces retain
+native handles and domain admission while using the same common language and
+evaluator.

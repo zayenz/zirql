@@ -12,7 +12,8 @@ strings. The application preserves case and punctuation. It does not stem words
 or remove duplicates. Both occurrences of `apple` count towards the analysis.
 
 The array expressions in this tutorial run in the [word
-example](getting-started.md). Its Rust output uses `Debug`; this guide writes
+example](getting-started.md). It uses the constructed-program API with a declared string sequence. Its Rust
+output uses `Debug`; this guide writes
 the same values as JSON for readability. The final section introduces a separate
 native pipeline example.
 
@@ -91,10 +92,11 @@ The development checkout returns a dictionary whose keys are the word sets. Run:
 cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
 ```
 
-The word host prints this exact Rust `Debug` result:
+The word host prints this Rust `Debug` result. `Declared` wrappers retain the
+string schema attached to selected input values:
 
 ```text
-Dictionary([(Set { element_type: Some(String), elements: [String("ash"), String("apple")] }, Integer(1)), (Set { element_type: Some(String), elements: [String("apple"), String("birch")] }, Integer(2))])
+Dictionary([(Set { element_type: Some(String), elements: [Declared { value: String("ash"), declaration: String }, Declared { value: String("apple"), declaration: String }] }, Integer(1)), (Set { element_type: Some(String), elements: [Declared { value: String("apple"), declaration: String }, Declared { value: String("birch"), declaration: String }] }, Integer(2))])
 ```
 
 The first pair occurs once. The next two pairs have the same members in opposite

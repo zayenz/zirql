@@ -1,9 +1,19 @@
-let selected = rows | filter(parse_int(_.quantity) >= 2);
-{
-  "quantity": sum([parse_int(row.quantity) for row in selected]),
-  "lines": [{
-    "item": row.item,
-    "total": parse_float(row.quantity) * parse_float(row.price),
-    "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
-  } for row in selected]
+param minimum_quantity: int;
+param report_label: string;
+fn report_orders(
+  orders: sequence<record {item: string, quantity: string, price: string}>,
+  minimum: int,
+  label: string
+) -> record {label: string, quantity: int, lines: sequence<record {item: string, total: float, label: string}>} {
+  let selected = orders | filter(parse_int(_.quantity) >= minimum);
+  {
+    "label": label,
+    "quantity": sum([parse_int(row.quantity) for row in selected]),
+    "lines": [{
+      "item": row.item,
+      "total": parse_float(row.quantity) * parse_float(row.price),
+      "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
+    } for row in selected]
+  }
 }
+report_orders(rows, minimum_quantity, report_label)

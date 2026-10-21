@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 133
-- Ready: 2
+- Ready: 1
 - Blocked: 1
-- Done: 130
+- Done: 131
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -136,7 +136,7 @@
 | [base-125](tasks/125-own-remaining-shared-composition-stages-and-remove-host-disp.md) | Own remaining shared composition stages and remove host dispatch | done | base-124 |
 | [base-126](tasks/126-declare-ordinary-native-functions-once-and-share-call-admiss.md) | Declare ordinary native functions once and share call admission | done | base-114 |
 | [base-127](tasks/127-read-common-programs-in-zirql-and-adopt-the-reader-in-all-th.md) | Read common programs in Zirql and adopt the reader in all three integrations | done | base-115, base-124 |
-| [base-128](tasks/128-provide-a-constructed-program-api-and-simplify-csv-and-words.md) | Provide a constructed-program API and simplify CSV and words | ready | base-117, base-120 |
+| [base-128](tasks/128-provide-a-constructed-program-api-and-simplify-csv-and-words.md) | Provide a constructed-program API and simplify CSV and words | done | base-117, base-120 |
 | [base-129](tasks/129-add-explicit-scalar-conversions-with-csv-and-consumer-exampl.md) | Add explicit scalar conversions with CSV and consumer examples | done | base-115 |
 | [base-130](tasks/130-use-one-structural-ordering-contract-for-value-and-native-op.md) | Use one structural ordering contract for value and native operations | done | base-125 |
 | [base-131](tasks/131-align-collection-selection-and-cardinality-across-native-and.md) | Align collection selection and cardinality across native and value paths | done | base-125 |

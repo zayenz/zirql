@@ -2,132 +2,12 @@
 //!
 //! Count unordered neighbouring word sets into a dictionary:
 //! cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
-use std::{collections::BTreeMap, ops::Range};
 use zirql::{
-    ArgumentReader, ArrayType, Budget, ConstructedValue, ExpressionStep, Location, ProgramLimits,
-    QueryError, ReadExpression, ValueQueryHost, ValueReaderHost, ValueType, copy_constructed_value,
-    dispose_native_value, evaluate_query_value, read_value_expression,
+    Budget, ConstructedBinding, ConstructedProgram, ConstructedValue, DeclaredType, FunctionLimits,
+    Location, ParameterInputs, ProgramLimits,
 };
 
-struct Words {
-    words: ConstructedValue,
-}
-
-// Splitting source text establishes string elements even when there are no words.
-fn word_types(budget: &mut Budget, location: Location) -> Result<Vec<ValueType>, QueryError> {
-    budget.charge(3, location)?;
-    Ok(vec![ValueType::Array(ArrayType::Elements(vec![
-        ValueType::String,
-    ]))])
-}
-
-// This host exposes the same immutable words as input and a named binding.
-impl ValueReaderHost for Words {
-    type Stage = ();
-    type SetOperator = ();
-    type Emitter = ();
-
-    fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
-        zirql::FieldPipelineSource::Constructed
-    }
-
-    fn is_binding(&self, name: &str) -> bool {
-        name == "words"
-    }
-
-    fn is_constructed_binding(&self, name: &str) -> bool {
-        self.is_binding(name)
-    }
-
-    fn is_stage(&self, _: &str) -> bool {
-        false
-    }
-
-    fn parse_stage(
-        &mut self,
-        reader: &mut ArgumentReader<'_>,
-        _: &mut Budget,
-    ) -> Result<ExpressionStep<(), ()>, QueryError> {
-        Err(reader.error("this word host has no native stages"))
-    }
-
-    fn parse_predicate_leaf(
-        &mut self,
-        reader: &mut ArgumentReader<'_>,
-        _: &mut Budget,
-    ) -> Result<(), QueryError> {
-        Err(reader.error("use string expressions to select words"))
-    }
-
-    fn set_operator(&self, _: &str) -> Option<()> {
-        None
-    }
-}
-
-impl ValueQueryHost<ReadExpression<Self>> for Words {
-    type Error = QueryError;
-
-    fn current_input_types(
-        &mut self,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<Vec<ValueType>, QueryError> {
-        word_types(budget, Location::Query(range.clone()))
-    }
-
-    fn read_current_input(
-        &mut self,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<ConstructedValue, QueryError> {
-        if let ConstructedValue::Array(rows) = self.words.data() {
-            budget.check_items(rows.len(), Location::Query(range.clone()))?;
-        }
-        copy_constructed_value(&self.words, budget, Location::Query(range.clone()))
-    }
-
-    fn query_types(
-        &mut self,
-        _: &ReadExpression<Self>,
-        _: &[(&str, Vec<ValueType>)],
-        _: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Vec<ValueType>, QueryError> {
-        Err(QueryError::query(
-            range.clone(),
-            "native queries are unavailable",
-        ))
-    }
-
-    fn evaluate_query(
-        &mut self,
-        query: &ReadExpression<Self>,
-        _: &[(&str, ConstructedValue)],
-        _: &mut Budget,
-    ) -> Result<ConstructedValue, QueryError> {
-        Err(QueryError::query(
-            query.range.clone(),
-            "native queries are unavailable",
-        ))
-    }
-
-    fn read_binding(
-        &mut self,
-        name: &str,
-        range: &Range<usize>,
-        budget: &mut Budget,
-    ) -> Result<ConstructedValue, QueryError> {
-        if name != "words" {
-            return Err(QueryError::query(
-                range.clone(),
-                "unknown word-host binding",
-            ));
-        }
-        copy_constructed_value(&self.words, budget, Location::Query(range.clone()))
-    }
-}
-
-fn main() -> Result<(), QueryError> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query = std::env::args()
         .nth(1)
         .unwrap_or_else(|| r#"words | windows(2) | map(_[1] ++ " " ++ _[2])"#.into());
@@ -151,17 +31,20 @@ fn main() -> Result<(), QueryError> {
             .map(|w| ConstructedValue::String(w.into()))
             .collect(),
     );
-    let types = BTreeMap::from([("words".into(), word_types(&mut budget, location)?)]);
-    let mut host = Words { words };
-    let mut reader = ArgumentReader::new(&query, 0)?;
-    let expression = read_value_expression(&mut reader, &mut host, &mut budget, 64)?;
-    reader.skip_whitespace();
-    let result = if reader.remaining().is_empty() {
-        evaluate_query_value(&expression, &types, &mut host, &mut budget)
-    } else {
-        Err(reader.error("expected the end of the expression"))
-    };
-    dispose_native_value(expression);
-    println!("{:?}", result?);
+    let words = ConstructedBinding::new(
+        words,
+        DeclaredType::Sequence(Box::new(DeclaredType::String)),
+        &mut budget,
+        location,
+    )?;
+    let program = ConstructedProgram::read(&query, &["words"], &mut budget, 64)?;
+    let result = program.evaluate(
+        &[("words", &words)],
+        Some(&words),
+        ParameterInputs::Cli(&[]),
+        FunctionLimits { active_depth: 32 },
+        &mut budget,
+    )?;
+    println!("{result:?}");
     Ok(())
 }
