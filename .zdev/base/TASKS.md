@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 112
-- Ready: 0
-- Blocked: 0
+- Total: 123
+- Ready: 3
+- Blocked: 8
 - Done: 112
 
 | ID | Task | State | Blocked by |
@@ -121,3 +121,14 @@
 | [base-110](tasks/110-design-record-matching-and-native-templates-for-query-by-exa.md) | Design record matching and native templates for query by example | done | — |
 | [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | done | — |
 | [base-112](tasks/112-organize-a-complete-library-reference-with-function-and-oper.md) | Organize a complete library reference with function and operator navigation | done | — |
+| [base-113](tasks/113-own-shared-expression-traversal-and-adopt-extensions-in-both.md) | Own shared expression traversal and adopt extensions in both hosts | ready | — |
+| [base-114](tasks/114-share-budgeted-declaration-copying-and-structural-inspection.md) | Share budgeted declaration copying and structural inspection | blocked | base-113 |
+| [base-115](tasks/115-consolidate-common-expression-recognition-and-suffix-routing.md) | Consolidate common expression recognition and suffix routing | blocked | base-113 |
+| [base-116](tasks/116-use-the-prepared-path-for-all-shared-zirium-report-expressio.md) | Use the prepared path for all shared Zirium report expressions | blocked | base-113 |
+| [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | blocked | base-116, base-114 |
+| [base-118](tasks/118-provide-common-json-rendering-for-all-zirql-data-and-adopt-i.md) | Provide common JSON rendering for all Zirql data and adopt it in CSV | ready | — |
+| [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | blocked | base-113, base-118 |
+| [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | blocked | base-118 |
+| [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | blocked | base-119, base-120 |
+| [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | ready | — |
+| [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122 |

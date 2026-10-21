@@ -561,7 +561,7 @@ part of the language.
 | Emission | Explicit emission events and result sequencing | Zincite terminal emitters; Zirium pass-through emitters and implicit final output |
 | Limits | One active counter through shared execution | Existing defaults, current per-stream limits, explicit new aggregate limits and host scan admission |
 | Effects | Nested execution context and declared effect boundary | Zirium live edits; Zincite candidate edits, complete validation and atomic replacement |
-| Structured output | Native constructed values | Zirium JSON/report conventions; Zincite tagged values, axes and completeness |
+| Structured output | Constructed values and shared JSON/Markdown rendering; see the consolidation contract below | Native projections, format selection, document/completeness envelopes and emission policy |
 
 An unknown predicate never becomes true through negation. Existing Boolean-only
 hosts return known truth values; the framework does not fabricate Unknown for
@@ -1844,3 +1844,114 @@ outside the parser, checks complete queries, and separates full bounded read-onl
 evaluation from truncated display. Its commands are proposed tool UI, not Zirql
 syntax. It records a three-template catalog, native effect/ownership boundaries,
 deferred options and two bounded follow-ups; this task imports no implementation.
+
+## Consolidate language machinery and data rendering (2026-10-21)
+
+The user requested tasks for every opportunity in the cross-project review and
+explicitly added JSON and Markdown output of Zirql data. The target is for
+Zincite and Zirium to consist mostly of data bindings and host operator/function
+definitions. Zirql owns common reading, expression traversal, preparation,
+execution, value/type machinery and rendering of ordinary Zirql data. Each
+extraction must remove the replaced consumer implementation, not add another
+optional layer that leaves both implementations maintained.
+
+This direction supersedes earlier wording assigning all JSON/report rendering
+to hosts, including the Structured output row above. Rendering remains an
+explicit boundary after evaluation. Hosts supply native projections, document
+and completeness envelopes, source/dialect semantics and effect policies;
+Zirql renders the ordinary data those projections produce. Native values must
+never pass through JSON merely to participate in evaluation. Keep identity,
+source coordinates, unknown/incomplete facts, stale-handle checks, atomic edits,
+terminal/pass-through emission and whole-request output buffering intact.
+
+The reviewed baselines are Zirql feature/extensions at 4c4bebe, Zincite main at
+cf2256f and Zirium main at a4bab07. Both consumers pin registry Zirql 0.2.0;
+the extensions branch includes newer AST forms. The first expression-tree
+integration also adopts that branch's current shared forms in both hosts,
+including required exhaustive match and builder migrations. Later consumer
+integrations reuse the accepted revision and update pins only as needed. Work
+in isolated consumer checkouts from their admitted current main; preserve
+unrelated changes, integrate serially and retain separate repository commits.
+The queue records integration work in this Zirql area; it does not create
+cross-area task dependencies or reopen completed consumer tasks. This request
+authorizes task creation/import, not immediate implementation or a new goal.
+No publication, deployment, release or messages to other chats are included.
+
+### Selected consolidation scope
+
+- Zirql-owned mapping and inspection/mutation of its expression trees, with
+  callbacks for native payloads and host policy. Preserve source ranges,
+  traversal order, lexical/eager-versus-deferred distinctions and finite bounds.
+- Shared budgeted declaration copying and applicable structural inspection.
+  Keep host kind conversion and native admission local where semantics differ.
+- Common reader recognition, starting with the duplicated ordering-call probe,
+  then shared expression starts and suffix routing. Host stage names, source
+  grammar, edit syntax and deliberate legacy literal policies remain inputs.
+- One prepared path for Zirium shared reports, followed by shared request-level
+  prepared-entry and binding/scope bookkeeping around PreparedFunctions. Keep
+  native stage execution and effect admission explicit; use existing evaluation.
+- Common JSON and Markdown renderers, including output budgeting, escaping,
+  ordering and meaningful errors, adopted by CSV, Zincite and Zirium.
+- A canonical highlighting asset with explicit revision-pinned consumer sync
+  and small host overlays; one shared library reference with host recipes and
+  supported-version notes. No grammar generator, plugin registry, new runtime
+  crate, generic CLI framework or site framework is required.
+
+### Shared rendering contract
+
+JSON has two explicit existing representations rather than per-host recursive
+serializers. Ordinary JSON retains the CSV/Zirium representation: absent is
+null; scalar values are JSON scalars; arrays, tuples and sets are ordered arrays;
+records are insertion-ordered objects; general dictionaries use the existing
+kind=dictionary, entries=[{key,value}] representation with actual recursive
+keys. Declared wrappers are transparent. Nominal members and keyed arrays use
+the corresponding existing Zincite tagged representation when ordinary JSON
+cannot express them, retaining member names and complete declared axes/missing
+cells. The explicit tagged-data representation preserves Zincite's existing
+scalar/member, positional/explicit array, tuple/set and dictionary encoding.
+Keep these format choices in Zirql, with compact and pretty output and an
+ordinary JSON-value conversion for existing host envelope APIs. Tagged output
+is a data interchange representation, not a new nominal-identity importer.
+
+Hosts provide native-leaf projections before ordinary data rendering; shared
+container traversal must not force each host to write another recursive
+serializer for mixed native/constructed reports. Use current collection views
+or a small concrete bridge justified by both consumers. Computational queues
+and identity sets remain non-renderable; report a located refusal rather than
+silently serializing runtime state. Native model/operation definitions and
+completeness/document envelopes remain host-owned.
+
+Markdown renders scalar data, ordered scalar collections, key/value records
+and dictionaries, sequences of record rows, and keyed maps of record rows.
+Record tables use the first-seen union of columns and input row order; missing
+and absent cells are blank. Preserve Zirium's existing Key/Value table and
+keyed-row layout, scalar count presentation, escaping and empty-result text
+where applicable. Nested cells and structural keys use compact shared JSON;
+nominal/keyed values therefore retain their explicit shape. Preserve JSON
+array order and record/dictionary insertion order. Render from Zirql data,
+without requiring hosts to first stringify whole values. No HTML renderer or
+configurable template language is included.
+
+Use the same request budget throughout conversion, table expansion and output
+bytes. Check known expansion before allocation; errors preserve the supplied
+location. Buffered entry points return no partial output on failure. Host
+emission wrappers preserve existing stdout/NDJSON/document transaction rules.
+
+### Completion and validation
+
+Every runtime slice includes its Rust embedding/API docs and actual consumer
+support notes, with one small runnable example when behavior becomes public.
+Renderer entries belong in the library reference and sidebar. Host documentation
+consolidation shortens duplicate common contracts while retaining domain recipes,
+local syntax, output envelopes and supported-version information. Prepare site
+links against the new local outputs; publication is separate work.
+
+Follow Testing and Validation above, including each affected host's checks and
+existing Python checks when public Python conversion/builders change. Reuse
+focused public controls for scope, empty declared types, native owners, output
+ordering/escaping, budget failure and later-error buffering; add only missing
+behavioral coverage. No internal callback-count tests, generated matrices or
+new benchmark suite. For preparation changes, exercise an existing small-query
+benchmark to catch a conspicuous regression; do not set a speculative threshold.
+Completion evidence identifies deleted duplicate responsibilities and retained
+host-only behavior alongside separately reviewable repository commits.
