@@ -1806,3 +1806,13 @@ relation acceptance, shortest witnesses, host uncertainty and diff restrictions.
 journeys, bounds and tie rules, deferred choices, API migration question and
 three proposed implementation/adoption tasks. The syntax and wider Zirium edge
 set remain proposed; this design task changes no runtime or consumer support.
+
+### Reusable named queries: existing functions
+
+On 2026-10-21 the user delegated following the recommendation to reuse typed
+pure functions for named native selections. This does not approve unseen syntax.
+[The design](../_notes/named-query-composition.md) records current Zincite and
+Zirium examples, explicit native contracts, saved complete programs and deferred
+query aliases, pipeline sugar, imports and closures. It proposes zero runtime
+follow-ups and only bounded documentation/examples under the relevant host
+authority; this task imports no implementation work and changes no host support.

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-108"
 key = "named-query-composition"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 priority = "normal"
 blocked_by = []
@@ -24,10 +24,10 @@ Named pure typed functions and native values already exist, while the brainstorm
 
 ## Done when
 
-- [ ] Write a reusable decision-declaration selection and an expensive-user selection with explicit input/parameter/result contracts; show the best current function equivalent.
-- [ ] Compare function reuse with a minimal query declaration/suffix form, resolving current-input binding, lexical scope, purity, argument checking and native kind transitions.
-- [ ] Record whether any syntax is needed and the smallest useful saved-definition workflow; imports, package management and general closures remain separate decisions.
-- [ ] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
+- [x] Write a reusable decision-declaration selection and an expensive-user selection with explicit input/parameter/result contracts; show the best current function equivalent.
+- [x] Compare function reuse with a minimal query declaration/suffix form, resolving current-input binding, lexical scope, purity, argument checking and native kind transitions.
+- [x] Record whether any syntax is needed and the smallest useful saved-definition workflow; imports, package management and general closures remain separate decisions.
+- [x] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
 
 ## Validation
 
@@ -35,3 +35,12 @@ Named pure typed functions and native values already exist, while the brainstorm
 - Record the user decision; no new product tests are expected.
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Selected existing typed functions for reusable native queries; documented both host examples, saved programs and deferred syntax with no runtime follow-ups.
+
+Validation:
+
+- Independent verification passed against Wfb5ffe9a560044da; snapshot unchanged.
+- git diff --check and zdev check base --format json passed.

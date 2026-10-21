@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 111
-- Ready: 4
+- Ready: 3
 - Blocked: 0
-- Done: 107
+- Done: 108
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -116,7 +116,7 @@
 | [base-105](tasks/105-design-composed-relationship-paths-and-intermediate-captures.md) | Design composed relationship paths and intermediate captures | done | — |
 | [base-106](tasks/106-construct-modified-records-with-immutable-with-expressions.md) | Construct modified records with immutable with expressions | done | — |
 | [base-107](tasks/107-align-two-record-sequences-by-unique-keys.md) | Align two record sequences by unique keys | done | — |
-| [base-108](tasks/108-design-reusable-named-pipeline-queries.md) | Design reusable named pipeline queries | ready | — |
+| [base-108](tasks/108-design-reusable-named-pipeline-queries.md) | Design reusable named pipeline queries | done | — |
 | [base-109](tasks/109-design-explanatory-finding-records-for-small-linters.md) | Design explanatory finding records for small linters | ready | — |
 | [base-110](tasks/110-design-record-matching-and-native-templates-for-query-by-exa.md) | Design record matching and native templates for query by example | ready | — |
 | [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | ready | — |
