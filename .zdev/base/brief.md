@@ -1955,3 +1955,110 @@ new benchmark suite. For preparation changes, exercise an existing small-query
 benchmark to catch a conspicuous regression; do not set a speculative threshold.
 Completion evidence identifies deleted duplicate responsibilities and retained
 host-only behavior alongside separately reviewable repository commits.
+
+## Complete the common language boundary (2026-10-21)
+
+The second consolidation review found that shared algorithms still require
+host-owned stage wrappers, program assembly and primitive-call machinery. The
+user authorized adding these findings, scalar conversions and CSV improvements
+to the task queue, updating existing tasks and including docs in every slice.
+This is planning authority; implementation and goals are separate interactions.
+The review used Zirql feature/extensions at 835f6b9, Zincite at cf2256f and
+Zirium at a4bab07. The preceding consolidation section owns integration,
+rendering and validation rules; this section extends its selected scope.
+
+### Common stages, calls and programs
+
+Represent common composition directly in Zirql's existing executable forms.
+Start with ordinary value sources and projection, then migrate shared filter,
+matching, ordering, mapping, existence/fixed-point and path composition. Core
+preparation owns their common arguments, scope, type flow and execution. Hosts
+retain native leaf payloads, value/kind views and domain admission; remove their
+replaced common variants, factories and dispatch rather than wrapping them in
+another host-dispatched enum. Preserve relative-input and native empty-stream
+policies, completeness/Unknown, native ownership and effects. Base-113 provides
+traversal, not the final stage boundary. Base-117 extracts the final session
+after these migrations and the common program reader.
+
+Ordinary eager native functions use one host definition for their name/ID,
+parameters, result declaration and existing pure/source behavior, plus their
+implementation. Reuse current call preparation, runtime admission and budgets.
+Migrate the existing ordinary primitives in both hosts; their implementations
+still validate native ownership and domain facts. Special nominal grammar,
+lazy predicates and effectful stages retain dedicated hooks. A direct lookup
+or static definitions suffice. Extend base-114 with narrow declared scalar-fact
+admission and nonnegative integer-to-usize extraction; retain an explicit
+strict/deferred distinction and host diagnostic/domain policy.
+
+The common reader owns function collection, parameters, pattern lets, lexical
+name introduction, separators and final-value assembly. Preserve established
+forward-function, sequential-binding and host terminator/output rules. Host
+hooks cover native expressions/types and host-only statements. Keep Zincite's
+edit/document syntax and Zirium's legacy syntax and emission behavior local.
+Base-115 also centralizes context-specific keyword/operation/binding-name
+classification; hosts append domain exclusions. Different naming contexts do
+not become one universal reserved-name set.
+
+### Constructed programs and CSV
+
+Provide a concrete embedding path for named constructed values with declared
+schemas and an optional current input. Use the same common reader, prepared
+functions, statement scopes and evaluation budget as the native integrations.
+Derive compact facts from the explicit declaration supplied with a value;
+preserve declared empty schemas and immutable sharing without inferring a
+separate fact for every input row. Function arguments remain explicit: a
+function cannot capture ambient bindings, parameters or current input.
+
+CSV and words use this path and remove their native refusal traits and repeated
+binding/type plumbing. CSV retains decoding, headers, exact string cells,
+input-byte limits, table naming and sole/named-input policy. Preserve rows,
+implicit count and the useful multiple-table ambiguity diagnostic. Extend CSV
+from let-plus-expression programs to common typed parameters and named
+functions, including existing pattern/recursion rules. Repeated --param
+name=value arguments use admit_parameters; table name=FILE arguments and the
+existing positional query remain valid. No generic CLI or new package is needed.
+The existing shared rendering tasks supply JSON and Markdown output.
+
+Rewrite the CSV embedding guide to teach loading, declaring/binding values,
+common reading/preparation/evaluation, and explicit rendering. Every migration
+updates its API/embedding and consumer docs when it lands; the final reference
+consolidation task does not postpone documentation. Keep the library reference,
+index and sidebar organized by purpose, with host guides retaining their domain
+recipes and supported-version information.
+
+### Explicit scalar conversion contract
+
+Add three pure common calls, available in ordinary reports and functions:
+
+- parse_int(text) accepts a string of ASCII decimal digits with an optional
+  leading + or - and returns a signed 64-bit integer. Require at least one
+  digit; accept leading zeros. Reject overflow, whitespace, separators, prefixes,
+  fractions, exponents and trailing characters.
+- parse_float(text) accepts an optional sign, one or more ASCII decimal digits,
+  an optional dot followed by one or more digits, and an optional e/E exponent
+  with optional sign and at least one digit. Return the correctly rounded
+  finite binary64 value; reject overflow, nonfinite spellings, whitespace and
+  trailing characters. Reject nonzero decimal values rounded to zero, retaining
+  the existing numeric contract. Accept signed zero and finite subnormal values.
+- to_string(value) accepts Boolean, integer, finite float or string. Booleans
+  use true/false, integers signed decimal, floats locale-independent shortest
+  round-trippable decimal, and strings retain their content. Preserve negative
+  floating zero; use float text accepted by parse_float. Absent/null, collections,
+  nominal members and native values require explicit handling/projection and
+  are refused by this call. Rendering whole values remains the renderer's job.
+
+Declared wrappers are transparent. Conversion failures are located errors,
+not absence, truncation or implicit defaults. Normal preflight checks known
+types; value-dependent parsing occurs only if evaluated, respecting lazy
+branches. Charge input scanning and known output allocation to the active
+budget. CSV decoding remains lossless and string-valued; no automatic coercion
+or trimming is added. Numeric report examples demonstrate filtering, summaries
+and labels, with a malformed-cell refusal. Do not widen the approved Zincite
+data-edit subset as a side effect. Trimming, regex and template formatting are
+deferred until supported by a concrete query.
+
+Use the existing focused public tests and required repository checks. Add only
+missing controls for changed ownership/scope, declared empty data and conversion
+boundaries. No new test matrix, plugin framework, evaluator or benchmark system.
+Each task's completion records the duplicate host responsibilities deleted and
+the domain responsibilities retained.
