@@ -1,14 +1,13 @@
 # Query CSV files with Zirql
 
-The [CSV example](../examples/csv.rs) reads each file as a table of string
+The [CSV example](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs) reads each file as a table of string
 fields, using its first row as column names. You can filter rows, select fields
 and combine named files in a report. To build an application like this one, follow
 [Build the CSV host](csv-host.md).
 
-These commands run from the root of a `v0.2.0` checkout or the extracted
-`zirql-0.2.0` crate with Rust 1.88 or later. The
-[setup guide](getting-started.md#run-the-example) describes both. This is a Cargo
-example executable; installing the library does not install a CSV command.
+These commands run from the root of this working checkout with Rust 1.88 or
+later. Its shared JSON renderer is newer than published Zirql 0.2.0. This is a
+Cargo example executable; installing the library does not install a CSV command.
 
 Use the tabs to compare a query, its input and its result, or copy a command.
 The commands pass a multiline query as one quoted shell argument. Results below
@@ -432,11 +431,34 @@ cargo run --locked --example csv -- \
 }
 ```
 
-`index_set` keeps unused keys; `entries` visits only present cells. The CSV
-renderer accepts those ordinary arrays and records. Direct keyed values retain
-their shape in the library and cannot be rendered as plain JSON by this host.
-See [keyed arrays](values.md#keyed-arrays) for row and column domains, typed
-empties and sparse cells.
+`index_set` keeps unused keys; `entries` visits only present cells. You can also
+return the keyed value directly:
+
+```sh
+cargo run --locked --example csv -- \
+  '[2: 20, 5: 50] axes([5, 2, 9])' \
+  examples/csv/people.csv
+```
+
+```json
+{
+  "kind": "array",
+  "indexing": "explicit",
+  "axes": [[
+    {"kind": "integer", "value": 5},
+    {"kind": "integer", "value": 2},
+    {"kind": "integer", "value": 9}
+  ]],
+  "entries": [
+    {"key": [{"kind": "integer", "value": 5}], "value": {"kind": "integer", "value": 50}},
+    {"key": [{"kind": "integer", "value": 2}], "value": {"kind": "integer", "value": 20}}
+  ]
+}
+```
+
+The shared [JSON renderer](library-rendering.md) keeps the declared key `9`
+without adding a cell for it. See [keyed arrays](values.md#keyed-arrays) for row
+and column domains, typed empties and sparse cells.
 
 ## Understand errors
 
@@ -475,7 +497,7 @@ request returns no partial JSON.
 
 The example loads at most 64 KiB of CSV source bytes across all input files,
 using bounded reads. It supplies constructed arrays and records, header types,
-named-table lookup and final JSON rendering. Input loading, decoder admission,
+named-table lookup and a call to Zirql's JSON renderer. Input loading, decoder admission,
 copies, parsing, evaluation and output share one budget: 1,000,000 work units,
 100,000 produced or copied results, nesting depth 64 and a 1,000-item stream
 ceiling. Work includes scanned and copied bytes, field metadata and output
@@ -484,13 +506,12 @@ bytes. The byte cap bounds the CSV decoder's temporary buffers as well.
 Zirql's common readers parse the expressions and `let` prefixes. The host lowers
 the bindings to one value block and calls `evaluate_query_value` once. Zirql
 therefore owns scope, saved-value reuse, correlated iteration, expressions,
-collection stages and their resource failures. The output writer walks the final
-constructed value directly, retaining record order. It renders absence as JSON
-`null` and tuples and sets as arrays. General dictionaries use tagged entries:
+collection stages and their resource failures. Zirql's shared ordinary compact
+renderer retains record order, renders absence as JSON `null` and tuples and
+sets as arrays. General dictionaries use tagged entries:
 `{"kind":"dictionary","entries":[{"key":...,"value":...}]}`. Each key and value
-is encoded recursively; string dictionaries remain ordinary JSON objects.
-Nominal members and keyed arrays are refused because this encoding would
-discard their identity or shape.
+is encoded recursively; records remain ordinary JSON objects. Nominal members
+and keyed arrays use their explicit tagged encoding to retain names and shape.
 
 [Build the CSV host](csv-host.md) walks through the Rust implementation, from
 loading a table to returning JSON. The [host integration guide](host-integration.md)

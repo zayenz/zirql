@@ -1,20 +1,20 @@
 # Build the CSV host
 
 The CSV host turns files into arrays of records and makes them available to
-Zirql by name. Zirql reads and evaluates the query; the host renders the result
-as JSON. This tutorial follows that implementation so you can adapt it to your
-own application. The [CSV guide](csv.md) shows what its users can query.
+Zirql by name. Zirql reads and evaluates the query, then its shared renderer
+converts the result to JSON. This tutorial follows that implementation so you
+can adapt it to your own application. The [CSV guide](csv.md) shows what its users can query.
 
-The complete implementation is [examples/csv.rs](../examples/csv.rs). Code
+The complete implementation is [examples/csv.rs](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs). Code
 blocks below are excerpts from that file, with the surrounding responsibilities
 explained at each step. Use the complete file for a runnable application; the
 excerpts omit imports and some error and budget handling.
 
 ## 1. Start with a runnable application
 
-Use Rust 1.88 or newer. From a Zirql `v0.2.0` checkout or extracted
-`zirql-0.2.0` crate, create a sibling application and copy the example and its
-fixtures:
+Use Rust 1.88 or newer and this working Zirql checkout. The shared rendering
+APIs are newer than published Zirql 0.2.0. With the checkout directory named
+`zirql`, create a sibling application and copy the matching example and fixtures:
 
 ```sh
 cargo new --bin --edition 2024 ../csv-query
@@ -22,7 +22,9 @@ cp examples/csv.rs ../csv-query/src/main.rs
 mkdir -p ../csv-query/examples
 cp -R examples/csv ../csv-query/examples/csv
 cd ../csv-query
-cargo add zirql@0.2.0 csv@1.4 serde_json@1
+cargo add zirql --path ../zirql
+cargo add csv@1.4
+cargo add --dev serde_json@1
 ```
 
 In the copied `src/main.rs`, change the usage message in `main` to name your
@@ -40,15 +42,18 @@ The application's dependencies are:
 
 ```toml
 [dependencies]
-zirql = "0.2.0"
+zirql = { path = "../zirql" }
 csv = "1.4"
+
+[dev-dependencies]
 serde_json = "1"
 ```
 
 In Zirql's own manifest, `csv` is a development dependency because it serves an
 example. Your application needs it as an ordinary dependency. `csv` decodes
-quoted records; `serde_json` escapes JSON scalars and strings. Zirql reads and
-evaluates the query language.
+quoted records. Zirql reads and evaluates the query language and renders JSON.
+The copied tests use `serde_json` to inspect results; the application itself
+does not call it.
 
 Run a selection through your new application:
 
@@ -103,7 +108,7 @@ an existing model or navigate domain relationships; see
 
 ## 3. Load and declare each table
 
-The [load_table and decode_table functions](../examples/csv.rs#L268)
+The [load_table and decode_table functions](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L277)
 read bounded chunks, enforce an aggregate 64 KiB limit across files, then decode
 the bytes. The CSV decoder handles quoting, embedded newlines and UTF-8. The
 loader requires a nonempty header, unique nonempty labels and the same field
@@ -143,7 +148,7 @@ has known columns. Charge the shared owner allocation before wrapping the
 declared value in `Arc::new`.
 
 The evaluator also needs type facts before it reads binding values. The
-[Table::types method](../examples/csv.rs#L249) derives those facts from headers:
+[Table::types method](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L259) derives those facts from headers:
 
 ```rust
 impl Table {
@@ -175,7 +180,7 @@ array of string records. For another data source, change them together.
 
 ## 4. Expose names to the reader
 
-The [CsvHost](../examples/csv.rs#L395) retains loaded tables, their input names
+The [CsvHost](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L404) retains loaded tables, their input names
 and the names introduced by parsed lets:
 
 ```rust
@@ -216,7 +221,7 @@ fn is_constructed_binding(&self, name: &str) -> bool {
 shared collection stages, as in `g.members | sort`. The same reader owns field
 access, comparisons, predicates, comprehensions and sorting.
 
-The remaining [reader methods](../examples/csv.rs#L428) declare the host's
+The remaining [reader methods](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L437) declare the host's
 unsupported native operations. `Stage`, `SetOperator`, `Emitter` and `Predicate`
 are `()`. `is_stage` returns `false`, `set_operator` returns `None`, and the
 native stage and predicate parsers return located errors. The required native
@@ -226,7 +231,7 @@ continue to work.
 
 ## 5. Supply values and current input
 
-Implement [ValueQueryHost](../examples/csv.rs#L472) for
+Implement [ValueQueryHost](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L481) for
 `ReadExpression<Self>`, with `type Error = QueryError`. This trait connects
 binding names to their data and defines the optional implicit input.
 
@@ -301,7 +306,7 @@ The other hooks have small, explicit roles:
 
 ## 6. Read lets and a final expression
 
-Follow [read_program](../examples/csv.rs#L549). Start an
+Follow [read_program](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L558). Start an
 `ArgumentReader::new(query, 0)` so diagnostics retain byte offsets in the user's
 original query. Repeatedly:
 
@@ -338,7 +343,7 @@ need the [larger program interfaces](embedding-programs.md).
 
 ## 7. Evaluate under one budget
 
-The [run function](../examples/csv.rs#L93) shows the complete request order:
+The [run function](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L94) shows the complete request order:
 
 ```text
 admit input arguments
@@ -394,25 +399,40 @@ to 1,000 rows per table and 1,000 columns per header. The separate
 decoder buffers before Zirql values exist.
 
 The core charges its own operations; the host charges its file reads, metadata,
-allocations, copies and output.
+allocations and copies. The shared renderer charges JSON conversion and output.
 [Budget and diagnostic APIs](runtime-limits.md) describes that accounting.
 
 ## 8. Render only a completed result
 
-[write_json](../examples/csv.rs#L644) walks `value.data()`. Arrays, tuples and
-sets become JSON arrays. Records become JSON objects by visiting their stored
-fields in order. Absence becomes `null`; scalar encoding uses `serde_json`.
-General dictionaries become `{"kind":"dictionary","entries":[{"key":...,"value":...}]}`
-in entry order. Keys and values use the same recursive encoding, including sets
-as arrays. String dictionaries remain ordinary JSON objects. Nominal members
-and keyed arrays return an error because this host has no JSON encoding for
-their identity or shape. These rendering choices leave Zirql's value kinds and
-key identity intact during evaluation.
+Call the shared [JSON renderer](library-rendering.md) after evaluation:
 
-The writer uses `budget.within_evaluation` for recursive containers. `append`
-charges output bytes before extending the buffer, and `JsonBuffer` applies the
-same accounting to bytes written by `serde_json`. String escaping therefore
-counts toward the output budget too.
+```rust
+let location = Location::Query(0..query.len());
+let mut output = render_json(
+    &result,
+    JsonRepresentation::Ordinary,
+    JsonLayout::Compact,
+    &mut budget,
+    location.clone(),
+)
+.map_err(query_error)?;
+budget.charge(1, location.clone()).map_err(query_error)?;
+budget.charge_results(1, location).map_err(query_error)?;
+output.push(b'\n');
+```
+
+Import `render_json`, `JsonRepresentation` and `JsonLayout` from `zirql`.
+Ordinary output keeps record fields and dictionary entries in stored order.
+Absence becomes `null`; tuples and sets become arrays. General dictionaries use
+recursive key/value entry pairs. Nominal members and keyed arrays use the
+explicit tagged representation, including declared axes and present cells.
+The [direct keyed-data command](csv.md#inspect-an-indexed-value) returns an
+unused declared key as well as the two present cells.
+
+Zirql checks constructed data, applies the active nesting/reentry guard and
+charges conversion, copied text and escaped output bytes. Rendering returns a
+complete buffer or the original located failure, including its budget category.
+The host adds its framing newline under the same budget.
 
 `run` builds all output in a `Vec<u8>`, including the final newline. `main`
 writes that buffer only after the request succeeds. Parsing, evaluation and

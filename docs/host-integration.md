@@ -447,7 +447,7 @@ also accepted; the operation receives that slice instead. Borrowing or moving
 does not create another result representation. An operation producing new data
 must charge work and admit result units before allocating it. Host failures keep
 their concrete error type and source locations through `EvaluationError::Host`.
-The host still checks operation purity and defines effects and rendering.
+The host still checks operation purity and defines effects and emission policy.
 
 Structural admission remains valid for that exact immutable value and unchanged
 declaration. New external values and operation results require admission.
@@ -484,6 +484,16 @@ Model execution and source writes are separate host operations. The host checks
 that each is valid for its current model and source.
 
 ## Library results and rendering
+
+Use Zirql's [JSON rendering APIs](library-rendering.md) for constructed data
+after evaluation. `to_json_value` produces an ordered JSON tree;
+`render_json` returns compact or pretty buffered bytes. `render_json_value`
+also writes existing JSON trees with host-owned document/completeness envelopes.
+All three share the request budget and preserve supplied error locations.
+These APIs belong to this working checkout, beyond published Zirql 0.2.0.
+Native projection remains with the host. A shared bridge for mixed native and
+constructed containers and consumer adoption remain separate integration work;
+computational wrappers remain outside data rendering.
 
 Return `NativeResult` or the host's value type to library callers. An emitter
 can observe the value at a written position, but its buffering and transaction
@@ -721,8 +731,9 @@ through constructed data and host collection views. Native leaves use exact
 `native_identity` tokens. `compare_native_values` orders same-kind leaves by
 canonical identity by default; override it to order different native kinds.
 A host without collection hooks reports an explicit unsupported operation.
-Rendering remains host-owned: tagged entry pairs can preserve general keys in
-JSON, while a plain JSON object still requires string member names.
+Zirql renders constructed dictionaries as recursive key/value entry pairs,
+preserving general keys. The host supplies native projections and emission
+policy; a plain JSON object still requires string member names.
 
 Native kind callbacks can use `pattern_function_value_kind` with owned pattern
 declarations, or `pattern_function_value_kind_borrowed` with existing
@@ -1006,9 +1017,9 @@ it cannot permit replacement. Entries retain insertion order.
 
 Return admitted owned keys and payloads from the callbacks. They move into the
 map, so a value can retain a borrowed native handle and its source coordinates
-without serialization. A host choosing JSON still owns snapshot conversion,
-null and numeric admission, escaping and emission. Admit another result
-container before moving entries into it.
+without serialization. A host choosing JSON supplies native snapshots and its
+emission policy. Zirql's constructed renderer handles data admission, encoding
+and escaping. Admit another result container before moving entries into it.
 
 The constructor guards its one actual object level. A host with its own array
 recursion can use `budget.within_evaluation(1, location, operation)` for each

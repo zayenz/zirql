@@ -13,10 +13,11 @@ use std::{
 };
 use zirql::{
     ArgumentReader, ArrayType, Budget, ConstructedValue as V, DeclaredType, ExpressionStep,
-    Located, Location, Predicate, ProgramLimits, Projection, QueryError, ReadExpression,
-    ValueExpression, ValueExpressionKind as K, ValueQueryHost, ValueReaderHost, ValueType,
-    copy_constructed_value, declare_constructed, dispose_native_value, dispose_pattern,
-    evaluate_query_value, pattern_names, read_pattern_let, read_value_expression,
+    JsonLayout, JsonRepresentation, Located, Location, Predicate, ProgramLimits, Projection,
+    QueryError, ReadExpression, ValueExpression, ValueExpressionKind as K, ValueQueryHost,
+    ValueReaderHost, ValueType, copy_constructed_value, declare_constructed, dispose_native_value,
+    dispose_pattern, evaluate_query_value, pattern_names, read_pattern_let, read_value_expression,
+    render_json,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -154,10 +155,18 @@ fn run(query: &str, inputs: &[InputSpec], limits: ProgramLimits) -> Result<Vec<u
     let result = evaluate_query_value(&expression, &types, &mut host, &mut budget);
     dispose_native_value(expression);
     let result = result.map_err(query_error)?;
-    let mut output = Vec::new();
     let location = Location::Query(0..query.len());
-    write_json(&result, &mut output, &mut budget, &location).map_err(query_error)?;
-    append(&mut output, b"\n", &mut budget, &location).map_err(query_error)?;
+    let mut output = render_json(
+        &result,
+        JsonRepresentation::Ordinary,
+        JsonLayout::Compact,
+        &mut budget,
+        location.clone(),
+    )
+    .map_err(query_error)?;
+    budget.charge(1, location.clone()).map_err(query_error)?;
+    budget.charge_results(1, location).map_err(query_error)?;
+    output.push(b'\n');
     Ok(output)
 }
 
@@ -613,148 +622,6 @@ fn read_program(
     }
 }
 
-fn append(
-    output: &mut Vec<u8>,
-    bytes: &[u8],
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<(), QueryError> {
-    budget.charge(bytes.len(), location.clone())?;
-    output.extend_from_slice(bytes);
-    Ok(())
-}
-struct JsonBuffer<'a> {
-    bytes: &'a mut Vec<u8>,
-    budget: &'a mut Budget,
-    location: &'a Location,
-    error: Option<QueryError>,
-}
-impl Write for JsonBuffer<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if let Err(error) = append(self.bytes, bytes, self.budget, self.location) {
-            self.error = Some(error);
-            return Err(io::Error::other("JSON output allowance exhausted"));
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-fn write_json(
-    value: &V,
-    output: &mut Vec<u8>,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<(), QueryError> {
-    budget.within_evaluation(1, location.clone(), |budget| {
-        budget.charge(1, location.clone())?;
-        budget.charge_results(1, location.clone())?;
-        match value.data() {
-            V::Array(_) | V::Tuple(_) | V::Set { .. } => {
-                let values: &[V] = match value.data() {
-                    V::Array(values) | V::Tuple(values) => values,
-                    V::Set { elements, .. } => elements,
-                    _ => unreachable!("matched collection"),
-                };
-                append(output, b"[", budget, location)?;
-                for (index, value) in values.iter().enumerate() {
-                    if index != 0 {
-                        append(output, b",", budget, location)?;
-                    }
-                    write_json(value, output, budget, location)?;
-                }
-                append(output, b"]", budget, location)
-            }
-            V::Record(fields) => {
-                append(output, b"{", budget, location)?;
-                for (index, (label, value)) in fields.iter().enumerate() {
-                    if index != 0 {
-                        append(output, b",", budget, location)?;
-                    }
-                    write_string(label, output, budget, location)?;
-                    append(output, b":", budget, location)?;
-                    write_json(value, output, budget, location)?;
-                }
-                append(output, b"}", budget, location)
-            }
-            V::Dictionary(entries) => {
-                append(
-                    output,
-                    br#"{"kind":"dictionary","entries":["#,
-                    budget,
-                    location,
-                )?;
-                for (index, (key, value)) in entries.iter().enumerate() {
-                    if index != 0 {
-                        append(output, b",", budget, location)?;
-                    }
-                    append(output, br#"{"key":"#, budget, location)?;
-                    write_json(key, output, budget, location)?;
-                    append(output, br#","value":"#, budget, location)?;
-                    write_json(value, output, budget, location)?;
-                    append(output, b"}", budget, location)?;
-                }
-                append(output, b"]}", budget, location)
-            }
-            V::Member(_) | V::KeyedArray { .. } => Err(QueryError::query(
-                location_range(location),
-                "CSV JSON output cannot represent nominal members or keyed-array shape",
-            )),
-            scalar => {
-                let mut writer = JsonBuffer {
-                    bytes: output,
-                    budget,
-                    location,
-                    error: None,
-                };
-                let result = match scalar {
-                    V::Absent => serde_json::to_writer(&mut writer, &()),
-                    V::Boolean(value) => serde_json::to_writer(&mut writer, value),
-                    V::Integer(value) => serde_json::to_writer(&mut writer, value),
-                    V::Float(value) => serde_json::to_writer(&mut writer, value),
-                    V::String(value) => serde_json::to_writer(&mut writer, value),
-                    _ => unreachable!("containers and declared wrappers are handled above"),
-                };
-                result.map_err(|error| {
-                    writer.error.unwrap_or_else(|| {
-                        QueryError::query(
-                            location_range(location),
-                            format!("writing JSON: {error}"),
-                        )
-                    })
-                })
-            }
-        }
-    })
-}
-fn location_range(location: &Location) -> Range<usize> {
-    match location {
-        Location::Query(range) | Location::Source(range) => range.clone(),
-    }
-}
-fn write_string(
-    value: &str,
-    output: &mut Vec<u8>,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<(), QueryError> {
-    let mut writer = JsonBuffer {
-        bytes: output,
-        budget,
-        location,
-        error: None,
-    };
-    serde_json::to_writer(&mut writer, value).map_err(|error| {
-        writer.error.unwrap_or_else(|| {
-            QueryError::query(
-                location_range(location),
-                format!("writing JSON string: {error}"),
-            )
-        })
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1061,33 +928,20 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
     }
 
     #[test]
-    fn output_is_metered_and_cannot_flatten_keyed_shape() {
-        let mut budget = Budget::for_program(ProgramLimits { work: 5, ..LIMITS });
-        let mut bytes = Vec::new();
-        let error = write_json(
-            &V::String("needs escaping\n".into()),
-            &mut bytes,
-            &mut budget,
-            &Location::Query(2..3),
-        )
-        .unwrap_err();
-        assert_eq!(error.category, QueryErrorCategory::WorkLimit);
-        assert_eq!(error.location, Location::Query(2..3));
-        // run returns its buffer only after evaluation, rendering and newline succeed.
-        let mut budget = Budget::for_program(LIMITS);
-        let error = write_json(
-            &V::KeyedArray {
-                axes: vec![zirql::KeyAxis {
-                    key_type: zirql::ValueKeyType::Integer,
-                    keys: vec![],
-                }],
-                entries: vec![],
-            },
-            &mut bytes,
-            &mut budget,
-            &Location::Query(0..1),
-        )
-        .unwrap_err();
-        assert!(error.message.contains("keyed-array shape"));
+    fn direct_keyed_output_keeps_unused_axis_keys() {
+        let output = text("[2: 20, 5: 50] axes([5, 2, 9])", &people());
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["indexing"], "explicit");
+        assert_eq!(
+            value["axes"][0][2],
+            serde_json::json!({"kind":"integer","value":9})
+        );
+        assert_eq!(value["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(value["entries"][0]["key"][0]["value"], 5);
+        assert_eq!(
+            value["entries"][1]["value"],
+            serde_json::json!({"kind":"integer","value":20})
+        );
+        assert!(output.ends_with('\n'));
     }
 }

@@ -29,6 +29,7 @@ runtime errors in skipped branches remain unexecuted. See
 - [Functions and control flow](library-control.md)
 - [Queues and native identity sets](library-worklists.md)
 - [Shared native forms](library-native.md)
+- [JSON rendering (Rust API)](library-rendering.md)
 
 The [language reference](language-reference.md) covers grammar and scope;
 [the word tutorial](examples.md) and [CSV examples](csv.md) develop full queries.
@@ -141,6 +142,8 @@ support. `present` is a pattern.
 | `push_back_all` | [Queues and native identity sets](library-worklists.md#push_back_all) |
 | `queue` | [Queues and native identity sets](library-worklists.md#queue) |
 | `record` | [Collections and reductions](library-collections.md#dictionaries-and-records) |
+| `render_json` (Rust) | [JSON rendering](library-rendering.md#render_json) |
+| `render_json_value` (Rust) | [JSON rendering](library-rendering.md#render_json_value) |
 | `report` | [Functions and control flow](library-control.md#report) |
 | `require` | [Presence and lookup](library-presence.md#require) |
 | `reverse` | [Shared native forms](library-native.md#reverse) |
@@ -156,6 +159,7 @@ support. `present` is a pattern.
 | `tail` | [Shared native forms](library-native.md#head-and-tail) |
 | `tally` | [Constructed pipeline stages](library-pipelines.md#tally) |
 | `tally (native)` | [Shared native forms](library-native.md#native-count-unique-and-tally) |
+| `to_json_value` (Rust) | [JSON rendering](library-rendering.md#to_json_value) |
 | `tuple` | [Collections and reductions](library-collections.md#arrays-and-tuples) |
 | `union` | [Shared native forms](library-native.md#native-set-operators) |
 | `unique` | [Constructed pipeline stages](library-pipelines.md#unique) |

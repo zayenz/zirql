@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-118"
 key = "shared-json-data"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "high"
@@ -25,12 +25,22 @@ Read brief.md section Consolidate language machinery and data rendering (2026-10
 
 ## Done when
 
-- [ ] Callable JSON conversion and compact/pretty buffered rendering cover every ConstructedValue kind under the brief’s ordinary/tagged contract, retaining dictionary key structure, insertion order, declared axes/missing cells and nominal metadata.
-- [ ] Common byte writing/escaping/allocation accounting uses the active budget and supplied location; declared wrappers are transparent and limit/error paths return no partial buffered result.
-- [ ] The CSV executable delegates ordinary output to Zirql and removes its recursive JSON writer and duplicate output-budget code; existing output remains compatible for previously supported data and nominal/keyed output follows the documented extension.
-- [ ] Public API docs, JSON library entry/sidebar and a runnable CSV data-output example document both representations and explicit rendering.
+- [x] Callable JSON conversion and compact/pretty buffered rendering cover every ConstructedValue kind under the brief’s ordinary/tagged contract, retaining dictionary key structure, insertion order, declared axes/missing cells and nominal metadata.
+- [x] Common byte writing/escaping/allocation accounting uses the active budget and supplied location; declared wrappers are transparent and limit/error paths return no partial buffered result.
+- [x] The CSV executable delegates ordinary output to Zirql and removes its recursive JSON writer and duplicate output-budget code; existing output remains compatible for previously supported data and nominal/keyed output follows the documented extension.
+- [x] Public API docs, JSON library entry/sidebar and a runnable CSV data-output example document both representations and explicit rendering.
 
 ## Validation
 
 - Use focused fixtures spanning nested structural dictionary keys, ordered records/sets, nominal/keyed shape and budget failure; reuse CSV existing examples, compare parsed content and intentional ordering.
 - Run Zirql Rust checks, documented CSV commands, git diff --check and zdev check base --format json; prepare/check affected docs links.
+
+## Result
+
+Added shared ordinary/tagged JSON conversion and compact/pretty buffered rendering; CSV delegates output and preserves keyed shape. Updated API/CSV/embedding reference docs and fixed shared sidebar fragment/base handling. Removed the CSV recursive serializer and duplicate output-budget implementation; native projections and envelopes remain host responsibilities.
+
+Validation:
+
+- Independent full verifier PASS against W66e9164b4f3da68c with equal final comparison; all 13 changed paths and completion conditions checked.
+- Formatting, fatal Clippy, workspace tests, documented CSV commands and empty-output failures passed.
+- Site check/build, generated documentation links and 122 sidebar anchors passed; zdev check and diff checks passed.

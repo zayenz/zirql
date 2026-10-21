@@ -20,7 +20,11 @@ function libraryGroup(label, page, entries) {
     label, collapsed: true,
     items: [
       { label: 'Category overview', slug: `guides/${page}` },
-      ...entries.map(([label, anchor]) => ({ label, link: `${prefix}guides/${page}/#${anchor}` })),
+      // Keep fragments out of Starlight's base/path normalization.
+      ...entries.map(([label, anchor]) => ({
+        label, slug: `guides/${page}`,
+        attrs: { href: `${prefix}guides/${page}/#${anchor}` },
+      })),
     ],
   };
 }
@@ -44,6 +48,11 @@ export default defineConfig({
       { label: 'Start here', items: [{ label: 'Overview', slug: '' }, 'guides/examples', 'guides/getting-started', 'guides/csv'] },
       { label: 'Library reference', items: [
         { label: 'Overview and alphabetical index', slug: 'guides/library-reference' },
+        libraryGroup('JSON rendering (Rust API)', 'library-rendering', [
+          ['to_json_value', 'to_json_value'],
+          ['render_json', 'render_json'],
+          ['render_json_value', 'render_json_value'],
+        ]),
         libraryGroup('Strings', 'library-strings', [
           ['contains', 'contains'],
           ['starts_with', 'starts_with'],

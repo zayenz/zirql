@@ -89,9 +89,11 @@ core charges and what the host must account for.
 
 ## Return data and control effects
 
-Results can remain Rust values. Rendering is an application decision: inspect
-the returned records, serialize them, or use native handles in another operation.
-The evaluator does not require a JSON conversion between stages.
+Results can remain Rust values. The application chooses when to call Zirql's
+[JSON renderer](library-rendering.md), inspect returned records or use native
+handles in another operation. The evaluator does not require a JSON conversion
+between stages. The renderer is available in this working checkout; published
+Zirql 0.2.0 does not include it.
 
 If an application supports edits, it owns their legality and commit policy.
 Pure expression and function contexts must reject effects during preflight.

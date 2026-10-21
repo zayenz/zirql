@@ -14,6 +14,7 @@ mod paths;
 mod program;
 mod projection;
 mod reader;
+mod rendering;
 mod runtime_types;
 mod sets;
 mod value;
@@ -79,6 +80,9 @@ pub use reader::{
     read_statement_prefix, read_unresolved_function_declaration,
     read_unresolved_pattern_function_declaration, read_value_expression,
     read_value_expression_in_scope, read_value_suffix,
+};
+pub use rendering::{
+    JsonLayout, JsonRepresentation, render_json, render_json_value, to_json_value,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
