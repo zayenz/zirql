@@ -1793,3 +1793,16 @@ and Validation above. New tests must distinguish meaningful ordering, binding,
 shape, ownership or error behaviour; no generic matrices or timing assertions.
 Documentation updates land with the feature, not in a final catch-up task.
 Documentation-only/design work needs diff and zdev checks, not Rust tests.
+
+### Composed native paths: selected first slice
+
+On 2026-10-21 the user accepted composition and bounded repetition as the first
+path extension, deferring named intermediate captures. The proposed form is
+`paths(defs / parent{1,2}, to=op("func.func"), max_depth=3)`: sequence terms
+consume one edge unless bounded explicitly, while a top-level bare primitive
+retains current bounded reachability. Keep same-kind native ownership, whole
+relation acceptance, shortest witnesses, host uncertainty and diff restrictions.
+[The retained design](../_notes/composed-native-paths.md) records the host
+journeys, bounds and tie rules, deferred choices, API migration question and
+three proposed implementation/adoption tasks. The syntax and wider Zirium edge
+set remain proposed; this design task changes no runtime or consumer support.

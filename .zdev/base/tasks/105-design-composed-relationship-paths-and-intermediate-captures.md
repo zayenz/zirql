@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-105"
 key = "composed-native-paths"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 priority = "normal"
 blocked_by = []
@@ -24,10 +24,10 @@ Current paths follow one registered edge and return one shortest witness per sou
 
 ## Done when
 
-- [ ] Work through one Zirium definition/structure journey and one Zincite reference journey, comparing composed paths with existing pipelines and loops; identify which intermediate capture is useful.
-- [ ] Present a preferred minimal syntax and alternative, defining edge-kind transitions, hop bounds, shortest-witness/tie rules, cycles, capture ambiguity and incomplete edges while preserving native ownership and diff-side restrictions.
-- [ ] The selected first slice identifies host adapter needs and a focused witness/refusal example; explicitly defer any unsupported capture or relation operator rather than promising a full graph language.
-- [ ] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
+- [x] Work through one Zirium definition/structure journey and one Zincite reference journey, comparing composed paths with existing pipelines and loops; identify which intermediate capture is useful.
+- [x] Present a preferred minimal syntax and alternative, defining edge-kind transitions, hop bounds, shortest-witness/tie rules, cycles, capture ambiguity and incomplete edges while preserving native ownership and diff-side restrictions.
+- [x] The selected first slice identifies host adapter needs and a focused witness/refusal example; explicitly defer any unsupported capture or relation operator rather than promising a full graph language.
+- [x] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
 
 ## Validation
 
@@ -35,3 +35,12 @@ Current paths follow one registered edge and return one shortest witness per sou
 - Record the user decision; no new product tests are expected.
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Selected composition and bounded repetition with named captures deferred; recorded host journeys, witness contracts and documentation follow-ups.
+
+Validation:
+
+- Independent verification passed against W5d16efc803618ea5; snapshot unchanged.
+- git diff --check and zdev check base --format json passed.
