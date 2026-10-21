@@ -510,3 +510,88 @@ fn markdown_checks_sparse_rectangle_and_escaped_bytes_before_growth() {
     assert!(error.message.contains("nonfinite"));
     assert_eq!(error.location, location);
 }
+
+#[test]
+fn mixed_reports_keep_constructed_policy_native_projections_and_located_refusals() {
+    use zirql::{EvaluationError, NativeCapture, RenderContext, RenderHost, RenderView};
+    enum Report {
+        Data(V),
+        Native,
+        Rows(Vec<NativeCapture<Report>>),
+        Refused,
+    }
+    struct Host;
+    impl RenderHost for Host {
+        type Value = Report;
+        type Error = &'static str;
+        fn view<'a>(
+            &mut self,
+            value: &'a Report,
+            _context: RenderContext,
+            budget: &mut Budget,
+            location: &Location,
+        ) -> Result<RenderView<'a, Report>, Self::Error> {
+            Ok(match value {
+                Report::Data(value) => RenderView::Constructed(value, JsonRepresentation::Tagged),
+                Report::Native => {
+                    budget
+                        .charge(13, location.clone())
+                        .map_err(|_| "native projection limit")?;
+                    budget
+                        .charge_results(13, location.clone())
+                        .map_err(|_| "native projection limit")?;
+                    RenderView::Projected(json!({"name":"native"}))
+                }
+                Report::Rows(rows) => RenderView::Captures(rows),
+                Report::Refused => return Err("computational value"),
+            })
+        }
+    }
+    let value = Report::Rows(vec![NativeCapture {
+        fields: vec![
+            ("z".into(), Report::Native),
+            (
+                "a".into(),
+                Report::Data(V::Tuple(vec![V::Integer(2), V::Absent])),
+            ),
+        ],
+    }]);
+    let location = Location::Query(7..19);
+    let json = zirql::to_report_json_value(
+        &mut Host,
+        &value,
+        &mut Budget::for_program(limits()),
+        location.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        json.to_string(),
+        r#"[{"z":{"name":"native"},"a":{"kind":"tuple","elements":[{"kind":"integer","value":2},{"kind":"absent"}]}}]"#
+    );
+    let error = zirql::to_report_json_value(
+        &mut Host,
+        &value,
+        &mut Budget::for_program(ProgramLimits {
+            results: 2,
+            ..limits()
+        }),
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EvaluationError::Core(error) if error.location == location && error.category == QueryErrorCategory::ResultLimit)
+    );
+    let error = zirql::to_report_json_value(
+        &mut Host,
+        &Report::Rows(vec![NativeCapture {
+            fields: vec![("queue".into(), Report::Refused)],
+        }]),
+        &mut Budget::for_program(limits()),
+        location,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        EvaluationError::Host("computational value")
+    ));
+}

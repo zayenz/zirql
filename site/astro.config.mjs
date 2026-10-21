@@ -50,6 +50,7 @@ export default defineConfig({
         { label: 'Overview and alphabetical index', slug: 'guides/library-reference' },
         libraryGroup('JSON and Markdown rendering (Rust API)', 'library-rendering', [
           ['to_json_value', 'to_json_value'],
+          ['to_report_json_value', 'mixed-native-reports'],
           ['render_json', 'render_json'],
           ['render_json_value', 'render_json_value'],
           ['render_markdown', 'render_markdown'],

@@ -4,8 +4,8 @@
 
 - Total: 129
 - Ready: 4
-- Blocked: 8
-- Done: 117
+- Blocked: 7
+- Done: 118
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -127,9 +127,9 @@
 | [base-116](tasks/116-use-the-prepared-path-for-all-shared-zirium-report-expressio.md) | Use the prepared path for all shared Zirium report expressions | ready | base-113 |
 | [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | blocked | base-116, base-114, base-125, base-126, base-127 |
 | [base-118](tasks/118-provide-common-json-rendering-for-all-zirql-data-and-adopt-i.md) | Provide common JSON rendering for all Zirql data and adopt it in CSV | done | — |
-| [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | ready | base-113, base-118 |
+| [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | done | base-113, base-118 |
 | [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | done | base-118 |
-| [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | blocked | base-119, base-120 |
+| [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | ready | base-119, base-120 |
 | [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | done | — |
 | [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122, base-128, base-129 |
 | [base-124](tasks/124-own-value-sources-and-projection-stages-in-zirql-and-migrate.md) | Own value sources and projection stages in Zirql and migrate both hosts | blocked | base-116 |

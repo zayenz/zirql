@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-119"
 key = "integrate-shared-json"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -21,12 +21,20 @@ Read brief.md section Consolidate language machinery and data rendering (2026-10
 
 ## Done when
 
-- [ ] Both consumer libraries and CLIs use shared ordinary/tagged codecs and budgeted writing, including data nested in native report containers; replaced recursive constructed serializers and byte writers are removed.
-- [ ] The shared boundary handles container traversal so host code supplies native-leaf projections and envelopes without another serializer. Existing native identity/owner and unsupported computational-value checks remain enforced.
-- [ ] Zincite tagged output and completeness metadata, Zirium ordinary JSON and document/NDJSON envelopes, ordering, pretty formatting and whole-request buffering remain compatible; newly representable nominal/keyed data follows the shared contract.
-- [ ] Host callable/Python conversion paths use the shared codec where they emit JSON, without changing native Python handle APIs. Host output docs and examples identify shared formats and local envelope fields.
+- [x] Both consumer libraries and CLIs use shared ordinary/tagged codecs and budgeted writing, including data nested in native report containers; replaced recursive constructed serializers and byte writers are removed.
+- [x] The shared boundary handles container traversal so host code supplies native-leaf projections and envelopes without another serializer. Existing native identity/owner and unsupported computational-value checks remain enforced.
+- [x] Zincite tagged output and completeness metadata, Zirium ordinary JSON and document/NDJSON envelopes, ordering, pretty formatting and whole-request buffering remain compatible; newly representable nominal/keyed data follows the shared contract.
+- [x] Host callable/Python conversion paths use the shared codec where they emit JSON, without changing native Python handle APIs. Host output docs and examples identify shared formats and local envelope fields.
 
 ## Validation
 
 - Compare existing library/CLI JSON fixtures for both hosts, include one mixed native/constructed report and a later failure after an emitter. Exercise affected Python conversion tests.
 - Run the brief’s Rust checks in every changed Rust repository and affected host/Python checks; git diff --check and zdev check base --format json for records. Record separate consumer commits and accepted Zirql dependency revisions.
+
+## Result
+
+Replaced consumer data JSON traversal and writing with shared Zirql rendering, retaining host projections, envelopes, native owning handles and the native-only legacy compatibility boundary. Added mixed-report API documentation, alphabetical library index and sidebar links. Consumers pin Zirql 90d184e9376a5ab039eecba0e62f3f1afd778a9b; Zincite commit ee3edb03d107b2a35b057cad77e524d17cd59837; Zirium commit f44d985e12beea988b5de80984a214644876a530.
+
+Validation:
+
+- Independent full review plus focused navigation recheck PASS (W75c876f4d5be28b4); snapshot and both consumer states unchanged. Core and both consumers: formatting, fatal Clippy, workspace tests; Zirium all-feature/doc checks and 28 affected Python tests. All three documentation checks/builds and new examples passed.

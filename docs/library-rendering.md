@@ -60,6 +60,75 @@ Key `2` has a present absent cell; key `9` has no cell. Empty axes remain in
 Nominal tags retain type and member names, without inventing portable IDs or
 an importer that reconstructs native identity.
 
+## Mixed native reports
+
+`to_report_json_value(host, value, budget, location)` traverses a borrowed
+report through `RenderHost`. `RenderView` distinguishes constructed values,
+sequences, records, captures, transparent retained values and projected native
+leaves. The host selects ordinary or tagged JSON for each constructed node.
+Native descriptors keep their ordinary shape. A mixed report therefore needs no
+second recursive serializer in the adapter.
+
+This complete Rust example renders one native descriptor beside tagged data:
+
+```rust
+use zirql::{
+    Budget, ConstructedValue, JsonRepresentation, Location, ProgramLimits,
+    RenderContext, RenderHost, RenderView, to_report_json_value,
+};
+
+enum Report {
+    Record(Vec<(String, Report)>),
+    Data(ConstructedValue),
+    Operation,
+}
+struct Host;
+impl RenderHost for Host {
+    type Value = Report;
+    type Error = zirql::QueryError;
+
+    fn view<'a>(
+        &mut self, value: &'a Report, _: RenderContext,
+        budget: &mut Budget, location: &Location,
+    ) -> Result<RenderView<'a, Report>, Self::Error> {
+        Ok(match value {
+            Report::Record(fields) => RenderView::Record(fields),
+            Report::Data(value) => RenderView::Constructed(value, JsonRepresentation::Tagged),
+            Report::Operation => {
+                // This sample has no native owner; real handles need owner checks.
+                budget.charge(13, location.clone())?;
+                budget.charge_results(13, location.clone())?;
+                RenderView::Projected(serde_json::json!({"name": "native"}))
+            }
+        })
+    }
+}
+let report = Report::Record(vec![
+    ("subject".into(), Report::Operation),
+    ("count".into(), Report::Data(ConstructedValue::Integer(3))),
+]);
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000, results: 10_000, nesting: 64, stream_items: 100,
+});
+let json = to_report_json_value(&mut Host, &report, &mut budget, Location::Query(0..5))?;
+assert_eq!(json["count"]["kind"], "integer");
+# Ok::<(), zirql::EvaluationError<zirql::QueryError>>(())
+```
+
+A host checks native ownership and refuses queues or identity sets in `view`.
+It admits native descriptor allocation before returning `Projected`; Zirql
+admits the borrowed containers, copied labels and constructed data. Captures
+preserve field and row order. `RenderContext::CaptureField` lets Zirium retain
+its singleton operation descriptor inside a capture without changing ordinary
+operation sequences. This bridge keeps constructed nodes typed for other
+renderers; it is separate from evaluation and session traits.
+
+Zincite uses tagged constructed nodes inside ordinary native containers and
+retains its `complete`, `limitations` and `result` envelope. Zirium uses ordinary
+constructed nodes, with tagged fallback for members and keyed arrays, and keeps
+its document and diff envelopes. Both use `render_json_value` for data bytes.
+Their native MiniZinc and MLIR source renderers remain host operations.
+
 ## render_json
 
 `render_json(value, representation, layout, budget, location)` converts the

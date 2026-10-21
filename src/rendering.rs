@@ -31,6 +31,145 @@ pub enum JsonLayout {
     Pretty,
 }
 
+/// The position of a value in a borrowed report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderContext {
+    Value,
+    /// Hosts may preserve a native capture's scalar projection here.
+    CaptureField,
+}
+
+/// A borrowed report node. Constructed nodes retain their type and selected
+/// representation; native leaves are projected only at this rendering boundary.
+/// Container traversal and allocation belong to Zirql.
+pub enum RenderView<'a, V> {
+    Constructed(&'a ConstructedValue, JsonRepresentation),
+    Sequence(&'a [V]),
+    Record(&'a [(String, V)]),
+    Capture(&'a crate::NativeCapture<V>),
+    Captures(&'a [crate::NativeCapture<V>]),
+    /// Transparent retained or host-annotated value.
+    Value(&'a V),
+    /// A native descriptor whose allocation the host has already admitted.
+    Projected(Value),
+}
+
+/// Supplies borrowed containers and native leaf projections after evaluation.
+/// This trait does not participate in evaluation or native identity comparison.
+/// Hosts retain owner checks, domain projections and computational-value refusals.
+pub trait RenderHost {
+    type Value;
+    type Error;
+
+    /// Inspect one node. Admit native descriptor allocation before returning
+    /// `Projected`; Zirql admits all borrowed container and constructed nodes.
+    fn view<'a>(
+        &mut self,
+        value: &'a Self::Value,
+        context: RenderContext,
+        budget: &mut Budget,
+        location: &Location,
+    ) -> Result<RenderView<'a, Self::Value>, Self::Error>;
+}
+
+/// Convert a mixed native/constructed report with shared container traversal.
+/// Native leaves remain host projections. Captures preserve field and row order.
+///
+/// # Errors
+/// Returns located core budget/data errors or the host's native projection
+/// refusal. The active budget is shared throughout and no partial tree escapes.
+pub fn to_report_json_value<H: RenderHost>(
+    host: &mut H,
+    value: &H::Value,
+    budget: &mut Budget,
+    location: Location,
+) -> Result<Value, crate::EvaluationError<H::Error>> {
+    report_value(host, value, RenderContext::Value, budget, &location)
+}
+
+fn report_value<H: RenderHost>(
+    host: &mut H,
+    value: &H::Value,
+    context: RenderContext,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value, crate::EvaluationError<H::Error>> {
+    use crate::EvaluationError::{Core, Host};
+    // The budget guard carries arbitrary host errors without replacing them.
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone()).map_err(Core)?;
+        match host.view(value, context, budget, location).map_err(Host)? {
+            RenderView::Value(value) => report_value(host, value, context, budget, location),
+            RenderView::Projected(value) => Ok(value),
+            RenderView::Constructed(value, representation) => {
+                to_json_value(value, representation, budget, location.clone()).map_err(Core)
+            }
+            RenderView::Sequence(values) => {
+                let mut output = JsonConversion { budget, location }
+                    .array(values.len())
+                    .map_err(Core)?;
+                for value in values {
+                    output.push(report_value(
+                        host,
+                        value,
+                        RenderContext::Value,
+                        budget,
+                        location,
+                    )?);
+                }
+                Ok(Value::Array(output))
+            }
+            RenderView::Record(fields) => {
+                report_record(host, fields, RenderContext::Value, budget, location)
+            }
+            RenderView::Capture(capture) => report_record(
+                host,
+                &capture.fields,
+                RenderContext::CaptureField,
+                budget,
+                location,
+            ),
+            RenderView::Captures(captures) => {
+                let mut output = JsonConversion { budget, location }
+                    .array(captures.len())
+                    .map_err(Core)?;
+                for capture in captures {
+                    output.push(budget.within_evaluation(1, location.clone(), |budget| {
+                        report_record(
+                            host,
+                            &capture.fields,
+                            RenderContext::CaptureField,
+                            budget,
+                            location,
+                        )
+                    })?);
+                }
+                Ok(Value::Array(output))
+            }
+        }
+    })
+}
+
+fn report_record<H: RenderHost>(
+    host: &mut H,
+    fields: &[(String, H::Value)],
+    context: RenderContext,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Value, crate::EvaluationError<H::Error>> {
+    use crate::EvaluationError::Core;
+    let mut output = JsonConversion { budget, location }
+        .object(fields.len())
+        .map_err(Core)?;
+    for (label, value) in fields {
+        let value = report_value(host, value, context, budget, location)?;
+        JsonConversion { budget, location }
+            .insert(&mut output, label, value)
+            .map_err(Core)?;
+    }
+    Ok(Value::Object(output))
+}
+
 /// Convert borrowed constructed data into an insertion-ordered JSON tree.
 /// Declared wrappers are transparent. General dictionary keys retain their
 /// structure; sparse keyed arrays retain unused axis keys and only present cells.

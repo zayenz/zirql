@@ -711,3 +711,14 @@ admission and rendering policy. No new host hook is required. This eager value
 operation has no pipeline suffix, selector callback or symbolic CP lowering.
 See [consumer adoption](host-integration.md#record-alignment-adoption) before
 advertising it through a Zincite or Zirium frontend.
+
+## Render retained reports
+
+Keep native results in the program's value type until the caller requests output.
+Implement `RenderHost` to expose borrowed report sequences, records and captures,
+and project native leaves with their owner checks. `to_report_json_value` handles
+container traversal and the selected constructed JSON representation. Pass the
+same request budget to that conversion and `render_json_value`; add document or
+completeness fields between those calls. The [rendering guide](library-rendering.md#mixed-native-reports)
+contains a complete mixed-report example and describes the allocation boundary.
+Evaluation never needs a JSON conversion.

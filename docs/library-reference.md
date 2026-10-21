@@ -163,6 +163,7 @@ support. `present` is a pattern.
 | `tally` | [Constructed pipeline stages](library-pipelines.md#tally) |
 | `tally (native)` | [Shared native forms](library-native.md#native-count-unique-and-tally) |
 | `to_json_value` (Rust) | [JSON rendering](library-rendering.md#to_json_value) |
+| `to_report_json_value` (Rust) | [Mixed native reports](library-rendering.md#mixed-native-reports) |
 | `tuple` | [Collections and reductions](library-collections.md#arrays-and-tuples) |
 | `union` | [Shared native forms](library-native.md#native-set-operators) |
 | `unique` | [Constructed pipeline stages](library-pipelines.md#unique) |
