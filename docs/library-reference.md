@@ -147,6 +147,7 @@ support. `present` is a pattern.
 | `render_json` (Rust) | [JSON rendering](library-rendering.md#render_json) |
 | `render_json_value` (Rust) | [JSON rendering](library-rendering.md#render_json_value) |
 | `render_markdown` (Rust) | [Markdown rendering](library-rendering.md#render_markdown) |
+| `render_report_markdown` (Rust) | [Mixed Markdown reports](library-rendering.md#render_report_markdown) |
 | `report` | [Functions and control flow](library-control.md#report) |
 | `require` | [Presence and lookup](library-presence.md#require) |
 | `reverse` | [Shared native forms](library-native.md#reverse) |

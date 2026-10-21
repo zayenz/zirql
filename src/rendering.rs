@@ -1,7 +1,7 @@
 //! Explicit JSON and Markdown rendering after evaluation.
 
 mod markdown;
-pub use markdown::render_markdown;
+pub use markdown::{render_markdown, render_report_markdown};
 
 use std::io::{self, Write};
 

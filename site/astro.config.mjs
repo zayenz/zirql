@@ -54,6 +54,7 @@ export default defineConfig({
           ['render_json', 'render_json'],
           ['render_json_value', 'render_json_value'],
           ['render_markdown', 'render_markdown'],
+          ['render_report_markdown', 'render_report_markdown'],
         ]),
         libraryGroup('Strings', 'library-strings', [
           ['contains', 'contains'],

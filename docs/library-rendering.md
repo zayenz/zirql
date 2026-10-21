@@ -165,10 +165,8 @@ envelope, then render that JSON tree with this function. The host accounts for
 its envelope construction and retains its own emission rules.
 
 These functions accept constructed data and existing JSON trees. Native-leaf
-projection remains a host responsibility. A shared bridge for mixed native and
-constructed containers and adoption in Zincite and Zirium remain separate
-integration work. Computational queues and
-identity sets are outside `ConstructedValue` and these APIs. Evaluation keeps
+projection remains a host responsibility. The mixed-report bridge above supplies native projections and shared container
+traversal. Computational queues and identity sets are outside `ConstructedValue` and these APIs. Evaluation keeps
 native handles and ordinary values directly; rendering is an explicit final
 step. See [library results and rendering](host-integration.md#library-results-and-rendering).
 
@@ -221,9 +219,34 @@ assert_eq!(bytes, b"\n| name | count |\n| --- | --- |\n| Ada |  |\n|  | 2 |\n\n"
 Markdown output includes leading and trailing blank lines, matching the existing
 Zirium report layout. The [CSV table example](csv.md#render-a-markdown-table)
 selects this format explicitly. The Rust API and CSV executable in this checkout
-support it; Zincite and Zirium adoption is separate integration work. Native
-leaves require host projections, and computational queues and identity sets
-remain outside this constructed-data API.
+support it. Zincite report programs and Zirium queries expose an explicit
+`markdown` stage through the mixed-report API below. Native leaves require host
+projections, and computational queues and identity sets cannot be rendered.
+
+## render_report_markdown
+
+`render_report_markdown(host, value, budget, location)` returns
+`Result<Vec<u8>, EvaluationError<H::Error>>`. It uses the same `RenderHost` and
+`RenderView` as mixed JSON reports. Constructed nodes keep their data layout,
+including when the host selects tagged JSON; native projections are ordinary
+JSON scalars, arrays or objects. Nested native subjects become compact JSON in
+cells, with the same escaping and ordering as constructed data.
+
+The mixed-report example above also supports Markdown:
+
+```rust
+let markdown = zirql::render_report_markdown(
+    &mut Host, &report, &mut budget, Location::Query(0..5),
+)?;
+assert!(String::from_utf8(markdown)?.contains("| count | 3 |"));
+```
+
+Zincite's terminal `markdown` emitter leaves completeness and limitations on
+`ProgramResult`; the CLI keeps its existing diagnostics and exit status.
+Zirium preserves pass-through emission and its native diff change table.
+Ordinary diff data uses the shared layouts with the diff CLI's existing framing.
+See the [Zincite report recipe](https://zayenz.se/zincite/guides/queries/#markdown-reports)
+and [Zirium report recipe](https://zayenz.se/zirium/guides/query-language/#markdown-reports).
 
 ## Budget and errors
 

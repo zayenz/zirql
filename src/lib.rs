@@ -86,7 +86,8 @@ pub use reader::{
 };
 pub use rendering::{
     JsonLayout, JsonRepresentation, RenderContext, RenderHost, RenderView, render_json,
-    render_json_value, render_markdown, to_json_value, to_report_json_value,
+    render_json_value, render_markdown, render_report_markdown, to_json_value,
+    to_report_json_value,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, ScalarType, TypeFactPolicy,

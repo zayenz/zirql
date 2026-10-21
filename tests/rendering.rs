@@ -568,6 +568,49 @@ fn mixed_reports_keep_constructed_policy_native_projections_and_located_refusals
         json.to_string(),
         r#"[{"z":{"name":"native"},"a":{"kind":"tuple","elements":[{"kind":"integer","value":2},{"kind":"absent"}]}}]"#
     );
+    let bytes = zirql::render_report_markdown(
+        &mut Host,
+        &value,
+        &mut Budget::for_program(limits()),
+        location.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        "\n| z | a |\n| --- | --- |\n| {\"name\":\"native\"} | \\[2,null\\] |\n\n"
+    );
+    assert_eq!(
+        zirql::render_report_markdown(
+            &mut Host,
+            &Report::Data(V::Array(vec![V::Integer(3)])),
+            &mut Budget::for_program(limits()),
+            location.clone()
+        )
+        .unwrap(),
+        b"\n| Value |\n| --- |\n| 3 |\n\n",
+    );
+    let error = zirql::render_report_markdown(
+        &mut Host,
+        &value,
+        &mut Budget::for_program(ProgramLimits {
+            results: 2,
+            ..limits()
+        }),
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EvaluationError::Core(error) if error.location == location && error.category == QueryErrorCategory::ResultLimit)
+    );
+    assert!(matches!(
+        zirql::render_report_markdown(
+            &mut Host,
+            &Report::Refused,
+            &mut Budget::for_program(limits()),
+            location.clone()
+        ),
+        Err(EvaluationError::Host("computational value"))
+    ));
     let error = zirql::to_report_json_value(
         &mut Host,
         &value,
