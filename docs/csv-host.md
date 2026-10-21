@@ -482,3 +482,12 @@ Reuse Zirql's grammar and evaluator for filters, saved values, correlated
 iteration and collection operations. Add native interfaces when your domain
 needs retained handles, identity or navigation. The
 [host integration guide](host-integration.md) describes those obligations.
+
+## Numeric report cells
+
+Keep decoded cells and declared columns string-valued. Queries can use the common
+[`parse_int`, `parse_float` and `to_string`](library-strings.md#parse_int) calls for
+numeric filtering, calculations and labels, as shown in the [orders recipe](csv.md#calculate-with-numeric-cells).
+These calls run in Zirql's evaluator with the existing budget and locations; the
+CSV host needs no numeric inference or conversion helpers. Empty and malformed
+cells remain strings until a query explicitly parses them.

@@ -15,6 +15,8 @@ include = [
     "/examples/csv.rs",
     "/examples/csv/people.csv",
     "/examples/csv/teams.csv",
+    "/examples/csv/orders.csv",
+    "/examples/csv/numeric-orders.zirql",
     "/examples/csv/indexed-arrays.zirql",
     "/docs/*.md",
     "/Cargo.toml",

@@ -553,3 +553,12 @@ counter. Errors restore active depth and preserve child locations, without
 refunding work or results. Partial strings and maps never become successful
 results. Newly admitted template and legacy JSON storage can refuse previously
 undercharged near-limit requests; defaults do not increase to compensate.
+
+## Scalar conversion work
+
+`parse_int` and `parse_float` admit two input-byte scans before grammar validation
+and numeric parsing. `to_string` admits a bounded formatting pass for a Boolean or
+number, counts the exact output bytes without allocating the string, then admits
+those bytes and one scalar result before allocation. An already owned string moves
+through unchanged. Conversion failures and exhausted budgets retain the conversion
+expression's location; no conversion creates a fresh budget.

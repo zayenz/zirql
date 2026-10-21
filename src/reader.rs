@@ -1120,6 +1120,9 @@ pub fn is_common_value_call(name: &str) -> bool {
             | "contains"
             | "starts_with"
             | "ends_with"
+            | "parse_int"
+            | "parse_float"
+            | "to_string"
             | "require"
             | "length"
             | "sum"
@@ -1208,6 +1211,9 @@ pub fn is_common_operation_name(name: &str) -> bool {
             | "where_exists"
             | "starts_with"
             | "ends_with"
+            | "parse_int"
+            | "parse_float"
+            | "to_string"
             | "length"
             | "sum"
             | "forall"
@@ -3498,7 +3504,20 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     return self.function_call(name, depth);
                 }
                 let value = ValueGuard::new(self.expression(0, depth + 1)?);
-                if matches!(name.value.as_str(), "lookup" | "has_key") {
+                if matches!(
+                    name.value.as_str(),
+                    "parse_int" | "parse_float" | "to_string"
+                ) {
+                    self.reader.expect(')')?;
+                    K::Unary {
+                        operator: match name.value.as_str() {
+                            "parse_int" => U::ParseInt,
+                            "parse_float" => U::ParseFloat,
+                            _ => U::ToString,
+                        },
+                        operand: Box::new(value.into_value()),
+                    }
+                } else if matches!(name.value.as_str(), "lookup" | "has_key") {
                     self.reader.expect(',')?;
                     let key = ValueGuard::new(self.expression(0, depth + 1)?);
                     self.reader.expect(')')?;

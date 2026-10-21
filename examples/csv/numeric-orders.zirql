@@ -1,0 +1,9 @@
+let selected = rows | filter(parse_int(_.quantity) >= 2);
+{
+  "quantity": sum([parse_int(row.quantity) for row in selected]),
+  "lines": [{
+    "item": row.item,
+    "total": parse_float(row.quantity) * parse_float(row.price),
+    "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
+  } for row in selected]
+}

@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::{self, Write};
 use std::mem::size_of;
 
 mod traversal;
@@ -224,6 +225,14 @@ pub enum ValueUnaryOperator {
     Positive,
     Negative,
     Not,
+    /// Parse optional ASCII sign and decimal digits as a checked signed integer.
+    ParseInt,
+    /// Parse a signed decimal with optional fraction/exponent as finite binary64.
+    /// Nonzero decimals rounded to zero are refused; signed zero is retained.
+    ParseFloat,
+    /// Format a present primitive scalar as text. Floats round-trip, including -0.
+    /// Collections, absence, nominal members and native values need explicit projection.
+    ToString,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3674,6 +3683,24 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                             require_type(&ty, ScalarRequirement::Numeric, location)?;
                             result.push(ty);
                         }
+                        ValueUnaryOperator::ParseInt | ValueUnaryOperator::ParseFloat => {
+                            crate::admit_scalar_type(
+                                &ty,
+                                crate::ScalarType::String,
+                                crate::TypeFactPolicy::Deferred,
+                                budget,
+                                location,
+                            )?;
+                            result.push(if *operator == ValueUnaryOperator::ParseInt {
+                                ValueType::Integer
+                            } else {
+                                ValueType::Float
+                            });
+                        }
+                        ValueUnaryOperator::ToString => {
+                            require_stringifiable_type(&ty, budget, location)?;
+                            result.push(ValueType::String);
+                        }
                     }
                 }
                 Ok(result)
@@ -5513,9 +5540,188 @@ fn unary(
         (ValueUnaryOperator::Negative, ConstructedValue::Float(value)) => {
             ConstructedValue::Float(-value)
         }
+        (ValueUnaryOperator::ParseInt, ConstructedValue::String(text)) => {
+            admit_decimal_scan(&text, budget, location)?;
+            let digits = text.strip_prefix(['+', '-']).unwrap_or(&text);
+            if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(error(
+                    location,
+                    "parse_int needs signed ASCII decimal digits",
+                ));
+            }
+            ConstructedValue::Integer(
+                text.parse()
+                    .map_err(|_| error(location, "parse_int integer overflow"))?,
+            )
+        }
+        (ValueUnaryOperator::ParseFloat, ConstructedValue::String(text)) => {
+            admit_decimal_scan(&text, budget, location)?;
+            let nonzero = decimal_float_grammar(&text).ok_or_else(|| {
+                error(
+                    location,
+                    "parse_float needs a signed decimal with optional fraction and exponent",
+                )
+            })?;
+            let value: f64 = text
+                .parse()
+                .map_err(|_| error(location, "parse_float overflow"))?;
+            if !value.is_finite() {
+                return Err(error(
+                    location,
+                    "parse_float needs a finite binary64 result",
+                ));
+            }
+            if value == 0.0 && nonzero {
+                return Err(error(
+                    location,
+                    "parse_float nonzero decimal rounded to zero",
+                ));
+            }
+            ConstructedValue::Float(value)
+        }
+        (ValueUnaryOperator::ParseInt | ValueUnaryOperator::ParseFloat, _) => {
+            return Err(error(location, "scalar parsing needs a string"));
+        }
+        (ValueUnaryOperator::ToString, value) => match value {
+            value @ ConstructedValue::String(_) => value,
+            ConstructedValue::Boolean(value) => {
+                return scalar_text(format_args!("{value}"), 5, budget, location);
+            }
+            ConstructedValue::Integer(value) => {
+                return scalar_text(format_args!("{value}"), 20, budget, location);
+            }
+            ConstructedValue::Float(value) => {
+                finite(value, location)?;
+                // Debug's shortest float representation retains negative zero and
+                // uses decimal/exponent spelling accepted by parse_float.
+                return scalar_text(format_args!("{value:?}"), 24, budget, location);
+            }
+            _ => {
+                return Err(error(
+                    location,
+                    "to_string needs a Boolean, integer, finite float or string",
+                ));
+            }
+        },
         _ => return Err(error(location, "operation needs numeric operands")),
     };
     scalar(value, budget, location)
+}
+
+fn require_stringifiable_type(
+    ty: &ValueType,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        match ty {
+            ValueType::Declared {
+                actual,
+                declaration,
+            } => {
+                if !matches!(
+                    underlying(declaration),
+                    DeclaredType::Value
+                        | DeclaredType::Boolean
+                        | DeclaredType::Integer
+                        | DeclaredType::Float
+                        | DeclaredType::String
+                ) {
+                    return Err(error(
+                        location,
+                        "to_string needs a primitive scalar declaration",
+                    ));
+                }
+                check_known_type(actual, declaration, budget, location)?;
+                require_stringifiable_type(actual, budget, location)
+            }
+            ValueType::Boolean
+            | ValueType::Integer
+            | ValueType::Float
+            | ValueType::String
+            | ValueType::ScalarKind
+            | ValueType::Unestablished => Ok(()),
+            _ => Err(error(
+                location,
+                "to_string needs a Boolean, integer, finite float or string",
+            )),
+        }
+    })
+}
+
+fn admit_decimal_scan(
+    text: &str,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    // Grammar validation and numeric parsing each scan at most the input length.
+    budget.charge(sum(text.len(), text.len(), location)?, location.clone())
+}
+
+/// Return whether the mantissa is nonzero, or None for a disallowed spelling.
+fn decimal_float_grammar(text: &str) -> Option<bool> {
+    let bytes = text.as_bytes();
+    let mut position = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let start = position;
+    let mut nonzero = false;
+    while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+        nonzero |= bytes[position] != b'0';
+        position += 1;
+    }
+    if position == start {
+        return None;
+    }
+    if bytes.get(position) == Some(&b'.') {
+        position += 1;
+        let start = position;
+        while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+            nonzero |= bytes[position] != b'0';
+            position += 1;
+        }
+        if position == start {
+            return None;
+        }
+    }
+    if matches!(bytes.get(position), Some(b'e' | b'E')) {
+        position += 1;
+        position += usize::from(matches!(bytes.get(position), Some(b'+' | b'-')));
+        let start = position;
+        while bytes.get(position).is_some_and(u8::is_ascii_digit) {
+            position += 1;
+        }
+        if position == start {
+            return None;
+        }
+    }
+    (position == bytes.len()).then_some(nonzero)
+}
+
+fn scalar_text(
+    arguments: fmt::Arguments<'_>,
+    work_bound: usize,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ConstructedValue, QueryError> {
+    struct ByteCount(usize);
+    impl Write for ByteCount {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            self.0 += text.len();
+            Ok(())
+        }
+    }
+    budget.charge(work_bound, location.clone())?;
+    let mut count = ByteCount(0);
+    count
+        .write_fmt(arguments)
+        .expect("counting text cannot fail");
+    allocation::<u8>(count.0, location)?;
+    budget.charge(count.0, location.clone())?;
+    budget.charge_results(1, location.clone())?;
+    let mut text = String::with_capacity(count.0);
+    text.write_fmt(arguments)
+        .expect("writing to String cannot fail");
+    Ok(ConstructedValue::String(text))
 }
 
 fn string_operand_error(budget: &mut Budget, location: &Location) -> QueryError {

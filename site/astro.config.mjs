@@ -56,10 +56,13 @@ export default defineConfig({
           ['render_markdown', 'render_markdown'],
           ['render_report_markdown', 'render_report_markdown'],
         ]),
-        libraryGroup('Strings', 'library-strings', [
+        libraryGroup('Scalars and strings', 'library-strings', [
           ['contains', 'contains'],
           ['starts_with', 'starts_with'],
           ['ends_with', 'ends_with'],
+          ['parse_float', 'parse_float'],
+          ['parse_int', 'parse_int'],
+          ['to_string', 'to_string'],
           ['++', 'string-concatenation'],
         ]),
         libraryGroup('Presence and lookup', 'library-presence', [

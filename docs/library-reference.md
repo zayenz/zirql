@@ -19,7 +19,7 @@ runtime errors in skipped branches remain unexecuted. See
 
 ## Browse by purpose
 
-- [Strings](library-strings.md)
+- [Scalars and strings](library-strings.md)
 - [Presence and lookup](library-presence.md)
 - [Operators and access](library-operators.md)
 - [Collections and reductions](library-collections.md)
@@ -137,6 +137,8 @@ support. `present` is a pattern.
 | `one` | [Collections and reductions](library-collections.md#one) |
 | `or` | [Operators and access](library-operators.md#boolean-operators) |
 | `param` | [Functions and control flow](library-control.md#param) |
+| `parse_float` | [Scalars and strings](library-strings.md#parse_float) |
+| `parse_int` | [Scalars and strings](library-strings.md#parse_int) |
 | `paths` | [Shared native forms](library-native.md#paths) |
 | `pop_front` | [Queues and native identity sets](library-worklists.md#pop_front) |
 | `present` | [Presence and lookup](library-presence.md#present-patterns) |
@@ -165,6 +167,7 @@ support. `present` is a pattern.
 | `tally (native)` | [Shared native forms](library-native.md#native-count-unique-and-tally) |
 | `to_json_value` (Rust) | [JSON rendering](library-rendering.md#to_json_value) |
 | `to_report_json_value` (Rust) | [Mixed native reports](library-rendering.md#mixed-native-reports) |
+| `to_string` | [Scalars and strings](library-strings.md#to_string) |
 | `tuple` | [Collections and reductions](library-collections.md#arrays-and-tuples) |
 | `union` | [Shared native forms](library-native.md#native-set-operators) |
 | `unique` | [Constructed pipeline stages](library-pipelines.md#unique) |

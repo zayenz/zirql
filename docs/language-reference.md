@@ -372,3 +372,12 @@ preserves that uncertainty.
 The application chooses finite limits for parsing and execution. Nested queries,
 comprehensions and host callbacks share the active budget. See
 [diagnostics and limits](diagnostics-and-limits.md) for the contract.
+
+## Explicit scalar conversion calls
+
+`parse_int(text)`, `parse_float(text)` and `to_string(value)` are pure common
+one-argument calls, usable in reports and typed functions. Their fixed names cannot
+be redeclared as functions. [Scalars and strings](library-strings.md#parse_int)
+defines the exact decimal grammar, finite numeric boundaries and scalar formatting.
+Known incompatible operands fail preflight; malformed text in an unchosen branch
+is not parsed.

@@ -211,9 +211,53 @@ fails because the CSV header declares the available columns. Strict field
 access is checked even when a table has no data rows.
 
 Cells remain strings, so sorting an amount column sorts its text: `"10"` comes
-before `"2"`. An empty cell is `""`, not `null`. If your application needs
-numeric columns or another treatment of empty cells, change the loader and its
-type declarations as described in [Build the CSV host](csv-host.md).
+before `"2"`. An empty cell is `""`, not `null`. Use explicit scalar conversions for numeric calculations. Handle an empty cell
+explicitly before parsing it, or let conversion report the malformed value.
+
+## Calculate with numeric cells
+
+`examples/csv/orders.csv` keeps quantities and prices as strings:
+
+```csv
+item,quantity,price
+apples,02,1.25e1
+pears,10,2.5
+plums,1,3
+```
+
+Convert quantity for numeric filtering and an integer sum, and convert decimal
+price text for line totals. `to_string` builds a label from the parsed quantity.
+The saved query is `examples/csv/numeric-orders.zirql`:
+
+```zirql
+let selected = rows | filter(parse_int(_.quantity) >= 2);
+{
+  "quantity": sum([parse_int(row.quantity) for row in selected]),
+  "lines": [{
+    "item": row.item,
+    "total": parse_float(row.quantity) * parse_float(row.price),
+    "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
+  } for row in selected]
+}
+```
+
+```sh
+cargo run --locked --example csv -- \
+  "$(cat examples/csv/numeric-orders.zirql)" examples/csv/orders.csv
+```
+
+This returns quantity `12`, with line totals `25.0` and labels `"apples: 2"` and
+`"pears: 10"`. The original `"02"` and exponent spelling remain in their CSV cells.
+The [scalar reference](library-strings.md#parse_int) defines both decimal grammars.
+Whitespace is rejected without trimming; `" 2"` fails just like malformed or empty
+text. These two commands deliberately fail at the conversion and leave stdout empty:
+
+```sh
+cargo run --locked --example csv -- \
+  '[parse_int(row.item) for row in rows]' examples/csv/orders.csv
+cargo run --locked --example csv -- \
+  '[parse_int(row.note) for row in rows if row.id == "3"]' examples/csv/people.csv
+```
 
 ## Reuse selections across named files
 

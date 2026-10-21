@@ -8343,3 +8343,200 @@ fn alignment_exhaustion_fails_the_request() {
     .unwrap_err();
     assert_eq!(error.category, zirql::QueryErrorCategory::ResultLimit);
 }
+
+#[test]
+fn explicit_scalar_conversions_parse_and_format_without_coercion() {
+    let value = run_query(
+        r#"[parse_int("-9223372036854775808"), parse_int("+09223372036854775807"), parse_float("+12.5e-1"), parse_float("5e-324"), to_string(true), to_string(-7), to_string("é"), to_string(-0.0)]"#,
+        V::Absent,
+        &mut ample(),
+    ).unwrap();
+    assert_eq!(
+        value,
+        V::Array(vec![
+            V::Integer(i64::MIN),
+            V::Integer(i64::MAX),
+            V::Float(1.25),
+            V::Float(f64::from_bits(1)),
+            V::String("true".into()),
+            V::String("-7".into()),
+            V::String("é".into()),
+            V::String("-0.0".into())
+        ])
+    );
+    for value in [
+        f64::MIN,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
+        -0.0,
+        0.1,
+    ] {
+        let expression = e(K::Unary {
+            operator: U::ParseFloat,
+            operand: Box::new(e(K::Unary {
+                operator: U::ToString,
+                operand: Box::new(literal(V::Float(value))),
+            })),
+        });
+        let V::Float(roundtrip) =
+            evaluate_value(&expression, &Bindings::default(), &mut ample()).unwrap()
+        else {
+            panic!("float")
+        };
+        assert_eq!(roundtrip.to_bits(), value.to_bits());
+    }
+    let expression = e(K::Unary {
+        operator: U::ParseInt,
+        operand: Box::new(literal(V::Declared {
+            value: Box::new(V::String("002".into())),
+            declaration: D::String,
+        })),
+    });
+    assert_eq!(
+        evaluate_value(&expression, &Bindings::default(), &mut ample()).unwrap(),
+        V::Integer(2)
+    );
+    assert_eq!(
+        run_query(
+            r#"if true then 2 else parse_int("bad") endif"#,
+            V::Absent,
+            &mut ample()
+        )
+        .unwrap(),
+        V::Integer(2)
+    );
+}
+
+#[test]
+fn scalar_conversion_failures_are_located_and_preflight_checks_empty_inputs() {
+    for source in [
+        r#"parse_int("9223372036854775808")"#,
+        r#"parse_int("-9223372036854775809")"#,
+        r#"parse_int("")"#,
+        r#"parse_int("+")"#,
+        r#"parse_int(" 2")"#,
+        r#"parse_int("1_0")"#,
+        r#"parse_int("0x10")"#,
+        r#"parse_int("1.0")"#,
+        r#"parse_int("1e2")"#,
+        r#"parse_int("1x")"#,
+        r#"parse_float(".5")"#,
+        r#"parse_float("1.")"#,
+        r#"parse_float("1e+")"#,
+        r#"parse_float("NaN")"#,
+        r#"parse_float("inf")"#,
+        r#"parse_float("1e309")"#,
+        r#"parse_float("1e-400")"#,
+        r#"parse_float("1 ")"#,
+        r#"to_string(null)"#,
+        r#"to_string([])"#,
+    ] {
+        let error = run_query(source, V::Absent, &mut ample()).unwrap_err();
+        assert_eq!(
+            error.location,
+            Location::Query(0..source.len()),
+            "{source}: {error:?}"
+        );
+    }
+    let V::Float(zero) = run_query(r#"parse_float("-000e-400")"#, V::Absent, &mut ample()).unwrap()
+    else {
+        panic!("float")
+    };
+    assert_eq!(zero.to_bits(), (-0.0f64).to_bits());
+    let empty_strings = || V::Declared {
+        value: Box::new(V::Array(vec![])),
+        declaration: D::Sequence(Box::new(D::String)),
+    };
+    assert_eq!(
+        run_query(
+            "[parse_int(n) for n in words]",
+            empty_strings(),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![])
+    );
+    assert!(
+        run_query(
+            "[parse_int(1) for n in words]",
+            empty_strings(),
+            &mut ample()
+        )
+        .is_err()
+    );
+    assert!(
+        run_query(
+            "if true then 1 else parse_float(false) endif",
+            V::Absent,
+            &mut ample()
+        )
+        .is_err()
+    );
+    for (operator, ty, expected) in [
+        (U::ParseInt, ValueType::ScalarKind, ValueType::Integer),
+        (U::ParseFloat, ValueType::Unestablished, ValueType::Float),
+        (U::ToString, ValueType::Boolean, ValueType::String),
+    ] {
+        let expression = e(K::Unary {
+            operator,
+            operand: Box::new(name("x")),
+        });
+        assert_eq!(
+            value_expression_types(
+                &expression,
+                &BTreeMap::from([("x".into(), ty)]),
+                &mut ample()
+            )
+            .unwrap(),
+            vec![expected]
+        );
+    }
+    let expression = e(K::Unary {
+        operator: U::ToString,
+        operand: Box::new(name("x")),
+    });
+    assert!(
+        value_expression_types(
+            &expression,
+            &BTreeMap::from([(
+                "x".into(),
+                ValueType::Declared {
+                    actual: Box::new(ValueType::Integer),
+                    declaration: D::Sequence(Box::new(D::Integer))
+                }
+            )]),
+            &mut ample()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn scalar_conversion_scanning_and_new_text_use_the_active_budget() {
+    let conversion = |operator, value| {
+        Located::new(
+            K::Unary {
+                operator,
+                operand: Box::new(Located::new(K::Literal(value), 30..40)),
+            },
+            10..20,
+        )
+    };
+    let error = evaluate_value(
+        &conversion(U::ParseInt, V::String("0".repeat(1000))),
+        &Bindings::default(),
+        &mut budget(1500, 10000, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    assert_eq!(error.location, Location::Query(10..20));
+    let error = evaluate_value(
+        &conversion(U::ToString, V::Integer(i64::MIN)),
+        &Bindings::default(),
+        &mut budget(45, 10000, 64),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    assert_eq!(error.location, Location::Query(10..20));
+}

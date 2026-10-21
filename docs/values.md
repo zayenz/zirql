@@ -840,3 +840,11 @@ or generators and retain unused keys; `KeyedComprehension::empty_axis_sources`
 remains a lazy fallback that runs only when no cell is produced. All
 construction, comparison, copies and rendering use the active budget and retain
 expression locations and native owners.
+
+## Explicit scalar conversions
+
+Use [`parse_int`, `parse_float` and `to_string`](library-strings.md#parse_int)
+when crossing between strings and primitive scalar values. Conversion checks the
+written operand's known type before evaluation, parses only evaluated strings,
+and reports located errors for malformed or out-of-range text. It adds no implicit
+numeric coercion, native stringification or CSV inference.
