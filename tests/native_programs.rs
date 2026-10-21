@@ -11316,21 +11316,23 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         })
     };
     for keys in [
-        vec![
-            zirql::ConstructedValue::Integer(1),
-            zirql::ConstructedValue::Float(2.0),
-        ],
-        vec![
-            zirql::ConstructedValue::Integer(1),
-            zirql::ConstructedValue::Absent,
-        ],
-        vec![zirql::ConstructedValue::Boolean(true)],
         vec![zirql::ConstructedValue::Float(f64::INFINITY)],
         // Both contradictory members lose to the first key.
         vec![
             member(1, 0, "small"),
             member(2, 1, "large"),
             member(2, 2, "other"),
+        ],
+        vec![
+            zirql::ConstructedValue::Array(vec![zirql::ConstructedValue::Integer(0)]),
+            zirql::ConstructedValue::Array(vec![
+                zirql::ConstructedValue::Integer(1),
+                member(2, 1, "large"),
+            ]),
+            zirql::ConstructedValue::Array(vec![
+                zirql::ConstructedValue::Integer(2),
+                member(2, 2, "other"),
+            ]),
         ],
     ] {
         let error = zirql::order_native_by(

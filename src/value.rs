@@ -585,8 +585,7 @@ pub enum ValueExpressionKind<Q = ()> {
     /// Stably sort an array, set or dictionary, retaining its kind.
     /// Without a selector, arrays/sets use values and dictionaries use keys.
     /// Descending reverses comparisons, preserving current order for ties.
-    /// Array and dictionary selector keys are present homogeneous integers,
-    /// finite floats, strings or nominal members. Selector failures use its range.
+    /// All selected keys use structural value order. Selector failures use its range.
     Sort {
         array: Box<ValueExpression<Q>>,
         selector: Option<Located<SortSelector>>,
@@ -6978,7 +6977,7 @@ fn sort_type(
         }
         ty @ ValueType::Set(_) => {
             if selector.is_some() {
-                return Err(error(&selected, "set sorting uses its scalar values"));
+                return Err(error(&selected, "set sorting uses its elements"));
             }
             ty
         }
@@ -7040,59 +7039,22 @@ fn check_ordering_types<'a>(
     budget: &mut Budget,
     selector: &Location,
 ) -> Result<(), QueryError> {
-    let mut key_type = None;
     for element in elements {
         budget.charge(1, selector.clone())?;
         let ty = shape_type(copy_type(element, budget, selector)?, budget, selector)?;
-        let ty = if let Some(field) = &field {
-            match ty {
-                ValueType::Record(fields) => {
-                    let mut selected = ValueType::Unestablished;
-                    for (label, ty) in fields {
-                        budget.charge(
-                            sum(1, label.len().min(field.value.len()), selector)?,
-                            selector.clone(),
-                        )?;
-                        if label == field.value {
-                            selected = ty;
-                            break;
-                        }
-                    }
-                    selected
-                }
-                ValueType::RecordKind | ValueType::Unestablished | ValueType::Absent => continue,
-                _ => return Err(error(selector, "field ordering needs record rows")),
-            }
-        } else {
-            ty
-        };
-        let ty = shape_type(ty, budget, selector)?;
-        match ty {
-            // Presence and missing data remain runtime checks, including in
-            // skipped branches. An optional declaration still supplies its kind.
-            ValueType::Absent | ValueType::Unestablished => continue,
-            ValueType::Integer | ValueType::Float | ValueType::String | ValueType::Member(_) => {}
-            _ => {
-                return Err(error(
-                    selector,
-                    "ordering keys need integers, finite floats, strings or nominal members",
-                ));
-            }
+        if field.is_some()
+            && !matches!(
+                ty,
+                ValueType::Record(_)
+                    | ValueType::RecordKind
+                    | ValueType::Unestablished
+                    | ValueType::Absent
+            )
+        {
+            return Err(error(selector, "field ordering needs record rows"));
         }
-        if key_type.as_ref().is_some_and(|previous| previous != &ty) {
-            return Err(error(selector, "ordering needs homogeneous key types"));
-        }
-        key_type = Some(ty);
     }
     Ok(())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OrderingKeyType {
-    Integer,
-    Float,
-    String,
-    Member(NominalTypeId),
 }
 
 pub(crate) fn ordering_key<'a>(
@@ -7100,7 +7062,7 @@ pub(crate) fn ordering_key<'a>(
     field: Option<&str>,
     budget: &mut Budget,
     location: &Location,
-) -> Result<(&'a ConstructedValue, OrderingKeyType), QueryError> {
+) -> Result<&'a ConstructedValue, QueryError> {
     budget.charge(1, location.clone())?;
     let key = if let Some(field) = field {
         let ConstructedValue::Record(fields) = row.data() else {
@@ -7121,57 +7083,87 @@ pub(crate) fn ordering_key<'a>(
     } else {
         row
     };
-    let key = key.data();
-    let ty = match key {
-        ConstructedValue::Integer(_) => OrderingKeyType::Integer,
-        ConstructedValue::Float(value) => {
-            finite(*value, location)?;
-            OrderingKeyType::Float
-        }
-        ConstructedValue::String(_) => OrderingKeyType::String,
-        ConstructedValue::Member(member) => {
-            member_bytes(member, budget, location)?;
-            OrderingKeyType::Member(member.type_id)
-        }
-        ConstructedValue::Absent => return Err(error(location, "ordering keys must be present")),
-        _ => {
-            return Err(error(
-                location,
-                "ordering keys need integers, finite floats, strings or nominal members",
-            ));
-        }
-    };
-    Ok((key, ty))
+    Ok(key)
 }
 
-pub(crate) fn compare_ordering_keys(
-    left: &ConstructedValue,
-    right: &ConstructedValue,
+/// Admit every selected value before comparison, including nested nominal members.
+/// The borrowed member list checks coherence across keys even when a structural
+/// comparison would stop at an earlier kind or sequence position.
+pub(crate) fn admit_ordering_values<'a>(
+    values: impl IntoIterator<Item = &'a ConstructedValue>,
     budget: &mut Budget,
     location: &Location,
-) -> Result<Ordering, QueryError> {
-    budget.charge(1, location.clone())?;
-    match (left, right) {
-        (ConstructedValue::Integer(a), ConstructedValue::Integer(b)) => Ok(a.cmp(b)),
-        (ConstructedValue::Float(a), ConstructedValue::Float(b)) => a
-            .partial_cmp(b)
-            .ok_or_else(|| error(location, "nonfinite float")),
-        (ConstructedValue::String(a), ConstructedValue::String(b)) => {
-            for (a, b) in a.bytes().zip(b.bytes()) {
-                budget.charge(1, location.clone())?;
-                let order = a.cmp(&b);
-                if order != Ordering::Equal {
-                    return Ok(order);
+) -> Result<(), QueryError> {
+    let mut members = Vec::new();
+    for value in values {
+        constructed_value_type(value, budget, location.clone())?;
+        collect_ordering_members(value, &mut members, budget, location)?;
+    }
+    Ok(())
+}
+
+fn collect_ordering_members<'a>(
+    value: &'a ConstructedValue,
+    members: &mut Vec<&'a NominalMember>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        match value.data() {
+            ConstructedValue::Member(member) => {
+                admit_ordering_member(member, members, budget, location)?
+            }
+            ConstructedValue::Array(values) | ConstructedValue::Tuple(values) => {
+                for value in values {
+                    collect_ordering_members(value, members, budget, location)?;
                 }
             }
-            Ok(a.len().cmp(&b.len()))
+            ConstructedValue::Set { elements, .. } => {
+                for value in elements.iter() {
+                    collect_ordering_members(value, members, budget, location)?;
+                }
+            }
+            ConstructedValue::Record(fields) => {
+                for (_, value) in fields {
+                    collect_ordering_members(value, members, budget, location)?;
+                }
+            }
+            ConstructedValue::Dictionary(entries) => {
+                for (key, value) in entries.iter() {
+                    collect_ordering_members(key, members, budget, location)?;
+                    collect_ordering_members(value, members, budget, location)?;
+                }
+            }
+            ConstructedValue::KeyedArray { axes, entries } => {
+                for key in axes
+                    .iter()
+                    .flat_map(|axis| &axis.keys)
+                    .chain(entries.iter().flat_map(|entry| &entry.key))
+                {
+                    if let ValueKey::Member(member) = key {
+                        admit_ordering_member(member, members, budget, location)?;
+                    }
+                }
+                for entry in entries {
+                    collect_ordering_members(&entry.value, members, budget, location)?;
+                }
+            }
+            _ => {}
         }
-        (ConstructedValue::Member(a), ConstructedValue::Member(b)) if a.type_id == b.type_id => {
-            check_member_pair(a, b, budget, location)?;
-            Ok(a.declaration_order.cmp(&b.declaration_order))
-        }
-        _ => Err(error(location, "ordering needs homogeneous key types")),
+        Ok(())
+    })
+}
+fn admit_ordering_member<'a>(
+    member: &'a NominalMember,
+    members: &mut Vec<&'a NominalMember>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    for previous in members.iter() {
+        check_member_pair(previous, member, budget, location)?;
     }
+    push_metadata(members, member, budget, location)
 }
 
 #[derive(Clone, Copy)]
@@ -7222,7 +7214,7 @@ pub(crate) fn sort_value(
         }
         ConstructedValue::Set { elements, .. } => {
             if selector.is_some() {
-                return Err(error(&selected, "set sorting uses its scalar values"));
+                return Err(error(&selected, "set sorting uses its elements"));
             }
             elements.len()
         }
@@ -7231,16 +7223,15 @@ pub(crate) fn sort_value(
         _ => return Err(error(location, "sort needs an array, set or dictionary")),
     };
     let mut order: Vec<OrderingRow<'_>> = metadata_vec(count, budget, location)?;
-    let mut key_type = None;
     for index in 0..count {
         let key = match data {
             ConstructedValue::Set { elements, .. } => {
                 budget.charge(1, selected.clone())?;
-                SortKey::Value(elements[index].data())
+                SortKey::Value(&elements[index])
             }
             ConstructedValue::Dictionary(entries) if selector.is_none() => {
                 budget.charge(1, selected.clone())?;
-                SortKey::Value(entries[index].0.data())
+                SortKey::Value(&entries[index].0)
             }
             ConstructedValue::Record(fields) if selector.is_none() => {
                 budget.charge(1, selected.clone())?;
@@ -7253,21 +7244,20 @@ pub(crate) fn sort_value(
                     ConstructedValue::Dictionary(entries) => &entries[index].1,
                     _ => unreachable!("checked collection kind"),
                 };
-                let (key, ty) = ordering_key(row, field, budget, &selected)?;
-                if key_type.is_some_and(|previous| previous != ty) {
-                    return Err(error(&selected, "ordering needs homogeneous key types"));
-                }
-                if let (Some(first), ConstructedValue::Member(member)) = (order.first(), key)
-                    && let SortKey::Value(ConstructedValue::Member(first)) = first.key
-                {
-                    check_member_pair(first, member, budget, &selected)?;
-                }
-                key_type = Some(ty);
+                let key = ordering_key(row, field, budget, &selected)?;
                 SortKey::Value(key)
             }
         };
         order.push(OrderingRow { index, key });
     }
+    admit_ordering_values(
+        order.iter().filter_map(|row| match row.key {
+            SortKey::Value(value) => Some(value),
+            SortKey::Label(_) => None,
+        }),
+        budget,
+        &selected,
+    )?;
     let mut scratch = metadata_vec(order.len(), budget, location)?;
     scratch.extend_from_slice(&order);
     let mut width = 1;
@@ -7289,19 +7279,8 @@ pub(crate) fn sort_value(
                         (SortKey::Label(left), SortKey::Label(right)) => {
                             crate::ordering::compare_text(left, right, budget, &selected)?
                         }
-                        (SortKey::Value(left), SortKey::Value(right))
-                            if matches!(data, ConstructedValue::Set { .. }) =>
-                        {
-                            identity::compare_admitted(left, right, budget, &selected)?
-                        }
-                        (SortKey::Value(left), SortKey::Value(right))
-                            if matches!(data, ConstructedValue::Dictionary(_))
-                                && selector.is_none() =>
-                        {
-                            identity::compare_admitted(left, right, budget, &selected)?
-                        }
                         (SortKey::Value(left), SortKey::Value(right)) => {
-                            compare_ordering_keys(left, right, budget, &selected)?
+                            identity::compare_admitted(left, right, budget, &selected)?
                         }
                         _ => unreachable!("one collection key kind"),
                     };
@@ -7371,23 +7350,22 @@ fn extremum_position(
         || location.clone(),
         |field| Location::Query(field.range.clone()),
     );
-    let mut selected: Option<(usize, &ConstructedValue)> = None;
-    let mut key_type = None;
-    for (index, row) in rows.iter().enumerate() {
-        let (key, ty) = ordering_key(
+    let mut keys = metadata_vec(rows.len(), budget, &selector)?;
+    for row in rows {
+        keys.push(ordering_key(
             row,
             field.map(|field| field.value.as_str()),
             budget,
             &selector,
-        )?;
-        if key_type.is_some_and(|previous| previous != ty) {
-            return Err(error(&selector, "ordering needs homogeneous key types"));
-        }
-        key_type = Some(ty);
+        )?);
+    }
+    admit_ordering_values(keys.iter().copied(), budget, &selector)?;
+    let mut selected: Option<(usize, &ConstructedValue)> = None;
+    for (index, key) in keys.into_iter().enumerate() {
         let replace = match selected {
             None => true,
             Some((_, previous)) => {
-                let order = compare_ordering_keys(key, previous, budget, &selector)?;
+                let order = identity::compare_admitted(key, previous, budget, &selector)?;
                 order
                     == if operator == ValueExtremum::Min {
                         Ordering::Less

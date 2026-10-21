@@ -1063,8 +1063,9 @@ ordering or map factory.
 `ProjectionHost::ordering_key_kind` checks declared key kinds and
 `ordering_key` projects one native result to `NativeOrderKey`. The core owns
 stable ordering, first or all tied extrema, and selector evaluation order.
-`admit_ordering` retains domain empty-extremum policy: Zirium refuses empty
-native extrema, while Zincite returns an empty same-kind selection.
+`admit_ordering` checks domain admission before iteration. Empty native extrema
+retain the original kind, element declaration, owner and source or diff side.
+Kind, selector and effect preflight still runs on empty inputs.
 
 For `map_by(key_query, value_query)`, `mapping_kind` declares the dictionary
 kind, `mapping_keys` exposes the key strings, and `construct_map` wraps the
@@ -1076,7 +1077,7 @@ entry's value. Native payloads retain their owners and coordinates.
 dictionaries. `sort_by(value)` uses the common value sort without treating
 `value` as a domain stage; saved and local names keep precedence. Bare `sort`
 orders dictionary keys. Both preserve dictionary kind and current-order ties.
-Native ordering keys follow the host's admitted scalar domain.
+Native ordering keys use the same structural contract as constructed keys.
 
 Lower native `head`, `tail`, `reverse`, `check`, `count`, `unique` and `tally`
 to `ExpressionStep::Collection` with the existing `Stage<()>` operation.
@@ -1163,11 +1164,14 @@ array instead. Do not guard a shared object constructor twice. The guard
 restores active depth on success or error and does not refund spent allowance.
 Fragment expansion uses a zero-depth guard to bound resolver reentry.
 
-Native ordering adapters can return `NativeOrderKey::Value` with an admitted
-constructed scalar. Convert native counts to signed integers with checked
-conversion when using this typed domain. Native handles need an explicit scalar
-projection. The shared operation validates all keys before selecting results;
-the adapter retains its input kind and owner when rebuilding an empty extremum.
+Native ordering adapters return `NativeOrderKey::Value` for constructed data,
+`Count` for a native unsigned count, `Text` for native text, or `Json` for an
+existing JSON value. `sort_map_by_value` takes the same descriptors directly.
+The borrowed comparison bridge retains exact unsigned leaves without changing
+ordinary signed arithmetic or declarations. Hosts admit copied storage before
+constructing descriptors; the shared operation admits all keys, including nested
+nominal metadata, before comparison. Native handles need an explicit supported
+projection. Restoration retains the original kind and owner for empty extrema.
 
 `ProjectionHost::set_kind` admits set operands during shared preflight. Its
 default requires equal kinds. Override it to reject kinds without a native

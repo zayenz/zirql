@@ -762,10 +762,7 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
                 Location::Query(range.clone()),
                 |value, budget| {
                     let value = host.copy_value(value, arguments.parts().0, budget, range)?;
-                    scalar_map_key(
-                        host.ordering_key(value, arguments.parts().0, budget, range)?,
-                        range,
-                    )
+                    host.ordering_key(value, arguments.parts().0, budget, range)
                 },
             )?;
             host.restore_map(input, entries, arguments.parts().0, budget, range)
@@ -1418,32 +1415,6 @@ pub(crate) fn ends_constructed_tally<S, O, E>(expression: &Expression<S, O, E>) 
         ),
         _ => false,
     }
-}
-
-fn scalar_map_key<E>(
-    key: NativeOrderKey,
-    range: &Range<usize>,
-) -> Result<ScalarMapKey, EvaluationError<E>> {
-    Ok(match key {
-        NativeOrderKey::Scalar(value) => value,
-        NativeOrderKey::Count(value) => ScalarMapKey::Unsigned(value as u64),
-        NativeOrderKey::Text(value) => ScalarMapKey::String(value),
-        NativeOrderKey::Value(value) => match value.into_data() {
-            ConstructedValue::Absent => ScalarMapKey::Null,
-            ConstructedValue::Boolean(value) => ScalarMapKey::Boolean(value),
-            value @ (ConstructedValue::Integer(_)
-            | ConstructedValue::Float(_)
-            | ConstructedValue::String(_)
-            | ConstructedValue::Member(_)) => ScalarMapKey::Typed(value),
-            _ => {
-                return Err(QueryError::query(
-                    range.clone(),
-                    "sort_by(value) requires scalar map values",
-                )
-                .into());
-            }
-        },
-    })
 }
 
 fn validate_fixed_point_leaves<C, H: ProjectionHost<C>>(

@@ -83,26 +83,9 @@ fn storage_error(location: &Location) -> QueryError {
     }
 }
 
-/// A host-projected scalar used to sort dictionary entries. Numeric variants share
-/// one category and compare exactly; the other categories must not mix.
-/// Hosts reject nested payloads and admit copied text before constructing it.
-#[derive(Debug, PartialEq)]
-pub enum ScalarMapKey {
-    Null,
-    Boolean(bool),
-    Integer(i64),
-    Unsigned(u64),
-    Float(f64),
-    String(String),
-    /// A language scalar retaining strict type and nominal-member ordering.
-    Typed(crate::ConstructedValue),
-}
-
 /// Sort already-admitted unique-key entries without copying their payloads.
-/// Collect and validate descriptors before sorting. Values must be all null,
-/// all Boolean, all numeric or all string; floats must be finite. Typed
-/// descriptors instead use homogeneous language scalar and nominal-member
-/// ordering. Equal values retain their incoming entry order.
+/// Collect and admit all descriptors before sorting in the common structural
+/// value order. Equal values retain their incoming entry order.
 ///
 /// The callback shares this budget for host access and any text copy.
 /// This operation admits descriptor and index storage, charges descriptor
@@ -111,13 +94,13 @@ pub enum ScalarMapKey {
 /// the caller; no serialization is needed.
 ///
 /// # Errors
-/// Propagates projection failures and located scalar, item, work and storage
+/// Propagates projection failures and located value, item, work and storage
 /// refusals, including invalid descriptors on singleton inputs.
 pub fn sort_map_by_value<V, E>(
     mut entries: Vec<(String, V)>,
     budget: &mut Budget,
     location: Location,
-    mut key: impl FnMut(&V, &mut Budget) -> Result<ScalarMapKey, EvaluationError<E>>,
+    mut key: impl FnMut(&V, &mut Budget) -> Result<crate::NativeOrderKey, EvaluationError<E>>,
 ) -> Result<Vec<(String, V)>, EvaluationError<E>> {
     use crate::ordering::{admit_slots, apply_order, sort_indices};
 
@@ -126,39 +109,15 @@ pub fn sort_map_by_value<V, E>(
     if count == 0 {
         return Ok(entries);
     }
-    admit_slots::<ScalarMapKey>(count, budget, &location)?;
+    admit_slots::<crate::NativeOrderKey>(count, budget, &location)?;
     let mut keys = Vec::with_capacity(count);
-    let mut category = None;
     for (_, value) in &entries {
         budget.charge(1, location.clone())?;
-        let key = key(value, budget)?;
-        let current = scalar_category(&key, budget, &location)?;
-        if category.is_some_and(|category| category != current) {
-            let message = if matches!(current, ScalarCategory::Typed(_))
-                || matches!(category, Some(ScalarCategory::Typed(_)))
-            {
-                "ordering needs homogeneous key types"
-            } else {
-                "sort_by(value) requires comparable scalar map values of one type"
-            };
-            return Err(scalar_error(location, message, budget)?.into());
-        }
-        category = Some(current);
-        if let ScalarMapKey::Typed(value) = &key
-            && let crate::ConstructedValue::Member(member) = value.data()
-        {
-            for previous in &keys {
-                if let ScalarMapKey::Typed(previous) = previous
-                    && let crate::ConstructedValue::Member(previous) = previous.data()
-                {
-                    crate::value::check_member_pair(previous, member, budget, &location)?;
-                }
-            }
-        }
-        keys.push(key);
+        keys.push(key(value, budget)?);
     }
+    crate::ordering::admit_keys(&keys, budget, &location)?;
     let destinations = sort_indices(count, budget, &location, |left, right, budget| {
-        compare_scalars(&keys[left], &keys[right], budget, &location)
+        crate::ordering::compare(&keys[left], &keys[right], budget, &location)
     })?;
     apply_order(&mut entries, destinations, budget, &location)?;
     Ok(entries)
@@ -199,95 +158,4 @@ pub fn select_map<V>(
         MapSelection::Tail(keep) => crate::tail(entries, keep),
     }
     Ok(())
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScalarCategory {
-    Null,
-    Boolean,
-    Number,
-    String,
-    Typed(crate::value::OrderingKeyType),
-}
-
-fn scalar_category(
-    key: &ScalarMapKey,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<ScalarCategory, QueryError> {
-    Ok(match key {
-        ScalarMapKey::Null => ScalarCategory::Null,
-        ScalarMapKey::Boolean(_) => ScalarCategory::Boolean,
-        ScalarMapKey::Integer(_) | ScalarMapKey::Unsigned(_) => ScalarCategory::Number,
-        ScalarMapKey::Float(value) if value.is_finite() => ScalarCategory::Number,
-        ScalarMapKey::Float(_) => {
-            return Err(scalar_error(
-                location.clone(),
-                "sort_by(value) requires finite numeric map values",
-                budget,
-            )?);
-        }
-        ScalarMapKey::String(_) => ScalarCategory::String,
-        ScalarMapKey::Typed(value) => {
-            ScalarCategory::Typed(crate::value::ordering_key(value, None, budget, location)?.1)
-        }
-    })
-}
-
-fn compare_scalars(
-    left: &ScalarMapKey,
-    right: &ScalarMapKey,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<std::cmp::Ordering, QueryError> {
-    use ScalarMapKey as K;
-    use std::cmp::Ordering;
-
-    budget.charge(1, location.clone())?;
-    Ok(match (left, right) {
-        (K::Null, K::Null) => Ordering::Equal,
-        (K::Boolean(left), K::Boolean(right)) => left.cmp(right),
-        (K::String(left), K::String(right)) => {
-            crate::ordering::compare_text(left, right, budget, location)?
-        }
-        (K::Typed(left), K::Typed(right)) => {
-            crate::value::compare_ordering_keys(left.data(), right.data(), budget, location)?
-        }
-        (K::Float(left), K::Float(right)) => left.partial_cmp(right).expect("finite scalar keys"),
-        (K::Float(left), right) => compare_integer_float(integer(right), *left).reverse(),
-        (left, K::Float(right)) => compare_integer_float(integer(left), *right),
-        (left, right) => integer(left).cmp(&integer(right)),
-    })
-}
-
-fn integer(key: &ScalarMapKey) -> i128 {
-    match key {
-        ScalarMapKey::Integer(value) => i128::from(*value),
-        ScalarMapKey::Unsigned(value) => i128::from(*value),
-        _ => unreachable!("map descriptors have one admitted scalar category"),
-    }
-}
-
-fn compare_integer_float(integer: i128, float: f64) -> std::cmp::Ordering {
-    // Integers fit in i64/u64. Saturation of this wider cast still orders
-    // out-of-range floats correctly; compare fractional parts only on a tie.
-    integer.cmp(&(float as i128)).then_with(|| {
-        0.0f64
-            .partial_cmp(&float.fract())
-            .expect("finite scalar key")
-    })
-}
-
-fn scalar_error(
-    location: Location,
-    message: &str,
-    budget: &mut Budget,
-) -> Result<QueryError, QueryError> {
-    budget.charge(message.len(), location.clone())?;
-    budget.charge_results(message.len(), location.clone())?;
-    Ok(QueryError {
-        location,
-        message: message.into(),
-        category: QueryErrorCategory::Other,
-    })
 }

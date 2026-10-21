@@ -401,7 +401,7 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
             "native ordering keys are unsupported",
         ))
     }
-    /// Preserve domain empty-extremum admission before evaluating selectors.
+    /// Check domain admission before evaluating selectors, including empty input.
     fn admit_ordering(
         &self,
         _input: &Self::Value,
@@ -412,6 +412,8 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
     ) -> Result<(), EvaluationError<Self::Error>> {
         Ok(())
     }
+    /// Project one supported data key; opaque native subjects require a projection.
+    /// The core admits every descriptor and applies structural ordering.
     fn ordering_key(
         &self,
         _value: Self::Value,

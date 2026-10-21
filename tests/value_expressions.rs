@@ -3950,7 +3950,7 @@ fn dictionaries_keep_kind_stable_current_ties_static_fields_and_first_seen_tally
     );
     let missing = r#"sort_by({"z": {"other": 1}}, "value")"#;
     assert_eq!(run(missing).unwrap_err().location, Location::Query(29..36));
-    assert!(run(r#"sort_by({"z": {"value": 1}}, value)"#).is_err());
+    assert!(run(r#"sort_by({"z": {"value": 1}}, value)"#).is_ok());
     let empty_boolean = sorting(
         literal(declared(
             V::Array(vec![]),
@@ -3959,7 +3959,7 @@ fn dictionaries_keep_kind_stable_current_ties_static_fields_and_first_seen_tally
         None,
         false,
     );
-    assert!(evaluate(&choose(empty_boolean)).is_err());
+    assert_eq!(evaluate(&choose(empty_boolean)).unwrap(), V::Integer(7));
     let incompatible_selector = e(K::Sort {
         array: Box::new(e(K::Array(vec![]))),
         selector: Some(Located::new(zirql::SortSelector::Value, 5..10)),
@@ -4227,57 +4227,70 @@ fn ordering_uses_exact_scalar_types_nominal_order_and_retained_declarations() {
 }
 
 #[test]
-fn ordering_refuses_later_bad_keys_and_known_incompatible_skipped_types_at_the_selector() {
+fn ordering_admits_structural_keys_and_refuses_missing_or_invalid_keys() {
     use zirql::ValueExtremum::Min;
-    for bad in [
-        record(vec![]),
-        record(vec![("score", literal(V::Absent))]),
-        record(vec![("score", text("1"))]),
-    ] {
-        let expression = extremum(
-            Min,
-            e(K::Array(vec![record(vec![("score", int(1))]), bad])),
-            Some("score"),
-        );
-        assert_eq!(
-            evaluate(&expression).unwrap_err().location,
-            Location::Query(5..12)
-        );
-    }
-    let missing = sorting(e(K::Array(vec![record(vec![])])), Some("score"), false);
-    assert_eq!(evaluate(&choose(missing)).unwrap(), V::Integer(7));
-    let incompatible = sorting(
-        e(K::Array(vec![record(vec![(
-            "score",
-            literal(V::Boolean(true)),
-        )])])),
+    let expression = extremum(
+        Min,
+        e(K::Array(vec![
+            record(vec![("score", int(1))]),
+            record(vec![]),
+        ])),
         Some("score"),
-        false,
     );
     assert_eq!(
-        evaluate(&choose(incompatible)).unwrap_err().location,
+        evaluate(&expression).unwrap_err().location,
         Location::Query(5..12)
     );
-    let mut foreign = member(10, 0);
-    foreign.type_id = NominalTypeId(8);
-    assert!(
-        evaluate(&sorting(
-            e(K::Array(vec![
-                member_expression(10, 0),
-                literal(V::Member(foreign))
-            ])),
-            None,
-            false
-        ))
-        .is_err()
+    let missing = sorting(e(K::Array(vec![record(vec![])])), Some("score"), false);
+    assert_eq!(evaluate(&choose(missing)).unwrap(), V::Integer(7));
+    let invalid_row = sorting(e(K::Array(vec![int(1)])), Some("score"), false);
+    assert_eq!(
+        evaluate(&choose(invalid_row)).unwrap_err().location,
+        Location::Query(5..12)
     );
-    assert!(
-        evaluate(&sorting(
-            e(K::Array(vec![int(1), literal(V::Float(2.0))])),
-            None,
-            false
-        ))
-        .is_err()
+    let keys = vec![
+        V::Array(vec![V::Integer(1)]),
+        V::String("a".into()),
+        V::Float(-2.0),
+        V::Integer(1),
+        V::Boolean(true),
+        V::Absent,
+    ];
+    let expected = V::Array(vec![
+        V::Absent,
+        V::Boolean(true),
+        V::Integer(1),
+        V::Float(-2.0),
+        V::String("a".into()),
+        V::Array(vec![V::Integer(1)]),
+    ]);
+    assert_eq!(
+        evaluate(&sorting(literal(V::Array(keys)), None, false)).unwrap(),
+        expected
+    );
+    let source = r#"sort([[1], "a", -2.0, 1, true, null])"#;
+    let expression = zirql::read_value_expression(
+        &mut zirql::ArgumentReader::new(source, 0).unwrap(),
+        &mut WordInput {
+            value: V::Array(vec![]),
+            unknown: false,
+        },
+        &mut ample(),
+        32,
+    )
+    .unwrap();
+    assert_eq!(
+        zirql::evaluate_query_value(
+            &expression,
+            &BTreeMap::new(),
+            &mut WordInput {
+                value: V::Array(vec![]),
+                unknown: false
+            },
+            &mut ample()
+        )
+        .unwrap(),
+        expected
     );
     assert!(
         evaluate(&extremum(
@@ -7626,7 +7639,19 @@ fn scoped_mapping_constructs_ordered_capacity_reports() {
             })
             .collect(),
     );
-    assert_eq!(evaluate(&expression).unwrap(), expected);
+    assert_eq!(
+        zirql::evaluate_query_value(
+            &expression,
+            &BTreeMap::new(),
+            &mut WordInput {
+                value: V::Array(vec![]),
+                unknown: false
+            },
+            &mut ample()
+        )
+        .unwrap(),
+        expected
+    );
     assert!(
         free_value_names(&expression, &BTreeMap::new(), &mut ample())
             .unwrap()

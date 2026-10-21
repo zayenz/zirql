@@ -121,7 +121,8 @@ preflight still covers those branches.
 
 Selectors and requirement messages retain their original locations. Grouping
 uses a static `Located<String>` field. Sorting and extrema have an optional
-static field; no field means scalar input. Known incompatible kinds fail
+static field; no field selects the element itself. Keys use structural value
+order, including mixed kinds, absence and compounds. Invalid selector shapes fail
 preflight, while missing fields may remain deferred until runtime. Empty report
 projections retain their declared row facts; an empty literal invents no schema.
 

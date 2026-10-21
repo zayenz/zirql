@@ -1,8 +1,8 @@
 use std::ops::Range;
 
 use zirql::{
-    Bindings, Budget, EvaluationError, ExpressionStep, Limits, Location, MapSelection, ProgramHost,
-    ProgramLimits, QueryError, QueryErrorCategory, ScalarMapKey, ValueReaderHost,
+    Bindings, Budget, EvaluationError, ExpressionStep, Limits, Location, MapSelection,
+    NativeOrderKey, ProgramHost, ProgramLimits, QueryError, QueryErrorCategory, ValueReaderHost,
 };
 
 #[derive(Debug, PartialEq)]
@@ -574,10 +574,10 @@ fn native_dictionaries_keep_owners_and_order_through_saved_selection() {
     );
 }
 
-fn scalar_sort(
-    entries: Vec<(&str, ScalarMapKey)>,
+fn descriptor_sort(
+    entries: Vec<(&str, NativeOrderKey)>,
     budget: &mut Budget,
-) -> Result<Vec<(String, ScalarMapKey)>, EvaluationError<()>> {
+) -> Result<Vec<(String, NativeOrderKey)>, EvaluationError<()>> {
     zirql::sort_map_by_value(
         entries
             .into_iter()
@@ -587,56 +587,90 @@ fn scalar_sort(
         Location::Query(8..22),
         |key, budget| {
             Ok(match key {
-                ScalarMapKey::Null => ScalarMapKey::Null,
-                ScalarMapKey::Boolean(value) => ScalarMapKey::Boolean(*value),
-                ScalarMapKey::Integer(value) => ScalarMapKey::Integer(*value),
-                ScalarMapKey::Unsigned(value) => ScalarMapKey::Unsigned(*value),
-                ScalarMapKey::Float(value) => ScalarMapKey::Float(*value),
-                ScalarMapKey::String(value) => {
+                NativeOrderKey::Count(value) => NativeOrderKey::Count(*value),
+                NativeOrderKey::Text(value) => {
                     budget.charge(value.len(), Location::Query(8..22))?;
                     budget.charge_results(value.len(), Location::Query(8..22))?;
-                    ScalarMapKey::String(value.clone())
+                    NativeOrderKey::Text(value.clone())
                 }
-                ScalarMapKey::Typed(value) => ScalarMapKey::Typed(zirql::copy_constructed_value(
-                    value,
-                    budget,
-                    Location::Query(8..22),
-                )?),
+                NativeOrderKey::Value(value) => NativeOrderKey::Value(
+                    zirql::copy_constructed_value(value, budget, Location::Query(8..22))?,
+                ),
+                NativeOrderKey::Json(value) => {
+                    fn units(value: &serde_json::Value) -> usize {
+                        match value {
+                            serde_json::Value::String(value) => 1 + value.len(),
+                            serde_json::Value::Array(values) => {
+                                1 + values.iter().map(units).sum::<usize>()
+                            }
+                            serde_json::Value::Object(values) => {
+                                1 + values
+                                    .iter()
+                                    .map(|(key, value)| key.len() + units(value))
+                                    .sum::<usize>()
+                            }
+                            _ => 1,
+                        }
+                    }
+                    let units = units(value);
+                    budget.charge(units, Location::Query(8..22))?;
+                    budget.charge_results(units, Location::Query(8..22))?;
+                    NativeOrderKey::Json(value.clone())
+                }
             })
         },
     )
 }
 
 #[test]
-fn dictionary_sorting_keeps_exact_numbers_categories_and_current_ties() {
-    use ScalarMapKey as K;
+fn dictionary_sorting_keeps_exact_integer_domain_and_current_ties() {
+    use zirql::{ConstructedValue as V, NativeOrderKey as K};
     let mut budget = Budget::for_program(limits());
-    let numbers = scalar_sort(
+    let entries = descriptor_sort(
         vec![
-            ("unsigned", K::Unsigned(u64::MAX)),
-            ("beyond", K::Float(18_446_744_073_709_551_616.0)),
-            ("integer", K::Integer(9_007_199_254_740_993)),
-            ("float", K::Float(9_007_199_254_740_992.0)),
-            ("negative", K::Integer(-1)),
-            ("fraction", K::Float(-1.5)),
+            ("unsigned", K::Json(serde_json::json!(u64::MAX))),
+            ("float", K::Value(V::Float(-1.5))),
+            (
+                "adjacent-b",
+                K::Json(serde_json::json!(9_007_199_254_740_994u64)),
+            ),
+            ("signed-max", K::Value(V::Integer(i64::MAX))),
+            (
+                "adjacent-a",
+                K::Json(serde_json::json!(9_007_199_254_740_993u64)),
+            ),
+            ("negative", K::Value(V::Integer(-1))),
+            ("absent", K::Value(V::Absent)),
+            ("false", K::Value(V::Boolean(false))),
+            ("compound-b", K::Json(serde_json::json!([u64::MAX]))),
+            ("compound-a", K::Value(V::Array(vec![V::Integer(i64::MAX)]))),
         ],
         &mut budget,
     )
     .unwrap();
     assert_eq!(
-        numbers
+        entries
             .iter()
             .map(|(key, _)| key.as_str())
             .collect::<Vec<_>>(),
         [
-            "fraction", "negative", "float", "integer", "unsigned", "beyond"
+            "absent",
+            "false",
+            "negative",
+            "adjacent-a",
+            "adjacent-b",
+            "signed-max",
+            "unsigned",
+            "float",
+            "compound-a",
+            "compound-b"
         ]
     );
-    let mut entries = scalar_sort(
+    let mut entries = descriptor_sort(
         vec![
-            ("z", K::Integer(2)),
-            ("a", K::Integer(2)),
-            ("m", K::Integer(1)),
+            ("z", K::Value(V::Integer(2))),
+            ("a", K::Count(2)),
+            ("m", K::Json(serde_json::json!(1))),
         ],
         &mut budget,
     )
@@ -655,86 +689,41 @@ fn dictionary_sorting_keeps_exact_numbers_categories_and_current_ties() {
         Location::Query(8..22),
     )
     .unwrap();
-    let reranked =
-        zirql::sort_map_by_value(entries, &mut budget, Location::Query(8..22), |value, _| {
-            let K::Integer(value) = value else {
-                unreachable!()
-            };
-            Ok::<_, EvaluationError<()>>(K::Integer(*value))
+    let entries =
+        zirql::sort_map_by_value(entries, &mut budget, Location::Query(8..22), |key, _| {
+            Ok::<_, EvaluationError<()>>(match key {
+                K::Count(value) => K::Count(*value),
+                K::Value(V::Integer(value)) => K::Value(V::Integer(*value)),
+                K::Json(value) => K::Json(value.clone()),
+                _ => unreachable!("integer descriptors"),
+            })
         })
         .unwrap();
     assert_eq!(
-        reranked
+        entries
             .iter()
             .map(|(key, _)| key.as_str())
             .collect::<Vec<_>>(),
         ["m", "a", "z"]
     );
-    let mut nulls = scalar_sort(vec![("z", K::Null), ("a", K::Null)], &mut budget).unwrap();
-    assert_eq!(nulls[0].0, "z");
-    zirql::select_map(
-        &mut nulls,
-        MapSelection::Reverse,
-        &mut budget,
-        Location::Query(8..22),
-    )
-    .unwrap();
-    assert_eq!(nulls[0].0, "a");
-    let reranked = zirql::sort_map_by_value(nulls, &mut budget, Location::Query(8..22), |_, _| {
-        Ok::<_, EvaluationError<()>>(K::Null)
-    })
-    .unwrap();
-    assert_eq!(reranked[0].0, "a");
-    let booleans = scalar_sort(
-        vec![("true", K::Boolean(true)), ("false", K::Boolean(false))],
-        &mut budget,
-    )
-    .unwrap();
-    assert_eq!(booleans[0].0, "false");
-    let mut strings = scalar_sort(
-        vec![
-            ("first", K::String("β".into())),
-            ("last", K::String("a".into())),
-        ],
-        &mut budget,
-    )
-    .unwrap();
-    assert_eq!(strings[0].0, "last");
-    zirql::select_map(
-        &mut strings,
-        MapSelection::Tail(usize::MAX),
-        &mut budget,
-        Location::Query(8..22),
-    )
-    .unwrap();
-    assert_eq!(strings.len(), 2);
-    zirql::select_map(
-        &mut strings,
-        MapSelection::Head(0),
-        &mut budget,
-        Location::Query(8..22),
-    )
-    .unwrap();
-    assert!(strings.is_empty());
-    assert!(scalar_sort(vec![], &mut budget).unwrap().is_empty());
+    assert!(descriptor_sort(vec![], &mut budget).unwrap().is_empty());
 }
 
 #[test]
-fn scalar_map_refusals_keep_locations_and_legacy_work_limits() {
-    use ScalarMapKey as K;
-    for entries in [
-        vec![("a", K::Null), ("b", K::Boolean(false))],
-        vec![("a", K::Float(f64::INFINITY))],
-    ] {
-        let error = scalar_sort(entries, &mut Budget::for_program(limits())).unwrap_err();
-        assert!(
-            matches!(error, EvaluationError::Core(error) if error.location == Location::Query(8..22) && error.category == QueryErrorCategory::Other)
-        );
-    }
-    let error = scalar_sort(
-        vec![("a", K::Null), ("b", K::Null)],
+fn map_refusals_keep_locations_and_legacy_work_limits() {
+    use zirql::{ConstructedValue as V, NativeOrderKey as K};
+    let error = descriptor_sort(
+        vec![("a", K::Value(V::Float(f64::INFINITY)))],
+        &mut Budget::for_program(limits()),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, EvaluationError::Core(error) if error.location == Location::Query(8..22) && error.category == QueryErrorCategory::Other)
+    );
+    let error = descriptor_sort(
+        vec![("a", K::Value(V::Absent)), ("b", K::Value(V::Absent))],
         &mut Budget::new(zirql::Limits {
-            work: 12,
+            work: 2,
             items: 16,
             nesting: 16,
         }),
@@ -743,8 +732,8 @@ fn scalar_map_refusals_keep_locations_and_legacy_work_limits() {
     assert!(
         matches!(error, EvaluationError::Core(error) if error.location == Location::Query(8..22) && error.category == QueryErrorCategory::WorkLimit)
     );
-    let error = scalar_sort(
-        vec![("a", K::Null)],
+    let error = descriptor_sort(
+        vec![("a", K::Value(V::Absent))],
         &mut Budget::for_program(ProgramLimits {
             results: 1,
             ..limits()

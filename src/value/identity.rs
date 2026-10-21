@@ -221,10 +221,82 @@ impl HashIndex {
     }
 }
 
+/// Borrow existing key storage without building another recursive value tree.
 #[derive(Clone, Copy)]
-enum KeyRef<'a> {
+pub(crate) enum KeyRef<'a> {
     Value(&'a V),
     Text(&'a str),
+    Count(usize),
+    Json(&'a serde_json::Value),
+}
+impl<'a> KeyRef<'a> {
+    fn data(self) -> Self {
+        match self {
+            Self::Value(value) => Self::Value(value.data()),
+            other => other,
+        }
+    }
+    fn rank(self) -> u8 {
+        match self.data() {
+            Self::Value(value) => rank(value),
+            Self::Text(_) => 4,
+            Self::Count(_) => 2,
+            Self::Json(value) => match value {
+                serde_json::Value::Null => 0,
+                serde_json::Value::Bool(_) => 1,
+                serde_json::Value::Number(value) if value.is_i64() || value.is_u64() => 2,
+                serde_json::Value::Number(_) => 3,
+                serde_json::Value::String(_) => 4,
+                serde_json::Value::Array(_) => ARRAY,
+                serde_json::Value::Object(_) => DICTIONARY,
+            },
+        }
+    }
+    fn boolean(self) -> bool {
+        match self.data() {
+            Self::Value(V::Boolean(value)) | Self::Json(serde_json::Value::Bool(value)) => *value,
+            _ => unreachable!(),
+        }
+    }
+    fn integer(self) -> i128 {
+        match self.data() {
+            Self::Value(V::Integer(value)) => i128::from(*value),
+            Self::Count(value) => value as i128,
+            Self::Json(serde_json::Value::Number(value)) => value
+                .as_i64()
+                .map(i128::from)
+                .unwrap_or_else(|| i128::from(value.as_u64().expect("integer JSON key"))),
+            _ => unreachable!(),
+        }
+    }
+    fn float(self) -> f64 {
+        match self.data() {
+            Self::Value(V::Float(value)) => *value,
+            Self::Json(serde_json::Value::Number(value)) => value.as_f64().expect("float JSON key"),
+            _ => unreachable!(),
+        }
+    }
+    fn text(self) -> &'a str {
+        match self.data() {
+            Self::Text(value) => value,
+            Self::Value(V::String(value)) | Self::Json(serde_json::Value::String(value)) => value,
+            _ => unreachable!(),
+        }
+    }
+    fn len(self) -> usize {
+        match self.data() {
+            Self::Value(V::Array(values) | V::Tuple(values)) => values.len(),
+            Self::Json(serde_json::Value::Array(values)) => values.len(),
+            _ => unreachable!(),
+        }
+    }
+    fn at(self, index: usize) -> Self {
+        match self.data() {
+            Self::Value(V::Array(values) | V::Tuple(values)) => Self::Value(&values[index]),
+            Self::Json(serde_json::Value::Array(values)) => Self::Json(&values[index]),
+            _ => unreachable!(),
+        }
+    }
 }
 pub(crate) fn rank(value: &V) -> u8 {
     match value.data() {
@@ -249,30 +321,59 @@ pub(crate) fn compare_admitted(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Ordering, QueryError> {
+    compare_refs(KeyRef::Value(left), KeyRef::Value(right), budget, location)
+}
+
+pub(crate) fn compare_refs(
+    left: KeyRef<'_>,
+    right: KeyRef<'_>,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<Ordering, QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
-        let order = rank(left).cmp(&rank(right));
+        let kind = left.rank();
+        let order = kind.cmp(&right.rank());
         if order != Ordering::Equal {
             return Ok(order);
         }
-        Ok(match (left.data(), right.data()) {
-            (V::Absent, V::Absent) => Ordering::Equal,
-            (V::Boolean(a), V::Boolean(b)) => a.cmp(b),
-            (V::Integer(a), V::Integer(b)) => a.cmp(b),
-            (V::Float(a), V::Float(b)) => {
-                if a == b {
+        match kind {
+            0 => return Ok(Ordering::Equal),
+            1 => return Ok(left.boolean().cmp(&right.boolean())),
+            2 => return Ok(left.integer().cmp(&right.integer())),
+            3 => {
+                let (a, b) = (left.float(), right.float());
+                return Ok(if a == b {
                     Ordering::Equal
                 } else {
-                    a.total_cmp(b)
-                }
+                    a.total_cmp(&b)
+                });
             }
-            (V::String(a), V::String(b)) => compare_text(a, b, budget, location)?,
+            4 => return compare_text(left.text(), right.text(), budget, location),
+            ARRAY | TUPLE => return compare_sequence(left, right, budget, location),
+            DICTIONARY => {
+                let a = sorted_entries(left, budget, location)?;
+                let b = sorted_entries(right, budget, location)?;
+                for ((ak, av), (bk, bv)) in a.iter().zip(&b) {
+                    let mut order = compare_refs(*ak, *bk, budget, location)?;
+                    if order == Ordering::Equal {
+                        order = compare_refs(*av, *bv, budget, location)?;
+                    }
+                    if order != Ordering::Equal {
+                        return Ok(order);
+                    }
+                }
+                return Ok(a.len().cmp(&b.len()));
+            }
+            _ => {}
+        }
+        let (KeyRef::Value(left), KeyRef::Value(right)) = (left.data(), right.data()) else {
+            unreachable!("constructed-only kind")
+        };
+        Ok(match (left, right) {
             (V::Member(a), V::Member(b)) => {
                 check_member_pair(a, b, budget, location)?;
                 (a.type_id.0, a.declaration_order).cmp(&(b.type_id.0, b.declaration_order))
-            }
-            (V::Array(a), V::Array(b)) | (V::Tuple(a), V::Tuple(b)) => {
-                compare_sequence(a, b, budget, location)?
             }
             (V::Set { elements: a, .. }, V::Set { elements: b, .. }) => {
                 let a = sorted_values(a, budget, location)?;
@@ -280,21 +381,6 @@ pub(crate) fn compare_admitted(
                 let mut order = Ordering::Equal;
                 for (a, b) in a.iter().zip(&b) {
                     order = compare_admitted(a, b, budget, location)?;
-                    if order != Ordering::Equal {
-                        break;
-                    }
-                }
-                order.then(a.len().cmp(&b.len()))
-            }
-            (a @ (V::Record(_) | V::Dictionary(_)), b @ (V::Record(_) | V::Dictionary(_))) => {
-                let a = sorted_entries(a, budget, location)?;
-                let b = sorted_entries(b, budget, location)?;
-                let mut order = Ordering::Equal;
-                for ((ak, av), (bk, bv)) in a.iter().zip(&b) {
-                    order = compare_key_refs(*ak, *bk, budget, location)?;
-                    if order == Ordering::Equal {
-                        order = compare_admitted(av, bv, budget, location)?;
-                    }
                     if order != Ordering::Equal {
                         break;
                     }
@@ -355,13 +441,13 @@ fn compare_text(
     Ok(a.cmp(b))
 }
 fn compare_sequence(
-    a: &[V],
-    b: &[V],
+    a: KeyRef<'_>,
+    b: KeyRef<'_>,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Ordering, QueryError> {
-    for (a, b) in a.iter().zip(b) {
-        let order = compare_admitted(a, b, budget, location)?;
+    for index in 0..a.len().min(b.len()) {
+        let order = compare_refs(a.at(index), b.at(index), budget, location)?;
         if order != Ordering::Equal {
             return Ok(order);
         }
@@ -391,29 +477,6 @@ fn compare_keys(
     }
     Ok(a.len().cmp(&b.len()))
 }
-fn compare_key_refs(
-    a: KeyRef<'_>,
-    b: KeyRef<'_>,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<Ordering, QueryError> {
-    let text = |key| match key {
-        KeyRef::Text(text) => Some(text),
-        KeyRef::Value(value) => match value.data() {
-            V::String(text) => Some(text.as_str()),
-            _ => None,
-        },
-    };
-    if let (Some(a), Some(b)) = (text(a), text(b)) {
-        return compare_text(a, b, budget, location);
-    }
-    match (a, b) {
-        (KeyRef::Value(a), KeyRef::Value(b)) => compare_admitted(a, b, budget, location),
-        (KeyRef::Text(_), KeyRef::Value(value)) => Ok(4u8.cmp(&rank(value))),
-        (KeyRef::Value(value), KeyRef::Text(_)) => Ok(rank(value).cmp(&4)),
-        _ => unreachable!("text keys compared above"),
-    }
-}
 fn sorted_values<'a>(
     values: &'a [V],
     budget: &mut Budget,
@@ -427,23 +490,37 @@ fn sorted_values<'a>(
     Ok(sorted)
 }
 fn sorted_entries<'a>(
-    value: &'a V,
+    value: KeyRef<'a>,
     budget: &mut Budget,
     location: &Location,
-) -> Result<Vec<(KeyRef<'a>, &'a V)>, QueryError> {
-    let len = match value {
-        V::Record(v) => v.len(),
-        V::Dictionary(v) => v.len(),
+) -> Result<Vec<(KeyRef<'a>, KeyRef<'a>)>, QueryError> {
+    let len = match value.data() {
+        KeyRef::Value(V::Record(v)) => v.len(),
+        KeyRef::Value(V::Dictionary(v)) => v.len(),
+        KeyRef::Json(serde_json::Value::Object(v)) => v.len(),
         _ => unreachable!(),
     };
     let mut sorted = super::metadata_vec(len, budget, location)?;
-    match value {
-        V::Record(fields) => sorted.extend(fields.iter().map(|(k, v)| (KeyRef::Text(k), v))),
-        V::Dictionary(entries) => sorted.extend(entries.iter().map(|(k, v)| (KeyRef::Value(k), v))),
+    match value.data() {
+        KeyRef::Value(V::Record(fields)) => sorted.extend(
+            fields
+                .iter()
+                .map(|(k, v)| (KeyRef::Text(k), KeyRef::Value(v))),
+        ),
+        KeyRef::Value(V::Dictionary(entries)) => sorted.extend(
+            entries
+                .iter()
+                .map(|(k, v)| (KeyRef::Value(k), KeyRef::Value(v))),
+        ),
+        KeyRef::Json(serde_json::Value::Object(entries)) => sorted.extend(
+            entries
+                .iter()
+                .map(|(k, v)| (KeyRef::Text(k), KeyRef::Json(v))),
+        ),
         _ => unreachable!(),
     }
     sort(&mut sorted, budget, location, |a, b, budget| {
-        compare_key_refs(a.0, b.0, budget, location)
+        compare_refs(a.0, b.0, budget, location)
     })?;
     Ok(sorted)
 }

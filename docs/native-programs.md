@@ -267,12 +267,15 @@ operations in their incoming order. Single extrema keep the first equal-key
 item; all-ties extrema keep every tied item in input order. Selectors execute
 in input order before comparisons begin, including for extrema.
 
-The host defines admissible keys and empty-result behavior. Zirium's native
-selectors return one string or count and refuse empty extrema. Zincite's native
-ordering uses present homogeneous signed integers, finite floats, exact strings
-or members of one nominal type; integer and float keys do not mix. Its empty
-extrema return an empty selection of the same kind. Missing or incompatible
-keys fail, including inconsistent nominal identity or member metadata.
+Native counts, text and supported ordinary data use the same structural ordering
+as constructed keys. Counts and JSON unsigned integers retain their full range;
+floats retain a separate rank. Native scalar projections must produce exactly
+one value. An ordinary compound is itself one key. Opaque handles require an
+explicit supported projection. Missing fields, invalid selector cardinality and
+inconsistent nominal metadata fail even when the key cannot win.
+
+Empty native extrema retain their input kind, element declaration and owner
+after ordinary kind, selector and effect preflight.
 
 Constructed collection extrema instead return absence on empty input. See the
 host language guides for their stages, and [ordering adapters](host-integration.md)
@@ -299,11 +302,9 @@ On `examples/cli/function-report.mlir`, it returns `{"mix":3,"double":2}`.
 The dictionary keeps its kind through sorting, reversal and bounds. Equal values
 keep their current order during sorting; an explicit reversal also reverses ties.
 
-Supported dictionary sort keys depend on the host. Zirium accepts homogeneous
-null, Boolean, numeric or string values, with exact comparison across signed and
-unsigned integers and finite floats. Zincite uses the narrower shared contract:
-present homogeneous signed integers, finite floats, strings or one nominal type,
-with no integer/float mixing. Nested values need an explicit scalar selector.
+Dictionary values use that same structural contract, including Boolean, absent
+and compound data. Integer and float kinds remain distinct. Native JSON arrays
+and objects compare structurally without rendering or narrowing unsigned leaves.
 The [embedding guide](host-integration.md) documents the callable constructor,
 map sorting and bounds APIs.
 

@@ -183,7 +183,7 @@ The result is `"unlabelled"`. A default evaluates its left operand once, then
 only evaluates the fallback if the value is absent. It does not catch errors.
 For example, `(1 div 0) default 0` fails at the division.
 
-Arithmetic, ordering and conditions need present values. Two absences compare
+Arithmetic and conditions need present values. Two absences compare
 equal, and an absence is unequal to a present value, subject to compatible
 underlying types. Declared optional integers and optional strings do not become
 compatible merely because both happen to be absent.
@@ -417,8 +417,8 @@ for a report that retains the positions of repeated words.
 
 ## Sorting and optional extrema
 
-`sort(a)` orders an array by its scalar values, a set by structural value order
-and a dictionary by structural key order. Nested collection keys are supported.
+`sort(a)` orders array and set elements or dictionary keys by structural value
+order. Mixed kinds, absence and nested collection keys are supported.
 Sorting retains the collection kind. `sort_by(rows, "field")` orders
 array rows or dictionary values by a literal field label; `sort_by(d, value)`
 orders dictionary values directly. All sorts are ascending and stable.
@@ -431,7 +431,7 @@ sort(words)
 The result is `["apple", "apple", "ash", "birch"]`. Strings use exact
 lexicographic order without normalization or locale-specific collation.
 
-`min` and `max` select an original scalar; `min_by` and `max_by` select an
+`min` and `max` select an original element; `min_by` and `max_by` select an
 original record. Ties select the first input value. Empty input yields absence:
 
 ```zirql
@@ -440,16 +440,16 @@ min([]) default "no minimum"
 
 This returns `"no minimum"`. Sorting an empty array returns an empty array.
 
-Array ordering and `sort_by`/extremum selectors require present, homogeneous
-integers, finite floats, strings or members of one nominal type. Integers and
-floats do not mix in those scalar selector contracts. Boolean or native values
-need a supported projection there. A missing field, absent key or later
-incompatible selector key fails the whole operation, including an extremum that
-already has a candidate winner. Project an explicit default if missing data
-should have an order. Keyed arrays need a conversion such as
-`[cell.value for cell in entries(a)]` before these operations. General set and
-dictionary-key sorting instead uses structural order, including Boolean, absent
-and nested collection values.
+Every selected key uses the structural order: absence, Boolean, integer, finite
+float, string, nominal member, array, tuple, set, dictionary, keyed array.
+Integers and floats have separate ranks. Arrays and tuples compare positionally;
+sets and dictionaries compare canonical membership and associations. Nominal
+metadata must remain coherent across all keys, including nested members and
+keys that cannot win an extremum. A missing field or non-record field-selector
+row fails the whole operation. An actual absent field value is valid and sorts
+first. Use an explicit lookup/default when a missing field should supply a key.
+Keyed arrays need a conversion such as `[cell.value for cell in entries(a)]`
+before reordering their cells.
 
 ## Constructed collection pipelines
 
@@ -818,7 +818,9 @@ The last has order `z, a, m`: descending comparisons retain the current order
 of the tied values. Bare `value` selects a dictionary value; quoted `"value"`
 selects that field within each value. Dictionary key sorting permits
 heterogeneous values because it does not inspect them as ordering keys.
-Unsupported or absent selector keys fail at the selector.
+Selector keys use the same structural order, including actual absence, mixed
+kinds and compound values. Missing fields, invalid row shapes and incoherent
+nominal metadata remain errors.
 
 Sorting, copying and saving a dictionary retain its kind and current order.
 Dictionary equality compares key/value associations independently of entry

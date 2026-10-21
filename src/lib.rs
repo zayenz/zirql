@@ -41,9 +41,7 @@ pub use functions::{
     pattern_function_expression_kind, pattern_function_expression_kind_borrowed,
     pattern_function_value_kind, pattern_function_value_kind_borrowed,
 };
-pub use mapping::{
-    MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,
-};
+pub use mapping::{MapSelection, NativeMap, map_native_by, select_map, sort_map_by_value};
 pub use matching::{
     MatchClause, NativeCapture, NativeMatch, dispose_match, evaluate_match,
     evaluate_match_with_arguments, match_types,

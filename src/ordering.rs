@@ -1,9 +1,12 @@
 use std::{cmp::Ordering, mem::size_of};
 
-use crate::value::{check_member_pair, compare_ordering_keys, ordering_key};
+use crate::value::{
+    admit_ordering_values,
+    identity::{KeyRef, compare_refs},
+};
 use crate::{Budget, ConstructedValue, EvaluationError, Location, QueryError, QueryErrorCategory};
 
-/// Native ordering leaves kind, empty-input and selector policies with the host.
+/// Native ordering retains host input/selector admission and original subjects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeOrder {
     Sort,
@@ -20,24 +23,32 @@ pub struct NativeOrdering<Q> {
     pub selector: Option<Q>,
 }
 
-/// Native counts retain their full unsigned range and sort before native text.
-/// Typed values use the constructed ordering contract: present homogeneous signed
-/// integers, finite floats, strings or members of one coherent nominal type.
-/// Typed values cannot mix with native count/text descriptors.
+/// Owned host descriptors using the common structural value order.
+/// Counts retain their unsigned range; JSON retains exact unsigned integers,
+/// arrays and objects without conversion into signed constructed values.
 #[derive(Debug, PartialEq)]
 pub enum NativeOrderKey {
-    /// A lossless host scalar for dictionary value sorting.
-    Scalar(crate::ScalarMapKey),
     Count(usize),
     Text(String),
     Value(ConstructedValue),
+    Json(serde_json::Value),
+}
+impl NativeOrderKey {
+    fn as_key(&self) -> KeyRef<'_> {
+        match self {
+            Self::Count(value) => KeyRef::Count(*value),
+            Self::Text(value) => KeyRef::Text(value),
+            Self::Value(value) => KeyRef::Value(value),
+            Self::Json(value) => KeyRef::Json(value),
+        }
+    }
 }
 
 /// Order admitted native payloads without copying them or replacing their owner.
 /// Keys are collected once in input order before any comparisons, so later key
 /// failures remain observable for extrema too. Sort is stable; a single extreme
 /// keeps its first tie and all-ties extremes keep input order. Empty input stays
-/// empty, allowing hosts to enforce their own empty-input policy.
+/// empty after the host's normal preflight.
 ///
 /// The callback uses this same budget for selector evaluation and admits any
 /// text copy *before* allocating it. Moving an already-admitted owned text key
@@ -64,9 +75,9 @@ pub fn order_native_by<T, E>(
     for item in &items {
         budget.charge(1, location.clone())?;
         let next = key(item, budget)?;
-        admit_key(&next, &keys, budget, &location)?;
         keys.push(next);
     }
+    admit_keys(&keys, budget, &location)?;
     if order == NativeOrder::Sort {
         let destinations = sort_indices(count, budget, &location, |left, right, budget| {
             compare(&keys[left], &keys[right], budget, &location)
@@ -113,58 +124,61 @@ pub fn order_native_by<T, E>(
     Ok(items)
 }
 
-fn admit_key(
-    key: &NativeOrderKey,
-    previous: &[NativeOrderKey],
+pub(crate) fn admit_keys(
+    keys: &[NativeOrderKey],
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
-    if matches!(key, NativeOrderKey::Scalar(_)) {
-        return Err(QueryError {
-            location: location.clone(),
-            message: "scalar map keys require dictionary value sorting".into(),
-            category: QueryErrorCategory::Other,
-        });
-    }
-    let NativeOrderKey::Value(value) = key else {
-        if matches!(previous.first(), Some(NativeOrderKey::Value(_))) {
-            return Err(QueryError {
-                location: location.clone(),
-                message: "ordering needs homogeneous key types".into(),
-                category: QueryErrorCategory::Other,
-            });
-        }
-        return Ok(());
-    };
-    let (value, ty) = ordering_key(value, None, budget, location)?;
-    if let Some(first) = previous.first() {
-        let NativeOrderKey::Value(first) = first else {
-            return Err(QueryError {
-                location: location.clone(),
-                message: "ordering needs homogeneous key types".into(),
-                category: QueryErrorCategory::Other,
-            });
-        };
-        let (_, first_ty) = ordering_key(first, None, budget, location)?;
-        if first_ty != ty {
-            return Err(QueryError {
-                location: location.clone(),
-                message: "ordering needs homogeneous key types".into(),
-                category: QueryErrorCategory::Other,
-            });
-        }
-    }
-    if let ConstructedValue::Member(member) = value {
-        // Every member participates in admission, including nonwinning extrema.
-        for previous in previous {
-            if let NativeOrderKey::Value(previous) = previous
-                && let ConstructedValue::Member(previous) = previous.data()
-            {
-                check_member_pair(previous, member, budget, location)?;
-            }
+    admit_ordering_values(
+        keys.iter().filter_map(|key| match key {
+            NativeOrderKey::Value(value) => Some(value),
+            _ => None,
+        }),
+        budget,
+        location,
+    )?;
+    for key in keys {
+        if let NativeOrderKey::Json(value) = key {
+            admit_json(value, budget, location)?;
         }
     }
     Ok(())
+}
+fn admit_json(
+    value: &serde_json::Value,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        budget.charge(1, location.clone())?;
+        match value {
+            serde_json::Value::Number(value)
+                if !value.is_i64()
+                    && !value.is_u64()
+                    && value.as_f64().is_none_or(|value| !value.is_finite()) =>
+            {
+                return Err(QueryError {
+                    location: location.clone(),
+                    message: "nonfinite float".into(),
+                    category: QueryErrorCategory::Other,
+                });
+            }
+            serde_json::Value::Array(values) => {
+                budget.check_items(values.len(), location.clone())?;
+                for value in values {
+                    admit_json(value, budget, location)?;
+                }
+            }
+            serde_json::Value::Object(values) => {
+                budget.check_items(values.len(), location.clone())?;
+                for value in values.values() {
+                    admit_json(value, budget, location)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn admit_slots<T>(
@@ -268,29 +282,11 @@ pub(crate) fn compare_text(
     Ok(left.len().cmp(&right.len()))
 }
 
-fn compare(
+pub(crate) fn compare(
     left: &NativeOrderKey,
     right: &NativeOrderKey,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<Ordering, QueryError> {
-    budget.charge(1, location.clone())?;
-    Ok(match (left, right) {
-        (NativeOrderKey::Count(left), NativeOrderKey::Count(right)) => left.cmp(right),
-        (NativeOrderKey::Count(_), NativeOrderKey::Text(_)) => Ordering::Less,
-        (NativeOrderKey::Text(_), NativeOrderKey::Count(_)) => Ordering::Greater,
-        (NativeOrderKey::Text(left), NativeOrderKey::Text(right)) => {
-            compare_text(left, right, budget, location)?
-        }
-        (NativeOrderKey::Value(left), NativeOrderKey::Value(right)) => {
-            compare_ordering_keys(left.data(), right.data(), budget, location)?
-        }
-        _ => {
-            return Err(QueryError {
-                location: location.clone(),
-                message: "ordering needs homogeneous key types".into(),
-                category: QueryErrorCategory::Other,
-            });
-        }
-    })
+    compare_refs(left.as_key(), right.as_key(), budget, location)
 }
