@@ -2735,7 +2735,7 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
             {
                 return Err(QueryError::query(
                     source.range.clone(),
-                    "constructed filter needs a positional array; use the host's native filter for native selections",
+                    "constructed filter needs an ordinary collection; use the host's native filter for native selections",
                 ));
             }
             Some(kind) if !element => kind,

@@ -253,7 +253,20 @@ pub(crate) fn kind<'q, C, H: ProjectionHost<C>>(
         ExpressionStep::Filter(predicate) => {
             let subject = host.subject_kind(input, budget, range)?;
             guard_arguments(predicate, host, &subject, scope, value_kind, budget)?;
-            Ok(input.clone())
+            if host.is_constructed_kind(input) {
+                let types = host.scalar_types(input, budget, range)?.ok_or_else(|| {
+                    QueryError::query(range.clone(), "constructed collection type is unavailable")
+                })?;
+                Ok(host.constructed_kind(crate::collection_selection_types(
+                    &types,
+                    true,
+                    false,
+                    budget,
+                    Location::Query(range.clone()),
+                )?))
+            } else {
+                Ok(input.clone())
+            }
         }
         ExpressionStep::Match(matching) => {
             let mut local = crate::projection::copy_scope::<C, H>(scope, budget, range)?;
@@ -383,7 +396,11 @@ pub(crate) fn kind<'q, C, H: ProjectionHost<C>>(
                 Stage::Tail(0)
             };
             if host.is_constructed_kind(input) {
-                Ok(input.clone())
+                let types = host.scalar_types(input, budget, range)?.ok_or_else(|| {
+                    QueryError::query(range.clone(), "constructed collection type is unavailable")
+                })?;
+                Ok(host
+                    .constructed_kind(collection_value_types(&operation, &types, budget, range)?))
             } else {
                 host.collection_kind(&operation, input, budget, range)
             }
@@ -433,7 +450,16 @@ pub(crate) fn kind<'q, C, H: ProjectionHost<C>>(
                 )?;
             }
             if host.is_constructed_kind(input) {
-                Ok(input.clone())
+                let types = host.scalar_types(input, budget, range)?.ok_or_else(|| {
+                    QueryError::query(range.clone(), "constructed collection type is unavailable")
+                })?;
+                Ok(host.constructed_kind(crate::collection_selection_types(
+                    &types,
+                    false,
+                    false,
+                    budget,
+                    Location::Query(range.clone()),
+                )?))
             } else {
                 host.collection_kind(
                     &Stage::Check {
@@ -527,6 +553,91 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
     match step {
         ExpressionStep::Group(body) => arguments.evaluate_body(body, Some(input), None, budget),
         ExpressionStep::Filter(predicate) => {
+            if let Some(collection) = host.pattern_constructed(&input) {
+                let location = Location::Query(range.clone());
+                let count = crate::value::collection_len(collection, false, &location)?;
+                budget.check_items(count, location.clone())?;
+                crate::projection::admit_slots::<bool>(count, budget, range)?;
+                let mut retained = Vec::with_capacity(count);
+                let bindings =
+                    arguments
+                        .parts()
+                        .1
+                        .with_shared_values(BTreeMap::new(), budget, range)?;
+                for index in 0..count {
+                    let value =
+                        crate::value::collection_subject(collection, index, budget, &location)?;
+                    let types = vec![constructed_value_type(&value, budget, location.clone())?];
+                    let item =
+                        host.lift_constructed(value, types, arguments.parts().0, budget, range)?;
+                    let truth = crate::eval::evaluate_predicate(
+                        predicate,
+                        crate::Nesting::Nodes,
+                        budget,
+                        |guard, budget, range| {
+                            host.evaluate_guard_leaf_with_arguments(
+                                guard, &item, &bindings, arguments, budget, range,
+                            )
+                        },
+                    )?;
+                    retained.push(match truth {
+                        Truth::True => true,
+                        Truth::False => false,
+                        Truth::Unknown => {
+                            return Err(QueryError::query(
+                                predicate.range.clone(),
+                                "constructed filter needs a known Boolean",
+                            )
+                            .into());
+                        }
+                    });
+                }
+                let value = crate::value::retain_collection(
+                    copy_constructed_value(collection, budget, location.clone())?,
+                    &retained,
+                    budget,
+                    &location,
+                )?;
+                let types = crate::collection_selection_types(
+                    &[constructed_value_type(
+                        collection,
+                        budget,
+                        location.clone(),
+                    )?],
+                    true,
+                    false,
+                    budget,
+                    location,
+                )?;
+                return host.lift_constructed(value, types, arguments.parts().0, budget, range);
+            }
+            if host.is_map_kind(&host.kind(&input, budget, range)?) {
+                let copy = host.copy_value(&input, arguments.parts().0, budget, range)?;
+                let entries = host.map_entries(copy, arguments.parts().0, budget, range)?;
+                let bindings =
+                    arguments
+                        .parts()
+                        .1
+                        .with_shared_values(BTreeMap::new(), budget, range)?;
+                crate::projection::admit_slots::<(String, H::Value)>(entries.len(), budget, range)?;
+                let mut selected = Vec::with_capacity(entries.len());
+                for (key, item) in entries {
+                    let truth = crate::eval::evaluate_predicate(
+                        predicate,
+                        crate::Nesting::Nodes,
+                        budget,
+                        |guard, budget, range| {
+                            host.evaluate_guard_leaf_with_arguments(
+                                guard, &item, &bindings, arguments, budget, range,
+                            )
+                        },
+                    )?;
+                    if host.filter_truth(truth, arguments.parts().0, budget, &predicate.range)? {
+                        selected.push((key, item));
+                    }
+                }
+                return host.restore_map(input, selected, arguments.parts().0, budget, range);
+            }
             let items = host.selection_items(&input, arguments.parts().0, budget, range)?;
             let bindings =
                 arguments
@@ -1115,7 +1226,13 @@ pub fn collection_value_types(
             Stage::Unique => ValueExpressionKind::Unique(Box::new(input)),
             Stage::Tally => ValueExpressionKind::Tally(Box::new(input)),
             Stage::Head(_) | Stage::Tail(_) | Stage::Reverse | Stage::Check { .. } => {
-                return copy_value_types(types, budget, Location::Query(range.clone()));
+                return crate::collection_selection_types(
+                    types,
+                    matches!(operation, Stage::Head(_) | Stage::Tail(_)),
+                    matches!(operation, Stage::Reverse),
+                    budget,
+                    Location::Query(range.clone()),
+                );
             }
             _ => {
                 return Err(QueryError::query(
@@ -1192,6 +1309,15 @@ fn run_collection<C, H: ProjectionHost<C>>(
 ) -> Result<H::Value, EvaluationError<H::Error>> {
     if let Some(value) = host.pattern_constructed(&input) {
         let location = Location::Query(range.clone());
+        if let Stage::Check { expected, message } = operation {
+            crate::check_cardinality(
+                crate::value::collection_len(value, false, &location)?,
+                *expected,
+                message.as_deref(),
+                range.clone(),
+            )?;
+            return Ok(input);
+        }
         let value = match operation {
             Stage::Count => Some(crate::value::reduce_ref(
                 ValueReducer::Length,
@@ -1199,6 +1325,14 @@ fn run_collection<C, H: ProjectionHost<C>>(
                 budget,
                 &location,
             )?),
+            Stage::Head(_) | Stage::Tail(_) | Stage::Reverse | Stage::Check { .. } => {
+                Some(crate::value::select_collection(
+                    copy_constructed_value(value, budget, location.clone())?,
+                    operation,
+                    budget,
+                    &location,
+                )?)
+            }
             Stage::Unique => Some(crate::value::unique_value(
                 copy_constructed_value(value, budget, location.clone())?,
                 budget,
@@ -1219,10 +1353,34 @@ fn run_collection<C, H: ProjectionHost<C>>(
         }
     }
     if host.is_map_kind(&host.kind(&input, budget, range)?)
-        && matches!(operation, Stage::Head(_) | Stage::Tail(_) | Stage::Reverse)
+        && matches!(
+            operation,
+            Stage::Head(_) | Stage::Tail(_) | Stage::Reverse | Stage::Count | Stage::Check { .. }
+        )
     {
         let value = host.copy_value(&input, context, budget, range)?;
         let mut entries = host.map_entries(value, context, budget, range)?;
+        match operation {
+            Stage::Count => {
+                return host.restore_collection(
+                    input,
+                    NativeValue::Count(entries.len()),
+                    context,
+                    budget,
+                    range,
+                );
+            }
+            Stage::Check { expected, message } => {
+                crate::check_cardinality(
+                    entries.len(),
+                    *expected,
+                    message.as_deref(),
+                    range.clone(),
+                )?;
+                return Ok(input);
+            }
+            _ => {}
+        }
         let selection = match operation {
             Stage::Head(n) => MapSelection::Head(*n),
             Stage::Tail(n) => MapSelection::Tail(*n),

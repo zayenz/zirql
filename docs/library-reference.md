@@ -26,7 +26,7 @@ runtime errors in skipped branches remain unexecuted. See
 - [Collections and reductions](library-collections.md)
 - [Ordering and extrema](library-ordering.md)
 - [Grouping and neighbourhoods](library-grouping.md)
-- [Constructed pipeline stages](library-pipelines.md)
+- [Collection pipeline stages](library-pipelines.md)
 - [Functions and control flow](library-control.md)
 - [Queues and native identity sets](library-worklists.md)
 - [Shared native forms](library-native.md)
@@ -77,11 +77,10 @@ support. `present` is a pattern.
 | `bind` | [Shared native forms](library-native.md#native-capture-match) |
 | `break` | [Functions and control flow](library-control.md#break) |
 | `case` | [Collections and reductions](library-collections.md#comprehensions) |
-| `check` | [Shared native forms](library-native.md#check) |
+| `check` | [Shared native forms](library-pipelines.md#check) |
 | `contains` | [Strings](library-strings.md#contains) |
 | `continue` | [Functions and control flow](library-control.md#continue) |
-| `count` | [Constructed pipeline stages](library-pipelines.md#count) |
-| `count (native)` | [Shared native forms](library-native.md#native-count-unique-and-tally) |
+| `count` | [Collection pipeline stages](library-pipelines.md#count) |
 | `default` | [Presence and lookup](library-presence.md#default) |
 | `dict` | [Collections and reductions](library-collections.md#dictionaries-and-records) |
 | `div` | [Operators and access](library-operators.md#multiplication-and-division) |
@@ -92,10 +91,9 @@ support. `present` is a pattern.
 | `entries` | [Collections and reductions](library-collections.md#entries) |
 | `except` | [Shared native forms](library-native.md#native-set-operators) |
 | `exists` | [Collections and reductions](library-collections.md#exists) |
-| `filter` | [Constructed pipeline stages](library-pipelines.md#filter) |
-| `filter (native)` | [Shared native forms](library-native.md#native-filter) |
+| `filter` | [Collection pipeline stages](library-pipelines.md#filter) |
 | `fixpoint` | [Shared native forms](library-native.md#fixpoint) |
-| `flat_map` | [Constructed pipeline stages](library-pipelines.md#flat_map) |
+| `flat_map` | [Collection pipeline stages](library-pipelines.md#flat_map) |
 | `fn` | [Functions and control flow](library-control.md#fn-and-calls) |
 | `fold` | [Functions and control flow](library-control.md#fold) |
 | `for` | [Collections and reductions](library-collections.md#comprehensions) |
@@ -104,7 +102,7 @@ support. `present` is a pattern.
 | `function call` | [Functions and control flow](library-control.md#fn-and-calls) |
 | `group_by` | [Grouping and neighbourhoods](library-grouping.md#group_by) |
 | `has_key` | [Presence and lookup](library-presence.md#has_key) |
-| `head` | [Shared native forms](library-native.md#head-and-tail) |
+| `head` | [Shared native forms](library-pipelines.md#head-and-tail) |
 | `identity_set` | [Queues and native identity sets](library-worklists.md#identity_set) |
 | `if` | [Functions and control flow](library-control.md#if) |
 | `in` | [Operators and access](library-operators.md#membership) |
@@ -117,7 +115,7 @@ support. `present` is a pattern.
 | `let` | [Functions and control flow](library-control.md#let) |
 | `lookup` | [Presence and lookup](library-presence.md#lookup) |
 | `loop` | [Functions and control flow](library-control.md#loop) |
-| `map` | [Constructed pipeline stages](library-pipelines.md#map) |
+| `map` | [Collection pipeline stages](library-pipelines.md#map) |
 | `map_by` | [Shared native forms](library-native.md#map_by) |
 | `match (value)` | [Functions and control flow](library-control.md#value-match) |
 | `match {captures}` | [Shared native forms](library-native.md#native-capture-match) |
@@ -150,7 +148,7 @@ support. `present` is a pattern.
 | `render_report_markdown` (Rust) | [Mixed Markdown reports](library-rendering.md#render_report_markdown) |
 | `report` | [Functions and control flow](library-control.md#report) |
 | `require` | [Presence and lookup](library-presence.md#require) |
-| `reverse` | [Shared native forms](library-native.md#reverse) |
+| `reverse` | [Shared native forms](library-pipelines.md#reverse) |
 | `runs_by` | [Grouping and neighbourhoods](library-grouping.md#runs_by) |
 | `scan` | [Functions and control flow](library-control.md#scan) |
 | `set` | [Collections and reductions](library-collections.md#sets) |
@@ -158,16 +156,16 @@ support. `present` is a pattern.
 | `sort_by` | [Ordering and extrema](library-ordering.md#sort_by) |
 | `starts_with` | [Strings](library-strings.md#starts_with) |
 | `sum` | [Collections and reductions](library-collections.md#sum) |
-| `tail` | [Shared native forms](library-native.md#head-and-tail) |
-| `tally` | [Constructed pipeline stages](library-pipelines.md#tally) |
-| `tally (native)` | [Shared native forms](library-native.md#native-count-unique-and-tally) |
+| `tail` | [Shared native forms](library-pipelines.md#head-and-tail) |
+| `tally` | [Collection pipeline stages](library-pipelines.md#tally) |
+| `tally (native)` | [Shared native forms](library-native.md#native-unique-and-tally) |
 | `to_json_value` (Rust) | [JSON rendering](library-rendering.md#to_json_value) |
 | `to_report_json_value` (Rust) | [Mixed native reports](library-rendering.md#mixed-native-reports) |
 | `to_string` | [Scalars and strings](library-strings.md#to_string) |
 | `tuple` | [Collections and reductions](library-collections.md#arrays-and-tuples) |
 | `union` | [Shared native forms](library-native.md#native-set-operators) |
-| `unique` | [Constructed pipeline stages](library-pipelines.md#unique) |
-| `unique (native)` | [Shared native forms](library-native.md#native-count-unique-and-tally) |
+| `unique` | [Collection pipeline stages](library-pipelines.md#unique) |
+| `unique (native)` | [Shared native forms](library-native.md#native-unique-and-tally) |
 | `where` | [Collections and reductions](library-collections.md#comprehensions) |
 | `where_exists` | [Shared native forms](library-native.md#where_exists) |
 | `windows` | [Grouping and neighbourhoods](library-grouping.md#windows) |

@@ -24,60 +24,23 @@ Top-level statements each start from the original input. Constructed bare
 filter/map/count instead read the host's constructed input.
 See [statement scope](native-programs.md#statements-and-scope).
 
-## Native filter
+## Collection selection and cardinality
 
-`selection | filter(predicate)`
+[Filter, head, tail, reverse and check](library-pipelines.md#filter) share their
+collection contract with ordinary values. Native predicates retain host domain
+subjects and Unknown/completeness behavior; source/diff ownership stays with the
+adapter. Dictionary predicates receive values and retained entries keep their
+keys. Native streams use their admitted selection/restoration boundary. The small
+`parse_pipeline` reader accepts literal bounds/messages; richer readers and typed
+APIs accept runtime expressions. See [predicate subjects](native-programs.md#predicate-argument-subjects).
 
-Keep each native subject whose predicate is known true, in incoming order with
-duplicates. For a host predicate `active`, `input | filter(active)` keeps active
-subjects. The host decides how final Unknown interacts with incomplete native
-facts; predicate errors fail.
-Supporting hosts accept `name => expression` or `_`, with one native subject
-per invocation and nested `_` rebinding. Available projections and predicate
-leaves remain host-defined. See [predicate subjects](native-programs.md#predicate-argument-subjects).
+## Native unique and tally
 
-## head and tail
+`selection | unique`; `selection | tally`
 
-`selection | head(n)`; `selection | tail(n)`
-
-Keep at most the first or last `n` stream items. `n` is a nonnegative integer;
-`head(0)` and `tail(0)` give an empty result. With incoming identities `a, b, c`,
-`tail(2)` retains `b, c` in that order. Oversized bounds retain all items and
-do not fail for insufficient cardinality. The small `parse_pipeline` reader
-accepts these forms; richer hosts may also apply them to ordered dictionaries,
-preserving kind and retained entry order. These are not constructed array
-suffixes. See [native bounds](shared-concepts.md#the-small-embedding-reader).
-
-## reverse
-
-`selection | reverse`
-
-Reverse incoming order. Incoming `a, b, c` becomes `c, b, a`; empty stays empty.
-Duplicates remain, and reversal also reverses equal-key ties after sorting.
-The small pipeline reader supports it. Native hosts can retain dictionary kind
-while reversing entries. This is not a constructed suffix.
-See [native dictionary order](native-programs.md#correlated-native-dictionaries).
-
-## check
-
-`check`, `check(n)`, `check("message")`, `check(n, "message")`
-
-Check stream cardinality, retaining the stream on success. Without `n`, require
-nonempty input; with `n`, require exactly that nonnegative count.
-`input | check(1, "expected one subject")` succeeds only for one subject.
-`check(0)` accepts empty input. Failures use the supplied optional message.
-The small `parse_pipeline` reader supports this form; a native host decides
-whether to expose it in its richer frontend. It is not a constructed suffix;
-use `require(length(a) == 1, a, "message")` for an array check.
-
-## Native count, unique and tally
-
-`selection | count`; `selection | unique`; `selection | tally`
-
-Count stream items, retain first occurrences by host identity, or count projected
-keys in first-seen order. Incoming native identities `a, a, b` give count `3`
-and unique `a, b`; tally depends on the host's key projection, which can give
-different keys from identity. Empty count is zero and unique is empty. Empty
+Retain first occurrences by host identity, or count projected
+keys in first-seen order. Incoming native identities `a, a, b` give unique `a, b`; tally depends on the host's key projection, which can give
+different keys from identity. Empty unique is empty. Empty
 tally retains its host result kind. The small pipeline representation makes
 count/tally terminal; richer hosts own result and output transitions.
 Native values are not converted to printed names for identity comparison.

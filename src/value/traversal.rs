@@ -103,7 +103,25 @@ pub fn for_each_value_child<'a, Q>(
             visit(array);
             visit(&argument.body);
         }
+        K::Head { collection, count } | K::Tail { collection, count } => {
+            visit(collection);
+            visit(count);
+        }
+        K::Check {
+            collection,
+            operand,
+            message,
+        } => {
+            visit(collection);
+            if let Some(operand) = operand {
+                visit(operand);
+            }
+            if let Some(message) = message {
+                visit(message);
+            }
+        }
         K::Queue { items: value, .. }
+        | K::Reverse(value)
         | K::PopFront(value)
         | K::Break(value)
         | K::One(value)
@@ -325,7 +343,25 @@ pub fn for_each_value_child_mut<'a, Q>(
             visit(array);
             visit(&mut argument.body);
         }
+        K::Head { collection, count } | K::Tail { collection, count } => {
+            visit(collection);
+            visit(count);
+        }
+        K::Check {
+            collection,
+            operand,
+            message,
+        } => {
+            visit(collection);
+            if let Some(operand) = operand {
+                visit(operand);
+            }
+            if let Some(message) = message {
+                visit(message);
+            }
+        }
         K::Queue { items: value, .. }
+        | K::Reverse(value)
         | K::PopFront(value)
         | K::Break(value)
         | K::One(value)
@@ -784,6 +820,24 @@ fn map_node<Q, R>(
                 argument: argument.argument,
                 body: Box::new(child(*argument.body, children)),
             },
+        },
+        K::Head { collection, count } => K::Head {
+            collection: Box::new(child(*collection, children)),
+            count: Box::new(child(*count, children)),
+        },
+        K::Tail { collection, count } => K::Tail {
+            collection: Box::new(child(*collection, children)),
+            count: Box::new(child(*count, children)),
+        },
+        K::Reverse(collection) => K::Reverse(Box::new(child(*collection, children))),
+        K::Check {
+            collection,
+            operand,
+            message,
+        } => K::Check {
+            collection: Box::new(child(*collection, children)),
+            operand: operand.map(|v| Box::new(child(*v, children))),
+            message: message.map(|v| Box::new(child(*v, children))),
         },
         K::Windows { items, size } => K::Windows {
             items: Box::new(child(*items, children)),

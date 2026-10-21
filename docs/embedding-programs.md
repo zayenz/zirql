@@ -915,3 +915,23 @@ same request budget to that conversion and `render_json_value`; add document or
 completeness fields between those calls. The [rendering guide](library-rendering.md#mixed-native-reports)
 contains a complete mixed-report example and describes the allocation boundary.
 Evaluation never needs a JSON conversion.
+
+## Collection bounds in a value tree
+
+Build `ValueExpressionKind::Head { collection, count }`, `Tail`, `Reverse` and
+`Check { collection, operand, message }` directly. `count`, `operand` and `message`
+are ordinary expressions; use `None` for an omitted check operand/message.
+`Filter` keeps the original collection kind and tests dictionary values.
+`ExpressionStep::{Head, Tail, Check}` and constant `Stage` operands use the same
+admission and operations for native hosts. Existing `ProgramValue` and native
+query leaves need no additional predicate payload API.
+
+Run a constructed chain with the word adapter:
+
+```sh
+cargo run --locked --example words -- \
+  '[3,1,3] | filter(_ > 1) | head(length([0,0])) | reverse | check(2, "two rows")'
+```
+
+It returns `[3, 3]`. The [collection reference](library-pipelines.md#filter)
+defines empty behavior and the explicit keyed-array conversion boundary.

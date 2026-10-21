@@ -19,6 +19,9 @@ pub struct Dictionary {
 }
 
 impl Dictionary {
+    pub(crate) fn into_vec(self) -> Vec<Entry> {
+        self.entries
+    }
     pub(crate) fn position(
         &self,
         key: &ConstructedValue,

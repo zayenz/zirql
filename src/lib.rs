@@ -423,4 +423,8 @@ pub use value::{
 
 pub use program::{for_each_expression_child, walk_expression};
 
+pub use value::{
+    collection_selection_types, collection_subject_types, restore_collection_declaration,
+};
+
 pub use composition::{NativeBody, NativeCollectionKey, SelectionShape, collection_value_types};

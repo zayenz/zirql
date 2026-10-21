@@ -9,6 +9,14 @@ pub use traversal::{
     walk_value, walk_value_mut,
 };
 
+mod collection;
+pub(crate) use collection::{
+    collection_len, collection_subject, retain_collection, select_collection,
+};
+pub use collection::{
+    collection_selection_types, collection_subject_types, restore_collection_declaration,
+};
+
 mod dictionary;
 pub use dictionary::Dictionary;
 pub(crate) mod execution;
@@ -522,10 +530,27 @@ pub enum ValueExpressionKind<Q = ()> {
         operator: ValueReducer,
         array: Box<ValueExpression<Q>>,
     },
-    /// Retain positional elements whose scoped predicate is true, in input order.
+    /// Retain array/set elements or dictionary values satisfying a known Boolean.
+    /// Preserve collection kind, entry keys, order and declared element contracts.
     Filter {
         array: Box<ValueExpression<Q>>,
         predicate: PredicateArgument<Q>,
+    },
+    /// Retain the first/last entries using a nonnegative runtime bound.
+    Head {
+        collection: Box<ValueExpression<Q>>,
+        count: Box<ValueExpression<Q>>,
+    },
+    Tail {
+        collection: Box<ValueExpression<Q>>,
+        count: Box<ValueExpression<Q>>,
+    },
+    Reverse(Box<ValueExpression<Q>>),
+    /// Require nonempty input, an exact count, or a single message operand.
+    Check {
+        collection: Box<ValueExpression<Q>>,
+        operand: Option<Box<ValueExpression<Q>>>,
+        message: Option<Box<ValueExpression<Q>>>,
     },
     /// Transform every positional item with a scoped expression, in input order.
     Map {
@@ -1710,6 +1735,43 @@ fn shape_type(
             }
             keyed.elements = fields;
             ValueType::KeyedArray(keyed)
+        }
+        (ValueType::Dictionary { keys, values }, DeclaredType::Dictionary(key, value)) => {
+            let mut declared_keys = metadata_vec(keys.len().max(1), budget, location)?;
+            for actual in keys {
+                declared_keys.push(declared_fact(key, actual, budget, location)?);
+            }
+            if declared_keys.is_empty() {
+                declared_keys.push(declared_fact(
+                    key,
+                    ValueType::Unestablished,
+                    budget,
+                    location,
+                )?);
+            }
+            let mut declared_values = metadata_vec(values.len().max(1), budget, location)?;
+            for actual in values {
+                declared_values.push(declared_fact(value, actual, budget, location)?);
+            }
+            if declared_values.is_empty() {
+                declared_values.push(declared_fact(
+                    value,
+                    ValueType::Unestablished,
+                    budget,
+                    location,
+                )?);
+            }
+            ValueType::Dictionary {
+                keys: declared_keys,
+                values: declared_values,
+            }
+        }
+        (ValueType::Record(entries), DeclaredType::Dictionary(_, value)) => {
+            let mut fields = metadata_vec(entries.len(), budget, location)?;
+            for (label, actual) in entries {
+                fields.push((label, declared_fact(value, actual, budget, location)?));
+            }
+            ValueType::Record(fields)
         }
         (ValueType::Tuple(entries), DeclaredType::Tuple(children)) => {
             let mut fields = metadata_vec(entries.len(), budget, location)?;
@@ -3982,6 +4044,14 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                         )
                         | ValueType::ArrayKind(elements) => elements,
                         ValueType::KeyedArray(keyed) => keyed.elements,
+                        ValueType::Set(_)
+                        | ValueType::Record(_)
+                        | ValueType::RecordKind
+                        | ValueType::Dictionary { .. }
+                            if *operator == ValueReducer::Length =>
+                        {
+                            continue;
+                        }
                         ValueType::Unestablished => continue,
                         _ => return Err(error(location, "reducer needs an array")),
                     };
@@ -4008,26 +4078,67 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 )
             }
             ValueExpressionKind::Filter { array, predicate } => {
-                let mut elements = Vec::new();
-                for ty in self.walk(array, budget)? {
-                    append_types(
-                        &mut elements,
-                        filter_elements(ty, budget, location)?,
-                        budget,
-                        location,
-                    )?;
-                }
-                if elements.is_empty() {
-                    push_metadata(&mut elements, ValueType::Unestablished, budget, location)?;
-                }
+                let types = self.walk(array, budget)?;
+                let elements = collection_subject_types(&types, budget, location.clone())?;
                 let result =
                     self.scoped_types(predicate, array, &elements, SubjectSource::Filter, budget)?;
                 predicate_types(&result, budget, &predicate.body.range)?;
-                one_type(
-                    ValueType::Array(ArrayType::Elements(elements)),
-                    budget,
-                    location,
-                )
+                collection_selection_types(&types, true, false, budget, location.clone())
+            }
+            ValueExpressionKind::Head { collection, count }
+            | ValueExpressionKind::Tail { collection, count } => {
+                let types = self.walk(collection, budget)?;
+                for ty in self.walk(count, budget)? {
+                    require_type(
+                        &ty,
+                        ScalarRequirement::Integer,
+                        &Location::Query(count.range.clone()),
+                    )?;
+                }
+                collection_selection_types(&types, true, false, budget, location.clone())
+            }
+            ValueExpressionKind::Reverse(collection) => {
+                let types = self.walk(collection, budget)?;
+                collection_selection_types(&types, false, true, budget, location.clone())
+            }
+            ValueExpressionKind::Check {
+                collection,
+                operand,
+                message,
+            } => {
+                let types = self.walk(collection, budget)?;
+                if let Some(operand) = operand {
+                    for ty in self.walk(operand, budget)? {
+                        let string = message.is_none()
+                            && matches!(
+                                shape_type(copy_type(&ty, budget, location)?, budget, location)?,
+                                ValueType::String
+                            );
+                        crate::admit_scalar_type(
+                            &ty,
+                            if string {
+                                crate::ScalarType::String
+                            } else {
+                                crate::ScalarType::Integer
+                            },
+                            crate::TypeFactPolicy::Deferred,
+                            budget,
+                            &Location::Query(operand.range.clone()),
+                        )?;
+                    }
+                }
+                if let Some(message) = message {
+                    for ty in self.walk(message, budget)? {
+                        crate::admit_scalar_type(
+                            &ty,
+                            crate::ScalarType::String,
+                            crate::TypeFactPolicy::Deferred,
+                            budget,
+                            &Location::Query(message.range.clone()),
+                        )?;
+                    }
+                }
+                collection_selection_types(&types, false, false, budget, location.clone())
             }
             ValueExpressionKind::Map { array, argument }
             | ValueExpressionKind::FlatMap { array, argument } => {
@@ -6545,20 +6656,6 @@ pub(crate) fn positional_elements(
     }
 }
 
-// Filtering loses positions while preserving established element facts.
-fn filter_elements(
-    ty: ValueType,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<Vec<ValueType>, QueryError> {
-    match shape_type(ty, budget, location)? {
-        ValueType::Array(ArrayType::Positions(elements) | ArrayType::Elements(elements))
-        | ValueType::ArrayKind(elements) => Ok(elements),
-        ValueType::Unestablished => one_type(ValueType::Unestablished, budget, location),
-        _ => Err(error(location, "filter needs a positional array")),
-    }
-}
-
 // Removal loses positional facts, but retains admitted element kinds.
 fn unique_elements(
     ty: ValueType,
@@ -7312,6 +7409,17 @@ pub(crate) fn reduce_ref(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ConstructedValue, QueryError> {
+    if operator == ValueReducer::Length {
+        let len = collection_len(array, true, location)?;
+        budget.charge(1, location.clone())?;
+        return scalar(
+            ConstructedValue::Integer(
+                i64::try_from(len).map_err(|_| error(location, "length overflow"))?,
+            ),
+            budget,
+            location,
+        );
+    }
     let array = array.data();
     // Sources are eager; reductions inspect their admitted immutable data.
     let (positional, keyed) = match &array {

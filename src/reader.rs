@@ -1137,6 +1137,10 @@ pub enum ValueSuffixKind {
     Windows,
     RunsBy,
     Count,
+    Head,
+    Tail,
+    Reverse,
+    Check,
     Sort,
     Unique,
     Tally,
@@ -1151,6 +1155,10 @@ impl ValueSuffixKind {
             "windows" => Self::Windows,
             "runs_by" => Self::RunsBy,
             "count" => Self::Count,
+            "head" => Self::Head,
+            "tail" => Self::Tail,
+            "reverse" => Self::Reverse,
+            "check" => Self::Check,
             "sort" => Self::Sort,
             "unique" => Self::Unique,
             "tally" => Self::Tally,
@@ -1165,6 +1173,7 @@ impl ValueSuffixKind {
     pub fn without_arguments<Q>(self) -> Option<ValueSuffix<Q>> {
         Some(match self {
             Self::Count => ValueSuffix::Count,
+            Self::Reverse => ValueSuffix::Reverse,
             Self::Sort => ValueSuffix::Sort,
             Self::Unique => ValueSuffix::Unique,
             Self::Tally => ValueSuffix::Tally,
@@ -1649,6 +1658,13 @@ pub enum ValueSuffix<Q = ()> {
     Windows(Box<ValueExpression<Q>>),
     RunsBy(Located<String>),
     Count,
+    Head(Box<ValueExpression<Q>>),
+    Tail(Box<ValueExpression<Q>>),
+    Reverse,
+    Check {
+        operand: Option<Box<ValueExpression<Q>>>,
+        message: Option<Box<ValueExpression<Q>>>,
+    },
     Sort,
     Unique,
     Tally,
@@ -1674,7 +1690,17 @@ pub fn lower_value_suffix<S, O, E>(
                 }
                 dispose_native_value(*predicate.body);
             }
-            ValueSuffix::Windows(size) => dispose_native_value(*size),
+            ValueSuffix::Windows(size) | ValueSuffix::Head(size) | ValueSuffix::Tail(size) => {
+                dispose_native_value(*size)
+            }
+            ValueSuffix::Check { operand, message } => {
+                if let Some(v) = operand {
+                    dispose_native_value(*v);
+                }
+                if let Some(v) = message {
+                    dispose_native_value(*v);
+                }
+            }
             _ => {}
         }
         return Err(QueryError::query(
@@ -1706,6 +1732,20 @@ pub fn lower_value_suffix<S, O, E>(
         ValueSuffix::Count => K::Reduce {
             operator: ValueReducer::Length,
             array: Box::new(value),
+        },
+        ValueSuffix::Head(count) => K::Head {
+            collection: Box::new(value),
+            count,
+        },
+        ValueSuffix::Tail(count) => K::Tail {
+            collection: Box::new(value),
+            count,
+        },
+        ValueSuffix::Reverse => K::Reverse(Box::new(value)),
+        ValueSuffix::Check { operand, message } => K::Check {
+            collection: Box::new(value),
+            operand,
+            message,
         },
         ValueSuffix::Sort => K::Sort {
             array: Box::new(value),
@@ -5145,6 +5185,36 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         _ => ValueSuffix::Filter(argument),
                     }
                 }
+                Some(kind @ (ValueSuffixKind::Head | ValueSuffixKind::Tail)) => {
+                    self.reader.expect('(')?;
+                    let count = ValueGuard::new(self.expression(0, depth + wrappers + 1)?);
+                    self.reader.expect(')')?;
+                    self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
+                    if kind == ValueSuffixKind::Head {
+                        ValueSuffix::Head(Box::new(count.into_value()))
+                    } else {
+                        ValueSuffix::Tail(Box::new(count.into_value()))
+                    }
+                }
+                Some(ValueSuffixKind::Check) => {
+                    let mut operand = None;
+                    let mut message = None;
+                    if self.reader.consume('(') && !self.reader.consume(')') {
+                        operand = Some(ValueGuard::new(self.expression(0, depth + wrappers + 1)?));
+                        if self.reader.consume(',') {
+                            message =
+                                Some(ValueGuard::new(self.expression(0, depth + wrappers + 1)?));
+                        }
+                        self.reader.expect(')')?;
+                    }
+                    self.slots::<ValueExpression<ReadExpression<H>>>(
+                        usize::from(operand.is_some()) + usize::from(message.is_some()),
+                    )?;
+                    ValueSuffix::Check {
+                        operand: operand.map(|v| Box::new(v.into_value())),
+                        message: message.map(|v| Box::new(v.into_value())),
+                    }
+                }
                 Some(ValueSuffixKind::Windows) => {
                     self.reader.expect('(')?;
                     let size = ValueGuard::new(self.expression(0, depth + wrappers + 1)?);
@@ -5166,11 +5236,11 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     ));
                 }
             };
+            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
             value = ValueGuard::new(lower_value_suffix(
                 value.into_value(),
                 Located::new(suffix, stage.range.start..self.reader.position()),
             )?);
-            self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
             wrappers += 1;
         }
         Ok(value.into_value())
@@ -5496,6 +5566,7 @@ pub(crate) fn dispose_native_trees<S, O, E>(
                 continue;
             }
             K::One(child)
+            | K::Reverse(child)
             | K::Break(child)
             | K::Occurs(child)
             | K::Absent(child)
@@ -5512,6 +5583,25 @@ pub(crate) fn dispose_native_trees<S, O, E>(
             | K::Sort { array: child, .. }
             | K::Extremum { array: child, .. } => {
                 pending.push(*child);
+                continue;
+            }
+            K::Head { collection, count } | K::Tail { collection, count } => {
+                pending.push(*collection);
+                pending.push(*count);
+                continue;
+            }
+            K::Check {
+                collection,
+                operand,
+                message,
+            } => {
+                pending.push(*collection);
+                if let Some(v) = operand {
+                    pending.push(*v);
+                }
+                if let Some(v) = message {
+                    pending.push(*v);
+                }
                 continue;
             }
             K::Filter { array, predicate }

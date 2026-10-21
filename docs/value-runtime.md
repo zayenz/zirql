@@ -108,7 +108,9 @@ preflight still covers those branches.
 | Conditional selection | `Conditional` |
 | Computed dictionary | `Dictionary` entry pairs or `DictionaryComprehension { clauses, key, head }` |
 | Array or set comprehension | `Comprehension` with `ValueConstructor` and `ValueGenerator` clauses |
-| Scoped element selection | `Filter { array, predicate }` |
+| Scoped collection selection | `Filter { array, predicate }` |
+| Bounds and movement | `Head { collection, count }`, `Tail { collection, count }`, `Reverse` |
+| Cardinality assertion | `Check { collection, operand, message }` |
 | One bound predicate | `PredicateScope { subject, predicate }`, `PredicateSubject` |
 | Summaries | `Reduce` with `ValueReducer::{Length, Sum, Forall, Exists}` |
 | Requirement | `Require { condition, value, message }` |
@@ -281,3 +283,18 @@ iteration and general set algebra are absent. The common expression reader accep
 and native membership. The host resolves native type names and supplies identity
 and container hooks. See [functions and control
 flow](functions-and-control-flow.md#other-control-flow-forms).
+
+## Selection contracts
+
+`Filter`, `Head`, `Tail`, `Reverse` and `Check` run in the same prepared value
+runner as other expressions. Bounds and check messages are expressions, evaluated
+in written order. Only `Length` broadens reducer admission to sets/dictionaries;
+`Sum`, `Forall` and `Exists` still require their existing arrays.
+
+Adapters can reuse `collection_subject_types` for element/value predicate facts,
+`collection_selection_types` for result facts, and
+`restore_collection_declaration` when rebuilding retained rows. Preserve explicit
+sequence/array element and dictionary key/value declarations before splitting
+containers. Removing record fields weakens their presence to optional; moving
+entries retains required fields. Do not copy stale positional facts into a
+reordered result or infer an empty schema from retained rows.

@@ -138,6 +138,25 @@ pub(crate) enum PreparedKind<'a, Q> {
         operator: ValueReducer,
         array: Box<PreparedValue<'a, Q>>,
     },
+    Filter {
+        collection: Box<PreparedValue<'a, Q>>,
+        argument: Option<&'a Pattern>,
+        body: Box<PreparedValue<'a, Q>>,
+    },
+    Head {
+        collection: Box<PreparedValue<'a, Q>>,
+        count: Box<PreparedValue<'a, Q>>,
+    },
+    Tail {
+        collection: Box<PreparedValue<'a, Q>>,
+        count: Box<PreparedValue<'a, Q>>,
+    },
+    Reverse(Box<PreparedValue<'a, Q>>),
+    Check {
+        collection: Box<PreparedValue<'a, Q>>,
+        operand: Option<Box<PreparedValue<'a, Q>>>,
+        message: Option<Box<PreparedValue<'a, Q>>>,
+    },
     SubjectScope {
         subject: Box<PreparedValue<'a, Q>>,
         predicate: bool,
@@ -214,7 +233,6 @@ pub(crate) enum PreparedKind<'a, Q> {
     },
     Comprehension {
         constructor: ValueConstructor,
-        retain_declaration: bool,
         clauses: Vec<Located<PreparedGenerator<'a, Q>>>,
         head: Box<PreparedValue<'a, Q>>,
     },
@@ -578,47 +596,42 @@ impl<'a> Preparation<'a> {
                     array: Box::new(self.resolve(array, queries, budget)?),
                 },
                 ValueExpressionKind::Filter { array, predicate } => {
-                    let source = self.resolve(array, queries, budget)?;
+                    let collection = Box::new(self.resolve(array, queries, budget)?);
                     let saved = self.locals.len();
-                    push_metadata(&mut self.locals, PREDICATE_SUBJECT, budget, &location)?;
-                    let subject = Located::new(
-                        PreparedKind::Name(ReadSlot::Local(saved)),
-                        array.range.clone(),
-                    );
-                    let body = self.predicate(predicate, queries, budget, &location)?;
-                    let filter = Located::new(
-                        PreparedKind::SubjectScope {
-                            predicate: true,
-                            subject: Box::new(subject),
-                            argument: predicate.argument.as_ref(),
-                            body: Box::new(body),
-                        },
-                        predicate.body.range.clone(),
-                    );
+                    let body = Box::new(self.predicate(predicate, queries, budget, &location)?);
                     self.locals.truncate(saved);
-                    let mut binders = metadata_vec(1, budget, &location)?;
-                    binders.push(None);
-                    let mut clauses = metadata_vec(1, budget, &location)?;
-                    clauses.push(Located::new(
-                        PreparedGenerator::In {
-                            case: false,
-                            binders,
-                            positional: false,
-                            source,
-                            filter: Some(filter),
-                        },
-                        expression.range.clone(),
-                    ));
-                    PreparedKind::Comprehension {
-                        constructor: ValueConstructor::Array,
-                        retain_declaration: true,
-                        clauses,
-                        head: Box::new(Located::new(
-                            PreparedKind::Name(ReadSlot::Local(saved)),
-                            array.range.clone(),
-                        )),
+                    PreparedKind::Filter {
+                        collection,
+                        argument: predicate.argument.as_ref(),
+                        body,
                     }
                 }
+                ValueExpressionKind::Head { collection, count } => PreparedKind::Head {
+                    collection: Box::new(self.resolve(collection, queries, budget)?),
+                    count: Box::new(self.resolve(count, queries, budget)?),
+                },
+                ValueExpressionKind::Tail { collection, count } => PreparedKind::Tail {
+                    collection: Box::new(self.resolve(collection, queries, budget)?),
+                    count: Box::new(self.resolve(count, queries, budget)?),
+                },
+                ValueExpressionKind::Reverse(collection) => {
+                    PreparedKind::Reverse(Box::new(self.resolve(collection, queries, budget)?))
+                }
+                ValueExpressionKind::Check {
+                    collection,
+                    operand,
+                    message,
+                } => PreparedKind::Check {
+                    collection: Box::new(self.resolve(collection, queries, budget)?),
+                    operand: operand
+                        .as_ref()
+                        .map(|v| self.resolve(v, queries, budget).map(Box::new))
+                        .transpose()?,
+                    message: message
+                        .as_ref()
+                        .map(|v| self.resolve(v, queries, budget).map(Box::new))
+                        .transpose()?,
+                },
                 ValueExpressionKind::Map { array, argument }
                 | ValueExpressionKind::FlatMap { array, argument } => self.mapping(
                     array,
@@ -787,7 +800,6 @@ impl<'a> Preparation<'a> {
                     self.locals.truncate(saved);
                     PreparedKind::Comprehension {
                         constructor: *constructor,
-                        retain_declaration: false,
                         clauses,
                         head,
                     }
@@ -914,7 +926,6 @@ impl<'a> Preparation<'a> {
         };
         Ok(PreparedKind::Comprehension {
             constructor: ValueConstructor::Array,
-            retain_declaration: false,
             clauses,
             head: Box::new(head),
         })

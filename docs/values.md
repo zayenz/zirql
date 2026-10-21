@@ -297,15 +297,15 @@ are described under [selective generator adoption](host-integration.md#selective
 
 | Call | Meaning | Empty input |
 | --- | --- | --- |
-| `length(a)` | Number of present array entries | `0` |
+| `length(a)` | Collection cardinality, including present keyed cells | `0` |
 | `sum(a)` | Checked integer sum in input order | `0` |
 | `forall(a)` | Every entry is true | `true` |
 | `exists(a)` | At least one entry is true | `false` |
 
-These calls accept positional and keyed arrays. Keyed summaries visit present
-cells in stored order; they do not fill missing cells. `sum` requires integers,
-and `forall` and `exists` require known Booleans. None accepts a string, tuple or
-set as its array operand.
+`length` accepts positional arrays, sets and dictionaries, plus present keyed
+cells. The other reducers keep their positional/keyed array contracts: `sum`
+requires integers, and `forall` and `exists` require known Booleans. Keyed
+summaries do not fill missing cells. Strings and tuples are refused.
 
 ```zirql
 length([w for w in words if contains(w, "p")])
@@ -848,3 +848,8 @@ when crossing between strings and primitive scalar values. Conversion checks the
 written operand's known type before evaluation, parses only evaluated strings,
 and reports located errors for malformed or out-of-range text. It adds no implicit
 numeric coercion, native stringification or CSV inference.
+
+The [collection selection reference](library-pipelines.md#filter) defines filter,
+bounds, reversal and checks for arrays, sets, dictionaries and admitted native
+collections. Selection preserves declared empty schemas; removed structural
+record fields become optional while retaining their value contracts.

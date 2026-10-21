@@ -8534,3 +8534,170 @@ fn scalar_conversion_scanning_and_new_text_use_the_active_budget() {
     assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
     assert_eq!(error.location, Location::Query(10..20));
 }
+
+#[test]
+fn collection_selection_keeps_kinds_keys_and_declared_empty_schemas() {
+    let mut host = WordInput {
+        value: V::Array(vec![]),
+        unknown: false,
+    };
+    let run = |source: &str, host: &mut WordInput| {
+        let mut allowance = ample();
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let expression = zirql::read_value_expression(&mut reader, host, &mut allowance, 64)
+            .unwrap_or_else(|error| panic!("{source}: {error}"));
+        let result =
+            zirql::evaluate_query_value(&expression, &BTreeMap::new(), host, &mut allowance);
+        zirql::dispose_native_value(expression);
+        result
+    };
+    let text = "[3,1,3] | filter(n => n > 1) | head(length([0,0])) | tail(9) | reverse | check(2, \"kept\" ++ \" rows\")";
+    let parsed = run(text, &mut host).unwrap();
+    let typed = e(K::Check {
+        collection: Box::new(e(K::Reverse(Box::new(e(K::Head {
+            collection: Box::new(e(K::Filter {
+                array: Box::new(literal(V::Array(vec![
+                    V::Integer(3),
+                    V::Integer(1),
+                    V::Integer(3),
+                ]))),
+                predicate: zirql::PredicateArgument {
+                    argument: Some(binder("n")),
+                    body: Box::new(binary(B::Greater, name("n"), int(1))),
+                },
+            })),
+            count: Box::new(e(K::Reduce {
+                operator: R::Length,
+                array: Box::new(literal(V::Array(vec![V::Integer(0), V::Integer(0)]))),
+            })),
+        }))))),
+        operand: Some(Box::new(int(2))),
+        message: Some(Box::new(literal(V::String("kept rows".into())))),
+    });
+    assert_eq!(parsed, evaluate(&typed).unwrap());
+    assert_eq!(parsed, V::Array(vec![V::Integer(3), V::Integer(3)]));
+    assert_eq!(
+        run(
+            r#"{"a":1,"b":3,"c":2} | filter(_ > 1) | reverse | head(1)"#,
+            &mut host
+        )
+        .unwrap()
+        .data(),
+        &V::Record(vec![("c".into(), V::Integer(2))])
+    );
+    assert_eq!(
+        run("{1,2,3} | filter(_ > 1) | tail(1)", &mut host)
+            .unwrap()
+            .data(),
+        &V::Set {
+            element_type: Some(SetElementType::Integer),
+            elements: vec![V::Integer(3)].into()
+        }
+    );
+    assert_eq!(
+        run("{1:2} | filter(false) | check(0) | count", &mut host)
+            .unwrap()
+            .data(),
+        &V::Integer(0)
+    );
+    assert_eq!(
+        run("length(set<int>())", &mut host).unwrap().data(),
+        &V::Integer(0)
+    );
+    assert_eq!(
+        run("set<int>() | check(0) | count", &mut host)
+            .unwrap()
+            .data(),
+        &V::Integer(0)
+    );
+    assert_eq!(
+        run("{} | check(0) | count", &mut host).unwrap().data(),
+        &V::Integer(0)
+    );
+    assert_eq!(
+        run("[] | tail(0) | head(9)", &mut host).unwrap().data(),
+        &V::Array(vec![])
+    );
+    assert!(
+        evaluate(&e(K::Reduce {
+            operator: R::Sum,
+            array: Box::new(literal(V::Set {
+                element_type: Some(SetElementType::Integer),
+                elements: vec![V::Integer(1)].into()
+            }))
+        }))
+        .is_err()
+    );
+    let record = declared(
+        V::Record(vec![("id".into(), V::Integer(1))]),
+        D::Record(vec![("id".into(), D::Integer)]),
+    );
+    let empty_record = evaluate(&e(K::Filter {
+        array: Box::new(literal(record)),
+        predicate: zirql::PredicateArgument {
+            argument: None,
+            body: Box::new(literal(V::Boolean(false))),
+        },
+    }))
+    .unwrap();
+    let V::Declared { declaration, .. } = &empty_record else {
+        panic!("record declaration")
+    };
+    assert_eq!(
+        declaration,
+        &D::Record(vec![("id".into(), D::Optional(Box::new(D::Integer)))])
+    );
+    admit_constructed(
+        &empty_record,
+        declaration,
+        &mut ample(),
+        Location::Query(0..1),
+    )
+    .unwrap();
+    assert!(run("[] | head(true)", &mut host).is_err());
+    assert!(run("[] | check(0, 7)", &mut host).is_err());
+    assert!(
+        run("[] | check(1, \"missing\")", &mut host)
+            .unwrap_err()
+            .message
+            .contains("expected 1 items, got 0: missing")
+    );
+    let empty = declared(
+        V::Array(vec![]),
+        D::Sequence(Box::new(D::Record(vec![("id".into(), D::Integer)]))),
+    );
+    let dictionary = declared(
+        V::Record(vec![]),
+        D::Dictionary(
+            Box::new(D::String),
+            Box::new(D::Record(vec![("id".into(), D::Integer)])),
+        ),
+    );
+    let invalid_dictionary = e(K::Filter {
+        array: Box::new(literal(dictionary)),
+        predicate: zirql::PredicateArgument {
+            argument: Some(binder("row")),
+            body: Box::new(binary(B::Greater, field(name("row"), "typo"), int(0))),
+        },
+    });
+    assert!(evaluate(&invalid_dictionary).is_err());
+    let selected = e(K::Head {
+        collection: Box::new(literal(empty)),
+        count: Box::new(int(0)),
+    });
+    let invalid = e(K::Map {
+        array: Box::new(selected),
+        argument: zirql::PredicateArgument {
+            argument: Some(binder("row")),
+            body: Box::new(field(name("row"), "typo")),
+        },
+    });
+    assert!(evaluate(&invalid).is_err());
+    assert!(
+        evaluate(&e(K::Reverse(Box::new(literal(V::KeyedArray {
+            axes: vec![],
+            entries: vec![]
+        })))))
+        .is_err()
+    );
+}

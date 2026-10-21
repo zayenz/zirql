@@ -77,12 +77,15 @@ See [keyed construction](values.md#keyed-arrays) for matrix headers and shape ru
 
 ## length
 
-`length(array) -> int`
+`length(collection) -> int`
 
-Count present cells in a positional or keyed array. `length([4, 4])` is `2`;
-empty input gives `0`. Missing keyed cells do not contribute. Strings, tuples,
-sets and dictionaries are not array operands. Native `count` is a separate
-pipeline form. See [array summaries](values.md#array-summaries-and-requirements).
+Return collection cardinality: positional array/set elements, dictionary entries,
+or present keyed-array cells. `length([4, 4])` is `2`; empty input gives `0`.
+Native positional, set and dictionary views use the same cardinality. Missing
+keyed cells do not contribute. Strings and tuples are refused. The pipeline
+[count](library-pipelines.md#count) spelling counts the same entries and native
+stream subjects. Constructed results use a checked signed integer; native counts
+can retain the host's exact scalar representation.
 
 ## sum
 

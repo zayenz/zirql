@@ -399,3 +399,13 @@ Diff filters retain their existing change or side-owned operation subject.
 The host's projections, domain leaves and effect rules still determine which
 expressions are meaningful. See [scoped predicate adapters](host-integration.md#scoped-predicates)
 for reader, preparation and active-runner obligations.
+
+## Collection selection parity
+
+The [shared collection operations](library-pipelines.md#filter) apply to native
+selections/maps and ordinary positional arrays, sets and dictionaries. Predicates
+receive each dictionary value while retained entries keep their exact keys and
+order. Native subjects retain their host identity, ownership and completeness.
+Runtime bounds and check messages use prepared arguments with existing native
+relative-input rules. `check` returns its input unchanged on success. Explicit
+keyed arrays support count/length and require conversion before removal/reversal.

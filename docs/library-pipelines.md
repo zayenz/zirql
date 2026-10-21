@@ -1,23 +1,56 @@
-# Constructed pipeline stages
+# Collection pipeline stages
 
-These suffixes apply to constructed sources in the common reader. A host must
-identify its constructed bindings; grouping can make an expression source
-explicit. Pipelines run left to right after ordinary expression operators.
-See [collection pipelines](values.md#constructed-collection-pipelines).
-Native stages with similar names follow [native contracts](library-native.md).
+The fixed selection operations below accept positional arrays, insertion-ordered
+sets and dictionaries, and admitted native selections/maps. They preserve the
+collection kind, entry order, native identity and declared empty schemas. Keyed
+arrays expose cardinality only; use `entries` or an explicit positional projection
+before removing or moving cells. Strings and tuples are refused. Host bindings
+may require grouping to select ordinary value syntax. See
+[collection pipelines](values.md#constructed-collection-pipelines).
 
 ## filter
 
 `items | filter(pattern => condition)`; `items | filter(condition_using_)`
 
-Retain positional elements with a known true Boolean result, preserving order
-and duplicates. `[1, 2, 3] | filter(_ > 1)` returns `[2, 3]`.
-Empty or no-match input gives `[]`. Pattern mismatches, unknown truth and
-non-Booleans fail. Bare `filter(...)` uses the host's constructed input.
+Test each array/set element or dictionary value in current order, retaining the
+original values and exact keys. Arrays retain duplicates; sets retain their
+established element metadata, including when emptied. `[1, 2, 3] | filter(_ > 1)`
+returns `[2, 3]`; `{"a": 1, "b": 3} | filter(_ > 1)` retains `"b": 3`.
+Constructed predicates require known Booleans. Native predicates keep their host's
+domain subjects and Unknown/completeness policy. Errors fail the request.
 Named arguments and `_` denote the same subject; nested predicates rebind `_`
 while named outer captures remain available. Preflight checks the whole written
-body even for empty input. There is no implicit iteration of sets, dictionaries,
-keyed arrays or opaque native selections.
+body even for empty input, including pattern and effect admission. Bare
+`filter(...)` reads the host's current input.
+
+## head and tail
+
+`items | head(count)`; `items | tail(count)`
+
+Retain the first or last entries in current order. The bound is a nonnegative
+integer expression evaluated once before selection. Zero gives an empty
+collection of the same kind; oversized bounds retain all entries. Dictionary
+keys stay with their values. Runtime arguments use lexical scope and the host's
+existing relative-input policy.
+
+## reverse
+
+`items | reverse`
+
+Reverse every entry, including duplicates and equal-key ties. Empty collections
+retain their kind and declarations. Reversal preserves required record fields.
+
+## check
+
+`items | check`; `check(operand)`; `check(count, message)`
+
+Pass the unchanged input through on success. Without an operand require nonempty
+input; an integer operand requires exactly that nonnegative count, while a string
+operand supplies a failure message for the nonempty check. With two operands,
+evaluate the count then the string message in written order. `[] | check(0)`
+succeeds. A failure reports expected/actual counts and the optional text at the
+check location. Known wrong argument types fail before collection iteration,
+including for empty input.
 
 ## map
 
@@ -46,10 +79,11 @@ limits; failure yields no partial result.
 
 `items | count -> int`; bare `count`
 
-Count array entries using the constructed `length` reduction. `[2, 2] | count`
-returns `2`; empty input returns `0`. Bare count reads the host's constructed
-input. The scalar result cannot feed a collection stage. Native count instead
-counts the host's incoming stream. See [length](library-collections.md#length).
+Return array/set element count, dictionary entry count, present keyed-cell count,
+or native stream subject count. `[2, 2] | count` gives `2`; empty input gives `0`.
+Bare count reads the host's current input. Constructed count uses
+[length](library-collections.md#length); native counts can keep their exact host
+scalar. A scalar result cannot feed a collection stage.
 
 ## unique
 

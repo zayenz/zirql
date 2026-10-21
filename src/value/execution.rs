@@ -666,6 +666,15 @@ type ResultSource<'a, H, Q> =
     GeneratorSource<'a, <H as Host<'a, Q>>::Native, <H as Host<'a, Q>>::Kind>;
 
 enum Pending<'a, Q, N, K> {
+    SelectionSource(&'a PreparedValue<'a, Q>, usize),
+    SelectionNext(
+        &'a PreparedValue<'a, Q>,
+        usize,
+        usize,
+        ConstructedValue,
+        Vec<bool>,
+        usize,
+    ),
     Eval(&'a PreparedValue<'a, Q>, usize, bool),
     Check(&'a PreparedValue<'a, Q>, usize),
     Apply(
@@ -834,7 +843,6 @@ impl<'a, N, K> GeneratorSource<'a, N, K> {
     }
 }
 struct Comprehension<'a, Q, N, K> {
-    expression: &'a PreparedValue<'a, Q>,
     clauses: &'a [Located<PreparedGenerator<'a, Q>>],
     key: Option<&'a PreparedValue<'a, Q>>,
     head: &'a PreparedValue<'a, Q>,
@@ -842,7 +850,6 @@ struct Comprehension<'a, Q, N, K> {
     general_keys: bool,
     depth: usize,
     output: std::cell::RefCell<Output<'a, N, K>>,
-    declaration: std::cell::RefCell<Option<DeclaredType<()>>>,
 }
 enum Output<'a, N, K> {
     Array(Vec<Value<'a, N, K>>),
@@ -907,7 +914,9 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                     _ => Location::Query(frame.range.clone()),
                 };
                 let depth = match &next {
-                    Pending::Eval(_, depth, _)
+                    Pending::SelectionSource(_, depth)
+                    | Pending::SelectionNext(_, depth, ..)
+                    | Pending::Eval(_, depth, _)
                     | Pending::Check(_, depth)
                     | Pending::Apply(_, depth, ..)
                     | Pending::Initialize(_, depth, ..)
@@ -1031,6 +1040,10 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     | PreparedKind::NativeValue { .. } => unreachable!(
                                         "native callbacks are dispatched before pure-value steps"
                                     ),
+                                    PreparedKind::Filter { collection, .. } => {
+                                        push!(Pending::SelectionSource(expression, depth));
+                                        push!(Pending::Eval(collection, depth + 1, false));
+                                    }
                                     PreparedKind::SubjectScope { subject, .. } => {
                                         push!(Pending::Predicate(
                                             expression,
@@ -1170,7 +1183,6 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             ),
                                         };
                                         let c = Rc::new(Comprehension {
-                                            expression,
                                             clauses,
                                             key: None,
                                             head,
@@ -1178,7 +1190,6 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             general_keys: false,
                                             depth,
                                             output: std::cell::RefCell::new(output),
-                                            declaration: std::cell::RefCell::new(None),
                                         });
                                         push!(Pending::FinishComprehension(Rc::clone(&c)));
                                         push!(Pending::Clauses(c, 0, frame.locals.len()));
@@ -1946,19 +1957,6 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 let value = result.take().expect("generator source");
                                 let clause = &c.clauses[index];
                                 let cl = Location::Query(clause.range.clone());
-                                if matches!(
-                                    c.expression.value,
-                                    PreparedKind::Comprehension {
-                                        retain_declaration: true,
-                                        ..
-                                    }
-                                ) && let Some(data) = host.constructed(&value, budget, &cl)?
-                                {
-                                    *c.declaration.borrow_mut() = data
-                                        .declaration
-                                        .map(|d| copy_declaration(d, budget, &cl))
-                                        .transpose()?;
-                                }
                                 match &clause.value {
                                     PreparedGenerator::Bind { binder, filter, .. } => {
                                         budget.charge(1, cl.clone())?;
@@ -2101,6 +2099,79 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     push!(Pending::Clauses(c, index + 1, saved));
                                 }
                             }
+                            Pending::SelectionSource(expression, depth) => {
+                                let collection = result
+                                    .take()
+                                    .expect("filter source")
+                                    .materialize_with(host, budget, &location)?;
+                                let len = super::collection_len(&collection, false, &location)?;
+                                budget.check_items(len, location.clone())?;
+                                let retained = metadata_vec(len, budget, &location)?;
+                                push!(Pending::SelectionNext(
+                                    expression,
+                                    depth,
+                                    0,
+                                    collection,
+                                    retained,
+                                    frame.locals.len()
+                                ));
+                            }
+                            Pending::SelectionNext(
+                                expression,
+                                depth,
+                                index,
+                                collection,
+                                mut retained,
+                                saved,
+                            ) => {
+                                let PreparedKind::Filter { argument, body, .. } = &expression.value
+                                else {
+                                    unreachable!()
+                                };
+                                if index > 0 {
+                                    frame.locals.truncate(saved);
+                                    retained.push(boolean(
+                                        result
+                                            .take()
+                                            .expect("filter predicate")
+                                            .materialize_with(host, budget, &location)?,
+                                        &Location::Query(body.range.clone()),
+                                    )?);
+                                }
+                                if index == super::collection_len(&collection, false, &location)? {
+                                    result = Some(Value::constructed(RuntimeValue::Owned(
+                                        super::retain_collection(
+                                            collection, &retained, budget, &location,
+                                        )?,
+                                    )));
+                                } else {
+                                    let subject = Value::constructed(RuntimeValue::Owned(
+                                        super::collection_subject(
+                                            &collection,
+                                            index,
+                                            budget,
+                                            &location,
+                                        )?,
+                                    ));
+                                    install_predicate(
+                                        &mut frame.locals,
+                                        subject,
+                                        *argument,
+                                        host,
+                                        budget,
+                                        &location,
+                                    )?;
+                                    push!(Pending::SelectionNext(
+                                        expression,
+                                        depth,
+                                        index + 1,
+                                        collection,
+                                        retained,
+                                        saved
+                                    ));
+                                    push!(Pending::Eval(body, depth + 1, false));
+                                }
+                            }
                             Pending::Predicate(expression, depth, saved) => {
                                 let PreparedKind::SubjectScope { argument, body, .. } =
                                     &expression.value
@@ -2239,20 +2310,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                 );
                                 let value = match output {
                                     Output::Array(values) => {
-                                        let mut value =
-                                            host.finish_array(values, budget, &location)?;
-                                        if let Some(declaration) = c.declaration.borrow_mut().take()
-                                            && let Data::Constructed(data) = value.data
-                                        {
-                                            value.data =
-                                                Data::Constructed(RuntimeValue::Owned(annotate(
-                                                    data.materialize(budget, &location)?,
-                                                    declaration,
-                                                    budget,
-                                                    &location,
-                                                )?));
-                                        }
-                                        result = Some(value);
+                                        result =
+                                            Some(host.finish_array(values, budget, &location)?);
                                         return Ok(());
                                     }
                                     Output::Dictionary(entries, _) => {
@@ -2290,11 +2349,7 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                         finish_keyed(axes, entries, budget, &location)?
                                     }
                                 };
-                                result = owned!(match c.declaration.borrow_mut().take() {
-                                    Some(declaration) =>
-                                        annotate(value, declaration, budget, &location)?,
-                                    None => value,
-                                });
+                                result = owned!(value);
                             }
                             Pending::EmptyAxes(c, index, mut axes) => {
                                 let sources = c.empty.expect("empty sources");
@@ -2962,14 +3017,12 @@ fn start_dictionary<'a, Q, H: Host<'a, Q>>(
             head,
         } => {
             let c = Rc::new(Comprehension {
-                expression,
                 clauses,
                 key: Some(key),
                 head,
                 empty: None,
                 general_keys: *general_keys,
                 depth,
-                declaration: std::cell::RefCell::new(None),
                 output: std::cell::RefCell::new(Output::Dictionary(
                     admit_container(0, budget, &location)?,
                     HashIndex::default(),
@@ -3098,14 +3151,12 @@ fn start_keyed<'a, Q, N, K>(
             ..
         } => {
             let c = Rc::new(Comprehension {
-                expression,
                 clauses,
                 key: Some(key),
                 head,
                 empty: empty_axis_sources.as_deref(),
                 general_keys: false,
                 depth,
-                declaration: std::cell::RefCell::new(None),
                 output: std::cell::RefCell::new(Output::Keyed(
                     axes,
                     admit_container(0, budget, &location)?,
@@ -3363,6 +3414,9 @@ fn operands<'a, Q>(
         PreparedKind::Array(v) | PreparedKind::Tuple(v) | PreparedKind::Set(v) => v.len(),
         PreparedKind::Record(v) => v.len(),
         PreparedKind::With { fields, .. } => sum(fields.len(), 1, location)?,
+        PreparedKind::Check {
+            operand, message, ..
+        } => 1 + usize::from(operand.is_some()) + usize::from(message.is_some()),
         PreparedKind::PushBackAll { .. }
         | PreparedKind::Insert { .. }
         | PreparedKind::Binary { .. }
@@ -3371,6 +3425,8 @@ fn operands<'a, Q>(
         | PreparedKind::ArrayAccess { .. }
         | PreparedKind::Range { .. }
         | PreparedKind::Windows { .. }
+        | PreparedKind::Head { .. }
+        | PreparedKind::Tail { .. }
         | PreparedKind::Align { .. }
         | PreparedKind::ZipExact { .. } => 2,
         _ => 1,
@@ -3405,7 +3461,24 @@ fn operands<'a, Q>(
             result.extend([array.as_ref(), index.as_ref()])
         }
         PreparedKind::Range { lower, upper } => result.extend([lower.as_ref(), upper.as_ref()]),
+        PreparedKind::Head { collection, count } | PreparedKind::Tail { collection, count } => {
+            result.extend([collection.as_ref(), count.as_ref()])
+        }
+        PreparedKind::Check {
+            collection,
+            operand,
+            message,
+        } => {
+            result.push(collection.as_ref());
+            if let Some(operand) = operand {
+                result.push(operand.as_ref());
+            }
+            if let Some(message) = message {
+                result.push(message.as_ref());
+            }
+        }
         PreparedKind::Queue { items: value, .. }
+        | PreparedKind::Reverse(value)
         | PreparedKind::PopFront(value)
         | PreparedKind::One(value)
         | PreparedKind::Occurs(value)
@@ -4224,6 +4297,70 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             _ => return Err(error(&location, "index_set needs an array").into()),
         },
         PreparedKind::Entries(_) => entries(next(), budget, &location)?,
+        PreparedKind::Head { count: source, .. } | PreparedKind::Tail { count: source, .. } => {
+            let collection = next();
+            let argument_location = Location::Query(source.range.clone());
+            let count = crate::nonnegative_integer_to_usize(
+                integer(next(), &argument_location)?,
+                argument_location,
+                "collection bound must be nonnegative",
+            )?;
+            let operation = if matches!(expression.value, PreparedKind::Head { .. }) {
+                crate::Stage::Head(count)
+            } else {
+                crate::Stage::Tail(count)
+            };
+            super::select_collection(collection, &operation, budget, &location)?
+        }
+        PreparedKind::Reverse(_) => {
+            super::select_collection(next(), &crate::Stage::Reverse, budget, &location)?
+        }
+        PreparedKind::Check {
+            operand, message, ..
+        } => {
+            let collection = next();
+            let mut expected = None;
+            let mut text = None;
+            if let Some(operand) = operand {
+                let argument_location = Location::Query(operand.range.clone());
+                match next().into_data() {
+                    ConstructedValue::Integer(value) => {
+                        expected = Some(crate::nonnegative_integer_to_usize(
+                            value,
+                            argument_location.clone(),
+                            "collection bound must be nonnegative",
+                        )?)
+                    }
+                    ConstructedValue::String(value) if message.is_none() => text = Some(value),
+                    _ => {
+                        return Err(error(
+                            &argument_location,
+                            "check operand must be an integer or string",
+                        )
+                        .into());
+                    }
+                }
+            }
+            if let Some(message) = message {
+                let ConstructedValue::String(value) = next().into_data() else {
+                    return Err(error(
+                        &Location::Query(message.range.clone()),
+                        "check message must be a string",
+                    )
+                    .into());
+                };
+                text = Some(value);
+            }
+            super::select_collection(
+                collection,
+                &crate::Stage::Check {
+                    expected,
+                    message: text,
+                },
+                budget,
+                &location,
+            )?
+        }
         PreparedKind::Unique(_) => unique_value(next(), budget, &location)?,
         PreparedKind::Tally {
             general_keys,

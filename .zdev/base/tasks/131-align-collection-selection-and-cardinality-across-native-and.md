@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-131"
 key = "coherent-collection-selection"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -28,15 +28,25 @@ Read the brief's paired-operation coherence decision. Start at src/composition.r
 
 ## Done when
 
-- [ ] Filter tests each array/set element or dictionary value in current order, retains original values/keys and collection kind, and preserves duplicates where the input kind permits them. Native predicates keep their existing domain subjects and Unknown/completeness rules; constructed predicates still require known Boolean truth.
-- [ ] Count and length return collection cardinality: array/set elements, dictionary entries or native stream subjects, with empty count zero. Native exact count results may keep their native scalar representation; explicit constructed conversion remains checked signed conversion.
-- [ ] Head/tail accept nonnegative integer expressions, allow zero and oversized bounds, and retain the first/last entries in current order. Reverse reverses all entries including equal-key ties. Each preserves ordinary collection kind and native owners.
-- [ ] Check passes its unchanged input through on success, requiring nonempty input without an expected count or exactly the supplied nonnegative count, and retaining the existing optional failure message. check(0) succeeds on empty input for every admitted ordinary collection.
-- [ ] Text and callable/typed forms use the same preparation, kind admission, runtime operation and argument semantics. Known invalid kinds/effects/argument types still fail on empty input; later errors leave no partial emitted output.
-- [ ] Removal/reordering retains declared element/key/value contracts and typed empty schemas. Structural record field facts narrow consistently when entries are removed instead of retaining invalid required-field claims; no empty schema is guessed from surviving rows.
-- [ ] Update the combined collection/pipeline reference, native embedding/API docs and affected Zincite/Zirium guides with signatures, dictionary predicate subjects and the explicit keyed-array boundary; remove duplicated or contradictory native-only descriptions.
+- [x] Filter tests each array/set element or dictionary value in current order, retains original values/keys and collection kind, and preserves duplicates where the input kind permits them. Native predicates keep their existing domain subjects and Unknown/completeness rules; constructed predicates still require known Boolean truth.
+- [x] Count and length return collection cardinality: array/set elements, dictionary entries or native stream subjects, with empty count zero. Native exact count results may keep their native scalar representation; explicit constructed conversion remains checked signed conversion.
+- [x] Head/tail accept nonnegative integer expressions, allow zero and oversized bounds, and retain the first/last entries in current order. Reverse reverses all entries including equal-key ties. Each preserves ordinary collection kind and native owners.
+- [x] Check passes its unchanged input through on success, requiring nonempty input without an expected count or exactly the supplied nonnegative count, and retaining the existing optional failure message. check(0) succeeds on empty input for every admitted ordinary collection.
+- [x] Text and callable/typed forms use the same preparation, kind admission, runtime operation and argument semantics. Known invalid kinds/effects/argument types still fail on empty input; later errors leave no partial emitted output.
+- [x] Removal/reordering retains declared element/key/value contracts and typed empty schemas. Structural record field facts narrow consistently when entries are removed instead of retaining invalid required-field claims; no empty schema is guessed from surviving rows.
+- [x] Update the combined collection/pipeline reference, native embedding/API docs and affected Zincite/Zirium guides with signatures, dictionary predicate subjects and the explicit keyed-array boundary; remove duplicated or contradictory native-only descriptions.
 
 ## Validation
 
 - Reuse existing filter, bounds, cardinality, schema and buffering controls. Add only missing public boundary controls: one textual/typed constructed chain using a runtime bound, a dictionary operation retaining keys/order, and an empty declared element-schema case that still refuses an invalid field.
 - Run the brief's required Rust checks in each changed repository and affected host/Python checks. Run affected documented examples and docs content/link checks; git diff --check and zdev check base --format json for records. Retain separate framework/consumer commits and reviewed Zirql dependency pins.
+
+## Result
+
+Unified filter, count, length, head, tail, reverse and check over admitted ordinary/native collections, retaining keys/order/owners, empty schemas and correct removable record facts. Shared helpers and existing runner own common behavior; hosts retain Unknown, native subjects, effects and Data/edit policy. Canonical Zirql 0345851b57b35b7ade4de77466350cba56fe02ea; Zincite 820803724985c728f94cb49d4dc51c3ef6a6f7c4; Zirium ca503d5147f6cbd67a057a7b87857cefbb81e720.
+
+Validation:
+
+- Independent complete review PASS without corrections at W8b2ca62c22f82644; post-review core comparison and all four consumer Git fields equal, final core comparison equal before completion.
+- Required Rust formatting, Clippy and full suites pass in all three repositories, including Zirium all-target/all-feature single-thread tests, doctests and warnings-denied docs. Rebuilt Python 180 passed, 2 skipped; Ruff and ty pass.
+- Affected documented core, host and Python examples pass; all sites check/build and production-path local anchors pass: 6399/1245/897 links. No tracked validation writes.

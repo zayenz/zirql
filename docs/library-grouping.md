@@ -4,7 +4,7 @@ These constructed operations consume positional arrays and return eager
 positional arrays. They preserve input records and duplicates. Literal field
 selectors are not arbitrary callbacks. Keyed arrays need an explicit positional
 conversion; native selections need a host-exposed view. Native `unique` and
-`tally` use the [shared collection steps](library-native.md#native-count-unique-and-tally)
+`tally` use the [shared collection steps](library-native.md#native-unique-and-tally)
 with host identity and key projections. Their algorithms remain in Zirql.
 
 ## group_by
