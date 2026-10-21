@@ -7,7 +7,7 @@ status = "open"
 complexity = "standard"
 afk = true
 priority = "normal"
-blocked_by = ["base-117", "base-115", "base-121", "base-122", "base-128", "base-129", "base-130", "base-131", "base-132"]
+blocked_by = ["base-117", "base-115", "base-121", "base-122", "base-128", "base-129", "base-130", "base-131", "base-132", "base-133"]
 +++
 # Make the Zirql library reference authoritative across all three sites
 
@@ -17,7 +17,7 @@ Host guides focus on bindings, native operators/functions and domain recipes, li
 
 ## Context
 
-Read brief.md section Consolidate language machinery and data rendering (2026-10-21), including its integration and validation rules. The reference created by base-112 owns common signatures and empty/error/order rules. Zincite docs/queries.md around 804 and Zirium docs/query-language.md around 654/690 duplicate those contracts. Runtime tasks update docs when they land; this task removes remaining duplicate exposition and organizes cross-site navigation after actual adoption. Read Complete the common language boundary in brief.md and include the new common stages, native calls, program reader, constructed embedding and scalar conversions. Read Coherent native and constructed operations in brief.md and the outcomes of base-130 through base-132; organize the reference around their implemented common contracts.
+Read brief.md section Consolidate language machinery and data rendering (2026-10-21), including its integration and validation rules. The reference created by base-112 owns common signatures and empty/error/order rules. Zincite docs/queries.md around 804 and Zirium docs/query-language.md around 654/690 duplicate those contracts. Runtime tasks update docs when they land; this task removes remaining duplicate exposition and organizes cross-site navigation after actual adoption. Read Complete the common language boundary in brief.md and include the new common stages, native calls, program reader, constructed embedding and scalar conversions. Read Coherent native and constructed operations in brief.md and the outcomes of base-130 through base-133; organize the reference around their implemented common contracts.
 
 ## Done when
 
