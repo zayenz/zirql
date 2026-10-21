@@ -107,6 +107,50 @@ comprehensions and lexical forms. Zincite retains its Data admission policy and
 model facts; Zirium retains MLIR/diff meanings and native ownership. Both use
 the same expression grammar without a whole-expression CST hook.
 
+## Inspect and transform shared syntax
+
+Zirql owns expression child order and native-payload mapping. Use
+`map_value_payloads(expression, mapper)` to move each opaque native payload
+through a host conversion without a `Clone` bound. It preserves ranges,
+patterns, generator selection flags, declarations and collection order.
+`NativeQuery` remains a projecting leaf; `NativeValue` retains its native value.
+The mapper uses explicit stacks, including for deep constructed trees.
+
+`for_each_value_child` and `for_each_value_child_mut` inspect one node without
+allocation or evaluation. Their order is written arguments and fields,
+dictionary key before value, declared axes before generator sources and
+filters, then comprehension key/head and zero-cell fallback axes. Fallbacks
+remain separate AST fields so hosts can choose deferred discovery explicitly.
+For bounded preorder inspection or rewriting, use `walk_value` or
+`walk_value_mut` with the active request budget and remaining nesting allowance.
+Their callbacks receive the node, its depth and that budget. Walks admit known
+child storage before allocation and return located errors. They do not bind
+names or evaluate branches. Native-wrapper discovery uses `walk_expression`;
+input, binding and sequence wrappers add no logical nesting. Opaque stages
+remain host callbacks.
+
+For example, this renames a native payload while retaining its query range:
+
+```rust
+use zirql::{Located, ValueExpressionKind as K, map_value_payloads};
+let expression = Located::new(K::NativeValue(Box::new("declarations")), 2..14);
+let mapped = map_value_payloads(expression, str::to_owned);
+assert_eq!(mapped.range, 2..14);
+assert!(matches!(mapped.value, K::NativeValue(name) if *name == "declarations"));
+```
+
+Zincite uses these operations for native payload lowering, primitive recognition
+and native discovery. Shared record evaluation calls its native construction
+hook. Zincite keeps MiniZinc member resolution, source coordinates, scalar
+projection, the closed Data subset and atomic edit checks.
+Its eager native discovery skips `default` fallbacks; full written admission
+still inspects them. Zirium uses the operations for report normalization and
+native-root discovery. It keeps document/operation ownership, stale-handle
+checks, dialect meanings, diff sides and effects. Both development integrations
+adopt `map`, `flat_map`, selective generators, `windows`, `runs_by`, `with` and
+`align` through the common reader and their existing builder entry points.
+They pin the accepted Git revision; registry 0.2.0 predates these integrations.
+
 ## Scoped predicates
 
 `read_predicate_argument(reader, host, locals, budget, nesting)` reads an optional

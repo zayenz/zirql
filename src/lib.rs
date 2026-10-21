@@ -404,3 +404,10 @@ pub fn check_cardinality(
     };
     Err(QueryError::query(range, format!("check failed: {message}")))
 }
+
+pub use value::{
+    for_each_value_child, for_each_value_child_mut, map_value_payloads, value_child_count,
+    walk_value, walk_value_mut,
+};
+
+pub use program::{for_each_expression_child, walk_expression};

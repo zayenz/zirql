@@ -988,3 +988,61 @@ pub fn dispose_expression<S, O, E>(expression: Expression<S, O, E>) {
         }
     }
 }
+
+/// Inspect direct native-wrapper children in written order. Stage payloads remain
+/// opaque; hosts inspect their own stages at sequence nodes.
+pub fn for_each_expression_child<'a, S, O, E>(
+    expression: &'a Expression<S, O, E>,
+    mut visit: impl FnMut(&'a Expression<S, O, E>),
+) {
+    match &expression.value {
+        ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+        ExpressionKind::Group(value)
+        | ExpressionKind::Field { value, .. }
+        | ExpressionKind::Sequence { input: value, .. } => visit(value),
+        ExpressionKind::Set { left, right, .. } => {
+            visit(left);
+            visit(right);
+        }
+        ExpressionKind::Record(fields) => {
+            for (_, value) in fields {
+                visit(value);
+            }
+        }
+    }
+}
+/// Inspect native wrappers with request bounds. Input, binding and sequence
+/// wrappers add no logical depth; grouped/field/set/record structure adds one.
+///
+/// # Errors
+/// Callback, traversal-storage, work and nesting refusals retain query ranges.
+pub fn walk_expression<'a, S, O, E>(
+    expression: &'a Expression<S, O, E>,
+    budget: &mut Budget,
+    nesting: usize,
+    mut visit: impl FnMut(&'a Expression<S, O, E>, &mut Budget) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
+    budget.charge_results(1, Location::Query(expression.range.clone()))?;
+    let mut pending = vec![(expression, 0usize)];
+    while let Some((expression, depth)) = pending.pop() {
+        let location = Location::Query(expression.range.clone());
+        let depth = depth.saturating_add(expression.value.depth());
+        budget.check_evaluation_depth(depth, 0, location.clone())?;
+        if depth > nesting.min(64) {
+            return Err(QueryError::query(
+                expression.range.clone(),
+                "native expression nesting limit exceeded",
+            ));
+        }
+        budget.charge(1, location.clone())?;
+        visit(expression, budget)?;
+        let mut width = 0usize;
+        for_each_expression_child(expression, |_| width = width.saturating_add(1));
+        budget.charge(width, location.clone())?;
+        budget.charge_results(width, location)?;
+        let start = pending.len();
+        for_each_expression_child(expression, |child| pending.push((child, depth)));
+        pending[start..].reverse();
+    }
+    Ok(())
+}

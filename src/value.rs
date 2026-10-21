@@ -2,6 +2,12 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::size_of;
 
+mod traversal;
+pub use traversal::{
+    for_each_value_child, for_each_value_child_mut, map_value_payloads, value_child_count,
+    walk_value, walk_value_mut,
+};
+
 mod dictionary;
 pub use dictionary::Dictionary;
 pub(crate) mod execution;
