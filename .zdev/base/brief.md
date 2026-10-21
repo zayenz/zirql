@@ -1835,3 +1835,12 @@ This does not approve unseen native-template syntax. [The design](../_notes/quer
 records the measurement and copied MLIR examples, host boundaries and deferred templates.
 It proposes zero runtime follow-ups and at most bounded documentation/adoption work under
 each host's authority; this task imports no work or consumer changes.
+
+### Query playground: local terminal exploration
+
+On 2026-10-21 the user delegated the recommended minimum: a line-based CSV
+exploration mode. [The design](../_notes/query-playground.md) keeps terminal holes
+outside the parser, checks complete queries, and separates full bounded read-only
+evaluation from truncated display. Its commands are proposed tool UI, not Zirql
+syntax. It records a three-template catalog, native effect/ownership boundaries,
+deferred options and two bounded follow-ups; this task imports no implementation.

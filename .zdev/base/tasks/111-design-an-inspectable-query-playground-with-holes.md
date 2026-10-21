@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-111"
 key = "query-playground-holes"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 priority = "low"
 blocked_by = []
@@ -24,10 +24,10 @@ The core has located parsing, type preparation and finite budgets, but no generi
 
 ## Done when
 
-- [ ] Sketch one complete interaction from a pipeline hole to a selected stage and resulting preview, including an invalid or incomplete expression and an empty input.
-- [ ] Choose a local CLI/REPL or minimal browser presentation and define the smallest host operation inventory needed; distinguish known applicable stages from unestablished types.
-- [ ] Preview execution is explicitly read-only and bounded, shows sampled/truncated display honestly, never executes edit/emission stages, and does not reinterpret a parse hole as a runnable query. Record documentation and implementation follow-ups for the selected interface.
-- [ ] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
+- [x] Sketch one complete interaction from a pipeline hole to a selected stage and resulting preview, including an invalid or incomplete expression and an empty input.
+- [x] Choose a local CLI/REPL or minimal browser presentation and define the smallest host operation inventory needed; distinguish known applicable stages from unestablished types.
+- [x] Preview execution is explicitly read-only and bounded, shows sampled/truncated display honestly, never executes edit/emission stages, and does not reinterpret a parse hole as a runnable query. Record documentation and implementation follow-ups for the selected interface.
+- [x] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
 
 ## Validation
 
@@ -35,3 +35,12 @@ The core has located parsing, type preparation and finite budgets, but no generi
 - Record the user decision; no new product tests are expected.
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Selected a local CSV exploration mode with terminal holes outside syntax, explicit bounded read-only previews, honest display truncation and scoped implementation/docs follow-ups.
+
+Validation:
+
+- Independent verification passed against W41ac618eeb18cb00; snapshot unchanged.
+- git diff --check and zdev check base --format json passed.

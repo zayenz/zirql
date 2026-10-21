@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 111
-- Ready: 1
+- Ready: 0
 - Blocked: 0
-- Done: 110
+- Done: 111
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -119,4 +119,4 @@
 | [base-108](tasks/108-design-reusable-named-pipeline-queries.md) | Design reusable named pipeline queries | done | — |
 | [base-109](tasks/109-design-explanatory-finding-records-for-small-linters.md) | Design explanatory finding records for small linters | done | — |
 | [base-110](tasks/110-design-record-matching-and-native-templates-for-query-by-exa.md) | Design record matching and native templates for query by example | done | — |
-| [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | ready | — |
+| [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | done | — |
