@@ -1,13 +1,58 @@
 # Construct programs in Rust
 
 The word executable reads a single expression. A host that supports several
-statements translates them into a `Program` and executes it through
-`ProgramHost`. A caller can also build the same representation directly in Rust.
-Use this path when your tool already has a parser or a typed query builder.
+statements can use `read_program` to read the common language into located
+`Statement` forms, then prepare and execute its existing `ProgramHost` path.
+A typed query builder can construct that same representation directly in Rust.
 
 The examples below are adapter fragments. They assume the host types and context
 described in [embedding in Rust](host-integration.md); they are not queries for
 the word executable.
+
+## Read text programs
+
+`ProgramReaderHost` extends `ValueReaderHost` with the surface decisions needed
+by native programs. Call `read_program(source, initial_names, host, budget,
+nesting)` with original source text, the names supplied by the caller and the
+same budget used for preparation and execution. The result contains unresolved
+pattern functions, ordered parameters with their statement positions, located
+statements and the original program range. Reading runs no native operations.
+
+The reader first collects top-level function headers, skipping strings, comments
+and balanced bodies. It exposes all function names before reading any body.
+Function parameters and local lets form each body's scope; program parameters,
+bindings and current input are unavailable there. The reader then handles
+`param`, pattern `let`, `report`, separators and evaluations in written order.
+A parameter or binding becomes visible only after its declaration. Duplicate
+names retain the range of the repeated definition.
+
+The host's `read_program_expression` callback consumes one expression and
+receives its purpose, current lexical names, budget and remaining nesting
+allowance. The driver borrows initial and lexical names, admits its source scan
+and retained metadata against that budget, and releases partial trees on failure.
+A host admits its own lexer and native syntax storage without charging the common
+source scan again. Other callbacks admit native signatures and binding patterns, lower
+parameters and patterns to existing statements, recognize domain statements or
+legacy headers, and select implicit output. They do not maintain another common
+statement loop. Zincite's callback retains its atomic edit grammar; Zirium's
+retains `do`, legacy bindings and pass-through emission.
+
+For a constructed-value host, `read_value_program` runs the same progression and
+returns an existing `ValueExpression::Block`, or the plain final expression when
+there are no lets. Its expression callback supplies a single core `Value` step.
+The [complete CSV adapter](csv-host.md#6-read-lets-and-a-final-expression) shows
+this bounded let-plus-expression entry. CSV deliberately disables functions,
+parameters and `report`, and refuses a semicolon after its final expression.
+These development APIs are newer than registry Zirql 0.2.0; use the matching
+checkout described in [setup](getting-started.md#use-zirql-in-another-rust-project).
+
+Run that adapter without an entry point or parameter preamble:
+
+```sh
+cargo run --locked --example csv -- \
+  'let chosen = rows | filter(_.active == "yes"); [p.name for p in chosen]' \
+  examples/csv/people.csv
+```
 
 ## A native binding in Rust
 

@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 129
-- Ready: 2
+- Ready: 1
 - Blocked: 3
-- Done: 124
+- Done: 125
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -135,6 +135,6 @@
 | [base-124](tasks/124-own-value-sources-and-projection-stages-in-zirql-and-migrate.md) | Own value sources and projection stages in Zirql and migrate both hosts | done | base-116 |
 | [base-125](tasks/125-own-remaining-shared-composition-stages-and-remove-host-disp.md) | Own remaining shared composition stages and remove host dispatch | ready | base-124 |
 | [base-126](tasks/126-declare-ordinary-native-functions-once-and-share-call-admiss.md) | Declare ordinary native functions once and share call admission | done | base-114 |
-| [base-127](tasks/127-read-common-programs-in-zirql-and-adopt-the-reader-in-all-th.md) | Read common programs in Zirql and adopt the reader in all three integrations | ready | base-115, base-124 |
+| [base-127](tasks/127-read-common-programs-in-zirql-and-adopt-the-reader-in-all-th.md) | Read common programs in Zirql and adopt the reader in all three integrations | done | base-115, base-124 |
 | [base-128](tasks/128-provide-a-constructed-program-api-and-simplify-csv-and-words.md) | Provide a constructed-program API and simplify CSV and words | blocked | base-117, base-120 |
 | [base-129](tasks/129-add-explicit-scalar-conversions-with-csv-and-consumer-exampl.md) | Add explicit scalar conversions with CSV and consumer examples | done | base-115 |

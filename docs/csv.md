@@ -14,6 +14,14 @@ The commands pass a multiline query as one quoted shell argument. Results below
 are indented for reading; the executable writes compact JSON by default. Pass `--format json` or
 `--format markdown` after the query to choose the output format.
 
+The common program reader accepts pattern `let` bindings followed by one final
+expression. Lets require `;`; the final expression must end the query without a
+semicolon. Names become visible after their initializer, and duplicate or forward
+bindings fail. This example intentionally has no typed parameters, named
+functions or `report` statements. `rows` and implicit `count` select the sole
+input; with several inputs, choose a table by name. Header declarations remain
+available even when a CSV contains no data rows.
+
 ## Select rows from one file
 
 Select active people and keep their names and notes. Switch to **CSV input** to

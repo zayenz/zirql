@@ -5,9 +5,9 @@ tutorial](examples.md). A program lets several analyses share named intermediate
 results. Its bindings can hold constructed values, native selections or records
 of related native objects, and its statements execute in written order.
 
-The host supplies statement and output handling. Zirql's common readers
-recognize statement prefixes and expressions; a host can also translate its own
-syntax into the same program representation. The [word
+Zirql's `read_program` owns common declaration collection, lexical names and
+statement assembly. The host supplies native syntax, admission and output
+handling, or translates its typed builder into the same program representation. The [word
 executable](getting-started.md) accepts one expression; it does not parse the
 complete programs or native extensions shown here.
 
@@ -29,7 +29,9 @@ let selected = [p for p in rows if p.active == "yes"];
 It returns `["Grace Hopper", "Ada, Lovelace", "Barbara Liskov"]` under `names`,
 with count 3. `let` installs an immutable name. Later statements can use it, but earlier
 statements cannot refer forward to it. Duplicate definitions and shadowing of
-existing bindings fail before execution.
+existing bindings fail before execution. Function names are collected across the
+whole program, including declarations written after their callers. Functions
+cannot capture those program bindings, parameters or the current input.
 
 Each statement starts with the original top-level input. A previous statement
 does not replace that input. Bind its result and refer to the binding explicitly
@@ -43,8 +45,9 @@ pass-through emitters; Zincite's output stages are terminal. Their
 [Zincite](https://zayenz.se/zincite/guides/queries/) guides document the actual
 commands. [Build the CSV host](csv-host.md#6-read-lets-and-a-final-expression)
 explains how its frontend reads lets into a shared value block.
-CSV's final expression renders JSON and does not accept `report` or
-named function declarations.
+CSV's final expression renders JSON or Markdown. It accepts no final semicolon,
+`report`, parameter declaration or named function declaration. Native hosts
+accept an optional final semicolon; every binding and parameter requires one.
 
 ## Required caller parameters
 

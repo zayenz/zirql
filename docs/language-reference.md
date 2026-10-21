@@ -319,9 +319,21 @@ Programs execute statements in order and save values in immutable bindings. A
 name must be available before use. Required external parameters have `int`,
 `string` or `bool` types and are checked before domain execution.
 
-The common reader recognizes `let name =`, `param name: type` and `report`
-prefixes. A host connects them to its program and emission policy. Single
-expressions, including every front-page example, need no declarations.
+The common `read_program` reader assembles pattern `let`, `param name: type`,
+`report` and ordinary evaluation statements. Bindings and parameters require
+`;`; native hosts accept an optional final expression semicolon. Function
+declarations have a balanced body and no separator. A host supplies native
+expressions/types, domain statements and output policy. A plain expression
+needs no declarations. CSV uses the same reader's let-plus-expression subset,
+with no final semicolon, parameters, functions or `report`.
+
+Parameters and bindings are sequential: a later declaration cannot satisfy an
+earlier use, and repeated names fail at their written definition. All function
+names are available before bodies and statements are read. A function receives
+its arguments explicitly and cannot capture program bindings, parameters or
+current input. Strings, comments and nested bodies do not introduce top-level
+functions. See [text program embedding](embedding-programs.md#read-text-programs)
+for the callable reader boundary.
 
 Named pure functions have typed parameters and a result type:
 

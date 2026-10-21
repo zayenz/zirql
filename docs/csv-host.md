@@ -181,14 +181,13 @@ array of string records. For another data source, change them together.
 
 ## 4. Expose names to the reader
 
-The [CsvHost](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L404) retains loaded tables, their input names
-and the names introduced by parsed lets:
+`CsvHost` retains loaded tables and their input names. The common program reader
+owns names introduced by lets:
 
 ```rust
 struct CsvHost<'a> {
     tables: Vec<Table>,
     inputs: &'a [InputSpec],
-    let_names: Vec<String>,
 }
 ```
 
@@ -200,7 +199,8 @@ mixture of named and unnamed inputs. With one table,
 `implicit` returns it; with several, it returns a diagnostic asking the user to
 choose a named table.
 
-Implement `ValueReaderHost` so the shared reader recognizes these bindings:
+`CsvReader` borrows the lexical names supplied by the common driver; it owns no
+tables or scope progression. Implement `ValueReaderHost` on that reader:
 
 ```rust
 fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
@@ -208,12 +208,7 @@ fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
 }
 
 fn is_binding(&self, name: &str) -> bool {
-    name == "rows"
-        || self
-            .inputs
-            .iter()
-            .any(|input| input.name.as_deref() == Some(name))
-        || self.let_names.iter().any(|binding| binding == name)
+    self.names.contains(&name)
 }
 
 fn is_constructed_binding(&self, name: &str) -> bool {
@@ -235,8 +230,8 @@ continue to work.
 
 ## 5. Supply values and current input
 
-Implement [ValueQueryHost](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L481) for
-`ReadExpression<Self>`, with `type Error = QueryError`. This trait connects
+Implement `ValueQueryHost<CsvExpression>` for `CsvHost`, where `CsvExpression`
+is `zirql::Expression<(), (), ()>`, with `type Error = QueryError`. This trait connects
 binding names to their data and defines the optional implicit input.
 
 The `binding` helper resolves `rows` through `implicit`; other names select the
@@ -310,40 +305,32 @@ The other hooks have small, explicit roles:
 
 ## 6. Read lets and a final expression
 
-Follow [read_program](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs#L558). Start an
-`ArgumentReader::new(query, 0)` so diagnostics retain byte offsets in the user's
-original query. Repeatedly:
+Implement `ProgramReaderHost` for `CsvReader` and call `read_value_program` with
+`rows` and the input table names. The common driver introduces let names after
+each initializer and returns the final expression directly, or one existing
+`ValueExpression::Block` when there are lets. It also disposes partial patterns
+and expressions on failure. The adapter maintains no let-name list or statement
+loop.
 
-1. Call `read_pattern_let` to read a let pattern, or stop when there is none.
-2. Call `read_value_expression` for its initializer.
-3. Use `pattern_names` to add the newly bound names to `host.let_names` after
-   reading the initializer. Later expressions can then reference them.
-4. Require `;` and retain the `(pattern, value)` pair.
-
-Read one final expression with `read_value_expression` and reject trailing text.
-When there are bindings, wrap them and the final value in one located block:
+The value-program entry refuses trailing separators, functions, parameters and
+`report`. Its expression hook uses the lexical names provided by the driver:
 
 ```rust
-Located::new(
-    K::Block {
-        bindings,
-        value: Box::new(value),
-    },
-    0..query.len(),
-)
+let mut expression_host = CsvReader { names };
+let value = read_value_expression(reader, &mut expression_host, budget, nesting)?;
+let range = value.range.clone();
+Ok(Located::new(zirql::ExpressionKind::Sequence {
+    input: Box::new(Located::new(zirql::ExpressionKind::Input, range.clone())),
+    steps: vec![Located::new(ExpressionStep::Value(value.into()), range.clone())],
+}, range))
 ```
 
-The source imports `ValueExpressionKind as K`. With no bindings, return the
-final expression directly. Pass the same budget and nesting allowance to every
-reader call. On parsing failures, release retained patterns with
-`dispose_pattern` and expression trees with `dispose_native_value`, as the
-complete function does.
-
-The host reads the small program envelope. Zirql evaluates binding scope,
-destructuring and each initializer once, including saved selections used by
-nested comprehensions. There is no separate CSV expression evaluator. This
-frontend admits ordered lets and one expression; named function declarations
-need the [larger program interfaces](embedding-programs.md).
+The expression reader borrows that complete name slice as constructed bindings.
+`FieldPipelineSource::Constructed` also keeps dotted fields on common collection
+pipelines. Native hosts instead choose their native result policy.
+Pass the original query, one budget and the remaining nesting allowance through
+each call. The [program embedding guide](embedding-programs.md#read-text-programs)
+describes the full native reader contract.
 
 ## 7. Evaluate under one budget
 
@@ -375,7 +362,7 @@ The evaluation and cleanup sequence is:
 
 ```rust
 let expression =
-    read_program(query, &mut host, &mut budget, limits.nesting)
+    csv_program(query, &host, &mut budget, limits.nesting)
         .map_err(query_error)?;
 let result = evaluate_query_value(&expression, &types, &mut host, &mut budget);
 dispose_native_value(expression);

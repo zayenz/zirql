@@ -71,7 +71,8 @@ pub use projection::{
     native_predicate_value_types, native_value_types, projection_types,
 };
 pub use reader::{
-    CommonStatement, FieldPipelineSource, ReadExpression, ReadStep, ResolvedFunctionSignature,
+    CommonStatement, FieldPipelineSource, ProgramExpression, ProgramRead, ProgramReaderHost,
+    ReadExpression, ReadParameter, ReadProgram, ReadStatement, ReadStep, ResolvedFunctionSignature,
     ResolvedPatternFunctionSignature, SignatureType, UnresolvedFunctionDeclaration,
     UnresolvedFunctionParameter, UnresolvedPatternFunctionDeclaration,
     UnresolvedPatternFunctionParameter, ValueReaderHost, ValueSuffix, ValueSuffixKind,
@@ -82,9 +83,9 @@ pub use reader::{
     probe_ordering_call, read_constructed_filter, read_function_call_in_scope,
     read_function_declaration, read_match, read_native_expression, read_native_predicate_argument,
     read_paths, read_pattern, read_pattern_function_declaration, read_pattern_let,
-    read_predicate_argument, read_projection, read_statement_prefix,
+    read_predicate_argument, read_program, read_projection, read_statement_prefix,
     read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
-    read_value_expression, read_value_expression_in_scope, read_value_suffix,
+    read_value_expression, read_value_expression_in_scope, read_value_program, read_value_suffix,
     starts_common_expression,
 };
 pub use rendering::{

@@ -14,10 +14,9 @@ use std::{
 use zirql::{
     ArgumentReader, ArrayType, Budget, ConstructedValue as V, DeclaredType, ExpressionStep,
     JsonLayout, JsonRepresentation, Located, Location, Predicate, ProgramLimits, QueryError,
-    ReadExpression, ValueExpression, ValueExpressionKind as K, ValueQueryHost, ValueReaderHost,
-    ValueType, copy_constructed_value, declare_constructed, dispose_native_value, dispose_pattern,
-    evaluate_query_value, pattern_names, read_pattern_let, read_value_expression, render_json,
-    render_markdown,
+    ReadExpression, ValueExpression, ValueQueryHost, ValueReaderHost, ValueType,
+    copy_constructed_value, declare_constructed, dispose_native_value, evaluate_query_value,
+    read_value_expression, render_json, render_markdown,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -159,11 +158,7 @@ fn run(
         })?;
         tables.push(table);
     }
-    let mut host = CsvHost {
-        tables,
-        inputs,
-        let_names: Vec::new(),
-    };
+    let mut host = CsvHost { tables, inputs };
     let mut types = BTreeMap::new();
     for (index, input) in inputs.iter().enumerate() {
         if let Some(name) = &input.name {
@@ -189,8 +184,7 @@ fn run(
         vec![ValueType::Unestablished]
     };
     types.insert("rows".into(), rows_types);
-    let expression =
-        read_program(query, &mut host, &mut budget, limits.nesting).map_err(query_error)?;
+    let expression = csv_program(query, &host, &mut budget, limits.nesting).map_err(query_error)?;
     let result = evaluate_query_value(&expression, &types, &mut host, &mut budget);
     dispose_native_value(expression);
     let result = result.map_err(query_error)?;
@@ -415,7 +409,6 @@ fn csv_position(position: Option<&csv::Position>) -> String {
 struct CsvHost<'a> {
     tables: Vec<Table>,
     inputs: &'a [InputSpec],
-    let_names: Vec<String>,
 }
 impl CsvHost<'_> {
     fn binding(&self, name: &str, range: &Range<usize>) -> Result<&Table, QueryError> {
@@ -445,7 +438,13 @@ impl CsvHost<'_> {
         ))
     }
 }
-impl ValueReaderHost for CsvHost<'_> {
+// Each expression borrows the common driver's complete lexical name slice.
+// The reader has no table ownership or independent name progression.
+struct CsvReader<'a> {
+    names: &'a [&'a str],
+}
+type CsvExpression = zirql::Expression<(), (), ()>;
+impl ValueReaderHost for CsvReader<'_> {
     type Stage = ();
     type SetOperator = ();
     type Emitter = ();
@@ -454,12 +453,7 @@ impl ValueReaderHost for CsvHost<'_> {
         zirql::FieldPipelineSource::Constructed
     }
     fn is_binding(&self, name: &str) -> bool {
-        name == "rows"
-            || self
-                .inputs
-                .iter()
-                .any(|input| input.name.as_deref() == Some(name))
-            || self.let_names.iter().any(|binding| binding == name)
+        self.names.contains(&name)
     }
     fn is_constructed_binding(&self, name: &str) -> bool {
         self.is_binding(name)
@@ -489,7 +483,7 @@ impl ValueReaderHost for CsvHost<'_> {
         None
     }
 }
-impl ValueQueryHost<ReadExpression<Self>> for CsvHost<'_> {
+impl ValueQueryHost<CsvExpression> for CsvHost<'_> {
     type Error = QueryError;
     fn current_input_types(
         &mut self,
@@ -512,7 +506,7 @@ impl ValueQueryHost<ReadExpression<Self>> for CsvHost<'_> {
     }
     fn query_types(
         &mut self,
-        _: &ReadExpression<Self>,
+        _: &CsvExpression,
         _: &[(&str, Vec<ValueType>)],
         _: &mut Budget,
         range: &Range<usize>,
@@ -524,7 +518,7 @@ impl ValueQueryHost<ReadExpression<Self>> for CsvHost<'_> {
     }
     fn evaluate_query(
         &mut self,
-        query: &ReadExpression<Self>,
+        query: &CsvExpression,
         _: &[(&str, V)],
         _: &mut Budget,
     ) -> Result<V, QueryError> {
@@ -566,71 +560,41 @@ impl ValueQueryHost<ReadExpression<Self>> for CsvHost<'_> {
     }
 }
 
-fn read_program(
+impl zirql::ProgramReaderHost for CsvReader<'_> {
+    fn read_program_expression(
+        &mut self,
+        reader: &mut ArgumentReader<'_>,
+        names: &[&str],
+        _: zirql::ProgramExpression,
+        budget: &mut Budget,
+        nesting: usize,
+    ) -> Result<ReadExpression<Self>, QueryError> {
+        let mut expression_host = CsvReader { names };
+        let value = read_value_expression(reader, &mut expression_host, budget, nesting)?;
+        let range = value.range.clone();
+        Ok(Located::new(
+            zirql::ExpressionKind::Sequence {
+                input: Box::new(Located::new(zirql::ExpressionKind::Input, range.clone())),
+                steps: vec![Located::new(
+                    ExpressionStep::Value(value.into()),
+                    range.clone(),
+                )],
+            },
+            range,
+        ))
+    }
+}
+
+fn csv_program(
     query: &str,
-    host: &mut CsvHost<'_>,
+    host: &CsvHost<'_>,
     budget: &mut Budget,
     nesting: usize,
 ) -> Result<ValueExpression<zirql::Expression<(), (), ()>>, QueryError> {
-    let mut reader = ArgumentReader::new(query, 0)?;
-    let mut bindings = Vec::new();
-    let result = (|| {
-        while let Some(pattern) = read_pattern_let(&mut reader, budget, nesting)? {
-            let value = match read_value_expression(&mut reader, host, budget, nesting) {
-                Ok(value) => value,
-                Err(error) => {
-                    dispose_pattern(pattern);
-                    return Err(error);
-                }
-            };
-            let names = match pattern_names(&pattern, budget) {
-                Ok(names) => names,
-                Err(error) => {
-                    dispose_pattern(pattern);
-                    dispose_native_value(value);
-                    return Err(error);
-                }
-            };
-            for name in names {
-                if let Err(error) =
-                    budget.charge(name.value.len() + 2, Location::Query(name.range.clone()))
-                {
-                    dispose_pattern(pattern);
-                    dispose_native_value(value);
-                    return Err(error);
-                }
-                host.let_names.push(name.value.clone());
-            }
-            bindings.push((pattern, value));
-            if !reader.consume(';') {
-                return Err(reader.error("expected ';' after a let binding"));
-            }
-        }
-        let value = read_value_expression(&mut reader, host, budget, nesting)?;
-        reader.skip_whitespace();
-        if !reader.remaining().is_empty() {
-            dispose_native_value(value);
-            return Err(reader.error("expected the end of the expression"));
-        }
-        Ok(value)
-    })();
-    match result {
-        Ok(value) if bindings.is_empty() => Ok(value),
-        Ok(value) => Ok(Located::new(
-            K::Block {
-                bindings,
-                value: Box::new(value),
-            },
-            0..query.len(),
-        )),
-        Err(error) => {
-            for (pattern, value) in bindings {
-                dispose_pattern(pattern);
-                dispose_native_value(value);
-            }
-            Err(error)
-        }
-    }
+    let mut names = vec!["rows"];
+    names.extend(host.inputs.iter().filter_map(|input| input.name.as_deref()));
+    let mut reader = CsvReader { names: &names };
+    zirql::read_value_program(query, &names, &mut reader, budget, nesting)
 }
 
 #[cfg(test)]
@@ -781,6 +745,23 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         let error = refusal(short, &people(), "pattern did not match");
         assert_eq!(error.error.location, Location::Query(4..12));
         refusal("fn f(x: int) -> int { x } f(1)", &people(), "expected");
+        assert_eq!(
+            text(
+                r#"/* fn hidden() -> int { 1 } */ let label = "fn inside() -> int { 2 }"; label"#,
+                &people()
+            ),
+            "\"fn inside() -> int { 2 }\"\n"
+        );
+        let duplicate = "let chosen = 1; let chosen = 2; chosen";
+        let error = refusal(duplicate, &people(), "already defined");
+        assert_eq!(error.error.location, Location::Query(20..26));
+        refusal(
+            "let first = later; let later = 1; first",
+            &people(),
+            "later",
+        );
+        refusal("rows;", &people(), "expected the end");
+        refusal("rows trailing", &people(), "expected the end");
         let error = refusal("rows | unique", &people(), "unique");
         assert_eq!(error.error.location, Location::Query(7..13));
         refusal(
@@ -860,7 +841,6 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         let mut host = CsvHost {
             tables: vec![empty],
             inputs: &inputs,
-            let_names: Vec::new(),
         };
         let types = BTreeMap::from([(
             "rows".into(),
@@ -868,9 +848,9 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
                 .types(&mut budget, Location::Query(0..1))
                 .unwrap(),
         )]);
-        let expression = read_program(
+        let expression = csv_program(
             "rows | filter(_.missing == \"yes\")",
-            &mut host,
+            &host,
             &mut budget,
             LIMITS.nesting,
         )
@@ -904,6 +884,43 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         );
         let error = refusal("1..100001", &people(), "result limit exceeded");
         assert_eq!(error.error.category, QueryErrorCategory::ResultLimit);
+        let names = ["rows", "alpha", "beta"];
+        let mut reader = CsvReader { names: &names };
+        let source = format!("/* {} */ 1", "a".repeat(128));
+        let error = zirql::read_value_program(
+            &source,
+            &names,
+            &mut reader,
+            &mut Budget::for_program(ProgramLimits { work: 64, ..LIMITS }),
+            LIMITS.nesting,
+        )
+        .unwrap_err();
+        assert_eq!(error.category, QueryErrorCategory::WorkLimit);
+        let error = zirql::read_value_program(
+            "1",
+            &names,
+            &mut reader,
+            &mut Budget::for_program(ProgramLimits {
+                results: 2,
+                ..LIMITS
+            }),
+            LIMITS.nesting,
+        )
+        .unwrap_err();
+        assert_eq!(error.category, QueryErrorCategory::ResultLimit);
+        let value = zirql::read_value_program(
+            &source,
+            &names,
+            &mut reader,
+            &mut Budget::new(zirql::Limits {
+                work: 64,
+                items: LIMITS.stream_items,
+                nesting: LIMITS.nesting,
+            }),
+            LIMITS.nesting,
+        )
+        .unwrap();
+        dispose_native_value(value);
         let mut budget = Budget::for_program(LIMITS);
         assert!(admit_inputs(&[InputSpec::parse("rows=no.csv".into())], &mut budget).is_err());
         assert!(admit_inputs(&[InputSpec::parse("for=no.csv".into())], &mut budget).is_err());
