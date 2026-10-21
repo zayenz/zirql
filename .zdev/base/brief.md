@@ -2067,8 +2067,8 @@ the domain responsibilities retained.
 
 The user authorized fixing meaningful differences between native and constructed
 versions of common operations, beyond removing duplicate reference labels. The
-follow-up covers ordering and extrema; filter, count, head, tail, reverse and
-check; and unique/tally. Historical frontend, container and host restrictions
+follow-up covers ordering and extrema; filter, count, length, head, tail,
+reverse and check; unique/tally; and existing infix comparisons/equality. Historical frontend, container and host restrictions
 are not reasons for different semantics. Native ownership, domain subjects,
 completeness/Unknown, effect admission and explicit indexed shape remain real
 constraints. Base-125 remains the migration of existing behavior; the designated
@@ -2084,6 +2084,16 @@ results, including nonwinning keys and contradictory nominal metadata. Empty
 extrema succeed after normal preflight: constructed single extrema return
 typed absence and native extrema retain an empty selection of the admitted
 kind. Native default projections and intrinsic result shapes remain explicit.
+
+Infix relations retain the existing ordinary numeric contract, including exact
+integer and mixed-number admission; they do not become structural sorting.
+Equality retains compatible-type admission and its existing collection,
+optional, nominal and keyed-shape rules. Native wrappers around equivalent
+ordinary data must not bypass these rules when facts were deferred. Check
+deferred values when evaluated without forcing an untaken lazy branch. Actual
+native leaves retain their explicit domain identity contract. Existing length
+uses collection cardinality consistently, including set/dictionary views and
+the existing present-cell count for keyed arrays.
 
 Selection and cardinality operations retain collection meaning, entry order,
 native identity and declared empty schemas. Unique and tally use structural

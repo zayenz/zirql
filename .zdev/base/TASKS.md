@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 132
-- Ready: 3
+- Total: 133
+- Ready: 4
 - Blocked: 3
 - Done: 126
 
@@ -141,3 +141,4 @@
 | [base-130](tasks/130-use-one-structural-ordering-contract-for-value-and-native-op.md) | Use one structural ordering contract for value and native operations | ready | base-125 |
 | [base-131](tasks/131-align-collection-selection-and-cardinality-across-native-and.md) | Align collection selection and cardinality across native and value paths | ready | base-125 |
 | [base-132](tasks/132-share-structural-unique-and-tally-semantics-across-value-and.md) | Share structural unique and tally semantics across value and native collections | blocked | base-125, base-131 |
+| [base-133](tasks/133-align-infix-comparison-admission-for-native-and-constructed.md) | Align infix comparison admission for native and constructed data | ready | base-125 |
