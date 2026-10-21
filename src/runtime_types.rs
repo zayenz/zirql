@@ -268,13 +268,43 @@ fn reject_native(
     })
 }
 
-pub(crate) fn copy_declaration<K: Clone>(
+/// Copy a declaration without inspecting its values or changing native kinds.
+/// Work, child slots, label bytes and nesting are checked before allocation.
+/// The returned root is stored inline; hosts charge their own Rc/Arc wrapper.
+/// Native kind cloning remains the host's responsibility through `K::clone`.
+///
+/// ```
+/// use zirql::{Budget, DeclaredType, Location, ProgramLimits, copy_declaration};
+/// let declaration = DeclaredType::<()>::Sequence(Box::new(DeclaredType::String));
+/// let mut budget = Budget::for_program(ProgramLimits {
+///     work: 100, results: 10, nesting: 8, stream_items: 10,
+/// });
+/// let copied = copy_declaration(&declaration, &mut budget, &Location::Query(0..4))?;
+/// assert_eq!(copied, declaration); // The element contract survives an empty sequence.
+/// # Ok::<(), zirql::QueryError>(())
+/// ```
+///
+/// # Errors
+/// Refuses exhausted work, result or nesting limits at `location`.
+pub fn copy_declaration<K: Clone>(
     declaration: &DeclaredType<K>,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<DeclaredType<K>, QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         budget.charge(1, location.clone())?;
+        let slots = match declaration {
+            DeclaredType::Optional(_)
+            | DeclaredType::Array(_)
+            | DeclaredType::Sequence(_)
+            | DeclaredType::Queue(_)
+            | DeclaredType::Keyed(_) => 1,
+            DeclaredType::Dictionary(_, _) => 2,
+            DeclaredType::Tuple(children) => children.len(),
+            DeclaredType::Record(fields) => fields.len(),
+            _ => 0,
+        };
+        budget.charge_results(slots, location.clone())?;
         Ok(match declaration {
             DeclaredType::Optional(child) => {
                 DeclaredType::Optional(Box::new(copy_declaration(child, budget, location)?))
@@ -308,6 +338,7 @@ pub(crate) fn copy_declaration<K: Clone>(
                 let mut copied = Vec::with_capacity(fields.len());
                 for (label, child) in fields {
                     budget.charge(label.len(), location.clone())?;
+                    budget.charge_results(label.len(), location.clone())?;
                     copied.push((label.clone(), copy_declaration(child, budget, location)?));
                 }
                 DeclaredType::Record(copied)
@@ -550,6 +581,70 @@ pub(crate) fn validate_declaration<K>(
             | DeclaredType::IdentitySet(_) => {}
         }
         Ok(())
+    })
+}
+
+/// A primitive constructed scalar contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarType {
+    Boolean,
+    Integer,
+    Float,
+    String,
+}
+
+/// Whether incomplete scalar facts may defer admission until runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeFactPolicy {
+    /// Require established facts, including the actual facts in declared wrappers.
+    Strict,
+    /// Permit `Unestablished` and `ScalarKind`; actual values still need admission.
+    Deferred,
+}
+
+/// Check scalar facts with the same rules as runtime declaration admission.
+/// Declared wrappers must have a compatible scalar declaration and compatible
+/// actual facts. Hosts choose whether their context permits deferred facts.
+///
+/// # Errors
+/// Returns a located type mismatch or budget refusal. This checks facts only;
+/// it neither reads a value nor admits native values or domain-specific kinds.
+pub fn admit_scalar_type(
+    actual: &ValueType,
+    expected: ScalarType,
+    policy: TypeFactPolicy,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    let expected = match expected {
+        ScalarType::Boolean => DeclaredType::<()>::Boolean,
+        ScalarType::Integer => DeclaredType::Integer,
+        ScalarType::Float => DeclaredType::Float,
+        ScalarType::String => DeclaredType::String,
+    };
+    check_type_facts(
+        actual,
+        &expected,
+        policy == TypeFactPolicy::Deferred,
+        budget,
+        location,
+    )
+}
+
+/// Extract a nonnegative integer that fits the platform's `usize`.
+/// Hosts supply the diagnostic message for their argument context.
+///
+/// # Errors
+/// Negative or overflowing values return `message` at `location`.
+pub fn nonnegative_integer_to_usize(
+    value: i64,
+    location: Location,
+    message: &str,
+) -> Result<usize, QueryError> {
+    usize::try_from(value).map_err(|_| QueryError {
+        location,
+        message: message.to_owned(),
+        category: QueryErrorCategory::Other,
     })
 }
 
@@ -965,7 +1060,12 @@ pub(crate) fn constructed_declaration<K>(
     })
 }
 
-pub(crate) fn contains_native<K>(
+/// Whether a declaration contains native or computational values.
+/// This inspects Zirql structure only; it does not classify a host's native kinds.
+///
+/// # Errors
+/// Refuses exhausted work or nesting limits at `location`.
+pub fn contains_native<K>(
     declaration: &DeclaredType<K>,
     budget: &mut Budget,
     location: &Location,

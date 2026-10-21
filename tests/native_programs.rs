@@ -13096,3 +13096,104 @@ fn alignment_retains_native_rows_and_optional_side_contracts() {
         zirql::dispose_native_value(expression);
     }
 }
+
+#[test]
+fn declaration_copy_retains_empty_contracts_order_and_limits() {
+    let declaration = DeclaredType::<()>::Record(vec![
+        (
+            "rows".into(),
+            DeclaredType::Sequence(Box::new(DeclaredType::String)),
+        ),
+        ("count".into(), DeclaredType::Integer),
+    ]);
+    let location = Location::Query(12..25);
+    let copied =
+        zirql::copy_declaration(&declaration, &mut Budget::for_program(limits()), &location)
+            .unwrap();
+    assert_eq!(copied, declaration);
+    let error = zirql::copy_declaration(
+        &declaration,
+        &mut Budget::for_program(ProgramLimits {
+            results: 1,
+            ..limits()
+        }),
+        &location,
+    )
+    .unwrap_err();
+    assert_eq!(error.category, QueryErrorCategory::ResultLimit);
+    assert_eq!(error.location, location);
+    let error = zirql::copy_declaration(
+        &declaration,
+        &mut Budget::for_program(ProgramLimits {
+            nesting: 1,
+            ..limits()
+        }),
+        &location,
+    )
+    .unwrap_err();
+    assert_eq!(error.location, location);
+    assert!(
+        !zirql::contains_native(&copied, &mut Budget::for_program(limits()), &location).unwrap()
+    );
+    assert!(
+        zirql::contains_native(
+            &DeclaredType::Sequence(Box::new(DeclaredType::Native("operation"))),
+            &mut Budget::for_program(limits()),
+            &location,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn scalar_facts_keep_declared_contracts_and_explicit_deferral() {
+    use zirql::{ScalarType, TypeFactPolicy, ValueType, admit_scalar_type};
+    let location = Location::Query(7..18);
+    let facts = ValueType::Declared {
+        actual: Box::new(ValueType::Unestablished),
+        declaration: DeclaredType::Integer,
+    };
+    let mut budget = Budget::for_program(limits());
+    admit_scalar_type(
+        &facts,
+        ScalarType::Integer,
+        TypeFactPolicy::Deferred,
+        &mut budget,
+        &location,
+    )
+    .unwrap();
+    assert!(
+        admit_scalar_type(
+            &facts,
+            ScalarType::Integer,
+            TypeFactPolicy::Strict,
+            &mut budget,
+            &location
+        )
+        .is_err()
+    );
+    assert!(
+        admit_scalar_type(
+            &facts,
+            ScalarType::String,
+            TypeFactPolicy::Deferred,
+            &mut budget,
+            &location
+        )
+        .is_err()
+    );
+    let error =
+        zirql::nonnegative_integer_to_usize(-1, location.clone(), "head needs a nonnegative count")
+            .unwrap_err();
+    assert_eq!(error.location, location);
+    assert_eq!(error.message, "head needs a nonnegative count");
+    assert_eq!(
+        zirql::nonnegative_integer_to_usize(0, location, "count").unwrap(),
+        0
+    );
+    if usize::BITS < 64 {
+        assert!(
+            zirql::nonnegative_integer_to_usize(i64::MAX, Location::Query(0..1), "count").is_err()
+        );
+    }
+}

@@ -85,8 +85,9 @@ pub use rendering::{
     JsonLayout, JsonRepresentation, render_json, render_json_value, render_markdown, to_json_value,
 };
 pub use runtime_types::{
-    DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,
-    checked_invoke, declare_constructed,
+    DeclaredType, OperationSignature, RuntimeTypeHost, ScalarType, TypeFactPolicy,
+    admit_constructed, admit_scalar_type, admit_value, checked_invoke, contains_native,
+    copy_declaration, declare_constructed, nonnegative_integer_to_usize,
 };
 pub use sets::{NativeSetOperator, combine_native_set};
 pub use value::identity::{compare_constructed_values, constructed_value_hash};

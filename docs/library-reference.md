@@ -31,6 +31,8 @@ runtime errors in skipped branches remain unexecuted. See
 - [Shared native forms](library-native.md)
 - [JSON and Markdown rendering (Rust API)](library-rendering.md)
 
+Rust adapters can share [declaration metadata and scalar argument admission](host-integration.md#declaration-metadata-and-scalar-arguments).
+
 The [language reference](language-reference.md) covers grammar and scope;
 [the word tutorial](examples.md) and [CSV examples](csv.md) develop full queries.
 The [Rust API](https://docs.rs/zirql/0.2.0/zirql/) documents callable builders and

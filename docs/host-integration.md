@@ -1173,3 +1173,38 @@ infers native identity from matching display text. Both consumers must choose
 and validate their keys and rendering of absent sides before exposing these
 reports. This core slice changes no consumer repository and adds no symbolic CP
 operation.
+
+## Declaration metadata and scalar arguments
+
+`copy_declaration` copies Zirql-owned declaration structure with the request's
+work, result and nesting limits. It retains record field order, nominal IDs,
+native kind payloads and the element declaration of an empty sequence. It
+charges each allocated child slot and copied field-name byte before allocation;
+the root is returned inline. An adapter storing that root in `Rc` or `Arc`
+charges its wrapper separately. Cloning a native kind still follows the host's
+own storage and accounting rules. The Rust API includes a runnable example.
+
+`contains_native` inspects this same structure and treats native kinds, queues
+and identity sets as requiring native handling. It does not interpret native
+kind payloads. Zincite deliberately classifies its native scalar/value wrappers
+as constructed in its local admission logic; that classification cannot use
+this structural test. Zirium uses the shared structural inspection directly.
+Both development adapters use the shared copy operation while retaining their
+`Rc` and `Arc` storage respectively.
+
+`admit_scalar_type` checks Boolean, integer, float or string facts through the
+existing runtime type checker. `TypeFactPolicy::Strict` requires established
+actual facts. `Deferred` permits `Unestablished` and `ScalarKind`; it still
+checks any declared wrapper against the requested scalar contract. Fact
+admission does not replace admission of the eventual value. Zincite defers
+only its unknown argument facts, retaining its refusal of bare `ScalarKind`.
+Zirium allows declaration-backed incomplete scalar facts and refuses bare
+unknown facts in predicate and primitive positions. These choices remain
+explicit in the adapters.
+
+`nonnegative_integer_to_usize` converts an evaluated signed integer for counts
+and indices, refusing negatives and platform overflow at the supplied location.
+The host supplies the diagnostic message for its argument context. Domain kind
+conversion, MiniZinc admission, MLIR ownership and native value admission remain
+host responsibilities. These APIs require the development revision pinned by
+the adapters; the published 0.2.0 crate does not contain them.
