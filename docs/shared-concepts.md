@@ -94,8 +94,9 @@ explains saved native values, projections and correlated selections.
 ## The small embedding reader
 
 The Rust `parse_pipeline` API is a smaller entry point. It reads `filter`,
-`head`, `unique` and terminal `count` or `tally`, using a callback for predicate
-leaves. For example, the [borrowed-word host](../README.md#a-borrowed-source-query)
+`head`, `tail`, `reverse`, `check`, `unique` and terminal `count` or `tally`, using
+a callback for predicate leaves. The [native library reference](library-native.md)
+describes bounds, reversal and cardinality checks. For example, the [borrowed-word host](../README.md#a-borrowed-source-query)
 registers `prefix`:
 
 ```zirql

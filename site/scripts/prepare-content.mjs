@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises';
 import { resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +10,10 @@ const guides = [
   'semantic-models', 'computation', 'execution-measurements', 'language-reference', 'implementation-reference',
   'functions-and-control-flow', 'value-runtime', 'runtime-limits', 'csv', 'csv-host',
 ];
+// Reference categories stay flat beside the existing guides in docs/.
+guides.push(...(await readdir(resolve(root, 'docs')))
+  .filter((name) => /^library-[\w-]+\.md$/.test(name))
+  .map((name) => name.slice(0, -3)).sort());
 const output = resolve(site, 'src/content/docs');
 await mkdir(resolve(output, 'guides'), { recursive: true });
 

@@ -116,6 +116,9 @@ and matching checkout.
 
 ## Learn the language
 
+Use the [library reference](library-reference.md) to find functions, pipeline
+stages and operators by purpose or alphabetical name.
+
 The [language reference](language-reference.md) covers expressions, data types,
 comprehensions, pipelines and programs. Start with values and collections. The
 later chapters explain how queries work with objects supplied by an application.

@@ -188,6 +188,11 @@ completed array, and rejected candidates still cost work. See
 
 ## Built-in operations
 
+The [library reference](library-reference.md) indexes every supported shared
+function, pipeline stage and operator. Browse its purpose groups for complete
+input, result, empty-input and error contracts. The table below is a quick
+selection of common constructed operations.
+
 These operations work on constructed values. Native stages can have similar
 names but operate on a host's native selections.
 
