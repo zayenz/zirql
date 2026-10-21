@@ -20,10 +20,9 @@ function libraryGroup(label, page, entries) {
     label, collapsed: true,
     items: [
       { label: 'Category overview', slug: `guides/${page}` },
-      // Keep fragments out of Starlight's base/path normalization.
+      // Absolute entry URLs preserve fragments through Starlight's path formatting.
       ...entries.map(([label, anchor]) => ({
-        label, slug: `guides/${page}`,
-        attrs: { href: `${prefix}guides/${page}/#${anchor}` },
+        label, link: new URL(`${prefix}guides/${page}/#${anchor}`, site).href,
       })),
     ],
   };
@@ -176,8 +175,6 @@ export default defineConfig({
         ]),
         libraryGroup('Shared native composition', 'library-native', [
           ['input', 'input'],
-          ['unique (native)', 'native-unique-and-tally'],
-          ['tally (native)', 'native-unique-and-tally'],
           ['project', 'project'],
           ['map_by', 'map_by'],
           ['match {captures}', 'native-capture-match'],
@@ -192,7 +189,7 @@ export default defineConfig({
         ]),
       ] },
       { label: 'Language reference', items: ['guides/language-reference', 'guides/values', 'guides/functions-and-control-flow', 'guides/shared-concepts', 'guides/native-programs', 'guides/diagnostics-and-limits'] },
-      { label: 'Implementation reference', items: ['guides/implementation-reference', { label: 'Constructed data programs', slug: 'guides/embedding-programs', attrs: { href: `${prefix}guides/embedding-programs/#constructed-data-programs` } }, 'guides/csv-host', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', { label: 'Native composition in Rust', slug: 'guides/embedding-programs', attrs: { href: `${prefix}guides/embedding-programs/#build-native-composition-steps` } }, 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
+      { label: 'Implementation reference', items: ['guides/implementation-reference', { label: 'Constructed data programs', link: new URL(`${prefix}guides/embedding-programs/#constructed-data-programs`, site).href }, 'guides/csv-host', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', { label: 'Native composition in Rust', link: new URL(`${prefix}guides/embedding-programs/#build-native-composition-steps`, site).href }, 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql/0.2.0/zirql/' },
       { label: 'Zincite guides', link: 'https://zayenz.se/zincite/' },
       { label: 'Zirium guides', link: 'https://zayenz.se/zirium/' },

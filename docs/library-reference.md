@@ -12,8 +12,10 @@ names belong to the [Zirium](https://zayenz.se/zirium/guides/query-language/)
 and [Zincite](https://zayenz.se/zincite/guides/queries/) references. Proposed
 language/CP forms are outside this library reference.
 
-Each entry gives its form, inputs, result, example and relevant empty/error/order
-rules. All operations spend the active finite request budget. Preflight scope,
+Each shared operation has one entry covering its constructed and native forms,
+including the native projections and result shapes that differ. Each entry gives
+its inputs, result, example and relevant empty/error/order rules. All operations
+spend the active finite request budget. Preflight scope,
 known-type and purity checks apply even to empty input and unselected branches;
 runtime errors in skipped branches remain unexecuted. See
 [diagnostics and limits](diagnostics-and-limits.md).
@@ -37,8 +39,9 @@ and share [declaration metadata and scalar argument admission](host-integration.
 
 The [language reference](language-reference.md) covers grammar and scope;
 [the word tutorial](examples.md) and [CSV examples](csv.md) develop full queries.
-The [Rust API](https://docs.rs/zirql/0.2.0/zirql/) documents callable builders and
-host integration. Reader forms and Rust enum variants are not interchangeable:
+The [published Rust API](https://docs.rs/zirql/0.2.0/zirql/) describes registry
+0.2.0. Run `cargo doc --open` in this checkout for the development APIs used by
+these guides. Reader forms and Rust enum variants are not interchangeable:
 for example, there is no ordinary `array(...)` call, and nominal member
 construction needs a host resolver.
 
@@ -77,7 +80,7 @@ support. `present` is a pattern.
 | `bind` | [Shared native forms](library-native.md#native-capture-match) |
 | `break` | [Functions and control flow](library-control.md#break) |
 | `case` | [Collections and reductions](library-collections.md#comprehensions) |
-| `check` | [Shared native forms](library-pipelines.md#check) |
+| `check` | [Collection pipeline stages](library-pipelines.md#check) |
 | `contains` | [Strings](library-strings.md#contains) |
 | `continue` | [Functions and control flow](library-control.md#continue) |
 | `count` | [Collection pipeline stages](library-pipelines.md#count) |
@@ -102,7 +105,7 @@ support. `present` is a pattern.
 | `function call` | [Functions and control flow](library-control.md#fn-and-calls) |
 | `group_by` | [Grouping and neighbourhoods](library-grouping.md#group_by) |
 | `has_key` | [Presence and lookup](library-presence.md#has_key) |
-| `head` | [Shared native forms](library-pipelines.md#head-and-tail) |
+| `head` | [Collection pipeline stages](library-pipelines.md#head-and-tail) |
 | `identity_set` | [Queues and native identity sets](library-worklists.md#identity_set) |
 | `if` | [Functions and control flow](library-control.md#if) |
 | `in` | [Operators and access](library-operators.md#membership) |
@@ -148,7 +151,7 @@ support. `present` is a pattern.
 | `render_report_markdown` (Rust) | [Mixed Markdown reports](library-rendering.md#render_report_markdown) |
 | `report` | [Functions and control flow](library-control.md#report) |
 | `require` | [Presence and lookup](library-presence.md#require) |
-| `reverse` | [Shared native forms](library-pipelines.md#reverse) |
+| `reverse` | [Collection pipeline stages](library-pipelines.md#reverse) |
 | `runs_by` | [Grouping and neighbourhoods](library-grouping.md#runs_by) |
 | `scan` | [Functions and control flow](library-control.md#scan) |
 | `set` | [Collections and reductions](library-collections.md#sets) |
@@ -156,7 +159,7 @@ support. `present` is a pattern.
 | `sort_by` | [Ordering and extrema](library-ordering.md#sort_by) |
 | `starts_with` | [Strings](library-strings.md#starts_with) |
 | `sum` | [Collections and reductions](library-collections.md#sum) |
-| `tail` | [Shared native forms](library-pipelines.md#head-and-tail) |
+| `tail` | [Collection pipeline stages](library-pipelines.md#head-and-tail) |
 | `tally` | [Collection pipeline stages](library-pipelines.md#tally) |
 | `to_json_value` (Rust) | [JSON rendering](library-rendering.md#to_json_value) |
 | `to_report_json_value` (Rust) | [Mixed native reports](library-rendering.md#mixed-native-reports) |

@@ -95,7 +95,8 @@ positional identity; sets use membership and dictionaries use associations.
 Different constructed kinds stay distinct, and floating signed zeros compare
 equal. Declared element contracts remain available on empty results.
 
-Native leaves use exact host identity, including source owner and diff side.
+Ordinary data exposed through native wrappers uses the same structural identity.
+Opaque native leaves use exact host identity, including source owner and diff side.
 Two operations or declarations with the same displayed name remain distinct.
 Project `names` explicitly to deduplicate spellings. Dictionaries and keyed
 arrays require an explicit positional conversion before unique or tally.
@@ -124,6 +125,8 @@ only for output. Names and rendered descriptors never determine identity.
 
 `collection | sort` uses [stable same-kind sorting](library-ordering.md#sort).
 `items | windows(size)` and `rows | runs_by("field")` use the same contracts as
-their [ordinary calls](library-grouping.md). Those are the remaining constructed
-suffixes. Native bounds/check/reversal and native ordering forms require host
-support; they are not additional constructed suffixes.
+their [ordinary calls](library-grouping.md). Native selection and ordering use the
+same entries, with host admission and restoration of native result shapes. The compact `parse_pipeline` API is a
+smaller native reader with literal bounds/messages; richer readers and typed
+APIs accept runtime expressions. See
+[predicate subjects](native-programs.md#predicate-argument-subjects).

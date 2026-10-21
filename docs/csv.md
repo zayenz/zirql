@@ -406,8 +406,10 @@ result as `sort(g.members)`.
 
 Bindings are immutable and visible after their initializer. A `let` cannot
 replace a table name, `rows`, or an earlier binding. Comprehension names stay
-inside their expression. The example accepts ordered `let` bindings followed by
-one final expression; named function declarations are unsupported.
+inside their expression. The example accepts typed parameters, pure named
+functions, ordered pattern `let` bindings and one final value expression through
+`ConstructedProgram`. Functions receive table and parameter values explicitly,
+as in the [numeric orders report](#calculate-with-numeric-cells).
 
 Use exactly one unnamed file, or only named files. Named tables use ASCII
 identifiers: a letter or underscore followed by letters, digits or underscores.
@@ -651,20 +653,21 @@ copies, parsing, evaluation and output share one budget: 1,000,000 work units,
 ceiling. Work includes scanned and copied bytes, field metadata and output
 bytes. The byte cap bounds the CSV decoder's temporary buffers as well.
 
-Zirql's common readers parse the expressions and `let` prefixes. The host lowers
-the bindings to one value block and calls `evaluate_query_value` once. Zirql
-therefore owns scope, saved-value reuse, correlated iteration, expressions,
-collection stages and their resource failures. Zirql's shared ordinary compact
-renderer retains record order, renders absence as JSON `null` and tuples and
-sets as arrays. General dictionaries use tagged entries:
-`{"kind":"dictionary","entries":[{"key":...,"value":...}]}`. Each key and value
-is encoded recursively; records remain ordinary JSON objects. Nominal members
-and keyed arrays use their explicit tagged encoding to retain names and shape.
+`ConstructedBinding` admits each table against its header-derived declaration.
+`ConstructedProgram` reads functions, typed parameters, ordered pattern lets
+and the final expression, then prepares and evaluates them with the same budget.
+The example needs no native reader or value-query traits. CSV retains decoding,
+exact string cells, input-byte limits and the sole/named-table selection policy.
 
-[Build the CSV host](csv-host.md) walks through the Rust implementation, from
-loading a table to returning JSON. The [host integration guide](host-integration.md)
-explains the adapter traits; [embedding programs](embedding-programs.md) covers
-the larger native-program API.
+The shared [JSON and Markdown renderers](library-rendering.md) format the
+completed value. `run` returns a complete buffer; `main` writes only after
+success, so a later conversion, evaluation or rendering error leaves stdout empty.
+
+[Build the CSV host](csv-host.md) walks through loading, declaring and binding
+a table, supplying parameters and returning JSON or Markdown. The
+[minimal embedding](embedding-programs.md#constructed-data-programs) starts with
+values already in memory. Use [native integration](host-integration.md) when
+your application also needs native handles, source coordinates or domain calls.
 
 ## Keep distinct rows and count repeated rows
 

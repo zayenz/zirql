@@ -19,52 +19,40 @@ documentation for your selected dependency with `cargo doc --open`.
 
 | Need | Shared API | Host supplies |
 | --- | --- | --- |
-| Text expressions over bindings | `ValueReaderHost`, `read_value_expression`, `ValueQueryHost`, `evaluate_query_value` | Binding names, type facts and budgeted value reads |
+| Constructed data programs | `ConstructedBinding`, `ConstructedProgram` | Values with declarations, binding names, optional current input and parameters |
 | Constructed expression trees | `evaluate_value` | Located expressions and immutable constructed bindings |
-| Ordered native stages | `Host` and `evaluate` | Native input, predicates, identity and typed stages |
-| Native bindings and reports | `ProgramHost`, `PreparedFunctions::prepare_expression` and `evaluate_expression` | Native values, remaining stage/set payloads, copying and emitters |
-| Native composition without functions | `ProjectionHost` and `evaluate_native_expression` | Native kinds, subjects, guard leaves, keys, identity and shape |
-| Correlated report fields | `ExpressionStep::Projection` and `ProjectionHost` | Native subjects, singleton kinds and explicit scalar projections |
-| Named pure functions | `FunctionHost`, `FunctionRequest`, `PreparedFunctions` | Type resolution and pure native operations |
+| Ordered native stages | `Host` and `evaluate` | Native input, predicate leaves, identity and domain stages |
+| Native programs and reports | `ProgramReaderHost`, `read_program`, `PreparedFunctions`, `PreparedProgram` | Native syntax/types, values, domain calls, admission and emission policy |
+| Native composition without functions | `ProjectionHost`, `evaluate_native_expression` | Native views, guard leaves, identity, ownership and shape |
 
-Core `ExpressionStep` variants carry ordinary values, projections, filters,
-matches, ordering, maps, existence, fixed points and paths. Zirql prepares and
-executes their bodies and scopes. `Stage` carries native primitive and guard
-payloads; `Emit` retains explicit host output policy. Native-only adapters use
-`evaluate_native_expression`; function-bearing requests use their active
-`PreparedFunctions` unit. These direct core forms require the development
-dependency; registry 0.2.0 predates them. The smaller `evaluate_program` API
-still handles programs containing only opaque native stages.
+The [minimal constructed program](embedding-programs.md#constructed-data-programs)
+needs no native host traits. The [word host](getting-started.md#supply-the-input)
+binds one declared string sequence. The [CSV host](csv-host.md) loads declared
+record sequences, selects sole or named input, supplies parameters and renders
+a complete JSON or Markdown result. Its [numeric orders recipe](csv.md#calculate-with-numeric-cells)
+uses typed parameters, a named function and explicit scalar conversions. Both
+examples use the same facade for reading, preparation, scope and evaluation.
+Lower-level `ValueReaderHost`, `ValueQueryHost` and `evaluate_query_value`
+remain available for adapters that need expression-only integration.
 
-The [word example](getting-started.md) uses the first row. Its reader recognizes
-one binding, `words`, and rejects native stages. Its value host returns a
-budgeted copy of the string array. Zirql reads and evaluates the collection
-stages as well as the comprehension, so this host needs no sort, unique or tally
-hooks. This is enough to run the front-page examples.
-Typed callers nest `ValueExpressionKind::Sort`, `Unique` and `Tally` nodes and
-call `evaluate_value` without parsing text. The common reader lowers constructed
-pipes to these same nodes; existing prepared and function entry points use the
-same evaluator. See [value evaluation](value-runtime.md) for type discovery,
-validation and owned results.
+Native programs use the [common reader](embedding-programs.md#read-text-programs),
+[function preparation and request program](#prepare-a-function-request), and
+the [domain hooks](#implement-domain-hooks) below. Core `ExpressionStep`
+variants carry values, projections, filters, matches, ordering, maps, existence,
+fixed points and paths. Zirql prepares and executes their bodies and scopes;
+adapters expose domain leaves and native views. `Stage` carries domain primitive
+and guard payloads, while `Emit` retains explicit host output policy. The smaller
+`evaluate_program` API handles programs containing only opaque native stages.
 
-The [CSV usage guide](csv.md) uses the same value interfaces for a complete
-application with [runnable source](../examples/csv.rs) and small
-[people](../examples/csv/people.csv) and [teams](../examples/csv/teams.csv) fixtures.
-Its adapter loads arrays of string dictionaries, supplies header type facts and
-named-table bindings, and renders the final value as JSON. It reads ordered
-`let` bindings and one final expression into a value block. Zirql evaluates
-scope, correlated comprehensions, saved values and sorting; the CSV adapter
-needs no separate implementations of those operations. Named functions need
-the larger program interface below and are outside that example's input format.
+These program, facade and composition APIs require this development checkout;
+registry Zirql 0.2.0 predates them. Use `cargo doc --open` for the selected
+checkout's callable signatures. The [published Rust API](https://docs.rs/zirql/0.2.0/zirql/)
+describes the released version.
 
-[Build the CSV host](csv-host.md) explains the implementation in order, including
-the header types and reader hooks. Start there to adapt it to your own tabular
-data; use the sections below when you need native objects or domain operations.
-
-The [borrowed-word example](../README.md#a-borrowed-source-query) instead
-implements `Host` for string slices, retaining their source through evaluation.
-The remaining sections explain how to add native data and operations. [Construct
-programs in Rust](embedding-programs.md) covers the program builders.
+The [borrowed-word example](../README.md#a-borrowed-source-query) implements
+`Host` for string slices, retaining their source through evaluation. Use native
+integration when queries need that ownership, source coordinates or domain
+navigation; [construct programs in Rust](embedding-programs.md) shows the builders.
 
 ## Retain native items and their owner
 
@@ -173,8 +161,11 @@ known lexer storage before allocation, then use the active request budget for
 checked lookahead and reading. Zirium keeps its established lightweight
 allowance for legacy literals and text containing common words. Recognized
 malformed common forms still receive the common parsing charges and diagnosis.
-Hosts keep their emission/edit stopping boundary and token cursor updates.
-Function collection and complete program assembly remain frontend work.
+`read_program` owns function collection and common program assembly. Hosts
+supply native expression and type reading, host-only statements and output
+policy through the [program reader hooks](embedding-programs.md#read-text-programs).
+Their emission/edit stopping boundaries and token cursor updates remain local;
+these hooks do not reimplement the shared statement loop.
 
 Name admission has separate contexts. `is_unquoted_binding_name` checks ASCII
 identifier spelling. `is_common_keyword` identifies syntax words for an external
@@ -260,7 +251,8 @@ scoped body retains its native result kind through preparation. Nested scopes
 bind `_` to their own subject and retain explicitly named outer captures.
 The domain leaf checks its argument's existing string/scalar or native contract before
 enumeration, including for empty selections. `PredicateScope` checks
-a shared Boolean body. Both use the same value runner and frame restoration. Other leaves pass through `predicate_expression`, which receives a
+a shared Boolean body. Both use the same value runner and frame restoration. Other
+leaves pass through `predicate_expression`, which receives a
 `PredicateArgument`. Bind its subject with `PredicateArgument::bind`, using the
 native input expression, and retain that expression in the host predicate leaf.
 Explicit native headers also use `predicate_expression` for a mandatory pattern
@@ -332,9 +324,11 @@ directly to `ExpressionStep::Value` and `ExpressionStep::Projection`.
 normally `ExpressionStep::Stage` for a domain operation. The reader owns native
 composition and Boolean wrappers; hosts need no value-source or projection
 factories.
-`read_statement_prefix` recognizes contextual `let name =` and `report` forms.
-The frontend lowers ordered statements and defines emission policy. Zirql owns
-program sequencing, binding scope and nested execution.
+`read_program` owns the common statement loop, function collection, parameter
+positions and pattern bindings. Implement `ProgramReaderHost` to supply native
+expressions/types, host-only statements and implicit output. The smaller
+`read_statement_prefix` helper remains available for deliberately limited readers.
+See [text programs](embedding-programs.md#read-text-programs).
 Comprehension-local names take precedence over native stage names in value
 expressions. The head sees every binder; each source sees earlier binders, and
 each filter also sees its current binder.
@@ -342,7 +336,8 @@ each filter also sees its current binder.
 A caller holding a constructed prefix can call `read_value_suffix` with its
 host, enclosing lexical names and cursor at the first outer pipe. The shared reader
 wraps that value in the existing `Filter`, `Sort`, `Unique` and `Tally` nodes, keeping
-stage locations. Preparation checks each continuation against the actual result kind. Pass the active parsing
+stage locations. Preparation checks each continuation against the actual result
+kind. Pass the active parsing
 budget and the nesting allowance remaining for suffix wrappers. The shared
 expression reader already owns both collection spellings and their generator
 pipes. A host with known
@@ -376,7 +371,8 @@ classify names or change `read_value_suffix`, which always reads constructed sta
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
 quoted-string helpers that skip whitespace, `#`/`%` line comments and nonnested
 block comments. `word()` returns single-quoted names without their quotes while
-retaining the complete byte range. Quoted strings retain literal comment markers. `remaining` and `advance` let a predicate callback read
+retaining the complete byte range. Quoted strings retain literal comment markers.
+`remaining` and `advance` let a predicate callback read
 other argument forms. The callback must consume and validate the whole leaf.
 
 The core validates the structure it can see. The frontend must validate references
@@ -478,7 +474,8 @@ keyed cells check every present element. Tuples have fixed positions. Records
 require every nonoptional label and reject extra labels; optional fields may be
 omitted. Checking a record preserves its stored field order. Duplicate
 declaration labels fail. Scalar sets retain their strict element contracts,
-including typed empty sets; `SetElementType::Value` admits general elements. Keyed rank, axis identity, sparse coverage and entry
+including typed empty sets; `SetElementType::Value` admits general elements. Keyed
+rank, axis identity, sparse coverage and entry
 order remain actual runtime facts. Nominal declarations use `NominalTypeId`, so
 equal names do not make distinct types compatible. Integers do not implicitly
 satisfy float contracts.
@@ -633,9 +630,12 @@ after evaluation. `to_json_value` produces an ordered JSON tree;
 also writes existing JSON trees with host-owned document/completeness envelopes.
 All three share the request budget and preserve supplied error locations.
 These APIs belong to this working checkout, beyond published Zirql 0.2.0.
-Native projection remains with the host. A shared bridge for mixed native and
-constructed containers and consumer adoption remain separate integration work;
-computational wrappers remain outside data rendering.
+For mixed reports, implement `RenderHost::view` to expose borrowed containers
+and project native leaves. Zirql owns recursive traversal and ordinary JSON and
+Markdown layout through the [mixed-report bridge](library-rendering.md#mixed-native-reports).
+The host checks native owners, supplies leaf descriptors and document/completeness
+envelopes, and refuses computational queues and identity sets. Rendering runs
+after evaluation and never supplies an identity for a native value.
 
 Return `NativeResult` or the host's value type to library callers. An emitter
 can observe the value at a written position, but its buffering and transaction
@@ -650,9 +650,9 @@ output must buffer until the request succeeds. Library live edits and emitters
 receive no automatic rollback from Zirql. Source-edit safety and transaction
 rules belong to the host.
 
-For signatures and budget charging helpers, use [the Rust API
-reference](https://docs.rs/zirql/0.2.0/zirql/) or `cargo doc
---open` for your selected dependency. The [budget and diagnostic
+For signatures and budget charging helpers, run `cargo doc --open` for your
+selected dependency. The [published Rust API](https://docs.rs/zirql/0.2.0/zirql/)
+describes registry 0.2.0 and does not include the development APIs above. The [budget and diagnostic
 reference](runtime-limits.md) explains how to translate errors and account for
 host work.
 
@@ -1185,95 +1185,46 @@ Runtime combination still validates every retained owner and handle.
 
 ## Selective generator adoption
 
-The shared reader, callable evaluator and local CSV/word examples in this
-checkout support `for case pattern in source` and `| case pattern in source`.
-The [measurement example](values.md#select-matching-values) demonstrates selecting
-present records from mixed input. This core support does not establish support
-in an installed Zirium or Zincite frontend.
-
-Each consumer needs a dependency revision containing `ValueGenerator::In::case`
-and callable builders updated with `case: false` for existing strict clauses.
-Builders that select matches set `case: true`; common-reader frontends receive
-the syntax through that reader. A host-owned surface must lower its selective
-form to the same clause. Native inputs use existing pattern views and admission
-checks; consumers retain their own handle, source-coordinate and rendering rules.
-
-A Zirium adoption could select report findings with a present source location.
-A Zincite adoption could select present model-backed measurement records before
-constructing a report. Those adapters must supply their domain data and adopt
-the dependency before advertising these examples. This feature changes no
-consumer frontend or Data edit policy and adds no symbolic CP operations.
+The common reader lowers `for case pattern in source` and
+`| case pattern in source` to `ValueGenerator::In { case: true, ... }`.
+Strict clauses use `case: false`. Native inputs use the host's existing pattern
+views and admission; source handles do not become positional data implicitly.
+See [selective comprehensions](library-collections.md#comprehensions) and the
+[measurement example](values.md#select-matching-values).
 
 ## Sequence neighbourhood adoption
 
-The development checkout's shared reader, callable evaluator and local
-word/CSV examples support `windows(items, size)`, `runs_by(rows, "field")`
-and their constructed pipeline suffixes. A Zirium report could project operation
-names into positional records, then compare adjacent pairs, consecutive same-name
-runs and global groups as in the [local report](examples.md#compare-consecutive-runs-with-global-groups).
-This example does not establish support in an installed consumer frontend.
-
-Each consumer needs a dependency revision containing the new AST and suffix
-variants. Common-reader frontends receive the syntax through that reader;
-frontends with their own call or suffix dispatch must lower to the shared nodes.
-Update exhaustive AST/suffix visitors and callable builders. For Zirium, retain
-native operation handles alongside projected names using the existing positional
-and record views and list/record constructors. Keep native ownership, source
-coordinates and output conversion with the adapter. Zincite can adopt the calls
-for positional reports; Data edit admission remains its own policy. Consumer
-repositories are unchanged by this core slice.
+[Windows and runs](library-grouping.md) consume positional report data. A native
+adapter supplies positional type/value views and list/record constructors;
+project operation names or other domain fields explicitly before grouping them.
+The [local report](examples.md#compare-consecutive-runs-with-global-groups)
+compares neighbouring pairs, consecutive runs and global groups.
 
 ## Immutable record adoption
 
-The shared reader, callable evaluator and local CSV/word hosts in this development
-checkout support `record with {field: expression, ...}`. The
+[Record updates](library-operators.md#record-update) use existing record value/kind
+views and constructors. Preserve whole-record and field declarations, retained
+native children and their owners. `with` updates report fields; it does not
+provide keyed-cell updates or source edits. The
 [capacity scenario](values.md#compare-capacity-scenarios) compares original and
-expanded capacity records through the local CSV executable. Installed consumer
-frontends have their own dependency and syntax support.
-
-Zincite and Zirium need a dependency revision containing `ValueExpressionKind::With`
-and updates to exhaustive AST visitors and callable builders. Common-reader
-frontends receive the spelling through that reader. A host-owned reader must
-lower its static field list to the same shared node and retain the surface ranges.
-Native record adapters use their existing record value/kind views and constructors;
-whole record and field contracts must survive that boundary.
-
-A Zincite report can project a model-backed capacity into a record, create a
-larger-capacity scenario and compare both. Model facts, MiniZinc type admission
-and Data edit policy remain host responsibilities. Updating capacities stored as
-keyed-array cells is deferred. That design still needs to choose missing-cell
-behaviour and preservation of axes; `with` does not provide keyed updates.
-Zirium can retain a native operation beside changed report fields using its
-existing handle and source-coordinate rules. This core slice changes neither
-consumer repository and adds no symbolic CP operation.
+expanded records without changing input data.
 
 ## Record alignment adoption
 
-The shared reader, callable evaluator and local CSV/word hosts support
-`align(left, right, by="field")` in this development checkout. The
-[benchmark comparison](examples.md#compare-benchmark-tables) demonstrates matched,
-removed and new cases with explicit guards before reading each side's timing.
+[Alignment](library-grouping.md#align) uses positional and record views, matching
+key equality/hash rules, and list/record constructors. Retain optional
+before/after declarations through downstream projections, including empty native
+sequences. Matching labels do not establish native identity or cross-document
+ownership. The [benchmark comparison](examples.md#compare-benchmark-tables)
+uses explicit guards before reading optional sides.
 
-Zincite and Zirium need a dependency revision containing
-`ValueExpressionKind::Align`, updates to exhaustive AST visitors and callable
-builders, and frontend lowering to that shared node. Common-reader frontends
-receive the call grammar through that reader. Host-owned parsers must preserve
-the literal selector's surface range. Native records need existing positional
-and record value/kind views and list/record constructors. Their equality and
-hashing must agree for admitted key values, retaining source and diff-side
-identity. Optional before/after contracts must survive downstream projections,
-including empty native sequences.
-
-A Zincite report can compare two projected model summaries by an explicit
-stable field, retaining declarations beside their measurements. Model meaning,
-MiniZinc admission and Data edit safety stay with Zincite. A Zirium report can
-compare two projected operation summaries by an explicit unique label while
-retaining operation handles and source coordinates. Its native semantic diff
-and cross-document identity policy remain host responsibilities. Neither use
-infers native identity from matching display text. Both consumers must choose
-and validate their keys and rendering of absent sides before exposing these
-reports. This core slice changes no consumer repository and adds no symbolic CP
-operation.
+The development [Zincite](https://zayenz.se/zincite/guides/query-comprehension-contract/#transform-report-rows)
+and [Zirium](https://zayenz.se/zirium/guides/query-language/#transform-positional-reports)
+report frontends expose these common forms. Their guides identify the supported
+dependency revisions; registry Zirql 0.2.0 and installed consumer releases retain
+their documented support. Zincite keeps model facts, MiniZinc admission and Data
+edit restrictions. Zirium keeps native MLIR/diff meaning, handle ownership and
+source-edit policy. The shared evaluator and renderer add no solver integration.
 
 ## Declaration metadata and scalar arguments
 

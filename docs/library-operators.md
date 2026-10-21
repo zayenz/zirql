@@ -1,7 +1,8 @@
 # Operators and access
 
-These are the constructed expression operators. Native set operators have a
-separate [host-dependent contract](library-native.md#native-set-operators).
+These expression operators cover constructed values and ordinary data carried
+by native wrappers. Opaque native operands retain explicit host contracts. Native
+set operators have a separate [host-dependent contract](library-native.md#native-set-operators).
 All operations share the request's finite work, result and nesting limits.
 
 ## Precedence

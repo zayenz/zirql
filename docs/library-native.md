@@ -24,37 +24,13 @@ Top-level statements each start from the original input. Constructed bare
 filter/map/count instead read the host's constructed input.
 See [statement scope](native-programs.md#statements-and-scope).
 
-## Collection selection and cardinality
+## Shared collection operations
 
-[Filter, head, tail, reverse and check](library-pipelines.md#filter) share their
-collection contract with ordinary values. Native predicates retain host domain
-subjects and Unknown/completeness behavior; source/diff ownership stays with the
-adapter. Dictionary predicates receive values and retained entries keep their
-keys. Native streams use their admitted selection/restoration boundary. The small
-`parse_pipeline` reader accepts literal bounds/messages; richer readers and typed
-APIs accept runtime expressions. See [predicate subjects](native-programs.md#predicate-argument-subjects).
-
-## Native unique and tally
-
-Read the shared [unique](library-pipelines.md#unique) and
-[tally](library-pipelines.md#tally) contracts. Native subjects retain exact
-owners, source coordinates and diff sides. Use an explicit scalar projection
-when the intended key is a name or another domain property.
-
-## Native ordering
-
-The [ordering reference](library-ordering.md) covers value and native inputs
-together: [sort](library-ordering.md#sort), [sort_by](library-ordering.md#sort_by),
-[min/max](library-ordering.md#min-and-max) and
-[min_by/max_by](library-ordering.md#min_by-and-max_by).
-Native forms retain their subjects and owners; the host supplies key admission,
-result kinds and empty-input policy. The [embedding contract](native-programs.md#order-native-selections)
-describes those hooks.
-
-## All-ties extrema
-
-See [all-ties extrema](library-ordering.md#all-ties-extrema) for `min_all`,
-`max_all`, `min_all_by` and `max_all_by`.
+Native and constructed forms share entries for [selection and cardinality](library-pipelines.md),
+[unique](library-pipelines.md#unique), [tally](library-pipelines.md#tally) and
+[ordering and extrema](library-ordering.md). Those entries cover admitted inputs,
+default projections, native result shapes and indexed-array restrictions.
+The forms below provide native composition beyond those collection operations.
 
 ## project
 

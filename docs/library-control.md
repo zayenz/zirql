@@ -1,9 +1,11 @@
 # Functions and control flow
 
 The shared reader supports these forms; the host chooses which complete
-programs, typed functions and output statements it installs. The word example
-accepts one expression; CSV adds ordered lets and a final expression. Neither
-registers named functions. See [functions and control flow](functions-and-control-flow.md)
+programs, typed functions and output statements it installs. The word and CSV
+examples use `ConstructedProgram` for named functions, typed parameters, ordered
+lets and a final value expression. CSV supplies caller
+parameters through repeated `--param name=value` arguments; the word executable
+supplies no external parameter values. See [functions and control flow](functions-and-control-flow.md)
 and [programs](native-programs.md).
 
 ## let

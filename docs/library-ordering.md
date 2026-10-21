@@ -26,8 +26,10 @@ use coherent type identity and declaration order.
 Keyed arrays need explicit conversion first.
 
 The pipeline form also accepts native inputs with a host-supplied default key.
-The host admits the input kind and key; sorting retains the native values and
-their owners. Native dictionaries sort by key. Use `sort_by` when native items
+Zirium uses its intrinsic string projection on value streams; Zincite accepts
+scalar string and literal streams. Opaque operation/source handles need an
+explicit selector. The host admits the input kind and key; sorting retains the
+native values and their owners. Native dictionaries sort by key. Use `sort_by` when native items
 need an explicit key query. See [native key admission](native-programs.md#order-native-selections).
 
 ## sort_by

@@ -43,8 +43,9 @@ frames. Render a completed result explicitly with the shared
 
 This API is newer than registry Zirql 0.2.0. Use the working checkout described
 in [setup](getting-started.md#use-zirql-in-another-rust-project).
-[Build the CSV host](csv-host.md) follows file loading, declaration, binding,
-program execution and rendering. The
+The [word host](getting-started.md#supply-the-input) binds an in-memory string
+sequence through this facade. [Build the CSV host](csv-host.md) follows file
+loading, declaration, binding, program execution and rendering. The
 [parameterized orders report](csv.md#calculate-with-numeric-cells) demonstrates
 named functions and repeated CLI parameter values.
 
@@ -737,18 +738,17 @@ A failed request returns no partial report.
 
 ## Consumer adoption
 
-The word and CSV examples expose these stages through the common value reader.
-Zincite and Zirium need frontend routing to the shared `Map`/`FlatMap` nodes
-before their query surfaces can advertise the same syntax. Their adapters must
-supply positional type/value views and native construction hooks for their own
-sequences and report values. Domain projections remain explicit.
+The word and CSV examples expose mapping through `ConstructedProgram` and the
+common reader. The development [Zincite report frontend](https://zayenz.se/zincite/guides/query-comprehension-contract/#transform-report-rows)
+and [Zirium report frontend](https://zayenz.se/zirium/guides/query-language/#transform-positional-reports)
+use the same `Map`/`FlatMap` nodes. Their positional value/kind views and
+list/record constructors retain native children alongside calculated data.
 
-Zincite retains MiniZinc types, model facts and its Data expression/edit policy.
-A capacity report like the local example needs the host's capacity and demand
-projections before it can read model-backed values. Zirium retains MLIR kinds,
-handle identity and source coordinates. Each consumer also owns its rendering
-and JSON policy for retained handles. The ordinary mapping operations do not
-extend a symbolic expression subset.
+Zincite retains MiniZinc model facts and its closed Data/edit policy. Zirium
+retains MLIR kinds, handle identity and source coordinates. Both supply native
+leaf projections and output envelopes to the shared renderers. Installed
+releases retain their published support; these integrations require the
+consumer development revisions identified in their guides.
 
 ## Select matching generator candidates
 

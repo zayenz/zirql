@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-123"
 key = "consolidate-library-docs"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -21,12 +21,21 @@ Read brief.md section Consolidate language machinery and data rendering (2026-10
 
 ## Done when
 
-- [ ] Each paired common operation has one reference entry covering its implemented native and constructed forms. Remove duplicate native labels and obsolete divergent policies; keep necessary default projections, native identity/result shape and explicit indexed-shape distinctions together in that entry. Native capture matching and value matching remain distinct contracts.
-- [ ] Both host sidebars expose the Zirql library reference; shared-function/operator/rendering sections link directly to appropriate entries and replace duplicated detailed contracts with concise host context.
-- [ ] Retain runnable MiniZinc/MLIR recipes, native projections/operators, accepted host syntax, version/support notes, output envelopes and edit/emission restrictions. All adopted extensions, scalar conversions and JSON/Markdown formats are described accurately.
-- [ ] The embedding guide describes the reduced host responsibilities and actual remaining hooks, links the simplified CSV/words embedding path and parameterized/function/numeric CSV recipes, and keeps scalar/string operations easy to find in the sidebar; public docs do not imply CP or unimplemented proposed forms are available.
-- [ ] Local generated sites and cross-project link targets are checked against the intended builds; the task completes without requiring live publication.
+- [x] Each paired common operation has one reference entry covering its implemented native and constructed forms. Remove duplicate native labels and obsolete divergent policies; keep necessary default projections, native identity/result shape and explicit indexed-shape distinctions together in that entry. Native capture matching and value matching remain distinct contracts.
+- [x] Both host sidebars expose the Zirql library reference; shared-function/operator/rendering sections link directly to appropriate entries and replace duplicated detailed contracts with concise host context.
+- [x] Retain runnable MiniZinc/MLIR recipes, native projections/operators, accepted host syntax, version/support notes, output envelopes and edit/emission restrictions. All adopted extensions, scalar conversions and JSON/Markdown formats are described accurately.
+- [x] The embedding guide describes the reduced host responsibilities and actual remaining hooks, links the simplified CSV/words embedding path and parameterized/function/numeric CSV recipes, and keeps scalar/string operations easy to find in the sidebar; public docs do not imply CP or unimplemented proposed forms are available.
+- [x] Local generated sites and cross-project link targets are checked against the intended builds; the task completes without requiring live publication.
 
 ## Validation
 
 - Run existing content preparation and site builds/link checks for changed sites, inspect sidebar and representative reference/recipe pages, git diff --check and zdev check base --format json. No new product tests.
+
+## Result
+
+Made the Zirql reference authoritative for common operations across all3sites, with one entry for native/constructed forms and direct purpose-based sidebar links. Shortened duplicated host exposition while retaining native projections/identity/resultshape/indexedconstraints, domain recipes, versionnotes, output/completeness and edit/emission rules. Embedding/CSV/words describe actual ConstructedProgram/sharedreader/preparation/nativecall/rendering boundaries. Fixed existing duplicatehref sidebarfragment navigation using supported Starlight links; documented existingarrayconcatenation. Consumer commits Zincite67552678e5f16f8598a536c31b0ce0f2ce1e323a and Ziriumc9c7f8a2af17f63c979d15b2364c0241a88c912d; runtimepin49c30dac unchanged.
+
+Validation:
+
+- Independent whole-task review,2staleprosefindings independentlyvetted, correction1 and freshfocusedPASS atW04d19e844fa90157; exactcore andall4consumerfieldsequal.
+- All3content/check/build0diagnostics;33/22/17pages; local6368/1252/896 and642cross-projectlinks against72intendedpagesPASS. Desktop/mobile reference/CSV/embedding/host/diffrecipes andactualsidebarfragmentclicksPASS;33corepages0duplicatehref. Docs/configonly; prioracceptedruntimeassuranceretained.

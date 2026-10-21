@@ -30,11 +30,17 @@ Return whether `text` ends with `suffix`. `ends_with("ash", "sh")` returns
 
 ## String concatenation
 
-`left ++ right -> string`
+`left ++ right -> string or positional array`
 
-Join two strings in operand order. `"ash" ++ "!"` returns `"ash!"`.
-An empty operand contributes no text. Numbers and collections are not converted
-to strings. See [operator precedence](library-operators.md#precedence).
+Join two strings in operand order. `"ash" ++ "!"` returns `"ash!"`; an empty
+string contributes no text. The same operator joins two positional arrays:
+`[1, 2] ++ [3]` returns `[1, 2, 3]`, with fresh one-based positions and retained
+element order and duplicates. An empty array contributes no elements.
+
+Both operands must be strings or both positional arrays. No value is implicitly
+converted to text; sets, tuples, dictionaries and keyed arrays are refused.
+Ordinary native wrappers follow the same admitted data forms. See
+[operator precedence](library-operators.md#precedence).
 
 ## parse_int
 
