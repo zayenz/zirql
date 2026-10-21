@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod composition;
 mod construction;
 mod eval;
 mod existence;
@@ -44,7 +45,7 @@ pub use mapping::{
     MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,
 };
 pub use matching::{
-    MatchClause, MatchHost, NativeCapture, NativeMatch, dispose_match, evaluate_match,
+    MatchClause, NativeCapture, NativeMatch, dispose_match, evaluate_match,
     evaluate_match_with_arguments, match_types,
 };
 pub use native_collections::{
@@ -55,7 +56,7 @@ pub use native_collections::{
 pub use ordering::{NativeOrder, NativeOrderKey, NativeOrdering, order_native_by};
 pub use parser::{ArgumentReader, parse_pipeline};
 pub use paths::{
-    NativePaths, PathHost, dispose_paths, evaluate_paths, evaluate_paths_with_arguments, path_types,
+    NativePaths, dispose_paths, evaluate_paths, evaluate_paths_with_arguments, path_types,
 };
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, ParameterDeclaration,
@@ -65,10 +66,10 @@ pub use program::{
 pub use projection::{
     ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeRead,
     NativeValueArguments, Projection, ProjectionFields, ProjectionHost, ScopedNativeArgument,
-    ScopedNativeValueArguments, evaluate_native_predicate, evaluate_native_predicate_value,
-    evaluate_native_value, evaluate_native_value_with_types, evaluate_projection,
-    evaluate_projection_with_types, native_expression_kind, native_predicate_types,
-    native_predicate_value_types, native_value_types, projection_types,
+    ScopedNativeValueArguments, evaluate_native_expression, evaluate_native_predicate,
+    evaluate_native_predicate_value, evaluate_native_value, evaluate_native_value_with_types,
+    evaluate_projection, evaluate_projection_with_types, native_entry_kind, native_expression_kind,
+    native_predicate_types, native_predicate_value_types, native_value_types, projection_types,
 };
 pub use reader::{
     CommonStatement, FieldPipelineSource, ProgramExpression, ProgramRead, ProgramReaderHost,
@@ -421,3 +422,5 @@ pub use value::{
 };
 
 pub use program::{for_each_expression_child, walk_expression};
+
+pub use composition::{NativeBody, NativeCollectionKey, SelectionShape, collection_value_types};

@@ -5,7 +5,9 @@ Zirql mechanisms, but do not make a domain operation available automatically.
 The examples here use illustrative host bindings, predicates and edges, not
 the word executable. Native handles retain source ownership until explicit
 rendering. Preflight checks native kinds and permitted pure operations even
-for empty input. See [native programs](native-programs.md); actual domain names,
+for empty input. Core expression steps own preparation and composition; adapters supply domain
+leaves, identity, shape and admission. See [native programs](native-programs.md)
+and [Rust composition builders](embedding-programs.md#build-native-composition-steps); actual domain names,
 source edits and output policies belong to the
 [Zirium](https://zayenz.se/zirium/guides/query-language/) and
 [Zincite](https://zayenz.se/zincite/guides/queries/) guides.
@@ -28,7 +30,8 @@ See [statement scope](native-programs.md#statements-and-scope).
 
 Keep each native subject whose predicate is known true, in incoming order with
 duplicates. For a host predicate `active`, `input | filter(active)` keeps active
-subjects. Unknown rejects a filter candidate; predicate errors fail.
+subjects. The host decides how final Unknown interacts with incomplete native
+facts; predicate errors fail.
 Supporting hosts accept `name => expression` or `_`, with one native subject
 per invocation and nested `_` rebinding. Available projections and predicate
 leaves remain host-defined. See [predicate subjects](native-programs.md#predicate-argument-subjects).
@@ -82,29 +85,18 @@ See [pipeline order](shared-concepts.md#keep-order-explicit).
 
 ## Native ordering
 
-`sort`, `min`, `max`; `sort_by(selector)`, `min_by(selector)`, `max_by(selector)`
-
-As native stages, order items or select the first extremum using a host default
-key or a pure query evaluated against each singleton subject. If `name` projects
-one string, `input | sort_by(name)` orders by that string.
-Selectors run in input order before comparisons; ties retain incoming order.
-Missing/incompatible keys fail. Admissible keys, result kinds and empty extrema
-depend on the host: Zirium refuses empty native extrema, while Zincite returns
-an empty selection. Native dictionary `sort_by(value)` sorts values without
-converting the dictionary to entries. These stage forms differ from constructed
-`sort_by(rows, "field")`. See [native ordering contracts](native-programs.md#order-native-selections)
-and [dictionary keys](native-programs.md#correlated-native-dictionaries).
+The [ordering reference](library-ordering.md) covers value and native inputs
+together: [sort](library-ordering.md#sort), [sort_by](library-ordering.md#sort_by),
+[min/max](library-ordering.md#min-and-max) and
+[min_by/max_by](library-ordering.md#min_by-and-max_by).
+Native forms retain their subjects and owners; the host supplies key admission,
+result kinds and empty-input policy. The [embedding contract](native-programs.md#order-native-selections)
+describes those hooks.
 
 ## All-ties extrema
 
-`min_all`, `max_all`; `min_all_by(selector)`, `max_all_by(selector)`
-
-Select every native item tied at the smallest/largest key, preserving incoming
-order and duplicates. With projected keys `2, 1, 1`, `min_all_by(key_query)`
-retains the latter two subjects. Key evaluation and host-dependent empty/key
-rules match native ordering. These are native stage forms, not constructed
-array calls; constructed `min`/`max` select one value or absence.
-See [all-ties native ordering](native-programs.md#order-native-selections).
+See [all-ties extrema](library-ordering.md#all-ties-extrema) for `min_all`,
+`max_all`, `min_all_by` and `max_all_by`.
 
 ## project
 
@@ -173,14 +165,18 @@ effect checks apply even to empty input. See [native existence](native-programs.
 
 `selection | fixpoint(query)`
 
-Repeatedly replace the selection with the pure body's result until ordered
+Repeatedly replace the selection with the admitted body's result until ordered
 identity equality, including duplicates, is unchanged. A host relation
 `input | fixpoint(input union neighbours)` explicitly accumulates neighbours.
 Intermediate selections do not accumulate implicitly. The final body execution
 establishes stability; a repeated non-fixed selection fails cycle detection.
 The result must retain the admitted native kind and owner; partial adjacency
 cannot prove convergence. Empty-input behavior follows the admitted body and
-does not bypass preflight. See [fixed points](native-programs.md#native-fixed-points).
+does not bypass preflight. Body effects follow the host context: Zincite
+requires pure bodies; Zirium entry programs also allow their existing
+pass-through emitters, including the final stability iteration. Functions and
+constructed contexts retain pure-body checks. See
+[fixed points](native-programs.md#native-fixed-points).
 
 ## Native set operators
 

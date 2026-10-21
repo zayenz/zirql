@@ -1,12 +1,10 @@
 use std::ops::Range;
 
 use zirql::{
-    Bindings, Budget, EvaluationError, Expression, ExpressionStep, Limits, Location, MapSelection,
-    NativeMap, NativeOrdering, ProgramHost, ProgramLimits, QueryError, QueryErrorCategory,
-    ScalarMapKey, ValueReaderHost,
+    Bindings, Budget, EvaluationError, ExpressionStep, Limits, Location, MapSelection, ProgramHost,
+    ProgramLimits, QueryError, QueryErrorCategory, ScalarMapKey, ValueReaderHost,
 };
 
-type Query = Expression<Stage, (), ()>;
 #[derive(Debug, PartialEq)]
 enum Stage {
     Names,
@@ -14,10 +12,6 @@ enum Stage {
     Many,
     Wrong,
     Keep,
-    SortValues,
-    Select(MapSelection),
-    Order(Box<NativeOrdering<Query>>),
-    Map(Box<NativeMap<Query>>),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Row<'a> {
@@ -39,7 +33,7 @@ impl ValueReaderHost for Words {
     type Stage = Stage;
     type SetOperator = ();
     type Emitter = ();
-    type Predicate = ();
+
     fn is_binding(&self, name: &str) -> bool {
         name == "saved" || self.value_binding && name == "value"
     }
@@ -55,23 +49,25 @@ impl ValueReaderHost for Words {
         _: &mut Budget,
     ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
         let name = reader.word()?;
+        if name.value == "reverse" {
+            return Ok(ExpressionStep::Collection(zirql::Stage::Reverse));
+        }
+        if matches!(name.value, "head" | "tail") {
+            reader.expect('(')?;
+            let count = reader.unsigned_integer()?.value;
+            reader.expect(')')?;
+            return Ok(ExpressionStep::Collection(if name.value == "head" {
+                zirql::Stage::Head(count)
+            } else {
+                zirql::Stage::Tail(count)
+            }));
+        }
         Ok(ExpressionStep::Stage(match name.value {
             "names" => Stage::Names,
             "missing" => Stage::Missing,
             "many" => Stage::Many,
             "wrong" => Stage::Wrong,
             "keep" => Stage::Keep,
-            "reverse" => Stage::Select(MapSelection::Reverse),
-            "head" | "tail" => {
-                reader.expect('(')?;
-                let count = reader.unsigned_integer()?.value;
-                reader.expect(')')?;
-                Stage::Select(if name.value == "head" {
-                    MapSelection::Head(count)
-                } else {
-                    MapSelection::Tail(count)
-                })
-            }
             _ => return Err(QueryError::query(name.range, "unknown word stage")),
         }))
     }
@@ -79,26 +75,10 @@ impl ValueReaderHost for Words {
         &mut self,
         reader: &mut zirql::ArgumentReader<'_>,
         _: &mut Budget,
-    ) -> Result<(), QueryError> {
+    ) -> Result<Stage, QueryError> {
         Err(reader.error("no predicates"))
     }
-    fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) -> Stage {
-        unreachable!()
-    }
 
-    fn mapping(&mut self, map: NativeMap<Query>, _: Range<usize>) -> Result<Stage, QueryError> {
-        Ok(Stage::Map(Box::new(map)))
-    }
-    fn map_sorting(&mut self, _: Range<usize>) -> Result<Stage, QueryError> {
-        Ok(Stage::SortValues)
-    }
-    fn ordering(
-        &mut self,
-        ordering: NativeOrdering<Query>,
-        _: Range<usize>,
-    ) -> Result<Stage, QueryError> {
-        Ok(Stage::Order(Box::new(ordering)))
-    }
     fn set_operator(&self, _: &str) -> Option<()> {
         None
     }
@@ -153,42 +133,11 @@ impl<'a> ProgramHost<&'a str> for Words {
         &self,
         stage: &Stage,
         value: Value<'a>,
-        context: &mut &'a str,
-        bindings: &Bindings<Value<'a>>,
+        _: &mut &'a str,
+        _: &Bindings<Value<'a>>,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Value<'a>, EvaluationError<QueryError>> {
-        let value = match (stage, value) {
-            (Stage::SortValues, value) => {
-                let Value::Map(entries) = value else {
-                    return Err(QueryError::query(range.clone(), "dictionary required").into());
-                };
-                return Ok(Value::Map(zirql::sort_map_by_value(
-                    entries,
-                    budget,
-                    Location::Query(range.clone()),
-                    |value, _| {
-                        let Value::Rows(rows) = value else {
-                            return Err(EvaluationError::Host(QueryError::query(
-                                range.clone(),
-                                "scalar projection required",
-                            )));
-                        };
-                        Ok(ScalarMapKey::Unsigned(rows[0].source.start as u64))
-                    },
-                )?));
-            }
-            (Stage::Select(selection), Value::Map(mut entries)) => {
-                zirql::select_map(
-                    &mut entries,
-                    *selection,
-                    budget,
-                    Location::Query(range.clone()),
-                )?;
-                return Ok(Value::Map(entries));
-            }
-            (_, value) => value,
-        };
         let Value::Rows(rows) = value else {
             return Err(QueryError::query(range.clone(), "words required").into());
         };
@@ -214,38 +163,6 @@ impl<'a> ProgramHost<&'a str> for Words {
                 }
                 Value::Rows(rows)
             }
-            Stage::SortValues | Stage::Select(_) | Stage::Order(_) => unreachable!(),
-            Stage::Map(map) => Value::Map(zirql::map_native_by(
-                rows,
-                context,
-                budget,
-                Location::Query(range.clone()),
-                |row, context, budget| {
-                    let key = zirql::evaluate_expression(
-                        &map.key,
-                        self,
-                        Value::Rows(vec![row.clone()]),
-                        context,
-                        bindings,
-                        budget,
-                    )?;
-                    Ok(if let Value::Strings(keys) = key {
-                        Some(keys)
-                    } else {
-                        None
-                    })
-                },
-                |row, context, budget| {
-                    zirql::evaluate_expression(
-                        &map.value,
-                        self,
-                        Value::Rows(vec![row]),
-                        context,
-                        bindings,
-                        budget,
-                    )
-                },
-            )?),
         })
     }
     fn combine(
@@ -279,6 +196,210 @@ impl<'a> ProgramHost<&'a str> for Words {
         unreachable!()
     }
 }
+#[derive(Clone, PartialEq)]
+enum Kind {
+    Rows,
+    Strings,
+    Map,
+    Constructed,
+}
+impl<'a> zirql::ProjectionHost<&'a str> for Words {
+    type Kind = Kind;
+    fn kind(
+        &self,
+        value: &Value<'a>,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Kind, QueryError> {
+        Ok(match value {
+            Value::Rows(_) => Kind::Rows,
+            Value::Strings(_) => Kind::Strings,
+            Value::Map(_) => Kind::Map,
+        })
+    }
+    fn scalar_types(
+        &self,
+        kind: &Kind,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Option<Vec<zirql::ValueType>>, QueryError> {
+        Ok(matches!(kind, Kind::Rows | Kind::Strings).then(|| {
+            vec![zirql::ValueType::Array(zirql::ArrayType::Elements(vec![
+                zirql::ValueType::String,
+            ]))]
+        }))
+    }
+    fn constructed_kind(&self, _: Vec<zirql::ValueType>) -> Kind {
+        Kind::Constructed
+    }
+    fn stage_kind(
+        &self,
+        stage: &Stage,
+        input: &Kind,
+        _: &std::collections::BTreeMap<String, Kind>,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Kind, QueryError> {
+        if *input != Kind::Rows {
+            return Err(QueryError::query(range.clone(), "words required"));
+        }
+        Ok(match stage {
+            Stage::Names | Stage::Missing | Stage::Many => Kind::Strings,
+            Stage::Wrong | Stage::Keep => Kind::Rows,
+        })
+    }
+    fn is_pure(&self, _: &Stage) -> bool {
+        true
+    }
+    fn nested_queries(
+        &self,
+        _: &Stage,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<zirql::NativeOperands<&'a str, Self>, QueryError> {
+        Ok(vec![])
+    }
+    fn subjects(
+        &self,
+        input: Value<'a>,
+        _: &mut &'a str,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<Value<'a>>, EvaluationError<QueryError>> {
+        let Value::Rows(rows) = input else {
+            return Err(QueryError::query(range.clone(), "words required").into());
+        };
+        budget.charge_results(rows.len(), Location::Query(range.clone()))?;
+        Ok(rows.into_iter().map(|row| Value::Rows(vec![row])).collect())
+    }
+    fn project_value(
+        &self,
+        value: Value<'a>,
+        _: &mut &'a str,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::ConstructedValue, EvaluationError<QueryError>> {
+        let location = Location::Query(range.clone());
+        let strings = match value {
+            Value::Rows(rows) => {
+                budget.charge_results(rows.len() + 1, location.clone())?;
+                let mut strings = Vec::with_capacity(rows.len());
+                for row in rows {
+                    budget.charge(row.name.len(), location.clone())?;
+                    strings.push(zirql::ConstructedValue::String(row.name.to_owned()));
+                }
+                strings
+            }
+            Value::Strings(strings) => {
+                budget.charge_results(strings.len() + 1, location)?;
+                strings
+                    .into_iter()
+                    .map(zirql::ConstructedValue::String)
+                    .collect()
+            }
+            Value::Map(_) => {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "explicit dictionary projection required",
+                )
+                .into());
+            }
+        };
+        Ok(zirql::ConstructedValue::Array(strings))
+    }
+    fn lift_constructed(
+        &self,
+        _: zirql::ConstructedValue,
+        _: Vec<zirql::ValueType>,
+        _: &mut &'a str,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Value<'a>, EvaluationError<QueryError>> {
+        Err(QueryError::query(range.clone(), "native-only fixture").into())
+    }
+    fn mapping_kind(
+        &self,
+        _: &Kind,
+        _: &Kind,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Kind, QueryError> {
+        Ok(Kind::Map)
+    }
+    fn mapping_keys(
+        &self,
+        value: Value<'a>,
+        _: &mut &'a str,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Option<Vec<String>>, EvaluationError<QueryError>> {
+        Ok(if let Value::Strings(keys) = value {
+            Some(keys)
+        } else {
+            None
+        })
+    }
+    fn construct_map(
+        &self,
+        entries: Vec<(String, Value<'a>)>,
+        _: &mut &'a str,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Value<'a>, EvaluationError<QueryError>> {
+        Ok(Value::Map(entries))
+    }
+    fn is_map_kind(&self, kind: &Kind) -> bool {
+        matches!(kind, Kind::Map)
+    }
+    fn map_sort_kind(
+        &self,
+        input: &Kind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Kind, QueryError> {
+        if matches!(input, Kind::Map) {
+            Ok(input.clone())
+        } else {
+            Err(QueryError::query(range.clone(), "dictionary required"))
+        }
+    }
+    fn map_entries(
+        &self,
+        value: Value<'a>,
+        _: &mut &'a str,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<(String, Value<'a>)>, EvaluationError<QueryError>> {
+        let Value::Map(entries) = value else {
+            return Err(QueryError::query(range.clone(), "dictionary required").into());
+        };
+        Ok(entries)
+    }
+    fn ordering_key(
+        &self,
+        value: Value<'a>,
+        _: &mut &'a str,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeOrderKey, EvaluationError<QueryError>> {
+        let Value::Rows(rows) = value else {
+            return Err(EvaluationError::Host(QueryError::query(
+                range.clone(),
+                "scalar projection required",
+            )));
+        };
+        Ok(zirql::NativeOrderKey::Count(rows[0].source.start))
+    }
+    fn collection_kind(
+        &self,
+        _: &zirql::Stage<()>,
+        input: &Kind,
+        _: &mut Budget,
+        _: &Range<usize>,
+    ) -> Result<Kind, QueryError> {
+        Ok(input.clone())
+    }
+}
 fn limits() -> ProgramLimits {
     ProgramLimits {
         work: 100_000,
@@ -295,7 +416,7 @@ fn run<'a>(text: &str, rows: Vec<Row<'a>>) -> Result<Value<'a>, EvaluationError<
         &mut budget,
         16,
     )?;
-    zirql::evaluate_expression(
+    zirql::evaluate_native_expression(
         &query,
         &Words::default(),
         Value::Rows(rows),
@@ -313,6 +434,7 @@ fn row(name: &str, offset: usize, fails: bool) -> Row<'_> {
 }
 #[test]
 fn common_map_reader_and_constructor_retain_native_rows_and_insertion_order() {
+    // Rows also admit scalar projection; map bodies must retain their native owners.
     let source = String::from("βeta alpha");
     let beta = row(&source[..5], 0, false);
     let alpha = row(&source[6..], 6, false);
@@ -425,7 +547,7 @@ fn native_dictionaries_keep_owners_and_order_through_saved_selection() {
         16,
     )
     .unwrap();
-    let Value::Map(selected) = zirql::evaluate_expression(
+    let Value::Map(selected) = zirql::evaluate_native_expression(
         &query,
         &Words::default(),
         Value::Rows(vec![]),
@@ -475,6 +597,11 @@ fn scalar_sort(
                     budget.charge_results(value.len(), Location::Query(8..22))?;
                     ScalarMapKey::String(value.clone())
                 }
+                ScalarMapKey::Typed(value) => ScalarMapKey::Typed(zirql::copy_constructed_value(
+                    value,
+                    budget,
+                    Location::Query(8..22),
+                )?),
             })
         },
     )
@@ -659,7 +786,7 @@ fn map_selector_keeps_binding_and_local_precedence() {
         panic!("sequence")
     };
     assert!(
-        matches!(&steps[0].value, ExpressionStep::Stage(Stage::Order(order)) if matches!(&order.selector.as_ref().unwrap().value, zirql::ExpressionKind::Sequence { input, steps } if steps.is_empty() && matches!(&input.value, zirql::ExpressionKind::Binding(name) if name == "value")))
+        matches!(&steps[0].value, ExpressionStep::Ordering(order) if matches!(&order.selector.as_ref().unwrap().query().value, zirql::ExpressionKind::Sequence { input, steps } if steps.is_empty() && matches!(&input.value, zirql::ExpressionKind::Binding(name) if name == "value")))
     );
     let expression = zirql::read_value_expression(
         &mut zirql::ArgumentReader::new("[input | sort_by(value) for value in [1]]", 0).unwrap(),
@@ -678,7 +805,7 @@ fn map_selector_keeps_binding_and_local_precedence() {
         panic!("sequence")
     };
     assert!(
-        matches!(&steps[0].value, ExpressionStep::Stage(Stage::Order(order)) if matches!(&order.selector.as_ref().unwrap().value, zirql::ExpressionKind::Sequence { input, steps } if steps.is_empty() && matches!(&input.value, zirql::ExpressionKind::Binding(name) if name == "value")))
+        matches!(&steps[0].value, ExpressionStep::Ordering(order) if matches!(&order.selector.as_ref().unwrap().query().value, zirql::ExpressionKind::Sequence { input, steps } if steps.is_empty() && matches!(&input.value, zirql::ExpressionKind::Binding(name) if name == "value")))
     );
     assert!(run("value", vec![]).is_err());
     let query = zirql::read_native_expression(
@@ -691,10 +818,7 @@ fn map_selector_keeps_binding_and_local_precedence() {
     let zirql::ExpressionKind::Sequence { steps, .. } = query.value else {
         panic!("sequence")
     };
-    assert!(matches!(
-        &steps[0].value,
-        ExpressionStep::Stage(Stage::Order(_))
-    ));
+    assert!(matches!(&steps[0].value, ExpressionStep::Ordering(_)));
 }
 
 #[test]

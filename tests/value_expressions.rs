@@ -4426,7 +4426,7 @@ impl zirql::ValueReaderHost for WordInput {
     type Stage = ();
     type SetOperator = ();
     type Emitter = ();
-    type Predicate = ();
+
     fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
         zirql::FieldPipelineSource::Constructed
     }
@@ -4450,7 +4450,6 @@ impl zirql::ValueReaderHost for WordInput {
     ) -> Result<(), zirql::QueryError> {
         Err(reader.error("no native predicates"))
     }
-    fn filter(&mut self, _: zirql::Predicate<()>, _: std::ops::Range<usize>) {}
 
     fn set_operator(&self, _: &str) -> Option<()> {
         None

@@ -301,7 +301,7 @@ impl<'a> Preparation<'a> {
         transfer: Option<usize>,
     ) -> Result<PreparedValue<'a, Q>, QueryError> {
         let location = Location::Query(expression.range.clone());
-        budget.within_evaluation(1, location.clone(), |budget| {
+        let mut resolve = |budget: &mut Budget| {
             budget.charge(1, location.clone())?;
             check_loop_terminal(&expression.value, transfer, &location)?;
             let kind = match &expression.value {
@@ -826,7 +826,12 @@ impl<'a> Preparation<'a> {
                 }
             };
             Ok(Located::new(kind, expression.range.clone()))
-        })
+        };
+        if matches!(expression.value, ValueExpressionKind::NativeValue(_)) {
+            resolve(budget)
+        } else {
+            budget.within_evaluation(1, location.clone(), resolve)
+        }
     }
 
     fn axis_sources<Q, H: ValueQueryHost<Q> + ?Sized>(

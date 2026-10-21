@@ -26,6 +26,8 @@ pub struct NativeOrdering<Q> {
 /// Typed values cannot mix with native count/text descriptors.
 #[derive(Debug, PartialEq)]
 pub enum NativeOrderKey {
+    /// A lossless host scalar for dictionary value sorting.
+    Scalar(crate::ScalarMapKey),
     Count(usize),
     Text(String),
     Value(ConstructedValue),
@@ -117,6 +119,13 @@ fn admit_key(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
+    if matches!(key, NativeOrderKey::Scalar(_)) {
+        return Err(QueryError {
+            location: location.clone(),
+            message: "scalar map keys require dictionary value sorting".into(),
+            category: QueryErrorCategory::Other,
+        });
+    }
     let NativeOrderKey::Value(value) = key else {
         if matches!(previous.first(), Some(NativeOrderKey::Value(_))) {
             return Err(QueryError {

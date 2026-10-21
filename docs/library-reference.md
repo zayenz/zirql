@@ -5,8 +5,9 @@ entries describe supported behavior in this checkout, including the current
 extensions. Hosts may pin earlier Zirql versions or expose a smaller frontend;
 check their own guides before using a form in a consumer.
 
-Constructed operations inspect ordinary values directly. Shared native forms
-need host adapters and retain native objects and source context. Domain-specific
+A shared operation can support ordinary values, native inputs, or both. Each
+entry describes its supported forms and host requirements. Native inputs need
+host adapters and retain their objects and source context. Domain-specific
 names belong to the [Zirium](https://zayenz.se/zirium/guides/query-language/)
 and [Zincite](https://zayenz.se/zincite/guides/queries/) references. Proposed
 language/CP forms are outside this library reference.
@@ -31,7 +32,8 @@ runtime errors in skipped branches remain unexecuted. See
 - [Shared native forms](library-native.md)
 - [JSON and Markdown rendering (Rust API)](library-rendering.md)
 
-Rust adapters can share [declaration metadata and scalar argument admission](host-integration.md#declaration-metadata-and-scalar-arguments).
+Rust adapters can build [direct native composition steps](embedding-programs.md#build-native-composition-steps)
+and share [declaration metadata and scalar argument admission](host-integration.md#declaration-metadata-and-scalar-arguments).
 
 The [language reference](language-reference.md) covers grammar and scope;
 [the word tutorial](examples.md) and [CSV examples](csv.md) develop full queries.
@@ -120,17 +122,13 @@ support. `present` is a pattern.
 | `match (value)` | [Functions and control flow](library-control.md#value-match) |
 | `match {captures}` | [Shared native forms](library-native.md#native-capture-match) |
 | `max` | [Ordering and extrema](library-ordering.md#min-and-max) |
-| `max (native)` | [Shared native forms](library-native.md#native-ordering) |
-| `max_all` | [Shared native forms](library-native.md#all-ties-extrema) |
-| `max_all_by` | [Shared native forms](library-native.md#all-ties-extrema) |
+| `max_all` | [Ordering and extrema](library-ordering.md#all-ties-extrema) |
+| `max_all_by` | [Ordering and extrema](library-ordering.md#all-ties-extrema) |
 | `max_by` | [Ordering and extrema](library-ordering.md#min_by-and-max_by) |
-| `max_by (native)` | [Shared native forms](library-native.md#native-ordering) |
 | `min` | [Ordering and extrema](library-ordering.md#min-and-max) |
-| `min (native)` | [Shared native forms](library-native.md#native-ordering) |
-| `min_all` | [Shared native forms](library-native.md#all-ties-extrema) |
-| `min_all_by` | [Shared native forms](library-native.md#all-ties-extrema) |
+| `min_all` | [Ordering and extrema](library-ordering.md#all-ties-extrema) |
+| `min_all_by` | [Ordering and extrema](library-ordering.md#all-ties-extrema) |
 | `min_by` | [Ordering and extrema](library-ordering.md#min_by-and-max_by) |
-| `min_by (native)` | [Shared native forms](library-native.md#native-ordering) |
 | `mod` | [Operators and access](library-operators.md#multiplication-and-division) |
 | `not` | [Operators and access](library-operators.md#boolean-operators) |
 | `occurs` | [Presence and lookup](library-presence.md#occurs) |
@@ -157,9 +155,7 @@ support. `present` is a pattern.
 | `scan` | [Functions and control flow](library-control.md#scan) |
 | `set` | [Collections and reductions](library-collections.md#sets) |
 | `sort` | [Ordering and extrema](library-ordering.md#sort) |
-| `sort (native)` | [Shared native forms](library-native.md#native-ordering) |
 | `sort_by` | [Ordering and extrema](library-ordering.md#sort_by) |
-| `sort_by (native)` | [Shared native forms](library-native.md#native-ordering) |
 | `starts_with` | [Strings](library-strings.md#starts_with) |
 | `sum` | [Collections and reductions](library-collections.md#sum) |
 | `tail` | [Shared native forms](library-native.md#head-and-tail) |

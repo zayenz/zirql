@@ -42,7 +42,6 @@ pub trait ValueReaderHost {
     type Stage;
     type SetOperator;
     type Emitter;
-    type Predicate;
 
     fn is_binding(&self, name: &str) -> bool;
     /// Whether a known binding contains a constructed value. Unknown and native
@@ -60,7 +59,7 @@ pub trait ValueReaderHost {
         &mut self,
         reader: &mut ArgumentReader<'_>,
         budget: &mut Budget,
-    ) -> Result<Self::Predicate, QueryError>;
+    ) -> Result<Self::Stage, QueryError>;
     /// Parse one domain stage in the current lexical scope. An adapter that
     /// starts a nested common value reader carries these borrowed names into
     /// that reader's binding facts. This exposes names, never caller values.
@@ -84,7 +83,7 @@ pub trait ValueReaderHost {
         _locals: &[&str],
         budget: &mut Budget,
         _nesting: usize,
-    ) -> Result<Self::Predicate, QueryError> {
+    ) -> Result<Self::Stage, QueryError> {
         self.parse_predicate_leaf(reader, budget)
     }
     /// Parse an existing domain leaf inside a predicate argument. The optional
@@ -98,7 +97,7 @@ pub trait ValueReaderHost {
         locals: &[&str],
         budget: &mut Budget,
         nesting: usize,
-    ) -> Result<Self::Predicate, QueryError> {
+    ) -> Result<Self::Stage, QueryError> {
         self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting)
     }
     /// Admit a host's constructed filter spelling before native predicate parsing.
@@ -110,7 +109,7 @@ pub trait ValueReaderHost {
         _locals: &[&str],
         _budget: &mut Budget,
         _nesting: usize,
-    ) -> Result<Option<Self::Stage>, QueryError> {
+    ) -> Result<Option<ReadStep<Self>>, QueryError> {
         Ok(None)
     }
     /// Recognize a domain predicate leaf without consuming syntax or budget.
@@ -127,7 +126,7 @@ pub trait ValueReaderHost {
         &mut self,
         predicate: PredicateArgument<ReadExpression<Self>>,
         range: Range<usize>,
-    ) -> Result<Self::Predicate, QueryError>
+    ) -> Result<Self::Stage, QueryError>
     where
         Self: Sized,
     {
@@ -138,100 +137,6 @@ pub trait ValueReaderHost {
         Err(QueryError::query(
             range,
             "predicate expressions are unsupported by this host",
-        ))
-    }
-    fn filter(&mut self, predicate: Predicate<Self::Predicate>, range: Range<usize>)
-    -> Self::Stage;
-    /// Wrap the shared match tree as a native stage. Supporting hosts retain
-    /// this tree and delegate its type discovery and execution to Zirql.
-    fn matching(
-        &mut self,
-        matching: NativeMatch<ReadExpression<Self>, Self::Predicate>,
-        range: Range<usize>,
-    ) -> Result<Self::Stage, QueryError>
-    where
-        Self: Sized,
-    {
-        crate::dispose_match(matching);
-        Err(QueryError::query(
-            range,
-            "native matching is unsupported by this host",
-        ))
-    }
-    /// Lower common native ordering, retaining its singleton-relative selector.
-    /// Hosts own kind checks, empty policy and native key projection.
-    fn ordering(
-        &mut self,
-        ordering: NativeOrdering<ReadExpression<Self>>,
-        range: Range<usize>,
-    ) -> Result<Self::Stage, QueryError>
-    where
-        Self: Sized,
-    {
-        if let Some(selector) = ordering.selector {
-            crate::dispose_expression(selector);
-        }
-        Err(QueryError::query(
-            range,
-            "native ordering is unsupported by this host",
-        ))
-    }
-    /// Lower `sort_by(value)` for a native dictionary. The common reader
-    /// recognizes an unbound `value`, including grouping, without parsing a
-    /// host value stage. Other ordering selectors keep the ordinary hook.
-    fn map_sorting(&mut self, range: Range<usize>) -> Result<Self::Stage, QueryError> {
-        Err(QueryError::query(
-            range,
-            "dictionary value sorting is unsupported by this host",
-        ))
-    }
-    /// Retain independent singleton-relative map selectors. Hosts preflight
-    /// their native kinds and effect policy before calling the map constructor.
-    fn mapping(
-        &mut self,
-        mapping: NativeMap<ReadExpression<Self>>,
-        range: Range<usize>,
-    ) -> Result<Self::Stage, QueryError>
-    where
-        Self: Sized,
-    {
-        crate::dispose_expression(mapping.key);
-        crate::dispose_expression(mapping.value);
-        Err(QueryError::query(
-            range,
-            "native mapping is unsupported by this host",
-        ))
-    }
-    /// Retain a pure singleton-relative relation. Supporting hosts preflight it
-    /// before delegating subject filtering to `filter_native_exists`.
-    fn where_exists(
-        &mut self,
-        query: ReadExpression<Self>,
-        range: Range<usize>,
-    ) -> Result<Self::Stage, QueryError>
-    where
-        Self: Sized,
-    {
-        crate::dispose_expression(query);
-        Err(QueryError::query(
-            range,
-            "native existence is unsupported by this host",
-        ))
-    }
-    /// Retain a common fixed-point body. Hosts supply native admission and body
-    /// execution, delegating replacement and cycle handling to the shared runner.
-    fn fixed_point(
-        &mut self,
-        query: ReadExpression<Self>,
-        range: Range<usize>,
-    ) -> Result<Self::Stage, QueryError>
-    where
-        Self: Sized,
-    {
-        crate::dispose_expression(query);
-        Err(QueryError::query(
-            range,
-            "native fixed points are unsupported by this host",
         ))
     }
     /// Map one located edge identifier to an existing typed native primitive.
@@ -1913,7 +1818,7 @@ pub fn read_native_predicate_argument<H: ValueReaderHost>(
     locals: &[&str],
     budget: &mut Budget,
     nesting: usize,
-) -> Result<Predicate<H::Predicate>, QueryError> {
+) -> Result<Predicate<H::Stage>, QueryError> {
     let locals = copy_reader_locals(locals, budget, reader.position())?;
     let mut parser = Reader {
         reader,
@@ -1960,7 +1865,7 @@ pub fn read_match<H: ValueReaderHost>(
     host: &mut H,
     budget: &mut Budget,
     nesting: usize,
-) -> Result<NativeMatch<ReadExpression<H>, H::Predicate>, QueryError> {
+) -> Result<NativeMatch<crate::NativeBody<ReadExpression<H>>, H::Stage>, QueryError> {
     Reader {
         reader,
         host,
@@ -1984,7 +1889,7 @@ pub fn read_paths<H: ValueReaderHost>(
     host: &mut H,
     budget: &mut Budget,
     nesting: usize,
-) -> Result<NativePaths<H::Stage, H::Predicate>, QueryError> {
+) -> Result<NativePaths<H::Stage, H::Stage>, QueryError> {
     Reader {
         reader,
         host,
@@ -4650,14 +4555,12 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 .range
                 .clone();
             self.slots::<Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>>(1)?;
-            let stage = self.host.matching(
-                matching.0.take().expect("native match source"),
-                range.clone(),
-            )?;
+            let stage =
+                ExpressionStep::Match(matching.0.take().expect("native match source").into());
             Located::new(
                 ExpressionKind::Sequence {
                     input: Box::new(Located::new(ExpressionKind::Input, start..start)),
-                    steps: vec![Located::new(ExpressionStep::Stage(stage), range.clone())],
+                    steps: vec![Located::new(stage, range.clone())],
                 },
                 range,
             )
@@ -4831,47 +4734,48 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 None
             };
             let step = if let Some(stage) = constructed_filter {
-                ExpressionStep::Stage(stage)
+                stage
             } else if self.reader.keyword("filter") {
                 self.reader.expect('(')?;
                 let predicate = self.native_predicate_argument(depth + 1)?;
                 self.reader.expect(')')?;
-                ExpressionStep::Stage(
-                    self.host
-                        .filter(predicate, stage_start..self.reader.position()),
-                )
+                ExpressionStep::Filter(predicate.into())
             } else if self.native_body_call("where_exists") {
                 self.name()?;
                 self.reader.expect('(')?;
                 let mut body = NativeGuard(Some(self.native_expression(depth + 1)?));
                 self.reader.expect(')')?;
-                ExpressionStep::Stage(self.host.where_exists(
-                    body.0.take().expect("existence relation"),
-                    stage_start..self.reader.position(),
-                )?)
+                let body = body.0.take().expect("existence relation");
+                let range = body.range.clone();
+                ExpressionStep::WhereExists(crate::NativeBody::new(body, range).into())
             } else if self.native_body_call("fixpoint") {
                 self.name()?;
                 self.reader.expect('(')?;
                 let mut body = NativeGuard(Some(self.native_expression(depth + 1)?));
                 self.reader.expect(')')?;
-                ExpressionStep::Stage(self.host.fixed_point(
-                    body.0.take().expect("fixed-point body"),
-                    stage_start..self.reader.position(),
-                )?)
+                let body = body.0.take().expect("fixed-point body");
+                let range = body.range.clone();
+                ExpressionStep::FixedPoint(crate::NativeBody::new(body, range).into())
             } else if self.match_call() {
                 let matching = self.matching(depth + 1)?;
-                ExpressionStep::Stage(
-                    self.host
-                        .matching(matching, stage_start..self.reader.position())?,
-                )
+                ExpressionStep::Match(matching.into())
             } else if self.projection_call() {
                 let projection = self.projection(depth + 1)?;
                 ExpressionStep::Projection(projection.into())
             } else if self.word_is("map_by") {
                 let mapping = self.mapping(depth + 1)?;
-                ExpressionStep::Stage(
-                    self.host
-                        .mapping(mapping, stage_start..self.reader.position())?,
+                ExpressionStep::Mapping(
+                    NativeMap {
+                        key: crate::NativeBody::new(
+                            mapping.key,
+                            stage_start..self.reader.position(),
+                        ),
+                        value: crate::NativeBody::new(
+                            mapping.value,
+                            stage_start..self.reader.position(),
+                        ),
+                    }
+                    .into(),
                 )
             } else if let Some((order, keyed)) = {
                 let mut probe = self.reader.at(stage_start)?;
@@ -4891,18 +4795,20 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 } else {
                     false
                 };
-                let range = stage_start..self.reader.position();
-                ExpressionStep::Stage(if map_value {
-                    self.host.map_sorting(range)?
+                if map_value {
+                    ExpressionStep::MapSorting
                 } else {
-                    self.host.ordering(
+                    ExpressionStep::Ordering(
                         NativeOrdering {
                             order,
-                            selector: selector.0.take(),
-                        },
-                        range,
-                    )?
-                })
+                            selector: selector.0.take().map(|query| {
+                                let range = query.range.clone();
+                                crate::NativeBody::new(query, range)
+                            }),
+                        }
+                        .into(),
+                    )
+                }
             } else {
                 self.host_syntax(depth, |host, reader, locals, budget, nesting| {
                     host.parse_stage_in_scope(reader, locals, budget, nesting)
@@ -4998,7 +4904,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn matching(
         &mut self,
         depth: usize,
-    ) -> Result<NativeMatch<ReadExpression<H>, H::Predicate>, QueryError> {
+    ) -> Result<NativeMatch<crate::NativeBody<ReadExpression<H>>, H::Stage>, QueryError> {
         self.depth(depth)?;
         self.reader.skip_trivia()?;
         let start = self.reader.position();
@@ -5015,7 +4921,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             while !self.reader.consume('}') {
                 self.reader.skip_trivia()?;
                 let clause_start = self.reader.position();
-                self.slots::<Located<MatchClause<ReadExpression<H>, H::Predicate>>>(1)?;
+                self.slots::<Located<MatchClause<crate::NativeBody<ReadExpression<H>>, H::Stage>>>(
+                    1,
+                )?;
                 let word = self.reader.word()?;
                 let (clause, name) = match word.value {
                     "from" | "bind" => {
@@ -5028,6 +4936,8 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                             self.reader.expect('=')?;
                         }
                         let source = self.native_expression(depth + 1)?;
+                        let range = source.range.clone();
+                        let source = crate::NativeBody::new(source, range);
                         let local = crate::parser::identifier_text(
                             self.reader.source(),
                             name.range.clone(),
@@ -5078,7 +4988,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         self.locals.truncate(scope);
         result
     }
-    fn paths(&mut self, depth: usize) -> Result<NativePaths<H::Stage, H::Predicate>, QueryError> {
+    fn paths(&mut self, depth: usize) -> Result<NativePaths<H::Stage, H::Stage>, QueryError> {
         self.depth(depth)?;
         self.reader.skip_trivia()?;
         let start = self.reader.position();
@@ -5104,7 +5014,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         self.reader.expect('=')?;
         let max_depth = self.reader.unsigned_integer()?;
         self.reader.expect(')')?;
-        self.slots::<NativePaths<H::Stage, H::Predicate>>(1)?;
+        self.slots::<NativePaths<H::Stage, H::Stage>>(1)?;
         self.budget.charge(
             self.reader.position() - start,
             Location::Query(start..self.reader.position()),
@@ -5169,7 +5079,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn native_predicate_argument(
         &mut self,
         depth: usize,
-    ) -> Result<Predicate<H::Predicate>, QueryError> {
+    ) -> Result<Predicate<H::Stage>, QueryError> {
         let mut argument = PatternGuard(self.predicate_pattern(depth)?);
         let saved = self.locals.len();
         self.slots::<&str>(1)?;
@@ -5184,7 +5094,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             };
             let range = pattern.range.clone();
             self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
-            self.slots::<Predicate<H::Predicate>>(3)?;
+            self.slots::<Predicate<H::Stage>>(3)?;
             // Admit the header before any native Boolean leaf, including leaves
             // that retain no value argument or bound name of their own.
             let admission = self.host.predicate_expression(
@@ -5278,12 +5188,12 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         &mut self,
         depth: usize,
         argument: Option<&crate::Pattern>,
-    ) -> Result<Predicate<H::Predicate>, QueryError> {
+    ) -> Result<Predicate<H::Stage>, QueryError> {
         let first = self.predicate_and(depth, argument)?;
-        self.slots::<Predicate<H::Predicate>>(1)?;
+        self.slots::<Predicate<H::Stage>>(1)?;
         let mut predicates = vec![first];
         while self.reader.keyword("or") || self.symbol("\\/")? {
-            self.slots::<Predicate<H::Predicate>>(1)?;
+            self.slots::<Predicate<H::Stage>>(1)?;
             predicates.push(self.predicate_and(depth, argument)?);
         }
         Ok(combine(predicates, PredicateKind::Or))
@@ -5292,12 +5202,12 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         &mut self,
         depth: usize,
         argument: Option<&crate::Pattern>,
-    ) -> Result<Predicate<H::Predicate>, QueryError> {
+    ) -> Result<Predicate<H::Stage>, QueryError> {
         let first = self.predicate_atom(depth, argument)?;
-        self.slots::<Predicate<H::Predicate>>(1)?;
+        self.slots::<Predicate<H::Stage>>(1)?;
         let mut predicates = vec![first];
         while self.reader.keyword("and") || self.symbol("/\\")? {
-            self.slots::<Predicate<H::Predicate>>(1)?;
+            self.slots::<Predicate<H::Stage>>(1)?;
             predicates.push(self.predicate_atom(depth, argument)?);
         }
         Ok(combine(predicates, PredicateKind::And))
@@ -5338,7 +5248,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         &mut self,
         depth: usize,
         argument: Option<&crate::Pattern>,
-    ) -> Result<Predicate<H::Predicate>, QueryError> {
+    ) -> Result<Predicate<H::Stage>, QueryError> {
         self.depth(depth)?;
         self.reader.skip_trivia()?;
         let start = self.reader.position();
@@ -5383,7 +5293,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 )
             }
         };
-        self.slots::<Predicate<H::Predicate>>(1)?;
+        self.slots::<Predicate<H::Stage>>(1)?;
         Ok(Located::new(value, start..self.reader.position()))
     }
 }
@@ -5536,21 +5446,7 @@ pub(crate) fn dispose_native_trees<S, O, E>(
                 ExpressionKind::Sequence { input, steps } => {
                     native.push(*input);
                     for step in steps {
-                        match step.value {
-                            ExpressionStep::Value(value) => {
-                                if let Ok(value) = std::sync::Arc::try_unwrap(value) {
-                                    pending.push(value);
-                                }
-                            }
-                            ExpressionStep::Projection(projection) => {
-                                if let Ok(projection) = std::sync::Arc::try_unwrap(projection) {
-                                    pending.extend(
-                                        projection.fields.into_iter().map(|(_, value)| value),
-                                    );
-                                }
-                            }
-                            ExpressionStep::Stage(_) | ExpressionStep::Emit { .. } => {}
-                        }
+                        crate::composition::dispose_step(step.value, &mut pending);
                     }
                 }
                 ExpressionKind::Set { left, right, .. } => {
@@ -5810,7 +5706,11 @@ pub(crate) fn dispose_native_trees<S, O, E>(
     }
 }
 
-struct MatchGuard<S, O, E, P>(Option<NativeMatch<Expression<S, O, E>, P>>);
+#[expect(
+    clippy::type_complexity,
+    reason = "The disposal guard retains the existing native match payload contract"
+)]
+struct MatchGuard<S, O, E, P>(Option<NativeMatch<crate::NativeBody<Expression<S, O, E>>, P>>);
 impl<S, O, E, P> Drop for MatchGuard<S, O, E, P> {
     fn drop(&mut self) {
         if let Some(matching) = self.0.take() {

@@ -39,6 +39,9 @@ pub struct ScopedNativeArgument<'a, Q, K> {
     pub expression: &'a ValueExpression<Q>,
     pub relative: Option<K>,
     pub locals: Vec<(Located<String>, K)>,
+    /// Core representation bodies may inherit an already-admitted entry effect policy.
+    /// Native stage arguments, predicates and selectors remain pure.
+    pub allow_effects: bool,
 }
 pub type ScopedNativeValueArguments<'a, C, H> =
     Vec<ScopedNativeArgument<'a, NativeExpression<C, H>, <H as ProjectionHost<C>>::Kind>>;
@@ -66,6 +69,26 @@ impl<V, K> NativeRead<V, K> {
 /// exact current context and lexical scope; adapters cannot rebind its context.
 pub trait NativeArguments<C, H: ProjectionHost<C>> {
     fn parts(&mut self) -> (&mut C, &Bindings<H::Value>);
+    /// Reuse a prepared native argument's kind without rechecking function bodies.
+    fn argument_kind(
+        &self,
+        _expression: &ValueExpression<NativeExpression<C, H>>,
+    ) -> Option<H::Kind> {
+        None
+    }
+
+    /// Execute a declared native body with the active lexical/function frame.
+    /// Scalar-capable native results retain their native representation.
+    fn evaluate_body(
+        &mut self,
+        body: &crate::NativeBody<NativeExpression<C, H>>,
+        _input: Option<H::Value>,
+        _captures: Option<&Bindings<H::Value>>,
+        _budget: &mut Budget,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        Err(QueryError::query(body.value().range.clone(), "native body was not prepared").into())
+    }
+
     /// Evaluate a declared body only when its native argument is selected.
     ///
     /// # Errors
@@ -178,6 +201,413 @@ pub trait NativeArguments<C, H: ProjectionHost<C>> {
 pub trait ProjectionHost<C>: ProgramHost<C> {
     type Kind: Clone + PartialEq;
 
+    /// Admit one opaque predicate leaf. Guards are separate from executable stages.
+    fn validate_guard_leaf(
+        &self,
+        _guard: &Self::Stage,
+        _input: &Self::Kind,
+        _scope: &BTreeMap<String, Self::Kind>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native predicates are unsupported",
+        ))
+    }
+    fn evaluate_guard_leaf(
+        &self,
+        _guard: &Self::Stage,
+        _input: &Self::Value,
+        _context: &mut C,
+        _bindings: &Bindings<Self::Value>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<crate::Truth, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native predicates are unsupported").into())
+    }
+    fn evaluate_guard_leaf_with_arguments(
+        &self,
+        guard: &Self::Stage,
+        input: &Self::Value,
+        bindings: &Bindings<Self::Value>,
+        arguments: &mut dyn NativeArguments<C, Self>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<crate::Truth, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        self.evaluate_guard_leaf(guard, input, arguments.parts().0, bindings, budget, range)
+    }
+    /// Final native filter truth retains the host's completeness policy.
+    fn filter_truth(
+        &self,
+        truth: crate::Truth,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<bool, EvaluationError<Self::Error>> {
+        match truth {
+            crate::Truth::True => Ok(true),
+            crate::Truth::False => Ok(false),
+            crate::Truth::Unknown => Err(QueryError::query(range.clone(), "predicate is unknown")
+                .with_category(QueryErrorCategory::UnknownPredicate)
+                .into()),
+        }
+    }
+    /// Required match/path guards refuse uncertainty at the responsible domain fact.
+    fn require_guard(
+        &self,
+        truth: crate::Truth,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+        message: &str,
+    ) -> Result<bool, EvaluationError<Self::Error>> {
+        let _ = (context, budget);
+        match truth {
+            crate::Truth::True => Ok(true),
+            crate::Truth::False => Ok(false),
+            crate::Truth::Unknown => Err(QueryError::query(range.clone(), message)
+                .with_category(QueryErrorCategory::UnknownPredicate)
+                .into()),
+        }
+    }
+    /// Admit identity-bearing selections for existence and fixed points.
+    fn selection_kind(
+        &self,
+        input: &Self::Kind,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        self.subject_kind(input, budget, range)?;
+        Ok(input.clone())
+    }
+    /// Distinguish ordinary constructed data from native values with scalar projections.
+    fn is_constructed_kind(&self, _kind: &Self::Kind) -> bool {
+        false
+    }
+    /// Native input policy for eager head/tail/check bound arguments.
+    fn collection_argument_kind(
+        &self,
+        input: &Self::Kind,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Ok(input.clone())
+    }
+    fn collection_argument_input(
+        &self,
+        input: &Self::Value,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        self.copy_value(input, context, budget, range)
+    }
+    /// Domain relation compatibility, including source/diff sides on empty selections.
+    fn validate_existence(
+        &self,
+        _input: &Self::Kind,
+        _result: &Self::Kind,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
+    /// Preserve an existing host's explicit per-iteration emission policy.
+    /// Core still refuses editing leaves and admits each native selection kind.
+    fn allows_fixed_point_emission(&self) -> bool {
+        false
+    }
+    /// Domain admission beyond the common exact-kind fixed-point rule.
+    fn fixed_point_kind(
+        &self,
+        input: &Self::Kind,
+        result: &Self::Kind,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        if input != result {
+            return Err(QueryError::query(
+                range.clone(),
+                "fixpoint body must preserve the exact native kind",
+            ));
+        }
+        Ok(input.clone())
+    }
+    /// Split an admitted selection while its original value retains shape metadata.
+    fn selection_items(
+        &self,
+        input: &Self::Value,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<Self::Value>, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        let input = self.copy_value(input, context, budget, range)?;
+        self.subjects(input, context, budget, range)
+    }
+    fn restore_selection(
+        &self,
+        _input: Self::Value,
+        _items: Vec<Self::Value>,
+        _shape: crate::SelectionShape,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(
+            range.clone(),
+            "native selection construction is unsupported",
+        )
+        .into())
+    }
+    /// Enforce native completeness, ownership and shape at a relation boundary.
+    fn admit_selection(
+        &self,
+        value: Self::Value,
+        _context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        self.selection_kind(&self.kind(&value, budget, range)?, budget, range)?;
+        Ok(value)
+    }
+    fn same_selection(
+        &self,
+        _left: &Self::Value,
+        _right: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<bool, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native selection equality is unsupported").into())
+    }
+    fn ordering_key_kind(
+        &self,
+        _kind: &Self::Kind,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native ordering keys are unsupported",
+        ))
+    }
+    /// Preserve domain empty-extremum admission before evaluating selectors.
+    fn admit_ordering(
+        &self,
+        _input: &Self::Value,
+        _order: crate::NativeOrder,
+        _context: &mut C,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<(), EvaluationError<Self::Error>> {
+        Ok(())
+    }
+    fn ordering_key(
+        &self,
+        _value: Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<crate::NativeOrderKey, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native ordering keys are unsupported").into())
+    }
+    fn mapping_kind(
+        &self,
+        _key: &Self::Kind,
+        _value: &Self::Kind,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native maps are unsupported",
+        ))
+    }
+    fn mapping_keys(
+        &self,
+        _value: Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Option<Vec<String>>, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native map keys are unsupported").into())
+    }
+    fn is_map_kind(&self, _kind: &Self::Kind) -> bool {
+        false
+    }
+    fn restore_map(
+        &self,
+        _input: Self::Value,
+        entries: Vec<(String, Self::Value)>,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        self.construct_map(entries, context, budget, range)
+    }
+    fn collection_kind(
+        &self,
+        _operation: &crate::Stage<()>,
+        _input: &Self::Kind,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native collections are unsupported",
+        ))
+    }
+    fn collection_identity(
+        &self,
+        _item: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<crate::NativeCollectionKey, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native collection identity is unsupported").into())
+    }
+    fn collection_tally_key(
+        &self,
+        _item: Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<String, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native tally keys are unsupported").into())
+    }
+    fn restore_collection(
+        &self,
+        input: Self::Value,
+        result: crate::NativeValue<Self::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        match result {
+            crate::NativeValue::Stream(items) => self.restore_selection(
+                input,
+                items,
+                crate::SelectionShape::Preserve,
+                context,
+                budget,
+                range,
+            ),
+            _ => Err(
+                QueryError::query(range.clone(), "native collection result is unsupported").into(),
+            ),
+        }
+    }
+    fn map_sort_kind(
+        &self,
+        _input: &Self::Kind,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native dictionary sorting is unsupported",
+        ))
+    }
+    #[expect(
+        clippy::type_complexity,
+        reason = "Map entries retain native values and host failures"
+    )]
+    fn map_entries(
+        &self,
+        _value: Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<(String, Self::Value)>, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native dictionaries are unsupported").into())
+    }
+    fn construct_map(
+        &self,
+        _entries: Vec<(String, Self::Value)>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native map construction is unsupported").into())
+    }
+    fn validate_path_edge(
+        &self,
+        _edge: &Self::Stage,
+        _input: &Self::Kind,
+        _scope: &BTreeMap<String, Self::Kind>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native paths are unsupported",
+        ))
+    }
+    fn path_neighbors(
+        &self,
+        _edge: &Self::Stage,
+        _input: &Self::Value,
+        _context: &mut C,
+        _bindings: &Bindings<Self::Value>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<Self::Value>, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native paths are unsupported").into())
+    }
+    fn same_path_identity(
+        &self,
+        _left: &Self::Value,
+        _right: &Self::Value,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<bool, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native path identity is unsupported").into())
+    }
+    fn path_steps(
+        &self,
+        _steps: Vec<Self::Value>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native path steps are unsupported").into())
+    }
+    fn capture_selection_kind(
+        &self,
+        _schema: crate::NativeCapture<Self::Kind>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native capture selections are unsupported",
+        ))
+    }
+    fn construct_captures(
+        &self,
+        _rows: Vec<Self::Value>,
+        _schema: crate::NativeCapture<Self::Kind>,
+        _context: &mut C,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>> {
+        Err(QueryError::query(range.clone(), "native capture selections are unsupported").into())
+    }
+
     /// Expose embedded primitive argument bodies without evaluating their data.
     fn value_arguments<'s>(
         &self,
@@ -209,6 +639,7 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
                 expression,
                 relative: (!self.is_explicit_source(stage)).then_some(kind),
                 locals: Vec::new(),
+                allow_effects: false,
             })
             .collect())
     }
@@ -406,13 +837,76 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
     scope: &BTreeMap<String, H::Kind>,
     budget: &mut Budget,
 ) -> Result<H::Kind, QueryError> {
-    expression_kind(
+    native_expression_kind_with_effects(expression, host, input, scope, false, None, budget)
+}
+
+/// Preflight a native program entry with the host's ordinary effect policy.
+/// Nested predicates, selectors, functions and constructed values remain pure.
+///
+/// # Errors
+/// Invalid scope, native transitions, nested effects and limits retain query ranges.
+pub fn native_entry_kind<C, H: ProjectionHost<C>>(
+    expression: &NativeExpression<C, H>,
+    host: &H,
+    input: &H::Kind,
+    scope: &BTreeMap<String, H::Kind>,
+    budget: &mut Budget,
+) -> Result<H::Kind, QueryError> {
+    native_expression_kind_with_effects(expression, host, input, scope, true, None, budget)
+}
+
+fn native_expression_kind_with_effects<'q, C, H: ProjectionHost<C>>(
+    expression: &'q NativeExpression<C, H>,
+    host: &H,
+    input: &H::Kind,
+    scope: &BTreeMap<String, H::Kind>,
+    allow_effects: bool,
+    arguments: Option<&mut ScopedNativeValueArguments<'q, C, H>>,
+    budget: &mut Budget,
+) -> Result<H::Kind, QueryError> {
+    expression_kind_with_arguments(
         expression,
         host,
         Some(input),
         scope,
-        false,
-        &mut |value, scope, relative, budget| {
+        allow_effects,
+        &mut |value, scope, relative, effects, budget| {
+            if let crate::ValueExpressionKind::NativeValue(query)
+            | crate::ValueExpressionKind::NativeQuery(query) = &value.value
+            {
+                let placeholder = host.constructed_kind(vec![ValueType::Unestablished]);
+                return if effects
+                    && matches!(value.value, crate::ValueExpressionKind::NativeValue(_))
+                {
+                    native_expression_kind_with_effects(
+                        query,
+                        host,
+                        relative.as_ref().unwrap_or(&placeholder),
+                        scope,
+                        true,
+                        None,
+                        budget,
+                    )
+                } else {
+                    host.expression_kind(
+                        query,
+                        relative.as_ref().unwrap_or(&placeholder),
+                        scope,
+                        budget,
+                    )
+                };
+            }
+            if let Some(argument) = native_scoped_argument(value) {
+                let subject = relative
+                    .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished]));
+                return Ok(host.constructed_kind(native_predicate_value_types(
+                    argument,
+                    host,
+                    subject,
+                    copy_scope::<C, H>(scope, budget, &value.range)?,
+                    budget,
+                )?));
+            }
             let facts = value_facts(host, scope, budget, &value.range)?;
             let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
             let mut prepared = BTreeMap::new();
@@ -432,6 +926,7 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
             };
             Ok(host.constructed_kind(query_value_types(value, &facts, &mut queries, budget)?))
         },
+        arguments,
         budget,
     )
 }
@@ -446,8 +941,41 @@ pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
         &ValueExpression<NativeExpression<C, H>>,
         &BTreeMap<String, H::Kind>,
         Option<H::Kind>,
+        bool,
         &mut Budget,
     ) -> Result<H::Kind, QueryError>,
+    budget: &mut Budget,
+) -> Result<H::Kind, QueryError> {
+    expression_kind_with_arguments(
+        expression,
+        host,
+        input,
+        scope,
+        allow_effects,
+        value_kind,
+        None,
+        budget,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "One type-flow walk checks bodies and optionally retains their exact argument scopes"
+)]
+pub(crate) fn expression_kind_with_arguments<'q, C, H: ProjectionHost<C>>(
+    expression: &'q NativeExpression<C, H>,
+    host: &H,
+    input: Option<&H::Kind>,
+    scope: &BTreeMap<String, H::Kind>,
+    allow_effects: bool,
+    value_kind: &mut impl FnMut(
+        &ValueExpression<NativeExpression<C, H>>,
+        &BTreeMap<String, H::Kind>,
+        Option<H::Kind>,
+        bool,
+        &mut Budget,
+    ) -> Result<H::Kind, QueryError>,
+    mut arguments: Option<&mut ScopedNativeValueArguments<'q, C, H>>,
     budget: &mut Budget,
 ) -> Result<H::Kind, QueryError> {
     let location = Location::Query(expression.range.clone());
@@ -462,10 +990,10 @@ pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
                 )
             }),
             ExpressionKind::Group(child) => {
-                expression_kind(child, host, input, scope, allow_effects, value_kind, budget)
+                expression_kind_with_arguments(child, host, input, scope, allow_effects, value_kind, arguments.as_deref_mut(), budget)
             }
             ExpressionKind::Field { value, field } => {
-                let kind = expression_kind(value, host, input, scope, allow_effects, value_kind, budget)?;
+                let kind = expression_kind_with_arguments(value, host, input, scope, allow_effects, value_kind, arguments.as_deref_mut(), budget)?;
                 let record = host.capture_record_kind(&kind).ok_or_else(|| {
                     QueryError::query(
                         field.range.clone(),
@@ -479,19 +1007,23 @@ pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
                 steps,
             } => {
                 let source_wrapper = matches!(source.value, ExpressionKind::Input)
-                    && steps.first().is_some_and(|step| matches!(&step.value, ExpressionStep::Value(_)) || matches!(&step.value, ExpressionStep::Stage(stage) if host.is_explicit_source(stage)));
-                let mut kind = if source_wrapper { input.cloned() } else { Some(expression_kind(source, host, input, scope, allow_effects, value_kind, budget)?) };
+                    && steps.first().is_some_and(|step| crate::composition::explicit_source(&step.value) || matches!(&step.value, ExpressionStep::Stage(stage) if host.is_explicit_source(stage)));
+                let mut kind = if source_wrapper { input.cloned() } else { Some(expression_kind_with_arguments(source, host, input, scope, allow_effects, value_kind, arguments.as_deref_mut(), budget)?) };
+                let mut terminal=crate::composition::ends_constructed_tally(source) && kind.as_ref().is_some_and(|kind|host.is_constructed_kind(kind));
                 for step in steps {
                     budget.charge(1, Location::Query(step.range.clone()))?;
+                    if terminal && !matches!(step.value,ExpressionStep::Emit{..}) { return Err(QueryError::query(step.range.clone(),"tally must be the terminal stage")); }
+                    terminal=matches!(step.value,ExpressionStep::Collection(crate::Stage::Tally)) && kind.as_ref().is_some_and(|kind|host.is_constructed_kind(kind));
+                    let argument_input = kind.clone();
                     kind = Some(match &step.value {
-                        ExpressionStep::Value(value) => value_kind(value, scope, kind, budget)?,
+                        ExpressionStep::Value(value) => value_kind(value, scope, kind, allow_effects && matches!(value.value, crate::ValueExpressionKind::NativeValue(_)), budget)?,
                         ExpressionStep::Projection(projection) => projection_kind(projection,host,kind.as_ref(),scope,value_kind,budget)?,
                         ExpressionStep::Stage(stage) => {
                             if !allow_effects && !host.is_pure(stage) {
                                 return Err(QueryError::query(step.range.clone(), "constructed expressions cannot edit or emit"));
                             }
                             for (query, relative) in host.nested_queries(stage, budget, &step.range)? {
-                                let result = expression_kind(&query, host, Some(&relative), scope, false, value_kind, budget);
+                                let result = expression_kind(&query, host, Some(&relative), scope, allow_effects, value_kind, budget);
                                 crate::dispose_expression(query);
                                 result?;
                             }
@@ -499,9 +1031,14 @@ pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
                             let input = match &kind { Some(kind) => kind, None if host.is_explicit_source(stage) => { placeholder = host.constructed_kind(vec![ValueType::Unestablished]); &placeholder }, None => return Err(QueryError::query(step.range.clone(), "functions require explicit native inputs")) };
                             host.stage_kind(stage, input, scope, budget, &step.range)?
                         }
+                        common if crate::composition::is_common(common) => crate::composition::kind(common,host,kind.as_ref(),scope,value_kind,allow_effects,arguments.as_deref_mut(),budget,&step.range)?,
                         ExpressionStep::Emit { .. } if allow_effects => kind.clone().ok_or_else(|| QueryError::query(step.range.clone(), "emission requires input"))?,
                         ExpressionStep::Emit { .. } => return Err(QueryError::query(step.range.clone(), "constructed expressions cannot emit")),
+                        _ => unreachable!("common step handled above"),
                     });
+                    if let Some(arguments) = arguments.as_deref_mut() {
+                        append_scoped_step_arguments(step, host, argument_input.as_ref(), scope, allow_effects, arguments, budget)?;
+                    }
                 }
                 kind.ok_or_else(|| QueryError::query(expression.range.clone(), "functions require explicit native inputs"))
             }
@@ -516,9 +1053,9 @@ pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
                     pending.push((right.as_ref(), &operand.range));
                     operand = left;
                 }
-                let mut left = expression_kind(operand, host, input, scope, allow_effects, value_kind, budget)?;
+                let mut left = expression_kind_with_arguments(operand, host, input, scope, allow_effects, value_kind, arguments.as_deref_mut(), budget)?;
                 while let Some((right, range)) = pending.pop() {
-                    let right = expression_kind(right, host, input, scope, allow_effects, value_kind, budget)?;
+                    let right = expression_kind_with_arguments(right, host, input, scope, allow_effects, value_kind, arguments.as_deref_mut(), budget)?;
                     left = host.set_kind(&left, &right, budget, range)?;
                 }
                 Ok(left)
@@ -527,7 +1064,7 @@ pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
                 admit_slots::<(String,H::Kind)>(fields.len(),budget,&expression.range)?;
                 let mut kinds = Vec::with_capacity(fields.len());
                 for (label,field) in fields {
-                    let kind = expression_kind(field,host,input,scope,allow_effects,value_kind,budget)?;
+                    let kind = expression_kind_with_arguments(field,host,input,scope,allow_effects,value_kind,arguments.as_deref_mut(),budget)?;
                     budget.charge(label.value.len(),Location::Query(label.range.clone()))?;
                     kinds.push((label.value.clone(),kind));
                 }
@@ -546,6 +1083,7 @@ fn projection_kind<C, H: ProjectionHost<C>>(
         &ValueExpression<NativeExpression<C, H>>,
         &BTreeMap<String, H::Kind>,
         Option<H::Kind>,
+        bool,
         &mut Budget,
     ) -> Result<H::Kind, QueryError>,
     budget: &mut Budget,
@@ -569,7 +1107,7 @@ fn projection_kind<C, H: ProjectionHost<C>>(
     let types = projection_field_types(
         projection,
         host,
-        &mut |field, budget| value_kind(field, &local, Some(subject.clone()), budget),
+        &mut |field, budget| value_kind(field, &local, Some(subject.clone()), false, budget),
         budget,
     )?;
     Ok(host.constructed_kind(types))
@@ -776,9 +1314,19 @@ pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
                     }
                     _ => {}
                 }
+                if crate::composition::is_common(&step.value) {
+                    let arguments =
+                        crate::composition::arguments(&step.value, host, budget, &step.range)?;
+                    admit_slots::<(&ValueExpression<NativeExpression<C, H>>, Option<H::Kind>)>(
+                        arguments.len(),
+                        budget,
+                        &step.range,
+                    )?;
+                    result.extend(arguments.into_iter().map(|value| (value, None)));
+                }
                 if let ExpressionStep::Stage(stage) = &step.value {
                     let arguments = host.value_arguments(stage, budget, &step.range)?;
-                    admit_slots::<(&ValueExpression<NativeExpression<C, H>>, H::Kind)>(
+                    admit_slots::<(&ValueExpression<NativeExpression<C, H>>, Option<H::Kind>)>(
                         arguments.len(),
                         budget,
                         &step.range,
@@ -843,183 +1391,75 @@ pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
     Ok(result)
 }
 
-pub(crate) fn scoped_arguments<'q, C, H: ProjectionHost<C>>(
-    query: &'q NativeExpression<C, H>,
+fn append_scoped_step_arguments<'q, C, H: ProjectionHost<C>>(
+    step: &'q Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>,
     host: &H,
-    input: &H::Kind,
+    input: Option<&H::Kind>,
     scope: &BTreeMap<String, H::Kind>,
+    allow_effects: bool,
+    arguments: &mut ScopedNativeValueArguments<'q, C, H>,
     budget: &mut Budget,
-) -> Result<ScopedNativeValueArguments<'q, C, H>, QueryError> {
-    scoped_arguments_with(
-        query,
-        host,
-        input,
-        scope,
-        &mut |value, scope, relative, budget| {
-            let facts = value_facts(host, scope, budget, &value.range)?;
-            let names = scope.keys().map(String::as_str).collect::<Vec<_>>();
-            let mut prepared = BTreeMap::new();
-            let mut queries = NativeValues {
-                host,
-                input_kind: relative
-                    .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished])),
-                input: None,
-                context: None,
-                bindings: None,
-                scope,
-                outer_names: &names,
-                outer: &[],
-                subject_name: None,
-                predicate_scope: false,
-                prepared: NativePreparation::Checking(&mut prepared),
-            };
-            Ok(host.constructed_kind(query_value_types(value, &facts, &mut queries, budget)?))
-        },
-        budget,
-    )
-}
-
-pub(crate) fn scoped_arguments_with<'q, C, H: ProjectionHost<C>>(
-    query: &'q NativeExpression<C, H>,
-    host: &H,
-    input: &H::Kind,
-    scope: &BTreeMap<String, H::Kind>,
-    value_kind: &mut impl FnMut(
-        &ValueExpression<NativeExpression<C, H>>,
-        &BTreeMap<String, H::Kind>,
-        Option<H::Kind>,
-        &mut Budget,
-    ) -> Result<H::Kind, QueryError>,
-    budget: &mut Budget,
-) -> Result<ScopedNativeValueArguments<'q, C, H>, QueryError> {
-    enum Pending<'q, S, O, E, K> {
-        Expression(&'q Expression<S, O, E>, K),
-        Stage(&'q Located<ExpressionStep<S, E, O>>, K),
-    }
-    admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter, H::Kind>>(
-        1,
-        budget,
-        &query.range,
-    )?;
-    let mut pending = vec![Pending::Expression(query, input.clone())];
-    let mut result = Vec::new();
-    while let Some(next) = pending.pop() {
-        match next {
-            Pending::Stage(step, kind) => {
-                match &step.value {
-                    ExpressionStep::Value(expression) => result.push(ScopedNativeArgument {
-                        expression,
-                        relative: Some(kind.clone()),
-                        locals: Vec::new(),
-                    }),
-                    ExpressionStep::Projection(projection) => {
-                        let subject = host.subject_kind(&kind, budget, &step.range)?;
-                        for (_, expression) in &projection.fields {
-                            admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
-                                1,
-                                budget,
-                                &step.range,
-                            )?;
-                            result.push(ScopedNativeArgument {
-                                expression,
-                                relative: Some(subject.clone()),
-                                locals: vec![(projection.subject.clone(), subject.clone())],
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-                if let ExpressionStep::Stage(stage) = &step.value {
-                    let arguments =
-                        host.scoped_value_arguments(stage, &kind, scope, budget, &step.range)?;
-                    admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
-                        arguments.len(),
-                        budget,
-                        &step.range,
-                    )?;
-                    result.extend(arguments);
-                }
-            }
-            Pending::Expression(expression, input) => {
-                budget.charge(1, Location::Query(expression.range.clone()))?;
-                let count = match &expression.value {
-                    ExpressionKind::Sequence { steps, .. } => steps.len() + 1,
-                    ExpressionKind::Set { .. } => 2,
-                    ExpressionKind::Record(fields) => fields.len(),
-                    ExpressionKind::Group(_) | ExpressionKind::Field { .. } => 1,
-                    _ => 0,
-                };
-                admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter, H::Kind>>(
-                    count,
-                    budget,
-                    &expression.range,
-                )?;
-                match &expression.value {
-                    ExpressionKind::Sequence {
-                        input: source,
-                        steps,
-                    } => {
-                        let mut stages = Vec::new();
-                        admit_slots::<(
-                            &Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>,
-                            H::Kind,
-                        )>(steps.len(), budget, &expression.range)?;
-                        let mut kind = expression_kind(
-                            source,
-                            host,
-                            Some(&input),
-                            scope,
-                            true,
-                            value_kind,
-                            budget,
-                        )?;
-                        for step in steps {
-                            stages.push((step, kind.clone()));
-                            kind = match &step.value {
-                                ExpressionStep::Stage(stage) => {
-                                    host.stage_kind(stage, &kind, scope, budget, &step.range)?
-                                }
-                                ExpressionStep::Value(value) => {
-                                    value_kind(value, scope, Some(kind), budget)?
-                                }
-                                ExpressionStep::Projection(projection) => projection_kind(
-                                    projection,
-                                    host,
-                                    Some(&kind),
-                                    scope,
-                                    value_kind,
-                                    budget,
-                                )?,
-                                ExpressionStep::Emit { .. } => kind,
-                            };
-                        }
-                        pending.extend(
-                            stages
-                                .into_iter()
-                                .rev()
-                                .map(|(step, kind)| Pending::Stage(step, kind)),
-                        );
-                        pending.push(Pending::Expression(source, input));
-                    }
-                    ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => {
-                        pending.push(Pending::Expression(value, input))
-                    }
-                    ExpressionKind::Set { left, right, .. } => {
-                        pending.push(Pending::Expression(right, input.clone()));
-                        pending.push(Pending::Expression(left, input));
-                    }
-                    ExpressionKind::Record(fields) => pending.extend(
-                        fields
-                            .iter()
-                            .rev()
-                            .map(|(_, value)| Pending::Expression(value, input.clone())),
-                    ),
-                    ExpressionKind::Input | ExpressionKind::Binding(_) => {}
-                }
+) -> Result<(), QueryError> {
+    match &step.value {
+        ExpressionStep::Value(expression) => {
+            admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
+                1,
+                budget,
+                &step.range,
+            )?;
+            arguments.push(ScopedNativeArgument {
+                expression,
+                relative: input.cloned(),
+                locals: Vec::new(),
+                allow_effects: allow_effects
+                    && matches!(expression.value, crate::ValueExpressionKind::NativeValue(_)),
+            });
+        }
+        ExpressionStep::Projection(projection) => {
+            let input = input.expect("projection kind admitted input");
+            let subject = host.subject_kind(input, budget, &step.range)?;
+            admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
+                projection.fields.len(),
+                budget,
+                &step.range,
+            )?;
+            for (_, expression) in &projection.fields {
+                admit_slots::<(Located<String>, H::Kind)>(1, budget, &step.range)?;
+                arguments.push(ScopedNativeArgument {
+                    expression,
+                    relative: Some(subject.clone()),
+                    locals: vec![(projection.subject.clone(), subject.clone())],
+                    allow_effects: false,
+                });
             }
         }
+        ExpressionStep::Emit { .. } | ExpressionStep::Match(_) => {}
+        step_value => {
+            let placeholder = host.constructed_kind(vec![ValueType::Unestablished]);
+            let input = input.unwrap_or(&placeholder);
+            let scoped = match step_value {
+                ExpressionStep::Stage(stage) => {
+                    host.scoped_value_arguments(stage, input, scope, budget, &step.range)?
+                }
+                common => crate::composition::scoped_arguments(
+                    common,
+                    host,
+                    input,
+                    scope,
+                    allow_effects,
+                    budget,
+                    &step.range,
+                )?,
+            };
+            admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
+                scoped.len(),
+                budget,
+                &step.range,
+            )?;
+            arguments.extend(scoped);
+        }
     }
-    Ok(result)
+    Ok(())
 }
 
 struct NativeValues<'a, C, H: ProjectionHost<C>> {
@@ -1095,76 +1535,21 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
     }
     fn query_types(
         &mut self,
-        query: &Expression<H::Stage, H::SetOperator, H::Emitter>,
+        query: &NativeExpression<C, H>,
         locals: &[(&str, Vec<ValueType>)],
         budget: &mut Budget,
         _range: &Range<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
-        let mut scope = copy_scope::<C, H>(self.scope, budget, &query.range)?;
-        for (name, types) in locals {
-            budget.charge(name.len() + 1, Location::Query(query.range.clone()))?;
-            scope.insert(
-                (*name).to_owned(),
-                self.host.constructed_kind(copy_value_types(
-                    types,
-                    budget,
-                    Location::Query(query.range.clone()),
-                )?),
-            );
-        }
-        let kind = self
-            .host
-            .expression_kind(query, &self.input_kind, &scope, budget)?;
-        let prepared = PreparedNative::resolve::<C, H>(
-            query,
-            self.host,
-            self.outer_names,
-            self.subject_name,
-            locals,
-            budget,
-        )?;
-        budget.charge(1, Location::Query(query.range.clone()))?;
-        self.prepared
-            .checking()
-            .insert(query as *const _ as usize, prepared);
-        let arguments =
-            scoped_arguments::<C, H>(query, self.host, &self.input_kind, &scope, budget)?;
-        for argument in arguments {
-            let mut scope = copy_scope::<C, H>(&scope, budget, &query.range)?;
-            for (name, kind) in argument.locals {
-                budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
-                if scope.insert(name.value, kind).is_some() {
-                    return Err(QueryError::query(name.range, "binding is already defined"));
-                }
-            }
-            let facts = value_facts(self.host, &scope, budget, &query.range)?;
-            admit_slots::<&str>(scope.len(), budget, &query.range)?;
-            let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
-            let mut queries = NativeValues {
-                host: self.host,
-                input_kind: argument
-                    .relative
-                    .unwrap_or_else(|| self.host.constructed_kind(vec![ValueType::Unestablished])),
-                input: None,
-                context: None,
-                bindings: None,
-                scope: &scope,
-                outer_names: &outer_names,
-                outer: &[],
-                subject_name: None,
-                predicate_scope: false,
-                prepared: NativePreparation::Checking(self.prepared.checking()),
-            };
-            query_value_types(argument.expression, &facts, &mut queries, budget)?;
-        }
-        self.host
-            .scalar_types(&kind, budget, &query.range)?
-            .ok_or_else(|| {
-                QueryError::query(
-                    query.range.clone(),
-                    "native handles require an explicit scalar projection",
-                )
-            })
+        self.prepare_query(query, locals, budget, true, false)
+    }
+    fn native_value_types(
+        &mut self,
+        query: &NativeExpression<C, H>,
+        locals: &[(&str, Vec<ValueType>)],
+        budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        self.prepare_query(query, locals, budget, false, false)
     }
     fn query_arguments<'q>(
         &self,
@@ -1180,7 +1565,10 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
         )?;
         Ok(arguments
             .into_iter()
-            .map(|(expression, _)| expression)
+            .map(|(expression, _)| {
+                native_scoped_argument(expression)
+                    .map_or(expression, |argument| argument.body.as_ref())
+            })
             .collect())
     }
     fn evaluate_query(
@@ -1365,6 +1753,94 @@ impl<C, H: ProjectionHost<C>> NativeArguments<C, H> for StageArguments<'_, '_, C
     fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
         (self.context, self.bindings)
     }
+    fn evaluate_body(
+        &mut self,
+        body: &crate::NativeBody<NativeExpression<C, H>>,
+        input: Option<H::Value>,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        let range = &body.value().range;
+        let id = body.value() as *const _ as usize;
+        budget.charge(self.declared.len() + 1, Location::Query(range.clone()))?;
+        if !self.declared.contains(&id) {
+            return Err(QueryError::query(
+                range.clone(),
+                "native body was not declared by this step",
+            )
+            .into());
+        }
+        let prepared = self
+            .prepared
+            .get(&(body.query() as *const _ as usize))
+            .ok_or_else(|| {
+                QueryError::query(
+                    range.clone(),
+                    "native body was not prepared in this request",
+                )
+            })?;
+        let bindings = captures.unwrap_or(self.bindings);
+        admit_slots::<&H::Value>(bindings.iter().count(), budget, range)?;
+        let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
+        let input = input.ok_or_else(|| {
+            QueryError::query(range.clone(), "native body requires relative input")
+        })?;
+        let subject = self.host.copy_value(&input, self.context, budget, range)?;
+        let mut result = None;
+        let mut selected = Some(input);
+        self.values.with_native_arguments(
+            body.value(),
+            &mut |nested, budget| {
+                let value = prepared.run(
+                    body.query(),
+                    self.host,
+                    selected.take().expect("native body runs once"),
+                    self.context,
+                    bindings,
+                    &outer,
+                    &subject,
+                    &[],
+                    nested,
+                    self.prepared,
+                    self.scope,
+                    budget,
+                )?;
+                result = Some(value);
+                Ok(())
+            },
+            budget,
+        )?;
+        Ok(result.expect("selected native body completed"))
+    }
+    fn evaluate_predicate(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: H::Value,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<bool, EvaluationError<H::Error>> {
+        let value = self
+            .read_argument(expression, input, captures, budget)?
+            .into_owned(budget)?;
+        crate::value::boolean(value, &Location::Query(expression.range.clone())).map_err(Into::into)
+    }
+    fn evaluate_native(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: H::Value,
+        budget: &mut Budget,
+    ) -> Result<NativeRead<H::Value, H::Kind>, EvaluationError<H::Error>> {
+        self.read_native_argument(expression, input, None, budget)
+    }
+    fn evaluate_match_value(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: H::Value,
+        captures: &Bindings<H::Value>,
+        budget: &mut Budget,
+    ) -> Result<NativeRead<H::Value, H::Kind>, EvaluationError<H::Error>> {
+        self.read_native_argument(expression, input, Some(captures), budget)
+    }
     fn evaluate_projection(
         &mut self,
         projection: &Projection<NativeExpression<C, H>>,
@@ -1386,44 +1862,7 @@ impl<C, H: ProjectionHost<C>> NativeArguments<C, H> for StageArguments<'_, '_, C
         input: H::Value,
         budget: &mut Budget,
     ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>> {
-        let id = expression as *const _ as usize;
-        budget.charge(
-            self.declared.len() + 1,
-            Location::Query(expression.range.clone()),
-        )?;
-        if !self.declared.contains(&id) {
-            return Err(QueryError::query(
-                expression.range.clone(),
-                "argument was not declared by this native stage",
-            )
-            .into());
-        }
-        admit_slots::<(&str, &H::Value)>(self.bindings.iter().count(), budget, &expression.range)?;
-        let outer_names = self
-            .bindings
-            .iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        let outer = self
-            .bindings
-            .iter()
-            .map(|(_, value)| value)
-            .collect::<Vec<_>>();
-        let input_kind = self.host.kind(&input, budget, &expression.range)?;
-        let mut queries = NativeValues {
-            host: self.host,
-            input_kind,
-            input: Some(&input),
-            context: Some(&mut *self.context),
-            bindings: Some(self.bindings),
-            scope: self.scope,
-            outer_names: &outer_names,
-            outer: &outer,
-            subject_name: None,
-            predicate_scope: false,
-            prepared: NativePreparation::Running(self.prepared),
-        };
-        self.values.evaluate(expression, &mut queries, budget)
+        self.read_argument(expression, input, None, budget)
     }
 }
 
@@ -2049,69 +2488,8 @@ fn evaluate_predicate_value<C, H: ProjectionHost<C>>(
     )?;
     scope.insert(crate::value::PREDICATE_SUBJECT.into(), kind.clone());
     let facts = value_facts(host, &scope, budget, range)?;
-    let mut locals = BTreeMap::new();
-    let retained = std::sync::Arc::new(subject);
-    locals.insert(
-        crate::value::PREDICATE_SUBJECT.into(),
-        std::sync::Arc::clone(&retained),
-    );
-    if let Some(pattern) = &predicate.argument {
-        use crate::value::execution::{Data, NativeView, Value};
-        let value = Value {
-            data: Data::Native(NativeView::new(std::sync::Arc::clone(&retained))),
-            contract: None,
-        };
-        let mut matcher = PredicatePatternHost::<C, H> {
-            host,
-            marker: std::marker::PhantomData,
-        };
-        let selected = crate::value::pattern::bind::<(), _>(
-            crate::value::pattern::PatternRef::Pattern(pattern),
-            value,
-            &mut matcher,
-            budget,
-        )?
-        .ok_or_else(|| {
-            QueryError::query(
-                pattern.range.clone(),
-                "predicate pattern does not match its subject",
-            )
-        })?;
-        for (name, value) in selected {
-            let Data::Native(view) = value.data else {
-                unreachable!("native pattern owner")
-            };
-            budget.charge(view.path.len(), Location::Query(range.clone()))?;
-            let selected = if view.path.is_empty() {
-                std::sync::Arc::clone(&view.owner)
-            } else if let Some(data) = view.constructed(
-                |v| host.pattern_constructed(v),
-                |v| host.capture_record(v),
-                |v| host.tuple_view(v),
-                |v| host.positional_view(v),
-                budget,
-                &Location::Query(range.clone()),
-            )? {
-                let data = data.materialize(budget, &Location::Query(range.clone()))?;
-                let types = vec![crate::constructed_value_type(
-                    &data,
-                    budget,
-                    Location::Query(range.clone()),
-                )?];
-                std::sync::Arc::new(host.lift_constructed(data, types, context, budget, range)?)
-            } else {
-                let data = view.native(
-                    |v| host.capture_record(v),
-                    |v| host.tuple_view(v),
-                    |v| host.positional_view(v),
-                );
-                std::sync::Arc::new(host.copy_value(data, context, budget, range)?)
-            };
-            budget.charge(name.len() + 1, Location::Query(range.clone()))?;
-            locals.insert(name.to_owned(), selected);
-        }
-    }
-    let bindings = bindings.with_shared_values(locals, budget, range)?;
+    let (retained, bindings) =
+        bind_predicate_subject(predicate, host, subject, context, bindings, budget)?;
     admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, range)?;
     let outer_names = bindings.iter().map(|(name, _)| name).collect::<Vec<_>>();
     let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
@@ -2184,4 +2562,442 @@ pub fn native_value_types<C, H: ProjectionHost<C>>(
         scope: &scope,
     };
     query_value_types(expression, &facts, &mut queries, budget)
+}
+
+impl<C, H: ProjectionHost<C>> NativeValues<'_, C, H> {
+    fn prepare_query(
+        &mut self,
+        query: &NativeExpression<C, H>,
+        locals: &[(&str, Vec<ValueType>)],
+        budget: &mut Budget,
+        projected: bool,
+        allow_effects: bool,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        let mut scope = copy_scope::<C, H>(self.scope, budget, &query.range)?;
+        for (name, types) in locals {
+            if scope.contains_key(*name) {
+                continue;
+            }
+            budget.charge(name.len() + 1, Location::Query(query.range.clone()))?;
+            scope.insert(
+                (*name).to_owned(),
+                self.host.constructed_kind(copy_value_types(
+                    types,
+                    budget,
+                    Location::Query(query.range.clone()),
+                )?),
+            );
+        }
+        let mut arguments = Vec::new();
+        let kind = native_expression_kind_with_effects(
+            query,
+            self.host,
+            &self.input_kind,
+            &scope,
+            allow_effects,
+            Some(&mut arguments),
+            budget,
+        )?;
+        let prepared = PreparedNative::resolve::<C, H>(
+            query,
+            self.host,
+            self.outer_names,
+            self.subject_name,
+            locals,
+            budget,
+        )?;
+        budget.charge(1, Location::Query(query.range.clone()))?;
+        self.prepared
+            .checking()
+            .insert(query as *const _ as usize, prepared);
+        for argument in arguments {
+            let mut scope = copy_scope::<C, H>(&scope, budget, &query.range)?;
+            for (name, kind) in argument.locals {
+                budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+                if scope.insert(name.value, kind).is_some() {
+                    return Err(QueryError::query(name.range, "binding is already defined"));
+                }
+            }
+            let relative = argument
+                .relative
+                .clone()
+                .unwrap_or_else(|| self.host.constructed_kind(vec![ValueType::Unestablished]));
+            let source = if let Some(predicate) = native_scoped_argument(argument.expression) {
+                if let Some(pattern) = &predicate.argument {
+                    predicate_pattern_scope(
+                        pattern,
+                        self.host,
+                        relative.clone(),
+                        &mut scope,
+                        budget,
+                    )?;
+                }
+                scope.insert(crate::value::PREDICATE_SUBJECT.to_owned(), relative.clone());
+                predicate.body.as_ref()
+            } else {
+                argument.expression
+            };
+            let facts = value_facts(self.host, &scope, budget, &query.range)?;
+            admit_slots::<&str>(scope.len(), budget, &query.range)?;
+            let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
+            let mut queries = NativeValues {
+                host: self.host,
+                input_kind: argument
+                    .relative
+                    .unwrap_or_else(|| self.host.constructed_kind(vec![ValueType::Unestablished])),
+                input: None,
+                context: None,
+                bindings: None,
+                scope: &scope,
+                outer_names: &outer_names,
+                outer: &[],
+                subject_name: None,
+                predicate_scope: false,
+                prepared: NativePreparation::Checking(self.prepared.checking()),
+            };
+            if argument.allow_effects {
+                let crate::ValueExpressionKind::NativeValue(body) = &source.value else {
+                    unreachable!("fixed-point native body")
+                };
+                queries.prepare_query(body, &[], budget, false, true)?;
+            } else {
+                query_value_types(source, &facts, &mut queries, budget)?;
+            }
+        }
+        match self.host.scalar_types(&kind, budget, &query.range)? {
+            Some(types) => Ok(types),
+            None if !projected => Ok(vec![ValueType::Unestablished]),
+            None => Err(QueryError::query(
+                query.range.clone(),
+                "native handles require an explicit scalar projection",
+            )),
+        }
+    }
+}
+
+/// Prepare and execute a native expression without requiring function capabilities.
+/// Common bodies share the existing argument preparation, lexical frames and budget;
+/// the returned value retains its host representation even when scalar projection is available.
+///
+/// # Errors
+/// Scope, type, native admission and resource failures retain their written locations.
+pub fn evaluate_native_expression<C, H: ProjectionHost<C>>(
+    expression: &NativeExpression<C, H>,
+    host: &H,
+    input: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+) -> Result<H::Value, EvaluationError<H::Error>> {
+    let range = &expression.range;
+    let scope = scope_kinds(host, bindings, budget, range)?;
+    let input_kind = host.kind(&input, budget, range)?;
+    let mut prepared = BTreeMap::new();
+    admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, range)?;
+    let names = bindings.iter().map(|(name, _)| name).collect::<Vec<_>>();
+    let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
+    let mut queries = NativeValues {
+        host,
+        input_kind,
+        input: None,
+        context: None,
+        bindings: None,
+        scope: &scope,
+        outer_names: &names,
+        outer: &[],
+        subject_name: None,
+        predicate_scope: false,
+        prepared: NativePreparation::Checking(&mut prepared),
+    };
+    queries.prepare_query(expression, &[], budget, false, true)?;
+    let arguments = crate::value::prepared::Preparation::new().arguments(
+        expression,
+        &mut queries,
+        budget,
+        range,
+    )?;
+    let mut frames = Vec::new();
+    admit_slots::<crate::value::prepared::Frame<'_>>(arguments.len(), budget, range)?;
+    for argument in &arguments {
+        admit_slots::<&str>(argument.names.len(), budget, range)?;
+        frames.push(crate::value::prepared::Frame::new(
+            argument.names.clone(),
+            budget,
+            &Location::Query(range.clone()),
+        )?);
+    }
+    let mut check = |_: &ConstructedValue, _: &mut Budget, _: &Location| Ok(());
+    let mut arguments = crate::value::PreparedArguments {
+        arguments: &arguments,
+        frames,
+        check_value: &mut check,
+    };
+    let resolved = &prepared[&(expression as *const _ as usize)];
+    let subject = host.copy_value(&input, context, budget, range)?;
+    resolved.run(
+        expression,
+        host,
+        input,
+        context,
+        bindings,
+        &outer,
+        &subject,
+        &[],
+        &mut arguments,
+        &prepared,
+        &scope,
+        budget,
+    )
+}
+
+#[expect(
+    clippy::type_complexity,
+    reason = "Subject ownership and its lexical frame travel together"
+)]
+fn bind_predicate_subject<C, H: ProjectionHost<C>>(
+    predicate: &crate::PredicateArgument<NativeExpression<C, H>>,
+    host: &H,
+    subject: H::Value,
+    context: &mut C,
+    bindings: &Bindings<H::Value>,
+    budget: &mut Budget,
+) -> Result<(std::sync::Arc<H::Value>, Bindings<H::Value>), EvaluationError<H::Error>> {
+    let range = &predicate.body.range;
+    let mut locals = BTreeMap::new();
+    let retained = std::sync::Arc::new(subject);
+    locals.insert(
+        crate::value::PREDICATE_SUBJECT.into(),
+        std::sync::Arc::clone(&retained),
+    );
+    if let Some(pattern) = &predicate.argument {
+        use crate::value::execution::{Data, NativeView, Value};
+        let value = Value {
+            data: Data::Native(NativeView::new(std::sync::Arc::clone(&retained))),
+            contract: None,
+        };
+        let mut matcher = PredicatePatternHost::<C, H> {
+            host,
+            marker: std::marker::PhantomData,
+        };
+        let selected = crate::value::pattern::bind::<(), _>(
+            crate::value::pattern::PatternRef::Pattern(pattern),
+            value,
+            &mut matcher,
+            budget,
+        )?
+        .ok_or_else(|| {
+            QueryError::query(
+                pattern.range.clone(),
+                "predicate pattern does not match its subject",
+            )
+        })?;
+        for (name, value) in selected {
+            let Data::Native(view) = value.data else {
+                unreachable!("native pattern owner")
+            };
+            budget.charge(view.path.len(), Location::Query(range.clone()))?;
+            let selected = if view.path.is_empty() {
+                std::sync::Arc::clone(&view.owner)
+            } else if let Some(data) = view.constructed(
+                |v| host.pattern_constructed(v),
+                |v| host.capture_record(v),
+                |v| host.tuple_view(v),
+                |v| host.positional_view(v),
+                budget,
+                &Location::Query(range.clone()),
+            )? {
+                let data = data.materialize(budget, &Location::Query(range.clone()))?;
+                let types = vec![crate::constructed_value_type(
+                    &data,
+                    budget,
+                    Location::Query(range.clone()),
+                )?];
+                std::sync::Arc::new(host.lift_constructed(data, types, context, budget, range)?)
+            } else {
+                let data = view.native(
+                    |v| host.capture_record(v),
+                    |v| host.tuple_view(v),
+                    |v| host.positional_view(v),
+                );
+                std::sync::Arc::new(host.copy_value(data, context, budget, range)?)
+            };
+            budget.charge(name.len() + 1, Location::Query(range.clone()))?;
+            locals.insert(name.to_owned(), selected);
+        }
+    }
+    let bindings = bindings.with_shared_values(locals, budget, range)?;
+    Ok((retained, bindings))
+}
+
+fn native_scoped_argument<S, O, E>(
+    expression: &ValueExpression<Expression<S, O, E>>,
+) -> Option<&crate::PredicateArgument<Expression<S, O, E>>> {
+    let (subject, argument) = match &expression.value {
+        crate::ValueExpressionKind::PredicateScope { subject, predicate } => (subject, predicate),
+        crate::ValueExpressionKind::SubjectScope { subject, argument } => (subject, argument),
+        _ => return None,
+    };
+    matches!(&subject.value,crate::ValueExpressionKind::NativeValue(query) if matches!(query.value,ExpressionKind::Input)).then_some(argument)
+}
+
+impl<C, H: ProjectionHost<C>> StageArguments<'_, '_, C, H> {
+    fn check_argument(
+        &self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        budget.charge(
+            self.declared.len() + 1,
+            Location::Query(expression.range.clone()),
+        )?;
+        if !self.declared.contains(&(expression as *const _ as usize)) {
+            return Err(QueryError::query(
+                expression.range.clone(),
+                "argument was not declared by this native stage",
+            ));
+        }
+        Ok(())
+    }
+    fn read_argument(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: H::Value,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>> {
+        self.check_argument(expression, budget)?;
+        let bindings = captures.unwrap_or(self.bindings);
+        if let Some(predicate) = native_scoped_argument(expression) {
+            let (subject, local) = bind_predicate_subject(
+                predicate,
+                self.host,
+                input,
+                self.context,
+                bindings,
+                budget,
+            )?;
+            self.read_scalar(&predicate.body, &subject, &local, true, budget)
+        } else {
+            self.read_scalar(expression, &input, bindings, false, budget)
+        }
+    }
+    fn read_scalar(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: &H::Value,
+        bindings: &Bindings<H::Value>,
+        predicate_scope: bool,
+        budget: &mut Budget,
+    ) -> Result<crate::ConstructedRead, EvaluationError<H::Error>> {
+        let range = &expression.range;
+        admit_slots::<(&str, &H::Value)>(bindings.iter().count(), budget, range)?;
+        let names = bindings.iter().map(|(name, _)| name).collect::<Vec<_>>();
+        let outer = bindings.iter().map(|(_, value)| value).collect::<Vec<_>>();
+        let scope = scope_kinds(self.host, bindings, budget, range)?;
+        let input_kind = self.host.kind(input, budget, range)?;
+        let mut queries = NativeValues {
+            host: self.host,
+            input_kind,
+            input: Some(input),
+            context: Some(&mut *self.context),
+            bindings: Some(bindings),
+            scope: &scope,
+            outer_names: &names,
+            outer: &outer,
+            subject_name: None,
+            predicate_scope,
+            prepared: NativePreparation::Running(self.prepared),
+        };
+        self.values.evaluate(expression, &mut queries, budget)
+    }
+    #[expect(
+        clippy::type_complexity,
+        reason = "Native arguments retain the adapter's value, kind and error types"
+    )]
+    fn read_native_argument(
+        &mut self,
+        expression: &ValueExpression<NativeExpression<C, H>>,
+        input: H::Value,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<NativeRead<H::Value, H::Kind>, EvaluationError<H::Error>> {
+        self.check_argument(expression, budget)?;
+        let bindings = captures.unwrap_or(self.bindings);
+        let (subject, local, source) = if let Some(predicate) = native_scoped_argument(expression) {
+            let (subject, local) = bind_predicate_subject(
+                predicate,
+                self.host,
+                input,
+                self.context,
+                bindings,
+                budget,
+            )?;
+            (subject, local, predicate.body.as_ref())
+        } else {
+            (
+                std::sync::Arc::new(input),
+                bindings.with_shared_values(BTreeMap::new(), budget, &expression.range)?,
+                expression,
+            )
+        };
+        let value = if let crate::ValueExpressionKind::NativeValue(query) = &source.value {
+            let prepared = self
+                .prepared
+                .get(&(query.as_ref() as *const _ as usize))
+                .ok_or_else(|| {
+                    QueryError::query(source.range.clone(), "native argument was not prepared")
+                })?;
+            admit_slots::<&H::Value>(local.iter().count(), budget, &source.range)?;
+            let outer = local.iter().map(|(_, value)| value).collect::<Vec<_>>();
+            let input = self
+                .host
+                .copy_value(&subject, self.context, budget, &source.range)?;
+            let mut result = None;
+            let mut selected = Some(input);
+            self.values.with_native_arguments(
+                source,
+                &mut |nested, budget| {
+                    let value = prepared.run(
+                        query,
+                        self.host,
+                        selected.take().expect("native argument runs once"),
+                        self.context,
+                        &local,
+                        &outer,
+                        &subject,
+                        &[],
+                        nested,
+                        self.prepared,
+                        self.scope,
+                        budget,
+                    )?;
+                    result = Some(value);
+                    Ok(())
+                },
+                budget,
+            )?;
+            result.expect("selected native argument completed")
+        } else {
+            let value = self
+                .read_scalar(
+                    source,
+                    &subject,
+                    &local,
+                    native_scoped_argument(expression).is_some(),
+                    budget,
+                )?
+                .into_owned(budget)?;
+            let types = vec![crate::constructed_value_type(
+                &value,
+                budget,
+                Location::Query(source.range.clone()),
+            )?];
+            self.host
+                .lift_constructed(value, types, self.context, budget, &source.range)?
+        };
+        Ok(NativeRead {
+            value: std::sync::Arc::new(value),
+            declaration: None,
+        })
+    }
 }

@@ -755,6 +755,26 @@ pub trait ValueArguments<Q, E: From<QueryError>> {
         queries: &mut dyn ValueQueryHost<Q, Error = E>,
         budget: &mut Budget,
     ) -> Result<ConstructedRead, E>;
+    /// Enter a native body's already-prepared argument frame for one selected execution.
+    ///
+    /// # Errors
+    /// Undeclared bodies and runners without prepared native frames are refused.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The callback borrows this invocation's existing prepared native argument frame"
+    )]
+    fn with_native_arguments(
+        &mut self,
+        expression: &ValueExpression<Q>,
+        _run: &mut dyn FnMut(&mut dyn ValueArguments<Q, E>, &mut Budget) -> Result<(), E>,
+        _budget: &mut Budget,
+    ) -> Result<(), E> {
+        Err(QueryError::query(
+            expression.range.clone(),
+            "native argument frame was not prepared",
+        )
+        .into())
+    }
 }
 
 /// Native leaves share scalar validation and runtime branch selection. Hosts
@@ -1040,8 +1060,8 @@ pub trait ValueQueryHost<Q> {
     }
 }
 
-struct NoQueries<'a> {
-    bindings: Option<&'a Bindings<ConstructedValue>>,
+pub(crate) struct NoQueries<'a> {
+    pub(crate) bindings: Option<&'a Bindings<ConstructedValue>>,
 }
 impl ValueQueryHost<()> for NoQueries<'_> {
     type Error = QueryError;
@@ -3227,6 +3247,10 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         transfer: Option<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
         let location = Location::Query(expression.range.clone());
+        if matches!(expression.value, ValueExpressionKind::NativeValue(_)) {
+            budget.charge(1, location.clone())?;
+            return self.node(expression, budget, &location, transfer);
+        }
         budget.within_evaluation(1, location.clone(), |budget| {
             budget.charge(1, location.clone())?;
             check_loop_terminal(&expression.value, transfer, &location)?;
@@ -6162,16 +6186,53 @@ fn run<'a, Q, H: ValueQueryHost<Q> + ?Sized>(
     })
 }
 
-struct PreparedArguments<'a, 'f, Q, F> {
-    arguments: &'a [PreparedArgument<'a, Q>],
-    frames: Vec<Frame<'a>>,
-    check_value: &'f mut F,
+pub(crate) struct PreparedArguments<'a, 'f, Q, F> {
+    pub(crate) arguments: &'a [PreparedArgument<'a, Q>],
+    pub(crate) frames: Vec<Frame<'a>>,
+    pub(crate) check_value: &'f mut F,
 }
 impl<Q, E, F> ValueArguments<Q, E> for PreparedArguments<'_, '_, Q, F>
 where
     E: From<QueryError>,
     F: FnMut(&ConstructedValue, &mut Budget, &Location) -> Result<(), QueryError>,
 {
+    fn with_native_arguments(
+        &mut self,
+        expression: &ValueExpression<Q>,
+        run: &mut dyn FnMut(&mut dyn ValueArguments<Q, E>, &mut Budget) -> Result<(), E>,
+        budget: &mut Budget,
+    ) -> Result<(), E> {
+        let argument = self
+            .arguments
+            .iter()
+            .find(|argument| std::ptr::eq(argument.source, expression))
+            .ok_or_else(|| {
+                QueryError::query(
+                    expression.range.clone(),
+                    "native body was not prepared in this invocation",
+                )
+            })?;
+        let PreparedKind::NativeValue { arguments, .. } = &argument.expression.value else {
+            return Err(QueryError::query(
+                expression.range.clone(),
+                "expected a prepared native body",
+            )
+            .into());
+        };
+        let location = Location::Query(expression.range.clone());
+        let mut frames = metadata_vec(arguments.len(), budget, &location)?;
+        for argument in arguments {
+            let mut names = metadata_vec(argument.names.len(), budget, &location)?;
+            names.extend_from_slice(&argument.names);
+            frames.push(Frame::new(names, budget, &location)?);
+        }
+        let mut nested = PreparedArguments {
+            arguments,
+            frames,
+            check_value: &mut *self.check_value,
+        };
+        run(&mut nested, budget)
+    }
     fn evaluate(
         &mut self,
         expression: &ValueExpression<Q>,
@@ -6538,7 +6599,7 @@ fn unique_elements(
     Ok(elements)
 }
 
-fn unique_value(
+pub(crate) fn unique_value(
     mut array: ConstructedValue,
     budget: &mut Budget,
     location: &Location,
@@ -6644,7 +6705,7 @@ fn tally_elements(
     }
 }
 
-fn tally_value(
+pub(crate) fn tally_value(
     array: ConstructedValue,
     general: bool,
     set_type: Option<SetElementType>,
@@ -7028,7 +7089,7 @@ struct OrderingRow<'a> {
     key: SortKey<'a>,
 }
 
-fn sort_value(
+pub(crate) fn sort_value(
     mut collection: ConstructedValue,
     selector: Option<&Located<SortSelector>>,
     descending: bool,
@@ -7245,7 +7306,7 @@ fn extremum_position(
     Ok(selected.map(|(index, _)| index))
 }
 
-fn reduce_ref(
+pub(crate) fn reduce_ref(
     operator: ValueReducer,
     array: &ConstructedValue,
     budget: &mut Budget,

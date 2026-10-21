@@ -52,71 +52,14 @@ pub enum MatchClause<Q, P> {
     Where { predicate: Predicate<P> },
 }
 
-/// Native Boolean leaves. The host validates every operand, type and effect;
-/// shared matching owns scope, Boolean composition, candidate order and budgets.
-pub trait MatchHost<C>: ProjectionHost<C> {
-    type Guard;
-
-    fn validate_guard_leaf(
-        &self,
-        guard: &Self::Guard,
-        input: &Self::Kind,
-        scope: &BTreeMap<String, Self::Kind>,
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<(), QueryError>;
-
-    fn evaluate_guard_leaf(
-        &self,
-        guard: &Self::Guard,
-        input: &Self::Value,
-        context: &mut C,
-        bindings: &Bindings<Self::Value>,
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Truth, EvaluationError<Self::Error>>;
-
-    /// Run a selected source through an enclosing prepared argument runner.
-    /// Clause bindings contain earlier captures and share the original outer map.
-    fn evaluate_match_source_with_arguments(
-        &self,
-        source: &NativeExpression<C, Self>,
-        input: Self::Value,
-        bindings: &Bindings<Self::Value>,
-        arguments: &mut dyn NativeArguments<C, Self>,
-        budget: &mut Budget,
-    ) -> Result<Self::Value, EvaluationError<Self::Error>>
-    where
-        Self: Sized,
-    {
-        evaluate_expression(source, self, input, arguments.parts().0, bindings, budget)
-    }
-
-    /// Run a selected guard with the same active calls and clause bindings.
-    fn evaluate_guard_leaf_with_arguments(
-        &self,
-        guard: &Self::Guard,
-        input: &Self::Value,
-        bindings: &Bindings<Self::Value>,
-        arguments: &mut dyn NativeArguments<C, Self>,
-        budget: &mut Budget,
-        range: &Range<usize>,
-    ) -> Result<Truth, EvaluationError<Self::Error>>
-    where
-        Self: Sized,
-    {
-        self.evaluate_guard_leaf(guard, input, arguments.parts().0, bindings, budget, range)
-    }
-}
-
 /// Preflight every clause without obtaining subjects, including unreachable ones.
 /// Returned native field kinds preserve declaration order and empty-input facts.
 ///
 /// # Errors
 /// Own-source/forward references, ambient or duplicate names, invalid native
 /// types/effects, malformed guards and resource exhaustion retain query ranges.
-pub fn match_types<C, H: MatchHost<C>>(
-    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+pub fn match_types<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
     host: &H,
     input: &H::Kind,
     scope: &BTreeMap<String, H::Kind>,
@@ -136,8 +79,8 @@ pub fn match_types<C, H: MatchHost<C>>(
     })
 }
 
-fn preflight_clauses<C, H: MatchHost<C>>(
-    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+fn preflight_clauses<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
     index: usize,
     host: &H,
     input: &H::Kind,
@@ -168,8 +111,8 @@ fn preflight_clauses<C, H: MatchHost<C>>(
                     ));
                 }
                 // Insert after preflight: a capture is absent in its own operand.
-                let kind = host.expression_kind(source, input, scope, budget)?;
-                let kind = host.subject_kind(&kind, budget, &source.range)?;
+                let kind = host.expression_kind(source.query(), input, scope, budget)?;
+                let kind = host.subject_kind(&kind, budget, &source.value().range)?;
                 budget.charge(
                     name.value
                         .len()
@@ -192,8 +135,8 @@ fn preflight_clauses<C, H: MatchHost<C>>(
     })
 }
 
-fn validate_guard<C, H: MatchHost<C>>(
-    predicate: &Predicate<H::Guard>,
+fn validate_guard<C, H: ProjectionHost<C>>(
+    predicate: &Predicate<H::Stage>,
     host: &H,
     input: &H::Kind,
     scope: &BTreeMap<String, H::Kind>,
@@ -222,8 +165,8 @@ pub(crate) fn dispose_predicate<P>(predicate: Predicate<P>) {
 /// # Errors
 /// All clauses preflight before enumeration, even after empty sources/false guards.
 /// Native failures retain their type; results, field copies and nesting are bounded.
-pub fn evaluate_match<C, H: MatchHost<C>>(
-    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+pub fn evaluate_match<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
     host: &H,
     input: H::Value,
     context: &mut C,
@@ -235,6 +178,7 @@ pub fn evaluate_match<C, H: MatchHost<C>>(
         host,
         input,
         &mut MatchContext::Direct { context, bindings },
+        None,
         budget,
     )
 }
@@ -245,8 +189,56 @@ pub fn evaluate_match<C, H: MatchHost<C>>(
 ///
 /// # Errors
 /// Source, guard, function and resource failures retain their original locations.
-pub fn evaluate_match_with_arguments<C, H: MatchHost<C>>(
-    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+pub fn evaluate_match_with_arguments<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
+    host: &H,
+    input: H::Value,
+    arguments: &mut dyn NativeArguments<C, H>,
+    budget: &mut Budget,
+) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
+    let schema = prepared_schema(matching, host, &input, arguments, budget)?;
+    evaluate_prepared_match(matching, &schema, host, input, arguments, budget)
+}
+pub(crate) fn prepared_schema<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
+    host: &H,
+    input: &H::Value,
+    arguments: &mut dyn NativeArguments<C, H>,
+    budget: &mut Budget,
+) -> Result<NativeCapture<H::Kind>, QueryError> {
+    let mut fields = Vec::new();
+    for clause in &matching.clauses {
+        if let MatchClause::From { name, source }
+        | MatchClause::Bind {
+            name,
+            value: source,
+        } = &clause.value
+        {
+            let kind = if let Some(kind) = arguments.argument_kind(source.value()) {
+                kind
+            } else {
+                let input_kind = host.kind(input, budget, &matching.range)?;
+                let mut scope = crate::projection::scope_kinds(
+                    host,
+                    arguments.parts().1,
+                    budget,
+                    &matching.range,
+                )?;
+                scope.extend(fields.iter().cloned());
+                host.expression_kind(source.query(), &input_kind, &scope, budget)?
+            };
+            let kind = host.subject_kind(&kind, budget, &source.value().range)?;
+            budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+            slots::<(String, H::Kind)>(1, budget, &matching.range, false)?;
+            fields.push((name.value.clone(), kind));
+        }
+    }
+    let _ = input;
+    Ok(NativeCapture { fields })
+}
+pub(crate) fn evaluate_prepared_match<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
+    schema: &NativeCapture<H::Kind>,
     host: &H,
     input: H::Value,
     arguments: &mut dyn NativeArguments<C, H>,
@@ -257,18 +249,19 @@ pub fn evaluate_match_with_arguments<C, H: MatchHost<C>>(
         host,
         input,
         &mut MatchContext::Arguments(arguments),
+        Some(schema),
         budget,
     )
 }
 
-enum MatchContext<'a, C, H: MatchHost<C>> {
+enum MatchContext<'a, C, H: ProjectionHost<C>> {
     Direct {
         context: &'a mut C,
         bindings: &'a Bindings<H::Value>,
     },
     Arguments(&'a mut dyn NativeArguments<C, H>),
 }
-impl<C, H: MatchHost<C>> MatchContext<'_, C, H> {
+impl<C, H: ProjectionHost<C>> MatchContext<'_, C, H> {
     fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
         match self {
             Self::Direct { context, bindings } => (context, bindings),
@@ -278,23 +271,24 @@ impl<C, H: MatchHost<C>> MatchContext<'_, C, H> {
     fn source(
         &mut self,
         host: &H,
-        source: &NativeExpression<C, H>,
+        source: &crate::NativeBody<NativeExpression<C, H>>,
         input: H::Value,
         bindings: &Bindings<H::Value>,
         budget: &mut Budget,
     ) -> Result<H::Value, EvaluationError<H::Error>> {
         match self {
             Self::Direct { context, .. } => {
-                evaluate_expression(source, host, input, context, bindings, budget)
+                evaluate_expression(source.query(), host, input, context, bindings, budget)
             }
-            Self::Arguments(arguments) => host
-                .evaluate_match_source_with_arguments(source, input, bindings, *arguments, budget),
+            Self::Arguments(arguments) => {
+                arguments.evaluate_body(source, Some(input), Some(bindings), budget)
+            }
         }
     }
     fn guard(
         &mut self,
         host: &H,
-        guard: &H::Guard,
+        guard: &H::Stage,
         input: &H::Value,
         bindings: &Bindings<H::Value>,
         budget: &mut Budget,
@@ -311,11 +305,12 @@ impl<C, H: MatchHost<C>> MatchContext<'_, C, H> {
     }
 }
 
-fn evaluate_match_context<C, H: MatchHost<C>>(
-    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+fn evaluate_match_context<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
     host: &H,
     input: H::Value,
     context: &mut MatchContext<'_, C, H>,
+    prepared_schema: Option<&NativeCapture<H::Kind>>,
     budget: &mut Budget,
 ) -> Result<Vec<H::Value>, EvaluationError<H::Error>> {
     if budget.remaining_results().is_none() {
@@ -333,11 +328,17 @@ fn evaluate_match_context<C, H: MatchHost<C>>(
                 .1
                 .with_shared_values(BTreeMap::new(), budget, &matching.range)?;
         let scope = crate::projection::scope_kinds(host, &bindings, budget, &matching.range)?;
-        let schema = match_types(matching, host, &input_kind, &scope, budget)?;
+        let discovered;
+        let schema = if let Some(schema) = prepared_schema {
+            schema
+        } else {
+            discovered = match_types(matching, host, &input_kind, &scope, budget)?;
+            &discovered
+        };
         slots::<H::Value>(1, budget, &matching.range, true)?;
         let mut rows = Vec::new();
         run_clauses(
-            matching, 0, &schema, host, &input, context, &bindings, budget, &mut rows,
+            matching, 0, schema, host, &input, context, &bindings, budget, &mut rows,
         )?;
         Ok(rows)
     })
@@ -349,8 +350,8 @@ fn evaluate_match_context<C, H: MatchHost<C>>(
     clippy::too_many_arguments,
     reason = "one bounded clause chain shares the request state"
 )]
-fn run_clauses<C, H: MatchHost<C>>(
-    matching: &NativeMatch<NativeExpression<C, H>, H::Guard>,
+fn run_clauses<C, H: ProjectionHost<C>>(
+    matching: &NativeMatch<crate::NativeBody<NativeExpression<C, H>>, H::Stage>,
     index: usize,
     schema: &NativeCapture<H::Kind>,
     host: &H,
@@ -402,13 +403,18 @@ fn run_clauses<C, H: MatchHost<C>>(
                 name,
                 value: source,
             } => {
-                let relative = host.copy_value(input, context.parts().0, budget, &source.range)?;
+                let relative =
+                    host.copy_value(input, context.parts().0, budget, &source.value().range)?;
                 let value = context.source(host, source, relative, bindings, budget)?;
-                let subjects = host.subjects(value, context.parts().0, budget, &source.range)?;
-                budget.check_items(subjects.len(), Location::Query(source.range.clone()))?;
+                let subjects =
+                    host.subjects(value, context.parts().0, budget, &source.value().range)?;
+                budget.check_items(
+                    subjects.len(),
+                    Location::Query(source.value().range.clone()),
+                )?;
                 if matches!(clause.value, MatchClause::Bind { .. }) && subjects.len() != 1 {
                     return Err(QueryError::query(
-                        source.range.clone(),
+                        source.value().range.clone(),
                         "required capture needs exactly one value",
                     )
                     .into());
@@ -432,15 +438,22 @@ fn run_clauses<C, H: MatchHost<C>>(
                 }
             }
             MatchClause::Where { predicate } => {
-                match crate::eval::evaluate_predicate(
+                let truth = crate::eval::evaluate_predicate(
                     predicate,
                     crate::Nesting::Nodes,
                     budget,
                     |guard, budget, range| {
                         context.guard(host, guard, input, bindings, budget, range)
                     },
+                )?;
+                if host.require_guard(
+                    truth,
+                    context.parts().0,
+                    budget,
+                    &predicate.range,
+                    "required match guard is Unknown",
                 )? {
-                    Truth::True => run_clauses(
+                    run_clauses(
                         matching,
                         index + 1,
                         schema,
@@ -450,16 +463,7 @@ fn run_clauses<C, H: MatchHost<C>>(
                         bindings,
                         budget,
                         rows,
-                    )?,
-                    Truth::False => {}
-                    Truth::Unknown => {
-                        return Err(QueryError::query(
-                            predicate.range.clone(),
-                            "required match guard is Unknown",
-                        )
-                        .with_category(QueryErrorCategory::UnknownPredicate)
-                        .into());
-                    }
+                    )?
                 }
             }
         }
@@ -496,11 +500,13 @@ fn check_slots<T>(count: usize, range: &Range<usize>) -> Result<(), QueryError> 
 
 /// Release native operands and Boolean wrappers iteratively. Hosts remain
 /// responsible for releasing their own opaque stage and guard payloads.
-pub fn dispose_match<S, O, E, P>(matching: NativeMatch<crate::Expression<S, O, E>, P>) {
+pub fn dispose_match<S, O, E, P>(
+    matching: NativeMatch<crate::NativeBody<crate::Expression<S, O, E>>, P>,
+) {
     for clause in matching.clauses {
         match clause.value {
             MatchClause::From { source, .. } | MatchClause::Bind { value: source, .. } => {
-                crate::dispose_expression(source)
+                crate::dispose_native_value(source.into_value())
             }
             MatchClause::Where { predicate } => {
                 dispose_predicate(predicate);

@@ -1116,23 +1116,21 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         if self.relative.is_none() {
             no_ambient_input::<C, H>(query, self.host, budget)?;
         }
-        let input = self
-            .relative
-            .clone()
-            .unwrap_or_else(|| self.host.constructed_kind(vec![ValueType::Unestablished]));
         let host = self.host;
-        let mut common_kinds = BTreeMap::new();
-        let kind = crate::projection::expression_kind(
+        let mut common_kinds: BTreeMap<usize, Kind<C, H>> = BTreeMap::new();
+        let mut arguments = Vec::new();
+        let kind = crate::projection::expression_kind_with_arguments(
             query,
             host,
             self.relative.clone().as_ref(),
             &scope,
             allow_effects,
-            &mut |value, scope, relative, budget| {
-                let kind = self.scoped_value_kind(value, scope, relative, budget)?;
+            &mut |value, scope, relative, effects, budget| {
+                let kind = self.scoped_value_kind(value, scope, relative, effects, budget)?;
                 common_kinds.insert(value as *const _ as usize, kind.clone());
                 Ok(kind)
             },
+            Some(&mut arguments),
             budget,
         )?;
         crate::projection::admit_slots::<String>(scope.len(), budget, &query.range)?;
@@ -1163,14 +1161,6 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 projection_types: BTreeMap::new(),
             },
         );
-        let arguments = crate::projection::scoped_arguments_with::<C, H>(
-            query,
-            host,
-            &input,
-            &scope,
-            &mut |value, _, _, _| Ok(common_kinds[&(value as *const _ as usize)].clone()),
-            budget,
-        )?;
         let mut argument_kinds = common_kinds;
         for argument in arguments {
             if argument_kinds.contains_key(&(argument.expression as *const _ as usize)) {
@@ -1244,12 +1234,19 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         entry: &ValueExpression<Query<C, H>>,
         scope: &BTreeMap<String, Kind<C, H>>,
         relative: Option<Kind<C, H>>,
+        effects: bool,
         budget: &mut Budget,
     ) -> Result<Kind<C, H>, QueryError> {
         self.enter_scope(budget, &entry.range)?;
         let saved = std::mem::replace(&mut self.relative, relative);
         self.scope = crate::projection::copy_scope::<C, H>(scope, budget, &entry.range)?;
         let result = (|| {
+            if effects && let ValueExpressionKind::NativeValue(query) = &entry.value {
+                self.native(query, &[], budget, false, true)?;
+                return Ok(self.prepared[&(query.as_ref() as *const _ as usize)]
+                    .kind
+                    .clone());
+            }
             let mut facts = BTreeMap::new();
             for (name, kind) in scope {
                 budget_name(name, budget, &entry.range)?;
@@ -2267,10 +2264,7 @@ fn no_ambient_input<C, H: ProjectionHost<C>>(
             ExpressionKind::Sequence { input, steps } => {
                 let explicit = steps.first().is_some_and(|step| match &step.value {
                     crate::ExpressionStep::Stage(stage) => host.is_explicit_source(stage),
-                    crate::ExpressionStep::Value(_) => true,
-                    crate::ExpressionStep::Projection(_) | crate::ExpressionStep::Emit { .. } => {
-                        false
-                    }
+                    common => crate::composition::explicit_source(common),
                 });
                 if !explicit {
                     pending.push(input);
@@ -4467,17 +4461,13 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                     calls,
                 };
                 match step {
-                    crate::ExpressionStep::Stage(stage) => {
-                        budget.within_evaluation(0, Location::Query(range.clone()), |budget| {
-                            host.evaluate_stage_with_arguments(
-                                stage,
-                                input.expect("native stage input"),
-                                &mut arguments,
-                                budget,
-                                range,
-                            )
-                        })
-                    }
+                    crate::ExpressionStep::Stage(stage) => host.evaluate_stage_with_arguments(
+                        stage,
+                        input.expect("native stage input"),
+                        &mut arguments,
+                        budget,
+                        range,
+                    ),
                     crate::ExpressionStep::Value(expression) => host.transition(
                         input,
                         arguments.context,
@@ -4525,11 +4515,32 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                             )
                         },
                     ),
+                    common if crate::composition::is_common(common) => host.transition(
+                        input,
+                        arguments.context,
+                        budget,
+                        range,
+                        |input, context, budget| {
+                            let mut arguments = Arguments {
+                                context,
+                                ..arguments
+                            };
+                            crate::composition::run(
+                                common,
+                                host,
+                                input.expect("composition input"),
+                                &mut arguments,
+                                budget,
+                                range,
+                            )
+                        },
+                    ),
                     crate::ExpressionStep::Emit { emitter, .. } => {
                         let input = input.expect("emission input");
                         host.emit(emitter, &input, arguments.context, budget, range)?;
                         Ok(input)
                     }
+                    _ => unreachable!("composition step handled above"),
                 }
             },
             budget,
@@ -5092,6 +5103,72 @@ impl<'a, C, H: FunctionHost<C>> Arguments<'_, 'a, C, H> {
 impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
     fn parts(&mut self) -> (&mut C, &Bindings<H::Value>) {
         (self.context, self.bindings)
+    }
+    fn argument_kind(&self, expression: &ValueExpression<Query<C, H>>) -> Option<Kind<C, H>> {
+        self.argument_kinds
+            .get(&(expression as *const _ as usize))
+            .cloned()
+    }
+    fn evaluate_body(
+        &mut self,
+        body: &crate::NativeBody<Query<C, H>>,
+        input: Option<H::Value>,
+        captures: Option<&Bindings<H::Value>>,
+        budget: &mut Budget,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        let id = body.value() as *const _ as usize;
+        budget.charge(
+            self.declared.len() + 1,
+            Location::Query(body.value().range.clone()),
+        )?;
+        if !self.declared.contains(&id) {
+            return Err(QueryError::query(
+                body.value().range.clone(),
+                "native body was not declared by this step",
+            )
+            .into());
+        }
+        let argument = self
+            .arguments
+            .iter()
+            .find(|argument| std::ptr::eq(argument.source, body.value()))
+            .ok_or_else(|| {
+                QueryError::query(
+                    body.value().range.clone(),
+                    "native body was not prepared in this request",
+                )
+            })?;
+        let PreparedKind::NativeValue { query, arguments } = &argument.expression.value else {
+            return Err(QueryError::query(
+                body.value().range.clone(),
+                "expected a prepared native body",
+            )
+            .into());
+        };
+        let mut runtime = Runtime {
+            host: self.host,
+            context: self.context,
+            bindings: captures.unwrap_or(self.bindings),
+            contracts: self.contracts,
+            prepared: self.prepared,
+            body_prepared: self.body_prepared,
+            native_functions: self.native_functions,
+            worklists: self.worklists,
+            source_function: self.source_function,
+            relative: input.as_ref(),
+            limit: self.limit,
+            calls: self.calls,
+        };
+        runtime.execute_native(
+            query,
+            arguments,
+            &mut [],
+            self.bodies,
+            self.depth,
+            None,
+            budget,
+            &body.value().range,
+        )
     }
     fn evaluate(
         &mut self,

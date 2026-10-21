@@ -605,10 +605,10 @@ enum PredicateFrame<'a, L> {
 }
 
 /// Visit every leaf before runtime Boolean short-circuiting can hide a refusal.
-pub(crate) fn validate_predicate_leaves<L>(
-    predicate: &Predicate<L>,
+pub(crate) fn validate_predicate_leaves<'a, L>(
+    predicate: &'a Predicate<L>,
     budget: &mut Budget,
-    mut leaf: impl FnMut(&L, &mut Budget, &Range<usize>) -> Result<(), QueryError>,
+    mut leaf: impl FnMut(&'a L, &mut Budget, &Range<usize>) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
     admit_validation_slots::<L>(1, budget, &predicate.range)?;
     let mut pending = vec![(predicate, 1)];

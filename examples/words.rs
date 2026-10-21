@@ -4,9 +4,9 @@
 //! cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
 use std::{collections::BTreeMap, ops::Range};
 use zirql::{
-    ArgumentReader, ArrayType, Budget, ConstructedValue, ExpressionStep, Location, Predicate,
-    ProgramLimits, QueryError, ReadExpression, ValueQueryHost, ValueReaderHost, ValueType,
-    copy_constructed_value, dispose_native_value, evaluate_query_value, read_value_expression,
+    ArgumentReader, ArrayType, Budget, ConstructedValue, ExpressionStep, Location, ProgramLimits,
+    QueryError, ReadExpression, ValueQueryHost, ValueReaderHost, ValueType, copy_constructed_value,
+    dispose_native_value, evaluate_query_value, read_value_expression,
 };
 
 struct Words {
@@ -26,7 +26,6 @@ impl ValueReaderHost for Words {
     type Stage = ();
     type SetOperator = ();
     type Emitter = ();
-    type Predicate = ();
 
     fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
         zirql::FieldPipelineSource::Constructed
@@ -59,8 +58,6 @@ impl ValueReaderHost for Words {
     ) -> Result<(), QueryError> {
         Err(reader.error("use string expressions to select words"))
     }
-
-    fn filter(&mut self, _: Predicate<()>, _: Range<usize>) {}
 
     fn set_operator(&self, _: &str) -> Option<()> {
         None

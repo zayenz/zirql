@@ -314,11 +314,14 @@ pub enum ExpressionKind<S, O, E> {
 }
 
 impl<S, O, E> ExpressionKind<S, O, E> {
-    // Representation-only Input/Binding/Sequence wrappers add no logical depth.
+    // Direct native bodies add a logical level; flat stage plumbing does not.
     pub(crate) fn depth(&self) -> usize {
         match self {
             Self::Group(_) | Self::Field { .. } | Self::Set { .. } | Self::Record(_) => 1,
-            Self::Input | Self::Binding(_) | Self::Sequence { .. } => 0,
+            Self::Sequence{steps,..}=>usize::from(steps.iter().any(|step|matches!(&step.value,
+                ExpressionStep::FixedPoint(_)|ExpressionStep::WhereExists(_)|ExpressionStep::Mapping(_)
+            ) || matches!(&step.value,ExpressionStep::Ordering(ordering) if ordering.selector.is_some()))),
+            Self::Input | Self::Binding(_) => 0,
         }
     }
 }
@@ -329,6 +332,27 @@ pub enum ExpressionStep<S, E, O = ()> {
     Value(std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>),
     /// Correlated scalar fields, prepared once for the declared singleton kind.
     Projection(std::sync::Arc<crate::Projection<Expression<S, O, E>>>),
+    /// A native predicate evaluated independently for each admitted subject.
+    Filter(std::sync::Arc<crate::Predicate<S>>),
+    #[expect(
+        clippy::type_complexity,
+        reason = "The direct match keeps the expression's existing stage/operator/emitter payloads"
+    )]
+    Match(std::sync::Arc<crate::NativeMatch<crate::NativeBody<Expression<S, O, E>>, S>>),
+    Ordering(std::sync::Arc<crate::NativeOrdering<crate::NativeBody<Expression<S, O, E>>>>),
+    Mapping(std::sync::Arc<crate::NativeMap<crate::NativeBody<Expression<S, O, E>>>>),
+    MapSorting,
+    /// Existing native stream operations; Filter and Host tags are not admitted here.
+    Collection(crate::Stage<()>),
+    Head(std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>),
+    Tail(std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>),
+    Check {
+        operand: Option<std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>>,
+        message: Option<std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>>,
+    },
+    WhereExists(std::sync::Arc<crate::NativeBody<Expression<S, O, E>>>),
+    FixedPoint(std::sync::Arc<crate::NativeBody<Expression<S, O, E>>>),
+    Paths(std::sync::Arc<crate::NativePaths<S, S>>),
     Stage(S),
     Emit {
         emitter: E,
@@ -859,12 +883,13 @@ where
                                     &step.range,
                                 )?;
                             }
-                            ExpressionStep::Value(_) | ExpressionStep::Projection(_) => {
+                            _ if crate::composition::is_common(&step.value) || matches!(step.value,ExpressionStep::Value(_)|ExpressionStep::Projection(_)) => {
                                 return Err(QueryError::query(step.range.clone(), "value and projection steps require prepared expression execution").into());
                             }
                             ExpressionStep::Emit { emitter, .. } => {
                                 host.emit(emitter, &value, context, budget, &step.range)?;
                             }
+                            _ => unreachable!("prepared composition refused above"),
                         }
                     }
                     Ok(value)
@@ -1042,15 +1067,8 @@ pub fn for_each_expression_child<'a, S, O, E>(
         ExpressionKind::Sequence { input, steps } => {
             visit(input);
             for step in steps {
-                match &step.value {
-                    ExpressionStep::Value(value) => value_natives(value, &mut visit),
-                    ExpressionStep::Projection(projection) => {
-                        for (_, value) in &projection.fields {
-                            value_natives(value, &mut visit);
-                        }
-                    }
-                    ExpressionStep::Stage(_) | ExpressionStep::Emit { .. } => {}
-                }
+                step.value
+                    .for_each_value(|value| value_natives(value, &mut visit));
             }
         }
         ExpressionKind::Set { left, right, .. } => {
@@ -1110,20 +1128,26 @@ pub fn walk_expression<'a, S, O, E>(
                     ExpressionKind::Sequence { input, steps } => {
                         push(Node::Native(input))?;
                         for step in steps {
-                            match &step.value {
-                                ExpressionStep::Value(value) => push(Node::Value(value))?,
-                                ExpressionStep::Projection(projection) => {
-                                    for (_, value) in &projection.fields {
-                                        push(Node::Value(value))?;
-                                    }
+                            let mut result = Ok(());
+                            step.value.for_each_value(|value| {
+                                if result.is_ok() {
+                                    result = push(Node::Value(value));
                                 }
-                                _ => {}
-                            }
+                            });
+                            result?;
                         }
                     }
                     ExpressionKind::Set { left, right, .. } => {
+                        // A flat left-associated set chain is one expression level,
+                        // matching preparation and execution. Explicit groups still nest.
                         push(Node::Native(left))?;
-                        push(Node::Native(right))?;
+                        if matches!(left.value, ExpressionKind::Set { .. }) {
+                            pending.last_mut().expect("left set operand").1 =
+                                depth.saturating_sub(1);
+                        }
+                        budget.charge(1, location.clone())?;
+                        budget.charge_results(1, location.clone())?;
+                        pending.push((Node::Native(right), depth));
                     }
                     ExpressionKind::Record(fields) => {
                         for (_, field) in fields {
@@ -1133,7 +1157,10 @@ pub fn walk_expression<'a, S, O, E>(
                 }
             }
             Node::Value(value) => {
-                let depth = depth.saturating_add(1);
+                let depth = depth.saturating_add(usize::from(!matches!(
+                    value.value,
+                    crate::ValueExpressionKind::NativeValue(_)
+                )));
                 let location = Location::Query(value.range.clone());
                 budget.check_evaluation_depth(depth, 0, location.clone())?;
                 if depth > nesting.min(64) {

@@ -323,9 +323,6 @@ type SourceExpression = Expression<SourceStage, (), &'static str>;
 
 #[derive(Debug, PartialEq)]
 enum SourceStage {
-    Order(Box<zirql::NativeOrdering<SourceExpression>>),
-    FixedPoint(Box<SourceExpression>),
-    Exists(Box<SourceExpression>),
     Neighbors,
     Same,
     Invalidate,
@@ -499,105 +496,6 @@ impl<'a> ProgramHost<SourceContext<'a>> for SourceHost {
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
         match stage {
-            SourceStage::Order(ordering) => {
-                let SourceValue::Words(words) = value else {
-                    return Err(
-                        QueryError::query(range.clone(), "expected source selections").into(),
-                    );
-                };
-                let words = zirql::order_native_by(
-                    words,
-                    ordering.order,
-                    budget,
-                    Location::Query(range.clone()),
-                    |word, budget| {
-                        let output = if let Some(selector) = &ordering.selector {
-                            let input = self.copy_value(
-                                &SourceValue::Words(vec![Word {
-                                    side: word.side,
-                                    text: word.text,
-                                    range: word.range.clone(),
-                                }]),
-                                context,
-                                budget,
-                                range,
-                            )?;
-                            evaluate_expression(selector, self, input, context, bindings, budget)?
-                        } else {
-                            SourceValue::Words(vec![Word {
-                                side: word.side,
-                                text: word.text,
-                                range: word.range.clone(),
-                            }])
-                        };
-                        match output {
-                            SourceValue::Count(count) => Ok(zirql::NativeOrderKey::Count(count)),
-                            SourceValue::Words(words) if words.len() == 1 => {
-                                budget
-                                    .charge(words[0].text.len(), Location::Query(range.clone()))?;
-                                budget.charge_results(1, Location::Query(range.clone()))?;
-                                Ok(zirql::NativeOrderKey::Text(words[0].text.to_owned()))
-                            }
-                            _ => Err(QueryError::query(
-                                range.clone(),
-                                "expected one word or count",
-                            )
-                            .into()),
-                        }
-                    },
-                )?;
-                Ok(SourceValue::Words(words))
-            }
-            SourceStage::Exists(body) => {
-                let SourceValue::Words(words) = value else {
-                    return Err(QueryError::query(range.clone(), "expected words").into());
-                };
-                Ok(SourceValue::Words(zirql::filter_native_exists(
-                    words,
-                    budget,
-                    Location::Query(range.clone()),
-                    |word, budget| {
-                        let input = self.copy_value(
-                            &SourceValue::Words(vec![Word {
-                                side: word.side,
-                                text: word.text,
-                                range: word.range.clone(),
-                            }]),
-                            context,
-                            budget,
-                            range,
-                        )?;
-                        match evaluate_expression(body, self, input, context, bindings, budget)? {
-                            SourceValue::Words(words) => Ok(words),
-                            _ => Err(QueryError::query(range.clone(), "expected words").into()),
-                        }
-                    },
-                )?))
-            }
-            SourceStage::FixedPoint(body) => zirql::evaluate_native_fixed_point(
-                value,
-                context,
-                budget,
-                Location::Query(range.clone()),
-                |current, context, budget| {
-                    let input = self.copy_value(current, context, budget, range)?;
-                    evaluate_expression(body, self, input, context, bindings, budget)
-                },
-                |current, context, budget| self.copy_value(current, context, budget, range),
-                |left, right, _, budget| {
-                    let (SourceValue::Words(left), SourceValue::Words(right)) = (left, right)
-                    else {
-                        return Err(QueryError::query(range.clone(), "expected words").into());
-                    };
-                    zirql::ordered_native_equal(
-                        left,
-                        right,
-                        budget,
-                        Location::Query(range.clone()),
-                        |left, right, _| Ok(left == right),
-                    )
-                },
-            ),
             SourceStage::Invalidate => {
                 context.source = &context.source[1..];
                 Ok(SourceValue::Constructed(zirql::ConstructedValue::Boolean(
@@ -1002,6 +900,102 @@ fn runtime_refusal(
 
 impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
     type Kind = SourceKind;
+    fn selection_items(
+        &self,
+        input: &SourceValue<'a>,
+        context: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Vec<SourceValue<'a>>, EvaluationError<SourceFailure>> {
+        let SourceValue::Words(words) = self.copy_value(input, context, budget, range)? else {
+            return Err(QueryError::query(range.clone(), "expected words").into());
+        };
+        Ok(words
+            .into_iter()
+            .map(|word| SourceValue::Words(vec![word]))
+            .collect())
+    }
+    fn selection_kind(
+        &self,
+        kind: &SourceKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceKind, QueryError> {
+        if *kind == SourceKind::Words {
+            Ok(kind.clone())
+        } else {
+            Err(QueryError::query(range.clone(), "expected words"))
+        }
+    }
+    fn restore_selection(
+        &self,
+        _: SourceValue<'a>,
+        items: Vec<SourceValue<'a>>,
+        _: zirql::SelectionShape,
+        _: &mut SourceContext<'a>,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<SourceValue<'a>, EvaluationError<SourceFailure>> {
+        let mut words = Vec::new();
+        for item in items {
+            let SourceValue::Words(mut item) = item else {
+                return Err(QueryError::query(range.clone(), "expected words").into());
+            };
+            words.append(&mut item);
+        }
+        Ok(SourceValue::Words(words))
+    }
+    fn same_selection(
+        &self,
+        left: &SourceValue<'a>,
+        right: &SourceValue<'a>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<bool, EvaluationError<SourceFailure>> {
+        let (SourceValue::Words(left), SourceValue::Words(right)) = (left, right) else {
+            return Err(QueryError::query(range.clone(), "expected words").into());
+        };
+        zirql::ordered_native_equal(
+            left,
+            right,
+            budget,
+            Location::Query(range.clone()),
+            |left, right, _| Ok(left == right),
+        )
+    }
+    fn ordering_key_kind(
+        &self,
+        kind: &SourceKind,
+        _: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        if matches!(kind, SourceKind::Words | SourceKind::Count) {
+            Ok(())
+        } else {
+            Err(QueryError::query(
+                range.clone(),
+                "expected one word or count",
+            ))
+        }
+    }
+    fn ordering_key(
+        &self,
+        value: SourceValue<'a>,
+        _: &mut SourceContext<'a>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<zirql::NativeOrderKey, EvaluationError<SourceFailure>> {
+        match value {
+            SourceValue::Count(count) => Ok(zirql::NativeOrderKey::Count(count)),
+            SourceValue::Words(words) if words.len() == 1 => {
+                budget.charge(words[0].text.len(), Location::Query(range.clone()))?;
+                budget.charge_results(1, Location::Query(range.clone()))?;
+                Ok(zirql::NativeOrderKey::Text(words[0].text.to_owned()))
+            }
+            _ => Err(QueryError::query(range.clone(), "expected one word or count").into()),
+        }
+    }
     fn set_kind(
         &self,
         left: &SourceKind,
@@ -1121,6 +1115,14 @@ impl<'a> zirql::ProjectionHost<SourceContext<'a>> for SourceHost {
         _: &Range<usize>,
     ) -> Result<SourceKind, QueryError> {
         Ok(match stage {
+            SourceStage::Pipeline(pipeline)
+                if matches!(
+                    pipeline.stages().last().map(|stage| &stage.value),
+                    Some(Stage::Count)
+                ) =>
+            {
+                SourceKind::Count
+            }
             SourceStage::Neighbors => {
                 SourceKind::Sequence(Box::new(DeclaredType::Native(SourceKind::Words)))
             }
@@ -2826,10 +2828,10 @@ mod projection {
     use std::{collections::BTreeMap, ops::Range, sync::Arc};
     use zirql::{
         ArrayType, Bindings, Budget, ConstructedValue as V, EvaluationError, Expression,
-        ExpressionKind, ExpressionStep, Located, Location, MatchHost, NativeCapture, NativeMatch,
-        NativeOperands, NativePaths, PathHost, Predicate, ProgramHost, ProgramLimits, Projection,
-        ProjectionHost, QueryError, QueryErrorCategory, ReadExpression, Truth,
-        ValueExpressionKind as K, ValueReaderHost, ValueType,
+        ExpressionKind, ExpressionStep, Located, Location, NativeCapture, NativeMatch,
+        NativeOperands, NativePaths, ProgramHost, ProgramLimits, Projection, ProjectionHost,
+        QueryError, QueryErrorCategory, Truth, ValueExpressionKind as K, ValueReaderHost,
+        ValueType,
     };
 
     #[derive(Debug, PartialEq)]
@@ -2870,8 +2872,7 @@ mod projection {
         Fail,
         Edit,
         Saved(String),
-        Match(Box<NativeMatch<Query, Guard>>),
-        Paths(Box<NativePaths<Stage, Guard>>),
+        Guard(Guard),
         Neighbors,
     }
     #[derive(Debug, PartialEq)]
@@ -2895,35 +2896,6 @@ mod projection {
         }
     }
     struct Host;
-
-    fn guard_values(predicate: &Predicate<Guard>) -> Vec<&zirql::ValueExpression<Query>> {
-        let mut values = Vec::new();
-        let mut pending = vec![predicate];
-        while let Some(predicate) = pending.pop() {
-            match &predicate.value {
-                zirql::PredicateKind::Leaf(Guard::Expression(body) | Guard::Count(body)) => {
-                    values.push(body.as_ref())
-                }
-                zirql::PredicateKind::Leaf(_) => {}
-                zirql::PredicateKind::Not(body) | zirql::PredicateKind::Group(body) => {
-                    pending.push(body)
-                }
-                zirql::PredicateKind::And(bodies) | zirql::PredicateKind::Or(bodies) => {
-                    pending.extend(bodies)
-                }
-            }
-        }
-        values
-    }
-    fn match_argument(source: &Query) -> Option<&zirql::ValueExpression<Query>> {
-        if let ExpressionKind::Sequence { steps, .. } = &source.value
-            && let [step] = steps.as_slice()
-            && let ExpressionStep::Stage(Stage::NativeArgument(value)) = &step.value
-        {
-            return Some(value);
-        }
-        None
-    }
 
     impl zirql::RuntimeTypeHost<()> for Host {
         type Kind = Kind;
@@ -3037,41 +3009,9 @@ mod projection {
                 Stage::Saved(name) => {
                     self.copy_value(bindings.get(name, range.clone())?, context, budget, range)
                 }
-                Stage::Match(matching) => {
-                    let input_kind = self.kind(&value, budget, range)?;
-                    let mut scope = BTreeMap::new();
-                    for (name, value) in bindings.iter() {
-                        budget.charge(name.len() + 1, Location::Query(range.clone()))?;
-                        scope.insert(name.to_owned(), self.kind(value, budget, range)?);
-                    }
-                    let schema = Arc::new(zirql::match_types(
-                        matching,
-                        self,
-                        &input_kind,
-                        &scope,
-                        budget,
-                    )?);
-                    let rows =
-                        zirql::evaluate_match(matching, self, value, context, bindings, budget)?;
-                    budget.charge_results(1, Location::Query(range.clone()))?;
-                    Ok(Value::Captures { rows, schema })
-                }
-                Stage::Paths(paths) => {
-                    let input_kind = self.kind(&value, budget, range)?;
-                    let schema = Arc::new(zirql::path_types(
-                        paths,
-                        self,
-                        &input_kind,
-                        &BTreeMap::new(),
-                        budget,
-                    )?);
-                    let rows =
-                        zirql::evaluate_paths(paths, self, value, context, bindings, budget)?;
-                    budget.charge_results(1, Location::Query(range.clone()))?;
-                    Ok(Value::Captures { rows, schema })
-                }
                 Stage::NativeArgument(_) => unreachable!("prepared argument runner"),
                 Stage::Neighbors => unreachable!("registered edge only"),
+                Stage::Guard(_) => unreachable!("predicate leaf only"),
                 Stage::Names => {
                     let Value::Subjects(rows) = value else {
                         return Err(QueryError::query(range.clone(), "names needs subjects").into());
@@ -3149,35 +3089,245 @@ mod projection {
     }
     impl ProjectionHost<()> for Host {
         type Kind = Kind;
+        fn validate_guard_leaf(
+            &self,
+            _: &Stage,
+            _: &Kind,
+            _: &BTreeMap<String, Kind>,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<(), QueryError> {
+            Ok(())
+        }
+        fn evaluate_guard_leaf_with_arguments(
+            &self,
+            leaf: &Stage,
+            input: &Value,
+            bindings: &Bindings<Value>,
+            arguments: &mut dyn zirql::NativeArguments<(), Self>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            let Stage::Guard(guard) = leaf else {
+                unreachable!("predicate leaf")
+            };
+            if let Guard::Count(expression) = guard {
+                let relative = self.copy_value(input, arguments.parts().0, budget, range)?;
+                let value =
+                    arguments.evaluate_match_value(expression, relative, bindings, budget)?;
+                let value = self.copy_value(value.value(), arguments.parts().0, budget, range)?;
+                let value = self.project_value(value, arguments.parts().0, budget, range)?;
+                let V::Integer(expected) = value.data() else {
+                    return Err(
+                        QueryError::query(range.clone(), "count_is needs an integer").into(),
+                    );
+                };
+                let Value::Subjects(subjects) = input else {
+                    unreachable!()
+                };
+                return Ok(if *expected == i64::try_from(subjects.len()).unwrap() {
+                    Truth::True
+                } else {
+                    Truth::False
+                });
+            }
+            if let Guard::Expression(expression) = guard {
+                let input = self.copy_value(input, arguments.parts().0, budget, range)?;
+                return Ok(
+                    if arguments.evaluate_predicate(expression, input, Some(bindings), budget)? {
+                        Truth::True
+                    } else {
+                        Truth::False
+                    },
+                );
+            }
+            Ok(guard.truth())
+        }
+        fn evaluate_guard_leaf(
+            &self,
+            leaf: &Stage,
+            _: &Value,
+            _: &mut (),
+            _: &Bindings<Value>,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<Truth, EvaluationError<QueryError>> {
+            let Stage::Guard(guard) = leaf else {
+                unreachable!("predicate leaf")
+            };
+            Ok(guard.truth())
+        }
+        fn validate_path_edge(
+            &self,
+            edge: &Stage,
+            input: &Kind,
+            _: &BTreeMap<String, Kind>,
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<(), QueryError> {
+            if *edge != Stage::Neighbors || *input != Kind::Subjects {
+                return Err(QueryError::query(
+                    range.clone(),
+                    "paths need native graph subjects",
+                ));
+            }
+            Ok(())
+        }
+        fn path_neighbors(
+            &self,
+            _: &Stage,
+            input: &Value,
+            _: &mut (),
+            _: &Bindings<Value>,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Vec<Value>, EvaluationError<QueryError>> {
+            let Value::Subjects(subjects) = input else {
+                unreachable!()
+            };
+            let [subject] = subjects.as_slice() else {
+                unreachable!()
+            };
+            let neighbors: &[&'static str] = match *subject {
+                "alpha" => &["beta", "gamma"],
+                "beta" => &["delta", "alpha"],
+                "gamma" => &["delta", "epsilon"],
+                "delta" => &["epsilon"],
+                "epsilon" => &["beta"],
+                _ => &[],
+            };
+            budget.check_items(neighbors.len(), Location::Query(range.clone()))?;
+            budget.charge(neighbors.len(), Location::Query(range.clone()))?;
+            budget.charge_results(neighbors.len() * 2, Location::Query(range.clone()))?;
+            Ok(neighbors
+                .iter()
+                .map(|subject| Value::Subjects(vec![subject]))
+                .collect())
+        }
+        fn same_path_identity(
+            &self,
+            left: &Value,
+            right: &Value,
+            _: &mut (),
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<bool, EvaluationError<QueryError>> {
+            // This borrowed host's subjects identify their native word value.
+            Ok(left == right)
+        }
+        fn path_steps(
+            &self,
+            steps: Vec<Value>,
+            _: &mut (),
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            budget.charge(steps.len(), Location::Query(range.clone()))?;
+            budget.charge_results(steps.len(), Location::Query(range.clone()))?;
+            let mut subjects = Vec::with_capacity(steps.len());
+            for step in steps {
+                let Value::Subjects(value) = step else {
+                    unreachable!()
+                };
+                let [value] = value.as_slice() else {
+                    unreachable!()
+                };
+                subjects.push(*value);
+            }
+            Ok(Value::Subjects(subjects))
+        }
+        fn capture_selection_kind(
+            &self,
+            schema: NativeCapture<Kind>,
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<Kind, QueryError> {
+            Ok(Kind::Captures(Arc::new(schema)))
+        }
+        fn construct_captures(
+            &self,
+            rows: Vec<Value>,
+            schema: NativeCapture<Kind>,
+            _: &mut (),
+            _: &mut Budget,
+            _: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            Ok(Value::Captures {
+                rows,
+                schema: Arc::new(schema),
+            })
+        }
+        fn restore_selection(
+            &self,
+            input: Value,
+            items: Vec<Value>,
+            _: zirql::SelectionShape,
+            _: &mut (),
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Value, EvaluationError<QueryError>> {
+            match input {
+                Value::Subjects(_) => {
+                    let mut rows = Vec::new();
+                    for item in items {
+                        let Value::Subjects(mut item) = item else {
+                            return Err(
+                                QueryError::query(range.clone(), "subjects required").into()
+                            );
+                        };
+                        rows.append(&mut item);
+                    }
+                    Ok(Value::Subjects(rows))
+                }
+                Value::Captures { schema, .. } => Ok(Value::Captures {
+                    rows: items,
+                    schema,
+                }),
+                _ => Err(QueryError::query(range.clone(), "selection required").into()),
+            }
+        }
+        fn ordering_key_kind(
+            &self,
+            kind: &Kind,
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<(), QueryError> {
+            if matches!(kind, Kind::Subjects | Kind::Strings | Kind::Count) {
+                Ok(())
+            } else {
+                Err(QueryError::query(
+                    range.clone(),
+                    "ordering needs a scalar native key",
+                ))
+            }
+        }
+        fn ordering_key(
+            &self,
+            value: Value,
+            _: &mut (),
+            _: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<zirql::NativeOrderKey, EvaluationError<QueryError>> {
+            match value {
+                Value::Count(count) => Ok(zirql::NativeOrderKey::Count(count)),
+                Value::Subjects(rows) if rows.len() == 1 => {
+                    Ok(zirql::NativeOrderKey::Text(rows[0].into()))
+                }
+                Value::Strings(mut rows) if rows.len() == 1 => {
+                    Ok(zirql::NativeOrderKey::Text(rows.remove(0)))
+                }
+                _ => Err(QueryError::query(range.clone(), "ordering needs one native key").into()),
+            }
+        }
         fn value_arguments<'s>(
             &self,
             stage: &'s Stage,
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<zirql::NativeValueArguments<'s, (), Self>, QueryError> {
-            if let Stage::Match(matching) = stage {
-                let mut values = Vec::new();
-                for clause in &matching.clauses {
-                    let source = match &clause.value {
-                        zirql::MatchClause::From { source, .. }
-                        | zirql::MatchClause::Bind { value: source, .. } => source,
-                        zirql::MatchClause::Where { predicate } => {
-                            values.extend(
-                                guard_values(predicate)
-                                    .into_iter()
-                                    .map(|body| (body, Kind::Subjects)),
-                            );
-                            continue;
-                        }
-                    };
-                    if let Some(value) = match_argument(source) {
-                        values.push((value, Kind::Subjects));
-                    }
-                }
-                budget.charge(values.len(), Location::Query(range.clone()))?;
-                return Ok(values);
-            }
-            if let Stage::NativeArgument(value) = stage {
+            if let Stage::Guard(Guard::Expression(value) | Guard::Count(value))
+            | Stage::NativeArgument(value) = stage
+            {
                 budget.charge(1, Location::Query(range.clone()))?;
                 Ok(vec![(value.as_ref(), Kind::Subjects)])
             } else if let Stage::Argument { value, .. } = stage {
@@ -3187,57 +3337,7 @@ mod projection {
                 Ok(vec![])
             }
         }
-        fn scoped_value_arguments<'s>(
-            &self,
-            stage: &'s Stage,
-            input: &Kind,
-            _: &BTreeMap<String, Kind>,
-            budget: &mut Budget,
-            range: &Range<usize>,
-        ) -> Result<Vec<zirql::ScopedNativeArgument<'s, Query, Kind>>, QueryError> {
-            if let Stage::Match(matching) = stage {
-                let mut locals: Vec<(Located<String>, Kind)> = Vec::new();
-                let mut arguments = Vec::new();
-                for clause in &matching.clauses {
-                    let (name, source) = match &clause.value {
-                        zirql::MatchClause::From { name, source }
-                        | zirql::MatchClause::Bind {
-                            name,
-                            value: source,
-                        } => (name, source),
-                        zirql::MatchClause::Where { predicate } => {
-                            for expression in guard_values(predicate) {
-                                arguments.push(zirql::ScopedNativeArgument {
-                                    expression,
-                                    relative: Some(input.clone()),
-                                    locals: locals.clone(),
-                                });
-                            }
-                            continue;
-                        }
-                    };
-                    if let Some(expression) = match_argument(source) {
-                        budget.charge(locals.len() + 1, Location::Query(source.range.clone()))?;
-                        arguments.push(zirql::ScopedNativeArgument {
-                            expression,
-                            relative: None,
-                            locals: locals.clone(),
-                        });
-                    }
-                    locals.push((name.clone(), Kind::Subjects));
-                }
-                return Ok(arguments);
-            }
-            Ok(self
-                .value_arguments(stage, budget, range)?
-                .into_iter()
-                .map(|(expression, kind)| zirql::ScopedNativeArgument {
-                    expression,
-                    relative: (!self.is_explicit_source(stage)).then_some(kind),
-                    locals: vec![],
-                })
-                .collect())
-        }
+
         fn evaluate_stage_with_arguments(
             &self,
             stage: &Stage,
@@ -3246,39 +3346,6 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
-            if let Stage::Match(matching) = stage {
-                let (context, bindings) = arguments.parts();
-                let input_kind = self.kind(&input, budget, range)?;
-                let mut scope = BTreeMap::new();
-                for (name, value) in bindings.iter() {
-                    scope.insert(name.to_owned(), self.kind(value, budget, range)?);
-                }
-                let schema = Arc::new(zirql::match_types(
-                    matching,
-                    self,
-                    &input_kind,
-                    &scope,
-                    budget,
-                )?);
-                let _ = context;
-                let rows =
-                    zirql::evaluate_match_with_arguments(matching, self, input, arguments, budget)?;
-                return Ok(Value::Captures { rows, schema });
-            }
-            if let Stage::Paths(paths) = stage {
-                let input_kind = self.kind(&input, budget, range)?;
-                let schema = Arc::new(zirql::path_types(
-                    paths,
-                    self,
-                    &input_kind,
-                    &BTreeMap::new(),
-                    budget,
-                )?);
-                let rows =
-                    zirql::evaluate_paths_with_arguments(paths, self, input, arguments, budget)?;
-                budget.charge_results(1, Location::Query(range.clone()))?;
-                return Ok(Value::Captures { rows, schema });
-            }
             if let Stage::NativeArgument(value) = stage {
                 let read = arguments.evaluate_native(value, Value::Subjects(vec![]), budget)?;
                 if matches!(value.value, K::Call { .. }) {
@@ -3449,12 +3516,6 @@ mod projection {
                     )
                 }
                 Stage::Saved(name) => Ok(scope[name].clone()),
-                Stage::Match(matching) => Ok(Kind::Captures(Arc::new(zirql::match_types(
-                    matching, self, input, scope, budget,
-                )?))),
-                Stage::Paths(paths) => Ok(Kind::Captures(Arc::new(zirql::path_types(
-                    paths, self, input, scope, budget,
-                )?))),
                 Stage::NativeArgument(_) => Ok(Kind::Subjects),
                 Stage::Argument { .. } => Ok(Kind::Count),
                 Stage::Names if *input == Kind::Subjects => Ok(Kind::Strings),
@@ -3473,7 +3534,7 @@ mod projection {
         fn is_explicit_source(&self, stage: &Stage) -> bool {
             matches!(
                 stage,
-                Stage::NativeArgument(_) | Stage::Match(_) | Stage::SignatureQuery { .. }
+                Stage::NativeArgument(_) | Stage::SignatureQuery { .. }
             )
         }
         fn is_pure(&self, stage: &Stage) -> bool {
@@ -4854,10 +4915,13 @@ mod projection {
         let ExpressionKind::Sequence { steps, .. } = query.value else {
             panic!("guarded native sequence")
         };
-        let ExpressionStep::Stage(Stage::Paths(paths)) = &steps[0].value else {
+        let ExpressionStep::Paths(paths) = &steps[0].value else {
             panic!("guarded paths")
         };
-        assert_eq!(paths.target.value, zirql::PredicateKind::Leaf(Guard::True));
+        assert_eq!(
+            paths.target.value,
+            zirql::PredicateKind::Leaf(Stage::Guard(Guard::True))
+        );
         // A typed caller may share the same source tree in two lexical scopes.
         let mut reader = zirql::ArgumentReader::new("identity(source) | count", 0).unwrap();
         let pipeline =
@@ -5390,14 +5454,17 @@ mod projection {
             let mut clauses = vec![super::at(
                 C::From {
                     name: super::at("first".into(), 10),
-                    source: super::at(ExpressionKind::Binding("xs".into()), 11),
+                    source: zirql::NativeBody::new(
+                        super::at(ExpressionKind::Binding("xs".into()), 11),
+                        11..12,
+                    ),
                 },
                 10,
             )];
             if let Some(guard) = guard {
                 clauses.push(super::at(
                     C::Where {
-                        predicate: super::at(zirql::PredicateKind::Leaf(guard), 12),
+                        predicate: super::at(zirql::PredicateKind::Leaf(Stage::Guard(guard)), 12),
                     },
                     12,
                 ));
@@ -5405,15 +5472,18 @@ mod projection {
             clauses.push(super::at(
                 C::Bind {
                     name: super::at("second".into(), 13),
-                    value: super::sequence(
-                        super::at(ExpressionKind::Input, 14),
-                        vec![super::at(
-                            ExpressionStep::Stage(Stage::NativeArgument(Arc::new(function_call(
-                                "identity",
-                                vec![fn_name(source_name)],
-                            )))),
-                            14,
-                        )],
+                    value: zirql::NativeBody::new(
+                        super::sequence(
+                            super::at(ExpressionKind::Input, 14),
+                            vec![super::at(
+                                ExpressionStep::Value(Arc::new(function_call(
+                                    "identity",
+                                    vec![fn_name(source_name)],
+                                ))),
+                                14,
+                            )],
+                        ),
+                        14..15,
                     ),
                 },
                 13,
@@ -5421,10 +5491,10 @@ mod projection {
             let source = function_value(K::NativeValue(Box::new(super::sequence(
                 super::at(ExpressionKind::Input, 15),
                 vec![super::at(
-                    ExpressionStep::Stage(Stage::Match(Box::new(NativeMatch {
+                    ExpressionStep::Match(Arc::new(NativeMatch {
                         clauses,
                         range: 10..20,
-                    }))),
+                    })),
                     15,
                 )],
             ))));
@@ -5683,7 +5753,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = Guard;
+
         fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
             zirql::FieldPipelineSource::ValueArgument
         }
@@ -5717,7 +5787,7 @@ mod projection {
             locals: &[&str],
             budget: &mut Budget,
             nesting: usize,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             let mut scope = self.0.to_vec();
             for name in locals {
                 if !scope.contains(name) {
@@ -5730,10 +5800,12 @@ mod projection {
             &mut self,
             predicate: zirql::PredicateArgument<Query>,
             range: Range<usize>,
-        ) -> Result<Guard, QueryError> {
-            Ok(Guard::Expression(Arc::new(predicate.bind(Located::new(
-                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
-                range,
+        ) -> Result<Stage, QueryError> {
+            Ok(Stage::Guard(Guard::Expression(Arc::new(predicate.bind(
+                Located::new(
+                    K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                    range,
+                ),
             )))))
         }
         fn is_predicate_leaf(&self, name: &str) -> bool {
@@ -5743,11 +5815,8 @@ mod projection {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             Host.parse_predicate_leaf(reader, budget)
-        }
-        fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
-            unreachable!()
         }
 
         fn parse_path_edge(
@@ -5765,7 +5834,7 @@ mod projection {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = Guard;
+
         fn parse_domain_call(
             &mut self,
             callee: Located<&str>,
@@ -5830,7 +5899,7 @@ mod projection {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("paths") {
                 return zirql::read_paths(reader, &mut ArgumentScope(locals), budget, nesting)
-                    .map(|paths| ExpressionStep::Stage(Stage::Paths(Box::new(paths))));
+                    .map(|paths| ExpressionStep::Paths(Arc::new(paths)));
             }
             self.parse_stage(reader, budget)
         }
@@ -5842,7 +5911,7 @@ mod projection {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("paths") {
                 return zirql::read_paths(reader, self, budget, 32)
-                    .map(|paths| ExpressionStep::Stage(Stage::Paths(Box::new(paths))));
+                    .map(|paths| ExpressionStep::Paths(Arc::new(paths)));
             }
             let word = reader.word()?;
             let stage = match word.value {
@@ -5860,7 +5929,7 @@ mod projection {
             locals: &[&str],
             budget: &mut Budget,
             nesting: usize,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             if probe.keyword("bound") {
                 reader.word()?;
@@ -5870,7 +5939,7 @@ mod projection {
                 )?;
                 reader.expect(')')?;
                 if matches!(value.value,K::Name(ref name) if locals.contains(&name.as_str())) {
-                    return Ok(Guard::True);
+                    return Ok(Stage::Guard(Guard::True));
                 }
                 return Err(QueryError::query(value.range, "guard needs a lexical name"));
             }
@@ -5883,7 +5952,7 @@ mod projection {
             locals: &[&str],
             budget: &mut Budget,
             nesting: usize,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             if !reader.keyword("count_is") {
                 return self.parse_predicate_leaf_in_scope(reader, locals, budget, nesting);
             }
@@ -5896,7 +5965,7 @@ mod projection {
                 K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
                 range,
             );
-            Ok(Guard::Count(Arc::new(
+            Ok(Stage::Guard(Guard::Count(Arc::new(
                 zirql::PredicateArgument {
                     argument: argument
                         .map(|p| zirql::copy_pattern(p, budget))
@@ -5904,16 +5973,18 @@ mod projection {
                     body: Box::new(value),
                 }
                 .bind_value(subject),
-            )))
+            ))))
         }
         fn predicate_expression(
             &mut self,
             predicate: zirql::PredicateArgument<Query>,
             range: Range<usize>,
-        ) -> Result<Guard, QueryError> {
-            Ok(Guard::Expression(Arc::new(predicate.bind(Located::new(
-                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
-                range,
+        ) -> Result<Stage, QueryError> {
+            Ok(Stage::Guard(Guard::Expression(Arc::new(predicate.bind(
+                Located::new(
+                    K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                    range,
+                ),
             )))))
         }
         fn is_predicate_leaf(&self, name: &str) -> bool {
@@ -5923,26 +5994,16 @@ mod projection {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             let word = reader.word()?;
             match word.value {
-                "true" => Ok(Guard::True),
-                "false" => Ok(Guard::False),
-                "unknown" => Ok(Guard::Unknown),
+                "true" => Ok(Stage::Guard(Guard::True)),
+                "false" => Ok(Stage::Guard(Guard::False)),
+                "unknown" => Ok(Stage::Guard(Guard::Unknown)),
                 _ => Err(QueryError::query(word.range, "unsupported guard")),
             }
         }
-        fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
-            unreachable!()
-        }
 
-        fn matching(
-            &mut self,
-            matching: NativeMatch<ReadExpression<Self>, Guard>,
-            _: Range<usize>,
-        ) -> Result<Stage, QueryError> {
-            Ok(Stage::Match(Box::new(matching)))
-        }
         fn parse_path_edge(
             &mut self,
             edge: Located<&str>,
@@ -5958,205 +6019,12 @@ mod projection {
             (word == "union").then_some(())
         }
     }
-    impl MatchHost<()> for Host {
-        type Guard = Guard;
-        fn evaluate_match_source_with_arguments(
-            &self,
-            source: &Query,
-            input: Value,
-            bindings: &Bindings<Value>,
-            arguments: &mut dyn zirql::NativeArguments<(), Self>,
-            budget: &mut Budget,
-        ) -> Result<Value, EvaluationError<QueryError>> {
-            if let Some(value) = match_argument(source) {
-                let selected = arguments.evaluate_match_value(value, input, bindings, budget)?;
-                return self.copy_value(
-                    selected.value(),
-                    arguments.parts().0,
-                    budget,
-                    &source.range,
-                );
-            }
-            zirql::evaluate_expression(source, self, input, arguments.parts().0, bindings, budget)
-        }
-        fn validate_guard_leaf(
-            &self,
-            _: &Guard,
-            _: &Kind,
-            _: &BTreeMap<String, Kind>,
-            _: &mut Budget,
-            _: &Range<usize>,
-        ) -> Result<(), QueryError> {
-            Ok(())
-        }
-        fn evaluate_guard_leaf_with_arguments(
-            &self,
-            guard: &Guard,
-            input: &Value,
-            bindings: &Bindings<Value>,
-            arguments: &mut dyn zirql::NativeArguments<(), Self>,
-            budget: &mut Budget,
-            range: &Range<usize>,
-        ) -> Result<Truth, EvaluationError<QueryError>> {
-            if let Guard::Count(expression) = guard {
-                let relative = self.copy_value(input, arguments.parts().0, budget, range)?;
-                let value =
-                    arguments.evaluate_match_value(expression, relative, bindings, budget)?;
-                let value = self.copy_value(value.value(), arguments.parts().0, budget, range)?;
-                let value = self.project_value(value, arguments.parts().0, budget, range)?;
-                let V::Integer(expected) = value.data() else {
-                    return Err(
-                        QueryError::query(range.clone(), "count_is needs an integer").into(),
-                    );
-                };
-                let Value::Subjects(subjects) = input else {
-                    unreachable!()
-                };
-                return Ok(if *expected == i64::try_from(subjects.len()).unwrap() {
-                    Truth::True
-                } else {
-                    Truth::False
-                });
-            }
-            if let Guard::Expression(expression) = guard {
-                let input = self.copy_value(input, arguments.parts().0, budget, range)?;
-                return Ok(
-                    if arguments.evaluate_predicate(expression, input, Some(bindings), budget)? {
-                        Truth::True
-                    } else {
-                        Truth::False
-                    },
-                );
-            }
-            Ok(guard.truth())
-        }
-        fn evaluate_guard_leaf(
-            &self,
-            guard: &Guard,
-            _: &Value,
-            _: &mut (),
-            _: &Bindings<Value>,
-            _: &mut Budget,
-            _: &Range<usize>,
-        ) -> Result<Truth, EvaluationError<QueryError>> {
-            Ok(guard.truth())
-        }
-    }
-    impl PathHost<()> for Host {
-        type Target = Guard;
-        fn validate_path_edge(
-            &self,
-            edge: &Stage,
-            input: &Kind,
-            _: &BTreeMap<String, Kind>,
-            _: &mut Budget,
-            range: &Range<usize>,
-        ) -> Result<(), QueryError> {
-            if *edge != Stage::Neighbors || *input != Kind::Subjects {
-                return Err(QueryError::query(
-                    range.clone(),
-                    "paths need native graph subjects",
-                ));
-            }
-            Ok(())
-        }
-        fn validate_target_leaf(
-            &self,
-            _: &Guard,
-            input: &Kind,
-            _: &BTreeMap<String, Kind>,
-            _: &mut Budget,
-            range: &Range<usize>,
-        ) -> Result<(), QueryError> {
-            if *input != Kind::Subjects {
-                return Err(QueryError::query(
-                    range.clone(),
-                    "target needs graph subjects",
-                ));
-            }
-            Ok(())
-        }
-        fn evaluate_target_leaf(
-            &self,
-            target: &Guard,
-            _: &Value,
-            _: &mut (),
-            _: &Bindings<Value>,
-            _: &mut Budget,
-            _: &Range<usize>,
-        ) -> Result<Truth, EvaluationError<QueryError>> {
-            Ok(target.truth())
-        }
-        fn path_neighbors(
-            &self,
-            _: &Stage,
-            input: &Value,
-            _: &mut (),
-            _: &Bindings<Value>,
-            budget: &mut Budget,
-            range: &Range<usize>,
-        ) -> Result<Vec<Value>, EvaluationError<QueryError>> {
-            let Value::Subjects(subjects) = input else {
-                unreachable!()
-            };
-            let [subject] = subjects.as_slice() else {
-                unreachable!()
-            };
-            let neighbors: &[&'static str] = match *subject {
-                "alpha" => &["beta", "gamma"],
-                "beta" => &["delta", "alpha"],
-                "gamma" => &["delta", "epsilon"],
-                "delta" => &["epsilon"],
-                "epsilon" => &["beta"],
-                _ => &[],
-            };
-            budget.check_items(neighbors.len(), Location::Query(range.clone()))?;
-            budget.charge(neighbors.len(), Location::Query(range.clone()))?;
-            budget.charge_results(neighbors.len() * 2, Location::Query(range.clone()))?;
-            Ok(neighbors
-                .iter()
-                .map(|subject| Value::Subjects(vec![subject]))
-                .collect())
-        }
-        fn same_path_identity(
-            &self,
-            left: &Value,
-            right: &Value,
-            _: &mut (),
-            _: &mut Budget,
-            _: &Range<usize>,
-        ) -> Result<bool, EvaluationError<QueryError>> {
-            // This borrowed host's subjects identify their native word value.
-            Ok(left == right)
-        }
-        fn path_steps(
-            &self,
-            steps: Vec<Value>,
-            _: &mut (),
-            budget: &mut Budget,
-            range: &Range<usize>,
-        ) -> Result<Value, EvaluationError<QueryError>> {
-            budget.charge(steps.len(), Location::Query(range.clone()))?;
-            budget.charge_results(steps.len(), Location::Query(range.clone()))?;
-            let mut subjects = Vec::with_capacity(steps.len());
-            for step in steps {
-                let Value::Subjects(value) = step else {
-                    unreachable!()
-                };
-                let [value] = value.as_slice() else {
-                    unreachable!()
-                };
-                subjects.push(*value);
-            }
-            Ok(Value::Subjects(subjects))
-        }
-    }
     struct SavedNames;
     impl ValueReaderHost for SavedNames {
         type Stage = Stage;
         type SetOperator = ();
         type Emitter = ();
-        type Predicate = Guard;
+
         fn is_binding(&self, name: &str) -> bool {
             matches!(name, "f" | "one" | "project" | "if" | "words")
         }
@@ -6170,16 +6038,6 @@ mod projection {
                     "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
                 )
         }
-        fn ordering(
-            &mut self,
-            ordering: zirql::NativeOrdering<Query>,
-            _: Range<usize>,
-        ) -> Result<Stage, QueryError> {
-            if let Some(selector) = ordering.selector {
-                zirql::dispose_expression(selector);
-            }
-            Ok(Stage::Saved("one".into()))
-        }
         fn parse_stage(
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
@@ -6187,23 +6045,7 @@ mod projection {
         ) -> Result<ExpressionStep<Stage, ()>, QueryError> {
             let mut probe = zirql::ArgumentReader::new(reader.source(), reader.position())?;
             let name = probe.word()?;
-            if matches!(
-                name.value,
-                "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
-            ) {
-                reader.word()?;
-                if name.value.ends_with("_by") {
-                    reader.expect('(')?;
-                    let selector = reader.word()?;
-                    assert_eq!(selector.value, "name");
-                    reader.expect(')')?;
-                }
-                budget.charge(
-                    reader.position() - name.range.start,
-                    Location::Query(name.range),
-                )?;
-                Ok(ExpressionStep::Stage(Stage::Saved("one".into())))
-            } else if matches!(name.value, "one" | "project") {
+            if matches!(name.value, "one" | "project") {
                 budget.charge(name.value.len(), Location::Query(name.range.clone()))?;
                 reader.advance(probe.position() - reader.position())?;
                 Ok(ExpressionStep::Stage(Stage::Saved(name.value.to_owned())))
@@ -6218,17 +6060,19 @@ mod projection {
             locals: &[&str],
             budget: &mut Budget,
             nesting: usize,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             Host.parse_predicate_leaf_in_argument(reader, argument, locals, budget, nesting)
         }
         fn predicate_expression(
             &mut self,
             predicate: zirql::PredicateArgument<Query>,
             range: Range<usize>,
-        ) -> Result<Guard, QueryError> {
-            Ok(Guard::Expression(Arc::new(predicate.bind(Located::new(
-                K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
-                range,
+        ) -> Result<Stage, QueryError> {
+            Ok(Stage::Guard(Guard::Expression(Arc::new(predicate.bind(
+                Located::new(
+                    K::NativeValue(Box::new(Located::new(ExpressionKind::Input, range.clone()))),
+                    range,
+                ),
             )))))
         }
         fn is_predicate_leaf(&self, name: &str) -> bool {
@@ -6238,11 +6082,8 @@ mod projection {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             budget: &mut Budget,
-        ) -> Result<Guard, QueryError> {
+        ) -> Result<Stage, QueryError> {
             Host.parse_predicate_leaf(reader, budget)
-        }
-        fn filter(&mut self, predicate: Predicate<Guard>, range: Range<usize>) -> Stage {
-            Host.filter(predicate, range)
         }
 
         fn set_operator(&self, word: &str) -> Option<()> {
@@ -6320,14 +6161,14 @@ mod projection {
         .unwrap()
     }
 
-    fn parse_match(source: &str) -> NativeMatch<Query, Guard> {
+    fn parse_match(source: &str) -> NativeMatch<zirql::NativeBody<Query>, Stage> {
         let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
         let matching = zirql::read_match(&mut reader, &mut Host, &mut budget(), 32).unwrap();
         assert!(reader.remaining().is_empty());
         matching
     }
 
-    fn parse_paths(source: &str) -> NativePaths<Stage, Guard> {
+    fn parse_paths(source: &str) -> NativePaths<Stage, Stage> {
         let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
         let paths = zirql::read_paths(&mut reader, &mut Host, &mut budget(), 32).unwrap();
         assert_eq!(reader.position(), source.len());
@@ -7032,7 +6873,7 @@ mod projection {
         );
         paths.target = Located::new(
             zirql::PredicateKind::Or(vec![
-                Located::new(zirql::PredicateKind::Leaf(Guard::True), 0..1),
+                Located::new(zirql::PredicateKind::Leaf(Stage::Guard(Guard::True)), 0..1),
                 Located::new(zirql::PredicateKind::And(vec![]), 2..3),
             ]),
             0..3,
@@ -7240,7 +7081,7 @@ mod projection {
         )])
         .unwrap();
         assert_eq!(
-            zirql::evaluate_expression(
+            zirql::evaluate_native_expression(
                 &field,
                 &Host,
                 Value::Subjects(vec![]),
@@ -8079,8 +7920,11 @@ mod projection {
                 V::Record(vec![("score".into(), V::Integer(1))]),
             ),
             ("max_by([], \"score\")", V::Absent),
-            ("sort", V::Array(vec![V::String("saved".into())])),
-            ("sort_by(name)", V::Array(vec![V::String("saved".into())])),
+            ("sort | names", V::Array(vec![V::String("beta".into())])),
+            (
+                "sort_by(names) | names",
+                V::Array(vec![V::String("beta".into())]),
+            ),
             ("f | names | one", V::Array(vec![V::String("saved".into())])),
             (
                 "project(w, {\"n\": w | count})",
@@ -8239,7 +8083,7 @@ mod projection {
                 Value::Subjects(vec!["beta"]),
             )])
             .unwrap();
-            let value = zirql::evaluate_expression(
+            let value = zirql::evaluate_native_expression(
                 &query,
                 &Host,
                 Value::Subjects(vec!["beta"]),
@@ -8285,7 +8129,7 @@ mod projection {
         )])
         .unwrap();
         assert!(
-            matches!(zirql::evaluate_expression(&query,&Host,Value::Subjects(vec!["beta"]),&mut (),&bindings,&mut allowance).unwrap(),Value::Strings(values) if values==["beta"])
+            matches!(zirql::evaluate_native_expression(&query,&Host,Value::Subjects(vec!["beta"]),&mut (),&bindings,&mut allowance).unwrap(),Value::Strings(values) if values==["beta"])
         );
         zirql::dispose_expression(*query);
         let mut reader = zirql::ArgumentReader::new("(1 + 2) * 3", 0).unwrap();
@@ -8587,7 +8431,10 @@ mod projection {
             range: 0..source.len(),
         };
         let value = function_value(K::NativeQuery(Box::new(super::sequence(
-            native_operand(Stage::Match(Box::new(matching))),
+            super::sequence(
+                super::at(ExpressionKind::Binding("xs".into()), 0),
+                vec![super::at(ExpressionStep::Match(Arc::new(matching)), 0)],
+            ),
             vec![super::at(ExpressionStep::Stage(Stage::Count), 0)],
         ))));
         let bindings = Bindings::new([
@@ -8647,7 +8494,10 @@ mod projection {
         let predicate =
             zirql::read_native_predicate_argument(&mut reader, &mut Host, &[], &mut allowance, 32)
                 .unwrap();
-        assert_eq!(predicate.value, zirql::PredicateKind::Leaf(Guard::True));
+        assert_eq!(
+            predicate.value,
+            zirql::PredicateKind::Leaf(Stage::Guard(Guard::True))
+        );
     }
 
     #[test]
@@ -9061,10 +8911,10 @@ fn shared_reader_releases_native_values_on_errors() {
     #[derive(Default)]
     struct ReaderHost(std::cell::RefCell<std::rc::Weak<()>>);
     impl zirql::ValueReaderHost for ReaderHost {
-        type Stage = ();
+        type Stage = Rc<()>;
         type SetOperator = Rc<()>;
         type Emitter = ();
-        type Predicate = Rc<()>;
+
         fn is_binding(&self, _: &str) -> bool {
             false
         }
@@ -9075,7 +8925,7 @@ fn shared_reader_releases_native_values_on_errors() {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<ExpressionStep<(), (), Rc<()>>, QueryError> {
+        ) -> Result<ExpressionStep<Rc<()>, (), Rc<()>>, QueryError> {
             Err(reader.error("no domain stages"))
         }
         fn is_predicate_leaf(&self, _: &str) -> bool {
@@ -9091,9 +8941,12 @@ fn shared_reader_releases_native_values_on_errors() {
             *self.0.borrow_mut() = Rc::downgrade(&retained);
             Ok(retained)
         }
-        fn filter(&mut self, _: zirql::Predicate<Rc<()>>, _: Range<usize>) {}
-        fn parse_path_edge(&mut self, _: Located<&str>, _: &mut Budget) -> Result<(), QueryError> {
-            Ok(())
+        fn parse_path_edge(
+            &mut self,
+            _: Located<&str>,
+            _: &mut Budget,
+        ) -> Result<Rc<()>, QueryError> {
+            Ok(Rc::new(()))
         }
 
         fn set_operator(&self, word: &str) -> Option<Rc<()>> {
@@ -9119,14 +8972,19 @@ fn shared_reader_releases_native_values_on_errors() {
         format!("where_exists({prefix})"),
         format!("where_exists({prefix}"),
     ] {
-        let error = zirql::read_native_expression(
+        let parsed = zirql::read_native_expression(
             &mut zirql::ArgumentReader::new(&source, 0).unwrap(),
             &mut host,
             &mut Budget::for_program(generous),
             64,
-        )
-        .unwrap_err();
-        assert!(matches!(error.location, Location::Query(_)));
+        );
+        if source.ends_with(')') {
+            let query = parsed.unwrap();
+            assert!(host.0.borrow().upgrade().is_some());
+            zirql::dispose_expression(query);
+        } else {
+            assert!(matches!(parsed.unwrap_err().location, Location::Query(_)));
+        }
         assert!(host.0.borrow().upgrade().is_none());
     }
     let source = "paths(edge, to=not leaf or leaf, max_depth=0)";
@@ -10976,7 +10834,7 @@ fn common_reader_executes_loops_named_reducers_and_native_worklist_calls() {
         type Stage = SourceStage;
         type SetOperator = ();
         type Emitter = &'static str;
-        type Predicate = Truth;
+
         fn is_binding(&self, _: &str) -> bool {
             false
         }
@@ -11004,11 +10862,8 @@ fn common_reader_executes_loops_named_reducers_and_native_worklist_calls() {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<Truth, QueryError> {
+        ) -> Result<SourceStage, QueryError> {
             Err(reader.error("no domain predicates"))
-        }
-        fn filter(&mut self, _: zirql::Predicate<Truth>, _: Range<usize>) -> SourceStage {
-            unreachable!("no domain predicates")
         }
     }
     let text = r#"
@@ -11179,7 +11034,7 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         type Stage = SourceStage;
         type SetOperator = ();
         type Emitter = &'static str;
-        type Predicate = ();
+
         fn is_binding(&self, name: &str) -> bool {
             name == "saved"
         }
@@ -11208,34 +11063,10 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<(), QueryError> {
+        ) -> Result<SourceStage, QueryError> {
             Err(reader.error("unsupported predicate"))
         }
-        fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) -> SourceStage {
-            unreachable!()
-        }
 
-        fn ordering(
-            &mut self,
-            ordering: zirql::NativeOrdering<SourceExpression>,
-            _: Range<usize>,
-        ) -> Result<SourceStage, QueryError> {
-            Ok(SourceStage::Order(Box::new(ordering)))
-        }
-        fn where_exists(
-            &mut self,
-            body: SourceExpression,
-            _: Range<usize>,
-        ) -> Result<SourceStage, QueryError> {
-            Ok(SourceStage::Exists(Box::new(body)))
-        }
-        fn fixed_point(
-            &mut self,
-            body: SourceExpression,
-            _: Range<usize>,
-        ) -> Result<SourceStage, QueryError> {
-            Ok(SourceStage::FixedPoint(Box::new(body)))
-        }
         fn set_operator(&self, word: &str) -> Option<()> {
             zirql::NativeSetOperator::from_keyword(word).map(|_| ())
         }
@@ -11271,10 +11102,10 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
     let ExpressionKind::Sequence { steps, .. } = &query.value else {
         panic!("existence pipeline")
     };
-    let ExpressionStep::Stage(SourceStage::Exists(body)) = &steps[0].value else {
+    let ExpressionStep::WhereExists(body) = &steps[0].value else {
         panic!("retained relation")
     };
-    let ExpressionKind::Sequence { input, .. } = &body.value else {
+    let ExpressionKind::Sequence { input, .. } = &body.query().value else {
         panic!("relation input")
     };
     assert!(matches!(&input.value, ExpressionKind::Binding(name) if name == "local"));
@@ -11333,7 +11164,7 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
             16,
         )
         .unwrap();
-        let SourceValue::Words(words) = evaluate_expression(
+        let SourceValue::Words(words) = zirql::evaluate_native_expression(
             &expression,
             &SourceHost,
             input(),
@@ -11374,19 +11205,27 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
             .is_err()
         );
     }
-    let typed = SourceStage::Order(Box::new(zirql::NativeOrdering {
-        order: zirql::NativeOrder::MinAll,
-        selector: None,
-    }));
+    let typed = Located::new(
+        ExpressionKind::Sequence {
+            input: Box::new(Located::new(ExpressionKind::Input, 21..28)),
+            steps: vec![Located::new(
+                ExpressionStep::Ordering(std::sync::Arc::new(zirql::NativeOrdering {
+                    order: zirql::NativeOrder::MinAll,
+                    selector: None,
+                })),
+                21..28,
+            )],
+        },
+        21..28,
+    );
     let mut budget = Budget::for_program(limits());
-    let SourceValue::Words(words) = ProgramHost::evaluate_stage(
-        &SourceHost,
+    let SourceValue::Words(words) = zirql::evaluate_native_expression(
         &typed,
+        &SourceHost,
         input(),
         &mut context,
         &Bindings::default(),
         &mut budget,
-        &(21..28),
     )
     .unwrap() else {
         panic!("words")
@@ -11416,14 +11255,13 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         ),
     ] {
         let mut budget = budget;
-        let error = ProgramHost::evaluate_stage(
-            &SourceHost,
+        let error = zirql::evaluate_native_expression(
             &typed,
+            &SourceHost,
             input(),
             &mut context,
             &Bindings::default(),
             &mut budget,
-            &(21..28),
         )
         .unwrap_err();
         assert!(

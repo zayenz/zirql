@@ -4,6 +4,7 @@ import zirql from '../assets/syntax/zirql.tmLanguage.json' with { type: 'json' }
 
 const base = process.env.SITE_BASE || '/zirql/';
 const site = process.env.SITE_URL || 'https://zayenz.se';
+const prefix = base.endsWith('/') ? base : `${base}/`;
 if (!/^\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]*$/.test(base)) {
   throw new Error('SITE_BASE must be / or a path such as /zirql/');
 }
@@ -15,7 +16,6 @@ if (!['https:', 'http:'].includes(origin.protocol) || origin.pathname !== '/' ||
 
 // Each category is one page; entry links also appear in that page's contents.
 function libraryGroup(label, page, entries) {
-  const prefix = base.endsWith('/') ? base : `${base}/`;
   return {
     label, collapsed: true,
     items: [
@@ -127,6 +127,10 @@ export default defineConfig({
           ['max', 'min-and-max'],
           ['min_by', 'min_by-and-max_by'],
           ['max_by', 'min_by-and-max_by'],
+          ['min_all', 'all-ties-extrema'],
+          ['max_all', 'all-ties-extrema'],
+          ['min_all_by', 'all-ties-extrema'],
+          ['max_all_by', 'all-ties-extrema'],
         ]),
         libraryGroup('Grouping and neighbourhoods', 'library-grouping', [
           ['group_by', 'group_by'],
@@ -166,7 +170,7 @@ export default defineConfig({
           ['identity_set', 'identity_set'],
           ['insert', 'insert'],
         ]),
-        libraryGroup('Shared native forms', 'library-native', [
+        libraryGroup('Shared native composition', 'library-native', [
           ['input', 'input'],
           ['filter (native)', 'native-filter'],
           ['head', 'head-and-tail'],
@@ -176,16 +180,6 @@ export default defineConfig({
           ['count (native)', 'native-count-unique-and-tally'],
           ['unique (native)', 'native-count-unique-and-tally'],
           ['tally (native)', 'native-count-unique-and-tally'],
-          ['sort (native)', 'native-ordering'],
-          ['sort_by (native)', 'native-ordering'],
-          ['min (native)', 'native-ordering'],
-          ['max (native)', 'native-ordering'],
-          ['min_by (native)', 'native-ordering'],
-          ['max_by (native)', 'native-ordering'],
-          ['min_all', 'all-ties-extrema'],
-          ['max_all', 'all-ties-extrema'],
-          ['min_all_by', 'all-ties-extrema'],
-          ['max_all_by', 'all-ties-extrema'],
           ['project', 'project'],
           ['map_by', 'map_by'],
           ['match {captures}', 'native-capture-match'],
@@ -200,7 +194,7 @@ export default defineConfig({
         ]),
       ] },
       { label: 'Language reference', items: ['guides/language-reference', 'guides/values', 'guides/functions-and-control-flow', 'guides/shared-concepts', 'guides/native-programs', 'guides/diagnostics-and-limits'] },
-      { label: 'Implementation reference', items: ['guides/implementation-reference', 'guides/csv-host', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
+      { label: 'Implementation reference', items: ['guides/implementation-reference', 'guides/csv-host', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', { label: 'Native composition in Rust', slug: 'guides/embedding-programs', attrs: { href: `${prefix}guides/embedding-programs/#build-native-composition-steps` } }, 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
       { label: 'Rust API reference', link: 'https://docs.rs/zirql/0.2.0/zirql/' },
       { label: 'Zincite guides', link: 'https://zayenz.se/zincite/' },
       { label: 'Zirium guides', link: 'https://zayenz.se/zirium/' },

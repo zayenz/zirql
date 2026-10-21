@@ -104,11 +104,16 @@ impl PreparedNative {
                         for step in steps {
                             let declared: Vec<&ValueExpression<NativeExpression<C, H>>> =
                                 match &step.value {
-                                    ExpressionStep::Stage(stage) => host
-                                        .value_arguments(stage, budget, &step.range)?
-                                        .into_iter()
-                                        .map(|(value, _)| value)
-                                        .collect::<Vec<_>>(),
+                                    ExpressionStep::Stage(stage) => {
+                                        let values =
+                                            host.value_arguments(stage, budget, &step.range)?;
+                                        admit_slots::<&ValueExpression<NativeExpression<C, H>>>(
+                                            values.len(),
+                                            budget,
+                                            &step.range,
+                                        )?;
+                                        values.into_iter().map(|(value, _)| value).collect()
+                                    }
                                     ExpressionStep::Value(value) => {
                                         admit_slots::<&ValueExpression<NativeExpression<C, H>>>(
                                             1,
@@ -126,6 +131,12 @@ impl PreparedNative {
                                         projection.fields.iter().map(|(_, value)| value).collect()
                                     }
                                     ExpressionStep::Emit { .. } => Vec::new(),
+                                    common => crate::composition::arguments(
+                                        common,
+                                        host,
+                                        budget,
+                                        &step.range,
+                                    )?,
                                 };
                             admit_slots::<usize>(declared.len(), budget, &step.range)?;
                             arguments.push(
@@ -223,17 +234,39 @@ impl PreparedNative {
                         budget,
                         range,
                     ),
-                    ExpressionStep::Value(expression) => {
-                        let input = value.expect("ordinary projection has relative input");
-                        let read = arguments.evaluate(expression, input, budget)?;
-                        let value = read.into_owned(budget)?;
-                        let types = vec![crate::constructed_value_type(
-                            &value,
-                            budget,
-                            Location::Query(range.clone()),
-                        )?];
-                        host.lift_constructed(value, types, arguments.context, budget, range)
-                    }
+                    ExpressionStep::Value(expression) => host.transition(
+                        value,
+                        arguments.context,
+                        budget,
+                        range,
+                        |value, context, budget| {
+                            let mut arguments = StageArguments {
+                                context,
+                                ..arguments
+                            };
+                            let input = value.expect("ordinary projection has relative input");
+                            if matches!(
+                                expression.value,
+                                crate::ValueExpressionKind::NativeValue(_)
+                            ) {
+                                let value = arguments.evaluate_native(expression, input, budget)?;
+                                return match std::sync::Arc::try_unwrap(value.into_shared()) {
+                                    Ok(value) => Ok(value),
+                                    Err(value) => {
+                                        host.copy_value(&value, arguments.context, budget, range)
+                                    }
+                                };
+                            }
+                            let read = arguments.evaluate(expression, input, budget)?;
+                            let value = read.into_owned(budget)?;
+                            let types = vec![crate::constructed_value_type(
+                                &value,
+                                budget,
+                                Location::Query(range.clone()),
+                            )?];
+                            host.lift_constructed(value, types, arguments.context, budget, range)
+                        },
+                    ),
                     ExpressionStep::Projection(projection) => {
                         let result = arguments.evaluate_projection(
                             projection,
@@ -248,11 +281,32 @@ impl PreparedNative {
                             range,
                         )
                     }
+                    common if crate::composition::is_common(common) => host.transition(
+                        value,
+                        arguments.context,
+                        budget,
+                        range,
+                        |value, context, budget| {
+                            let mut arguments = StageArguments {
+                                context,
+                                ..arguments
+                            };
+                            crate::composition::run(
+                                common,
+                                host,
+                                value.expect("native composition input"),
+                                &mut arguments,
+                                budget,
+                                range,
+                            )
+                        },
+                    ),
                     ExpressionStep::Emit { emitter, .. } => {
                         let value = value.expect("emission input");
                         host.emit(emitter, &value, arguments.context, budget, range)?;
                         Ok(value)
                     }
+                    _ => unreachable!("composition step handled above"),
                 }
             },
             budget,
@@ -334,10 +388,7 @@ impl PreparedNative {
                         let explicit = matches!(source.value, ExpressionKind::Input)
                             && steps.first().is_some_and(|step| match &step.value {
                                 ExpressionStep::Stage(stage) => host.is_explicit_source(stage),
-                                ExpressionStep::Value(_) => true,
-                                ExpressionStep::Projection(_) | ExpressionStep::Emit { .. } => {
-                                    false
-                                }
+                                common => crate::composition::explicit_source(common),
                             });
                         let mut value = if explicit
                             && input.is_none()
@@ -350,7 +401,7 @@ impl PreparedNative {
                             && input.is_none()
                             && matches!(
                                 steps.first().map(|step| &step.value),
-                                Some(ExpressionStep::Stage(_))
+                                Some(step) if !matches!(step, ExpressionStep::Value(_))
                             )
                         {
                             budget.charge_results(1, Location::Query(expression.range.clone()))?;

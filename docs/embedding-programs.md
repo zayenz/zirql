@@ -113,6 +113,46 @@ through the request's `PreparedFunctions` unit as below. `Stage` still carries
 domain operations and `Emit` carries explicit host output. Registry Zirql 0.2.0
 predates these core steps.
 
+## Build native composition steps
+
+Filters, matches, ordering, maps, existence, fixed points and paths are direct
+`ExpressionStep` forms. A typed builder retains a nested native expression in
+`NativeBody` rather than adding an executable host wrapper:
+
+```rust
+use zirql::{Expression, ExpressionKind, ExpressionStep, Located, NativeBody};
+
+let relation: Expression<(), (), ()> = Located::new(ExpressionKind::Input, 13..18);
+let exists: ExpressionStep<(), (), ()> =
+    ExpressionStep::WhereExists(NativeBody::new(relation, 13..18).into());
+let selection: Expression<(), (), ()> = Located::new(ExpressionKind::Input, 9..14);
+let fixed_point: ExpressionStep<(), (), ()> =
+    ExpressionStep::FixedPoint(NativeBody::new(selection, 9..14).into());
+```
+
+These fragments construct syntax. The host must admit the selection kinds and
+supply native subjects and shape restoration before execution. The common
+reader constructs the same forms from `where_exists(input)` and
+`fixpoint(input)`. Existence runs its body against each singleton; a fixed-point
+body receives the whole current selection.
+
+A native-only adapter implements `ProjectionHost` and calls
+`evaluate_native_expression` with current input, context, bindings and budget.
+Use `native_entry_kind` for entry-level type checking that admits the host's
+ordinary effects; `native_expression_kind` checks pure nested expressions.
+Function-bearing requests prepare the same tree through `PreparedFunctions`
+and execute it with the active invocation. `NativeArguments::evaluate_body`
+retains a body's native result; ordinary value expressions keep their explicit
+scalar projection rules. Hosts do not need function capabilities for native-only
+composition.
+
+Host callbacks describe native kinds, guard leaves, identity, scalar keys,
+selection or dictionary shape and domain admission. The core owns common
+argument discovery, scopes, purity checks and execution. See the
+[adapter hooks](host-integration.md#native-ordering-and-map-construction).
+The [Zirium projection recipe](native-programs.md#project-a-native-selection)
+exercises this boundary with real native operations.
+
 ## Supply typed caller inputs
 
 Check all caller parameters before reading domain data. `admit_parameters`
@@ -308,21 +348,16 @@ check native values at every boundary. Fresh native results and changed contract
 still receive whole admission. This removes repeated native scans for opted-in
 hosts; it does not increase the work/result defaults or skip producer charges.
 
-Native matching inside a function uses `evaluate_match_with_arguments` to keep
-the active runner while the common clause executor introduces captures. Its
-source and guard hooks receive the current immutable clause bindings. A selected
-embedded value runs through `NativeArguments::evaluate_match_value`; it does not
-start another function request. `ProjectionHost::scoped_value_arguments` supplies
-each written value's additional lexical names and optional relative input during
-preparation. Earlier capture names are available to later sources and guards;
-forward names and shadowing fail before execution. Ordinary arguments keep their
-existing relative-input behavior and no additional names by default.
+Native matching inside a function uses the core `Match` step. The common
+clause executor introduces captures and retains the active runner; sources and
+guards see the original query input plus only earlier captures. Forward names
+and shadowing fail before execution. Only opaque native leaf arguments need
+`ProjectionHost::scoped_value_arguments`; hosts do not walk common match clauses.
 
-The same clause executor handles direct and function-bearing requests. It still
-checks all written clauses, spends work on candidate/guard inspection, skips
-later sources after a false guard and refuses a final Unknown. Captures share
-their original outer binding map. Scoped preparation and the small clause-local
-binding metadata spend the continuing request allowance before growth.
+The same executor checks all written clauses, spends work on candidates and
+guards, skips later sources after a false guard and refuses a final Unknown.
+Captures share their original outer binding map. Scoped preparation and the
+clause-local binding metadata spend the continuing request allowance.
 
 ## Define a native function
 

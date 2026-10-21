@@ -23,16 +23,18 @@ documentation for your selected dependency with `cargo doc --open`.
 | Constructed expression trees | `evaluate_value` | Located expressions and immutable constructed bindings |
 | Ordered native stages | `Host` and `evaluate` | Native input, predicates, identity and typed stages |
 | Native bindings and reports | `ProgramHost`, `PreparedFunctions::prepare_expression` and `evaluate_expression` | Native values, remaining stage/set payloads, copying and emitters |
+| Native composition without functions | `ProjectionHost` and `evaluate_native_expression` | Native kinds, subjects, guard leaves, keys, identity and shape |
 | Correlated report fields | `ExpressionStep::Projection` and `ProjectionHost` | Native subjects, singleton kinds and explicit scalar projections |
 | Named pure functions | `FunctionHost`, `FunctionRequest`, `PreparedFunctions` | Type resolution and pure native operations |
 
-In the development API, `ExpressionStep::Value` carries an ordinary value
-expression and `ExpressionStep::Projection` carries its subject and fields.
-Both are prepared and executed by Zirql. `Stage` carries the remaining host
-operations; `Emit` retains the host's output policy. These core steps and the
-prepared-expression entry require the development dependency; registry 0.2.0
-predates them. The direct `evaluate_program` path remains available for
-native-only programs.
+Core `ExpressionStep` variants carry ordinary values, projections, filters,
+matches, ordering, maps, existence, fixed points and paths. Zirql prepares and
+executes their bodies and scopes. `Stage` carries native primitive and guard
+payloads; `Emit` retains explicit host output policy. Native-only adapters use
+`evaluate_native_expression`; function-bearing requests use their active
+`PreparedFunctions` unit. These direct core forms require the development
+dependency; registry 0.2.0 predates them. The smaller `evaluate_program` API
+still handles programs containing only opaque native stages.
 
 The [word example](getting-started.md) uses the first row. Its reader recognizes
 one binding, `words`, and rejects native stages. Its value host returns a
@@ -270,7 +272,9 @@ Shared predicates add no reflected native fields or new domain projections.
 
 Expose every retained expression through `ProjectionHost::value_arguments` and
 `scoped_value_arguments`. Declare its actual relative kind and separate lexical
-captures. Preparation checks every branch, Boolean result, free name and effect
+captures, with `ScopedNativeArgument::allow_effects` set to `false` for native
+arguments. Only core representation bodies inherit an admitted entry policy.
+Preparation checks every branch, Boolean result, free name and effect
 before enumeration. Execute selected bodies with
 `NativeArguments::evaluate_predicate(expression, subject, captures, budget)`.
 Pass `Some(clause_bindings)` for native match guards and `None` for ordinary
@@ -429,6 +433,13 @@ Host hooks charge scans and materialization that the core cannot see. Check know
 sizes and admit result units before allocation. Choose limits for the actual
 host request; Zirql supplies no defaults. The
 [budget reference](runtime-limits.md) explains the accounting units.
+
+Core composition prepares native bodies and their argument scopes before
+execution. That metadata and its copies use the same work allowance as the
+query. A query close to a legacy work limit can therefore fail during
+preparation even when its native traversal would fit; host defaults and the
+meaning of a work unit remain unchanged. Type flow and scoped-argument
+collection share one walk.
 
 ## Constructed-value APIs
 
@@ -680,101 +691,64 @@ restores outer bindings on success and failure.
 
 ## Native match adapter
 
-Implement `MatchHost<C>` on the existing `ProjectionHost<C>` adapter. Its
-`Guard` type holds a domain Boolean leaf. `validate_guard_leaf` checks every
-native operand against the supplied input kind and ordered scope, including
-purity and supported types. `evaluate_guard_leaf` returns the existing `Truth`
-with the active context, immutable bindings and budget. The core owns all
-Boolean wrappers and short-circuit evaluation; the leaf owns native identity.
+The common reader returns `ExpressionStep::Match`. Its ordered clauses retain
+native query bodies in `NativeBody<Expression<...>>`, and Boolean leaves use the
+host's `Stage` payload type. A native `Guard` variant keeps those leaves distinct
+from executable domain stages. `ProjectionHost::validate_guard_leaf` admits
+the leaf's input, scope and native arguments; `evaluate_guard_leaf` returns
+`Truth`. The core owns Boolean composition and short-circuit evaluation.
 
-The entry points are `match_types(&matching, host, &input_kind, &scope, budget)`
-and `evaluate_match(&matching, host, input, context, bindings, budget)`. Type
-discovery returns ordered `NativeCapture<Kind>` fields. Execution returns
-`Vec<Value>` rows built through `ProgramHost::construct_record`. Keep the schema
-in the native collection wrapper, including when the row vector is empty.
-Wrapping already-admitted rows moves them; admit any new host container before
-allocation.
+Preparation checks each source and guard against the original match input and
+only the captures introduced by earlier clauses. `from` enumerates singleton
+subjects through `subject_kind` and `subjects`; `bind` requires exactly one.
+A match whose sources supply explicit input can execute inside a function
+without an ambient selection. The prepared runner retains active function
+arguments, lexical bindings and native results throughout clause execution.
 
-`ProjectionHost::subject_kind` declares the singleton kind yielded by
-`subjects` and rejects unsupported enumeration even on empty input. Its default
-returns the input kind for existing hosts. Both `from` and `bind` use these
-hooks; the core checks the exact-one requirement for `bind`. Projection binds
-that same singleton kind, so a collection of native capture records can feed
-shared report projection without losing its field schema.
+`capture_selection_kind` and `construct_captures` preserve the ordered field
+schema, including an empty result. `ProgramHost::construct_record` builds each
+native capture. Expose singleton fields through `capture_record` and
+`capture_record_kind`; field reads use the host's charged `copy_value`.
+Keep kind metadata immutable and shared so kind cloning does not copy native
+objects. Operand lookup, SSA equality, model ownership and diff sides remain
+domain facts.
 
-Expose the singleton record through the borrowed
-`ProgramHost::capture_record` and `ProjectionHost::capture_record_kind` hooks.
-Both default to absence. Hosts unwrap their wrappers; `NativeCapture::get`
-checks and charges field lookup, and the expression runner uses `copy_value`
-to retain the selected native type. Kinds should use shared immutable metadata
-so their required `Clone` operation does not hide native materialization.
-Handles never enter `ConstructedValue` or `ValueType`.
+Standalone callers can use `match_types` and `evaluate_match`; composed queries
+use the core step through `PreparedFunctions` or `evaluate_native_expression`.
+Hosts do not wrap the common match in an executable native stage or discover
+its clause arguments themselves. Only opaque native leaf arguments use
+`value_arguments` and `scoped_value_arguments`.
 
-`ValueReaderHost::matching` wraps the shared parsed tree as a native stage.
-Its default returns a located unsupported error. Supporting adapters dispatch
-that stage to the shared match functions; `parse_stage` and
-`parse_predicate_leaf` only parse domain primitive arguments. They must not
-implement a second match evaluator.
-
-The reader releases partially constructed shared trees when parsing fails.
-Callers own successful returns and must release long flat native trees
-iteratively: use `dispose_expression` for a native expression, `dispose_match`
-for a match, and `dispose_native_value` for a shared value containing native
-operands. For a returned projection, consume its fields with the same helper:
-
-```rust
-for (_, value) in projection.fields {
-    zirql::dispose_native_value(value);
-}
-```
-
-These consuming helpers need no remaining parsing allowance. They visit shared
-wrappers and native composition; the host remains responsible for cleanup
-inside opaque stage, set-operator, emitter and predicate payloads. Host wrappers
-can call the helpers from their own `Drop` implementations.
-
-Native handles still retain the host's document ownership, source coordinates,
-completeness and diff-side rules. Operand lookup and SSA equality, for example,
-remain Zirium operations. Rendering is an explicit host boundary and does not
-supply identity to the matcher.
+Release successful trees with `dispose_expression`, `dispose_match` or
+`dispose_native_value`, as appropriate. These helpers visit shared composition
+iteratively, including `NativeBody` storage. Hosts own cleanup inside opaque
+stage, set-operator and emitter payloads. Native handles keep their source
+coordinates until an explicit projection or rendering boundary.
 
 ## Native path adapter
 
-Implement `PathHost<C>` on the existing `ProjectionHost<C>`. Its `Target`
-holds an ordinary domain predicate leaf. Keep it separate from any narrower
-match guard language. `validate_path_edge` admits one pure native primitive,
-and `validate_target_leaf` checks every operand, type and scope before scans.
-The core also refuses edges declared effectful by `is_pure`.
+The common reader returns `ExpressionStep::Paths`. `parse_path_edge` maps one
+located identifier to an existing native primitive without consuming more
+syntax. `ProjectionHost::validate_path_edge` admits its kind and scope; the core
+also checks `is_pure`. Targets use the same `Stage` guard payloads and
+`validate_guard_leaf` hooks as other native predicates.
 
-`path_neighbors` returns admitted singleton neighbors in direct edge order.
-An edge preserves the subject kind and native owner. It retains unresolved-edge
-limitations and existing stale-handle or owner refusals. `same_path_identity`
-compares real native identities after the core charges a comparison;
-printed names and debug text cannot replace that identity.
+`path_neighbors` supplies admitted singleton neighbors in direct edge order.
+`same_path_identity` compares native identity, and `path_steps` builds an ordered
+selection from admitted singletons. Preserve native owners, source or diff sides,
+unresolved-edge limitations and stale-handle errors in these hooks. Printed
+names do not establish identity.
 
-The entry points are `path_types(&paths, host, &input_kind, &scope, budget)` and
-`evaluate_paths(&paths, host, input, context, bindings, budget)`. Type discovery
-returns the ordered `NativeCapture<Kind>` schema for `source`, `sink` and
-`steps`. Execution returns rows through `construct_record`, using `subjects`,
-`subject_kind` and charged `copy_value` calls. Retain the schema when wrapping
-an empty result, as for matching.
+The core owns breadth-first traversal, visited comparisons, witness choice and
+reconstruction under the request budget. Target predicates use candidate
+singleton input; they retain active lexical and function bindings. A final
+Unknown fails at the target location through the host's `require_guard` policy.
 
-`path_steps` moves admitted singleton values into one ordered native selection.
-Its declared kind agrees with `subject_kind`, and its sequence shape survives
-a one-step witness. Charge any additional host allocation before constructing
-it. The core owns breadth-first traversal, visited comparisons, predecessor
-indices and witness reconstruction; adapters supply no second traversal.
-
-In a text frontend, `parse_stage` calls `read_paths` with the original reader
-and budget. `ValueReaderHost::parse_path_edge` receives one located identifier
-and maps it to an existing typed primitive without consuming more syntax.
-Its default refuses paths. Target leaves use `parse_predicate_leaf`; shared
-Boolean wrappers remain with the common reader. Preserve host parameter
-discovery and purity checks for native operands inside those leaves.
-
-Release returned path trees with `dispose_paths`. It drops shared Boolean
-wrappers iteratively; opaque edge and target payloads retain their host disposal
-contract. Native results and later emitter snapshots use the same budget.
+`path_types` and `evaluate_paths` remain callable standalone APIs. Composed
+queries use the same algorithm through the core step. `capture_selection_kind`
+and `construct_captures` retain the `source`, `sink` and `steps` schema even for
+an empty result. Release returned path trees with `dispose_paths`; opaque edge
+and guard payloads retain their host disposal contract.
 
 ## Prepare native reports in one invocation
 
@@ -855,12 +829,11 @@ statement runs. Zirium uses this path for textual queries and typed report build
 including programs without functions. Its native stages retain direct execution,
 document ownership checks and their existing budget policy.
 
-Keep lowered argument bodies in their owning stage when the prepared runner
-borrows them. Zirium retains the constructed bodies of overloaded `count`,
-`sort`, `unique` and `tally` stages, prepares them only for constructed input,
-and runs native input through its native implementation. Report-only entries
-require scalar data; entries that admit native values retain their host kinds
-and handles until an explicit projection.
+Keep native leaf argument bodies in their owning payload while preparation
+borrows them. Core composition retains its own arguments and selects constructed
+or native behavior from the admitted input kind. Report-only entries require
+scalar data; native entries retain host kinds and handles until an explicit
+projection.
 
 `PreparedFunctions::prepare` registers every signature before checking bodies. Each
 body can read its parameters and earlier immutable locals. The entry receives
@@ -1057,89 +1030,86 @@ containers. Library results may retain them and continue with the public
 budgeted operations in the same valid context. The host supplies any text syntax
 for these operations.
 
-## Correlated map construction
+## Native ordering and map construction
 
-The common reader recognizes `map_by(key_query, value_query)` and calls
-`ValueReaderHost::mapping` with a `NativeMap` of located native expressions.
-A host can retain the expressions or lower its own syntax to the same
-representation.
+The common reader constructs `Ordering`, `Mapping` and `MapSorting` steps
+directly. `NativeBody` retains each selector as a stable prepared argument;
+selectors run against singleton subjects and keep native results even when the
+same native kind also supports scalar projection. A host supplies no common
+ordering or map factory.
 
-After preflighting both selectors, call `map_native_by` with admitted items, the
-active runner/context and budget. Its key adapter returns `Some(strings)` or
-`None` for another shape; the core enforces the single-string rule and duplicate
-refusal. Its value adapter returns the native value to store. Both adapters use
-the same singleton and existing saved/prepared-call scope. The core owns the
-ordered loop and insertion-ordered entry storage. The host owns singleton copies, domain
-admission and any explicit legacy per-entry conversion before insertion.
+`ProjectionHost::ordering_key_kind` checks declared key kinds and
+`ordering_key` projects one native result to `NativeOrderKey`. The core owns
+stable ordering, first or all tied extrema, and selector evaluation order.
+`admit_ordering` retains domain empty-extremum policy: Zirium refuses empty
+native extrema, while Zincite returns an empty same-kind selection.
 
-For native dictionary value sorting, implement `ValueReaderHost::map_sorting`.
-The common reader calls it for `sort_by(value)`, including grouped selectors,
-without asking the host to parse a `value` stage. Saved and local names keep
-precedence. Other ordering selectors use `ordering` as before.
+For `map_by(key_query, value_query)`, `mapping_kind` declares the dictionary
+kind, `mapping_keys` exposes the key strings, and `construct_map` wraps the
+ordered entries. The core evaluates the key before the value for each subject,
+requires exactly one string, and refuses duplicates before executing that
+entry's value. Native payloads retain their owners and coordinates.
 
-Call `sort_map_by_value(entries, budget, location, key)` with owned, admitted
-unique-key entries. The callback projects each payload to `ScalarMapKey`:
-`Null`, `Boolean(bool)`, `Integer(i64)`, `Unsigned(u64)`, `Float(f64)` or
-`String(String)`. Reject unsupported nested payloads in that callback and admit
-text copies before allocation. The core validates homogeneous scalar categories
-and finite numbers, compares numbers without integer-to-float precision loss,
-and keeps current-order ties. It reorders the owned entry vector; native owners
-and coordinates stay intact.
+`map_sort_kind`, `map_entries` and `restore_map` admit and rebuild native
+dictionaries. `sort_by(value)` uses the common value sort without treating
+`value` as a domain stage; saved and local names keep precedence. Bare `sort`
+orders dictionary keys. Both preserve dictionary kind and current-order ties.
+Native ordering keys follow the host's admitted scalar domain.
 
-Hosts using the constructed typed-key contract can instead move the same entry
-vector through `order_native_by` with `NativeOrder::Sort`. Project each payload
-to `NativeOrderKey::Value`: a present signed integer, finite float, exact string
-or member of one coherent nominal type. This domain rejects Boolean and absent
-keys and does not mix integer and float keys. Convert native counts with checked
-signed conversion. The shared stable permutation retains entry payloads and
-current-order ties without a separate dictionary result kind. `ScalarMapKey`
-remains available for hosts whose scalar domain includes null, Boolean or mixed
-numeric keys.
+Lower native `head`, `tail`, `reverse`, `check`, `count`, `unique` and `tally`
+to `ExpressionStep::Collection` with the existing `Stage<()>` operation.
+Computed bounds use `Head`, `Tail` or `Check` value steps. The native hooks admit
+collection kinds, expose identity or tally keys and restore result shapes; the
+core owns iteration, stable deduplication, counting and bounds. `Stage::Filter`
+and `Stage::Host` are not collection tags. Native filter uses its direct
+`ExpressionStep::Filter` and shared `Predicate<Stage>` tree.
 
-Both construction APIs return `Vec<(String, V)>`. Retain it as one dictionary
-kind through bindings, copies and rendering. Call
-`select_map(&mut entries, selection, budget, location)` with
-`MapSelection::Reverse`, `Head(n)` or `Tail(n)` for dictionary bounds, whether
-or not the dictionary has been sorted. Neither operation converts native values
-or serializes JSON.
+The lower-level `map_native_by`, `order_native_by`, `sort_map_by_value` and
+`select_map` algorithms remain available to standalone callers. A composed
+query uses the core steps so preparation and execution share its active frame.
 
 ## Native existence
 
-Implement `ValueReaderHost::where_exists` to retain the common reader's located
-relation. The default disposes it and returns an unsupported-host error. Prepare
-the pure relation against the singleton subject kind before inspecting input,
-including empty input. Then call `filter_native_exists` with admitted original
-rows and the active budget. Its callback evaluates the retained relation against
-an admitted singleton using the current bindings, parameters and function locals.
+`ExpressionStep::WhereExists` retains one `NativeBody`. Preparation admits the
+pure relation against the singleton subject kind, including empty input.
+Execution uses the active prepared runner and `filter_native_exists`; a nonempty
+relation keeps the original subject, while a complete empty relation rejects it.
+Incoming order, duplicates and native ownership survive filtering.
 
-Return an admitted native relation result. A nonempty result keeps the original
-subject; a complete empty result rejects it. Unknown nonemptiness and relation
-errors must refuse at their responsible locations. Keep original handles, order,
-duplicates, owners and diff sides. Rendering and scalar truth are not cardinality
-checks.
+`selection_kind` admits identity-bearing selections, `validate_existence`
+checks relation compatibility, and `admit_selection` checks runtime completeness,
+owner and shape. `selection_items` and `restore_selection` expose and rebuild
+the native selection. `SelectionShape::Filter` allows hosts to distinguish a
+filtered singleton from a preserved whole selection. Unknown nonemptiness and
+relation errors fail at their responsible locations.
 
-For required nested observations, override `Host::filter_truth` to admit the
-completed shared Boolean result. Reject final `Unknown` with the host's
-responsible diagnostic. Keep decisive conditions such as `unknown or true`
-valid; an unknown leaf alone cannot determine the whole condition. The default
-keeps ordinary best-effort filtering unchanged.
-
-Zincite scopes complete-or-error observation to the nested body and restores it
-on every result. Native results that omitted uncertain endpoints or final
-unknown matches retain one responsible error through saved copies and native
-collection operations, including empty results. Nested observation refuses that
-value; unrelated report limitations do not establish incompleteness.
+`filter_truth` controls the host's ordinary predicate completeness policy;
+`require_guard` controls required match and path predicates. The core completes
+Boolean composition before invoking these policies, so `unknown or true` can
+remain decisive. Zincite retains responsible incomplete facts through saved
+values and native collection operations, including empty results. Unrelated
+report limitations do not establish that a relation is incomplete.
 
 ## Native fixed-point execution
 
-Implement `ValueReaderHost::fixed_point` to retain the common reader's body; the
-default disposes it and returns an unsupported error. Delegate replacement and
-cycle handling to `evaluate_native_fixed_point`, passing one mutable context and
-the active budget through body execution, checkpoint copying and comparison.
-Use `ordered_native_equal` after checking kind and owner, including empty input.
-Keep the body stable in prepared native arguments so functions retain their
-parameters, locals and saved bindings on every iteration. Host callbacks retain
-native admission, nested execution guards and approved effect policy.
+`ExpressionStep::FixedPoint` prepares its `NativeBody` against the complete
+current selection. This differs from existence's singleton-relative body.
+The active runner preserves function arguments, lexical bindings and the
+request budget on each iteration. The core uses `evaluate_native_fixed_point`
+for replacement, convergence and cycle detection.
+
+`fixed_point_kind` admits the body's result kind and returns the selection kind
+for the next iteration. Its default requires exact input/result kind equality;
+Zirium also retains its existing operation-stream to string-stream transition.
+`same_selection` compares
+ordered native identities after owner and kind checks, including empty input;
+`admit_selection`, `selection_items` and `restore_selection` preserve runtime
+completeness and shape. The body must return an admitted selection kind.
+Native navigation and any domain-specific closure optimization stay with the
+host. Body effect admission follows the surrounding host context. Zincite
+requires pure bodies; Zirium entry programs preserve their pass-through
+emission on every iteration, including the final stability iteration. Pure
+functions and constructed contexts still reject effects.
 
 ## Fragments and computed object keys
 

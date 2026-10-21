@@ -94,12 +94,15 @@ pub enum ScalarMapKey {
     Unsigned(u64),
     Float(f64),
     String(String),
+    /// A language scalar retaining strict type and nominal-member ordering.
+    Typed(crate::ConstructedValue),
 }
 
 /// Sort already-admitted unique-key entries without copying their payloads.
 /// Collect and validate descriptors before sorting. Values must be all null,
-/// all Boolean, all numeric or all string; floats must be finite. Equal values
-/// retain their incoming entry order.
+/// all Boolean, all numeric or all string; floats must be finite. Typed
+/// descriptors instead use homogeneous language scalar and nominal-member
+/// ordering. Equal values retain their incoming entry order.
 ///
 /// The callback shares this budget for host access and any text copy.
 /// This operation admits descriptor and index storage, charges descriptor
@@ -131,14 +134,27 @@ pub fn sort_map_by_value<V, E>(
         let key = key(value, budget)?;
         let current = scalar_category(&key, budget, &location)?;
         if category.is_some_and(|category| category != current) {
-            return Err(scalar_error(
-                location,
-                "sort_by(value) requires comparable scalar map values of one type",
-                budget,
-            )?
-            .into());
+            let message = if matches!(current, ScalarCategory::Typed(_))
+                || matches!(category, Some(ScalarCategory::Typed(_)))
+            {
+                "ordering needs homogeneous key types"
+            } else {
+                "sort_by(value) requires comparable scalar map values of one type"
+            };
+            return Err(scalar_error(location, message, budget)?.into());
         }
         category = Some(current);
+        if let ScalarMapKey::Typed(value) = &key
+            && let crate::ConstructedValue::Member(member) = value.data()
+        {
+            for previous in &keys {
+                if let ScalarMapKey::Typed(previous) = previous
+                    && let crate::ConstructedValue::Member(previous) = previous.data()
+                {
+                    crate::value::check_member_pair(previous, member, budget, &location)?;
+                }
+            }
+        }
         keys.push(key);
     }
     let destinations = sort_indices(count, budget, &location, |left, right, budget| {
@@ -191,6 +207,7 @@ enum ScalarCategory {
     Boolean,
     Number,
     String,
+    Typed(crate::value::OrderingKeyType),
 }
 
 fn scalar_category(
@@ -211,6 +228,9 @@ fn scalar_category(
             )?);
         }
         ScalarMapKey::String(_) => ScalarCategory::String,
+        ScalarMapKey::Typed(value) => {
+            ScalarCategory::Typed(crate::value::ordering_key(value, None, budget, location)?.1)
+        }
     })
 }
 
@@ -229,6 +249,9 @@ fn compare_scalars(
         (K::Boolean(left), K::Boolean(right)) => left.cmp(right),
         (K::String(left), K::String(right)) => {
             crate::ordering::compare_text(left, right, budget, location)?
+        }
+        (K::Typed(left), K::Typed(right)) => {
+            crate::value::compare_ordering_keys(left.data(), right.data(), budget, location)?
         }
         (K::Float(left), K::Float(right)) => left.partial_cmp(right).expect("finite scalar keys"),
         (K::Float(left), right) => compare_integer_float(integer(right), *left).reverse(),

@@ -13,10 +13,10 @@ use std::{
 };
 use zirql::{
     ArgumentReader, ArrayType, Budget, ConstructedValue as V, DeclaredType, ExpressionStep,
-    JsonLayout, JsonRepresentation, Located, Location, Predicate, ProgramLimits, QueryError,
-    ReadExpression, ValueExpression, ValueQueryHost, ValueReaderHost, ValueType,
-    copy_constructed_value, declare_constructed, dispose_native_value, evaluate_query_value,
-    read_value_expression, render_json, render_markdown,
+    JsonLayout, JsonRepresentation, Located, Location, ProgramLimits, QueryError, ReadExpression,
+    ValueExpression, ValueQueryHost, ValueReaderHost, ValueType, copy_constructed_value,
+    declare_constructed, dispose_native_value, evaluate_query_value, read_value_expression,
+    render_json, render_markdown,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -448,7 +448,7 @@ impl ValueReaderHost for CsvReader<'_> {
     type Stage = ();
     type SetOperator = ();
     type Emitter = ();
-    type Predicate = ();
+
     fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
         zirql::FieldPipelineSource::Constructed
     }
@@ -477,7 +477,6 @@ impl ValueReaderHost for CsvReader<'_> {
     ) -> Result<(), QueryError> {
         Err(reader.error("use a scoped row expression in filter"))
     }
-    fn filter(&mut self, _: Predicate<()>, _: Range<usize>) {}
 
     fn set_operator(&self, _: &str) -> Option<()> {
         None
