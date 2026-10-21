@@ -7,23 +7,24 @@ status = "open"
 complexity = "advanced"
 afk = true
 priority = "normal"
-blocked_by = ["base-116", "base-114"]
+blocked_by = ["base-116", "base-114", "base-125", "base-126", "base-127"]
 +++
 # Move common program preparation bookkeeping into Zirql
 
 ## Outcome
 
-Both hosts retain domain stage handling while Zirql manages shared prepared entries, bindings and program scope progression.
+Both hosts retain domain stage handling while Zirql manages common stages/calls, prepared entries, bindings and program scope progression for native and constructed clients.
 
 ## Context
 
-Read brief.md section Consolidate language machinery and data rendering (2026-10-21), including its integration and validation rules. Compare Zincite program/functions.rs Session (around 605) and Zirium query/functions.rs Session (around 827) with src/functions.rs PreparedFunctions/PreparedPatternBinding and src/program.rs. The preceding Zirium task removes its competing report route. Extend existing preparation rather than adding a second evaluator or cache.
+Read brief.md section Consolidate language machinery and data rendering (2026-10-21), including its integration and validation rules. Compare Zincite program/functions.rs Session (around 605) and Zirium query/functions.rs Session (around 827) with src/functions.rs PreparedFunctions/PreparedPatternBinding and src/program.rs. The preceding Zirium task removes its competing report route. Read Complete the common language boundary in brief.md. The new common-stage, typed-native-call and program-reader tasks settle the representation before this extraction. Extend existing preparation rather than adding a second evaluator or cache; CSV’s following task must be able to consume it without implementing native host traits.
 
 ## Done when
 
-- [ ] Zirql owns request-local prepared-entry storage and shared prepare/bind/run bookkeeping; common statement scope progression is shared through the lowered program with explicit host stage argument/kind hooks.
+- [ ] Zirql owns request-local prepared-entry storage and shared prepare/bind/run bookkeeping; common statement scope progression is shared through the lowered program using the common program reader and core-owned stages/calls. Host stage argument/kind hooks remain only for native operations.
 - [ ] Both host Session implementations shrink to domain adaptation; duplicate maps, lookups and shared binding progression are removed rather than hidden behind new wrappers.
 - [ ] Statement-order bindings, parameter positions, pattern atomicity, nested relative inputs, native owners, preflight effects and continuing budgets remain observable through existing public programs.
+- [ ] The shared prepared path can combine named functions, parameters and ordered pattern bindings with constructed current input and shared bindings under one continuing budget. Function bodies still receive data explicitly; do not fall back to NoQueries in a way that drops entry-program input or sharing. The following constructed embedding task supplies the concrete adapter and CSV/words adoption.
 - [ ] Embedding documentation shows a minimal data/function/operator host and names any remaining host orchestration with its concrete domain reason.
 
 ## Validation

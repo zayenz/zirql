@@ -17,7 +17,7 @@ Zirql owns traversal of its expression AST; both consumers adopt the current ext
 
 ## Context
 
-Read brief.md section Consolidate language machinery and data rendering (2026-10-21), including its integration and validation rules. Zincite crates/zincite-query/src/program/builder.rs map_queries (around line 405), functions.rs lower_primitives/check_values, and Zirium crates/zirium/src/query/functions.rs normalize_with plus report.rs visit_value enumerate Zirql variants. Start with src/value.rs, reader.rs and existing disposal/traversal code. Both consumers currently pin 0.2.0 and require adoption of newer branch variants; this task owns that initial integration.
+Read brief.md section Consolidate language machinery and data rendering (2026-10-21), including its integration and validation rules. Zincite crates/zincite-query/src/program/builder.rs map_queries (around line 405), functions.rs lower_primitives/check_values, and Zirium crates/zirium/src/query/functions.rs normalize_with plus report.rs visit_value enumerate Zirql variants. Start with src/value.rs, reader.rs and existing disposal/traversal code. Both consumers currently pin 0.2.0 and require adoption of newer branch variants; this task owns that initial integration. Read the later Complete the common language boundary section too: subsequent tasks move shared stage ownership into core. Keep this traversal slice usable for that representation; it does not freeze the current host wrappers or prepared-session interfaces.
 
 ## Boundaries
 

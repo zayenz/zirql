@@ -122,16 +122,16 @@
 | [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | done | — |
 | [base-112](tasks/112-organize-a-complete-library-reference-with-function-and-oper.md) | Organize a complete library reference with function and operator navigation | done | — |
 | [base-113](tasks/113-own-shared-expression-traversal-and-adopt-extensions-in-both.md) | Own shared expression traversal and adopt extensions in both hosts | ready | — |
-| [base-114](tasks/114-share-budgeted-declaration-copying-and-structural-inspection.md) | Share budgeted declaration copying and structural inspection | blocked | base-113 |
-| [base-115](tasks/115-consolidate-common-expression-recognition-and-suffix-routing.md) | Consolidate common expression recognition and suffix routing | blocked | base-113 |
+| [base-114](tasks/114-share-budgeted-declaration-copying-and-structural-inspection.md) | Share declaration metadata and scalar argument admission | blocked | base-113 |
+| [base-115](tasks/115-consolidate-common-expression-recognition-and-suffix-routing.md) | Consolidate common syntax routing and name admission | blocked | base-113 |
 | [base-116](tasks/116-use-the-prepared-path-for-all-shared-zirium-report-expressio.md) | Use the prepared path for all shared Zirium report expressions | blocked | base-113 |
-| [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | blocked | base-116, base-114 |
+| [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | blocked | base-116, base-114, base-125, base-126, base-127 |
 | [base-118](tasks/118-provide-common-json-rendering-for-all-zirql-data-and-adopt-i.md) | Provide common JSON rendering for all Zirql data and adopt it in CSV | ready | — |
 | [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | blocked | base-113, base-118 |
 | [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | blocked | base-118 |
 | [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | blocked | base-119, base-120 |
 | [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | ready | — |
-| [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122 |
+| [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122, base-128, base-129 |
 | [base-124](tasks/124-own-value-sources-and-projection-stages-in-zirql-and-migrate.md) | Own value sources and projection stages in Zirql and migrate both hosts | blocked | base-116 |
 | [base-125](tasks/125-own-remaining-shared-composition-stages-and-remove-host-disp.md) | Own remaining shared composition stages and remove host dispatch | blocked | base-124 |
 | [base-126](tasks/126-declare-ordinary-native-functions-once-and-share-call-admiss.md) | Declare ordinary native functions once and share call admission | blocked | base-114 |
