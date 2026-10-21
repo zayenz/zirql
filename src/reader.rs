@@ -353,7 +353,7 @@ pub fn read_pattern_let(
     }
     probe.skip_trivia()?;
     let scan_start = probe.position();
-    let mut stack = Vec::new();
+    let mut stack = ScanDelimiters::new();
     let mut declaration = false;
     while let Some(ch) = probe.remaining().chars().next() {
         if probe.protected_span()? {
@@ -1106,6 +1106,616 @@ pub fn is_common_value_call(name: &str) -> bool {
     )
 }
 
+/// Whether an unquoted name has the common ASCII identifier spelling.
+/// Keywords are contextual: hosts apply their binding or input-name policy
+/// separately. Single-quoted identities must not be checked as unquoted text.
+pub fn is_unquoted_binding_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Common syntax words. This is useful for external names such as CSV tables;
+/// it is not a universal reserved-name set for lexical bindings.
+pub fn is_common_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "_" | "input"
+            | "true"
+            | "false"
+            | "null"
+            | "absent"
+            | "let"
+            | "report"
+            | "param"
+            | "fn"
+            | "for"
+            | "in"
+            | "if"
+            | "else"
+            | "then"
+            | "end"
+            | "match"
+            | "case"
+            | "where"
+            | "bind"
+            | "from"
+            | "and"
+            | "or"
+            | "not"
+            | "mod"
+            | "div"
+            | "default"
+            | "loop"
+            | "continue"
+            | "break"
+            | "return"
+    )
+}
+
+/// Common names that conflict with function declarations. Lexical bindings
+/// can still use contextual operation names; native operations remain host facts.
+pub fn is_common_operation_name(name: &str) -> bool {
+    matches!(
+        name,
+        "queue"
+            | "pop_front"
+            | "push_back_all"
+            | "identity_set"
+            | "insert"
+            | "fold"
+            | "scan"
+            | "one"
+            | "occurs"
+            | "absent"
+            | "lookup"
+            | "has_key"
+            | "index_set"
+            | "entries"
+            | "zip_exact"
+            | "contains"
+            | "filter"
+            | "fixpoint"
+            | "where_exists"
+            | "starts_with"
+            | "ends_with"
+            | "length"
+            | "sum"
+            | "forall"
+            | "exists"
+            | "sort"
+            | "sort_by"
+            | "min"
+            | "max"
+            | "min_by"
+            | "max_by"
+            | "group_by"
+            | "windows"
+            | "runs_by"
+            | "align"
+            | "require"
+            | "project"
+            | "match"
+            | "paths"
+            | "map_by"
+            | "default"
+            | "if"
+    )
+}
+
+/// The syntax of one constructed collection suffix, before reading its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueSuffixKind {
+    Filter,
+    Map,
+    FlatMap,
+    Windows,
+    RunsBy,
+    Count,
+    Sort,
+    Unique,
+    Tally,
+}
+impl ValueSuffixKind {
+    /// Classify a common suffix spelling. Native-only stages return `None`.
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "filter" => Self::Filter,
+            "map" => Self::Map,
+            "flat_map" => Self::FlatMap,
+            "windows" => Self::Windows,
+            "runs_by" => Self::RunsBy,
+            "count" => Self::Count,
+            "sort" => Self::Sort,
+            "unique" => Self::Unique,
+            "tally" => Self::Tally,
+            _ => return None,
+        })
+    }
+    pub fn is_terminal(self) -> bool {
+        self == Self::Tally
+    }
+    /// Lower a suffix without arguments. Argument-bearing kinds need their
+    /// parsed payload and return `None`.
+    pub fn without_arguments<Q>(self) -> Option<ValueSuffix<Q>> {
+        Some(match self {
+            Self::Count => ValueSuffix::Count,
+            Self::Sort => ValueSuffix::Sort,
+            Self::Unique => ValueSuffix::Unique,
+            Self::Tally => ValueSuffix::Tally,
+            _ => return None,
+        })
+    }
+}
+
+/// Recognize collection forms that require value reading: sets, expression
+/// keys, indexed arrays, comprehensions and postfix access. Plain JSON-shaped
+/// arrays and records are not sufficient on their own, so a host can retain its
+/// legacy literal/interpolation policy. This allocation-free prediction is
+/// bounded by the source length and the common nesting ceiling.
+pub fn has_collection_syntax(source: &str) -> bool {
+    let mut reader = ArgumentReader::new(source, 0).expect("source boundary");
+    let mut containers = [b' '; crate::MAX_NESTING];
+    let mut depth = 0usize;
+    while !reader.remaining().is_empty() {
+        reader.skip_whitespace();
+        let Some(character) = reader.remaining().chars().next() else {
+            break;
+        };
+        let start = reader.position();
+        reader
+            .advance(character.len_utf8())
+            .expect("character boundary");
+        match character {
+            '"' | '\'' | '#' | '%' | '/'
+                if character != '/' || reader.remaining().starts_with('*') =>
+            {
+                let mut span = ArgumentReader::new(source, start).expect("source boundary");
+                if span.protected_span().is_err() {
+                    return true;
+                }
+                reader
+                    .advance(span.position() - reader.position())
+                    .expect("span boundary");
+                if character == '\'' && depth > 0 && containers[depth - 1] == b'k' {
+                    return true;
+                }
+                if character == '"' && depth > 0 && containers[depth - 1] == b'k' {
+                    reader.skip_whitespace();
+                    if !reader.consume(':') {
+                        return true;
+                    }
+                    containers[depth - 1] = b'{';
+                }
+            }
+            '{' | '[' | '(' => {
+                if depth == containers.len() {
+                    return true;
+                }
+                containers[depth] = if character == '{' {
+                    b'k'
+                } else {
+                    character as u8
+                };
+                depth += 1;
+            }
+            '}' | ']' | ')' => {
+                depth = depth.saturating_sub(1);
+                if character == '}' {
+                    reader.skip_whitespace();
+                    if reader.remaining().starts_with(['[', '.']) {
+                        return true;
+                    }
+                }
+                if character == ']' {
+                    let mut probe =
+                        ArgumentReader::new(source, reader.position()).expect("source boundary");
+                    if probe.keyword("axes") && probe.consume('(') {
+                        return true;
+                    }
+                }
+            }
+            ':' if depth > 0 && containers[depth - 1] == b'[' => return true,
+            ',' if depth > 0 && containers[depth - 1] == b'{' => containers[depth - 1] = b'k',
+            _ if depth > 0 && containers[depth - 1] == b'k' => return true,
+            ch if ch.is_ascii_alphabetic() || ch == '_' => {
+                let mut probe = ArgumentReader::new(source, start).expect("source boundary");
+                let word = probe.word().expect("identifier start");
+                reader
+                    .advance(probe.position() - reader.position())
+                    .expect("word boundary");
+                if word.value == "set" && probe.consume('<') {
+                    return true;
+                }
+                if word.value == "for" && depth > 0 && probe.word().is_ok() && probe.keyword("in") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+// Recognize `for binder in` at this array's own level. `[for]` stays a literal.
+// The allocation-free admission scan ignores quoted strings and comments, so
+// legacy names and text containing `for` retain their old parsing allowance.
+/// Predict whether a source contains common value/program syntax before a
+/// host allocates its own tokens. The predicate supplies native calls that also
+/// require common value parsing. This allocation-free admission prediction
+/// does not consume the request budget; recognized parsing charges that budget.
+/// Malformed recognized forms remain on the common path for located diagnosis.
+pub fn has_common_expression_syntax(source: &str, is_native_call: impl Fn(&str) -> bool) -> bool {
+    if has_collection_syntax(source) {
+        return true;
+    }
+    let bytes = source.as_bytes();
+    let mut cursor = 0;
+    let mut arrays = 0usize;
+    let mut records = 0usize;
+    let mut groups = 0usize;
+    let mut statement_start = true;
+    let mut previous_for = false;
+    let mut before_previous_for = false;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' | b'\'' | b'#' | b'%' | b'/'
+                if bytes[cursor] != b'/' || source[cursor..].starts_with("/*") =>
+            {
+                let comment = matches!(bytes[cursor], b'#' | b'%' | b'/');
+                let mut span = ArgumentReader::new(source, cursor).expect("source boundary");
+                if span.protected_span().is_err() {
+                    return true;
+                }
+                cursor = span.position();
+                if !comment {
+                    previous_for = false;
+                    before_previous_for = false;
+                    statement_start = false;
+                }
+            }
+            byte if byte.is_ascii_whitespace() => cursor += 1,
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                let start = cursor;
+                cursor += 1;
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                {
+                    cursor += 1;
+                }
+                let word = &source[start..cursor];
+                let mut lookahead =
+                    ArgumentReader::new(source, cursor).expect("source byte boundary");
+                lookahead.skip_whitespace();
+                let rest = lookahead.remaining();
+                if matches!(word, "queue" | "identity_set") && rest.starts_with('<') {
+                    return true;
+                }
+                if is_native_call(word) && rest.starts_with('(')
+                    || admission_ordering_call(source, start)
+                    || is_common_value_call(word)
+                        && !matches!(
+                            word,
+                            "sort" | "sort_by" | "min" | "max" | "min_by" | "max_by"
+                        )
+                        && rest.starts_with('(')
+                    || word == "project" && rest.starts_with('(')
+                {
+                    return true;
+                }
+                if statement_start
+                    && word == "report"
+                    && !rest.is_empty()
+                    && !rest.starts_with(['=', '|', ';'])
+                {
+                    return true;
+                }
+                if statement_start && word == "fn" {
+                    let mut probe =
+                        ArgumentReader::new(source, cursor).expect("source byte boundary");
+                    if probe.word().is_ok() && probe.consume('(') {
+                        return true;
+                    }
+                }
+                if statement_start && word == "param" {
+                    let mut probe =
+                        ArgumentReader::new(source, cursor).expect("source byte boundary");
+                    if probe.word().is_ok() && probe.consume(':') {
+                        return true;
+                    }
+                }
+                if statement_start && word == "let" {
+                    let mut probe =
+                        ArgumentReader::new(source, cursor).expect("source byte boundary");
+                    if probe.word().is_ok() && probe.consume('=') {
+                        return true;
+                    }
+                }
+                if is_common_control_call(word) && rest.starts_with('(') {
+                    return true;
+                }
+
+                if word == "default"
+                    && !rest.starts_with([':', '='])
+                    && source[..start]
+                        .trim_end()
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| {
+                            !matches!(c, '[' | '(' | '{' | ',' | ':' | ';' | '=' | '|')
+                        })
+                {
+                    return true;
+                }
+                if arrays > 0 && before_previous_for && word == "in" {
+                    return true;
+                }
+                before_previous_for = previous_for;
+                previous_for = word == "for";
+                statement_start = false;
+            }
+            byte => {
+                if byte == b'[' {
+                    arrays += 1;
+                } else if byte == b']' {
+                    arrays = arrays.saturating_sub(1);
+                }
+                if byte == b'{' {
+                    records += 1;
+                } else if byte == b'}' {
+                    records = records.saturating_sub(1);
+                }
+                if byte == b'(' {
+                    groups += 1;
+                } else if byte == b')' {
+                    groups = groups.saturating_sub(1);
+                }
+                statement_start = byte == b';' && arrays == 0 && records == 0 && groups == 0;
+                previous_for = false;
+                before_previous_for = false;
+                cursor += 1;
+            }
+        }
+    }
+    false
+}
+
+fn admission_ordering_call(source: &str, position: usize) -> bool {
+    let reader = ArgumentReader::new(source, position).expect("source boundary");
+    let mut budget = Budget::for_program(crate::ProgramLimits {
+        work: usize::MAX,
+        results: usize::MAX,
+        nesting: crate::MAX_NESTING,
+        stream_items: usize::MAX,
+    });
+    probe_ordering_call(&reader, &mut budget, crate::MAX_NESTING).unwrap_or(true)
+}
+
+// Small lookahead reads use the existing reader's protected spans, spelling and
+// boundaries. They retain source slices and allocate no token stream.
+fn syntax_token<'s>(reader: &mut ArgumentReader<'s>) -> Option<Located<&'s str>> {
+    reader.skip_trivia().ok()?;
+    let start = reader.position();
+    let first = reader.remaining().chars().next()?;
+    if first.is_ascii_alphabetic() || first == '_' || first == '\'' {
+        return reader.word().ok();
+    }
+    if first == '"' {
+        reader.protected_span().ok()?;
+    } else if first.is_ascii_digit() {
+        reader.number_text().ok()?;
+    } else {
+        reader.advance(first.len_utf8()).ok()?;
+    }
+    Some(Located::new(
+        &reader.source()[start..reader.position()],
+        start..reader.position(),
+    ))
+}
+
+fn expression_boundary(reader: &ArgumentReader<'_>) -> usize {
+    let mut probe = reader.at(reader.position()).expect("reader boundary");
+    let mut depth = 0usize;
+    while let Some(token) = syntax_token(&mut probe) {
+        match token.value {
+            "(" | "[" | "{" => depth += 1,
+            ")" | "]" | "}" if depth == 0 => return token.range.start,
+            ")" | "]" | "}" => depth -= 1,
+            "|" | ";" if depth == 0 => return token.range.start,
+            _ => {}
+        }
+    }
+    reader.end()
+}
+
+const VALUE_OPERATORS: &[(&str, u8, Option<B>)] = &[
+    ("or", 1, Some(B::Or)),
+    ("\\/", 1, Some(B::Or)),
+    ("and", 2, Some(B::And)),
+    ("/\\", 2, Some(B::And)),
+    ("==", 3, Some(B::Equal)),
+    ("!=", 3, Some(B::NotEqual)),
+    ("<=", 4, Some(B::LessEqual)),
+    (">=", 4, Some(B::GreaterEqual)),
+    ("in", 4, Some(B::In)),
+    ("<", 4, Some(B::Less)),
+    (">", 4, Some(B::Greater)),
+    ("=", 3, Some(B::Equal)),
+    ("++", 5, Some(B::Concatenate)),
+    ("..", 6, None),
+    ("+", 7, Some(B::Add)),
+    ("-", 7, Some(B::Subtract)),
+    ("*", 8, Some(B::Multiply)),
+    ("/", 8, Some(B::Divide)),
+    ("div", 8, Some(B::IntegerDivide)),
+    ("mod", 8, Some(B::Modulo)),
+];
+
+/// Whether a value continues with a postfix or infix operator. Pipeline stages
+/// are classified separately by [`ValueSuffixKind`].
+pub fn is_value_continuation(token: &str) -> bool {
+    matches!(token, "[" | "." | "!" | "default")
+        || VALUE_OPERATORS.iter().any(|(word, _, _)| *word == token)
+}
+
+/// Whether the initial (possibly grouped) name selects a field. Hosts that
+/// retain saved native values leave its later pipeline routing to their facts.
+pub fn has_named_value_postfix(reader: &ArgumentReader<'_>) -> bool {
+    let mut probe = reader.at(reader.position()).expect("reader boundary");
+    let Some(name) = std::iter::from_fn(|| syntax_token(&mut probe)).find(|t| t.value != "(")
+    else {
+        return false;
+    };
+    if !is_unquoted_binding_name(name.value) {
+        return false;
+    }
+    std::iter::from_fn(|| syntax_token(&mut probe))
+        .find(|t| t.value != ")")
+        .is_some_and(|t| t.value == ".")
+}
+
+/// Recognize common value syntax at the current expression boundary without
+/// consuming the reader. The host first applies native-stage precedence using
+/// its binding facts and [`probe_ordering_call`]. Plain JSON-shaped literals
+/// remain available to a legacy host. Checked ordering lookahead shares the
+/// supplied request budget and remaining nesting allowance.
+///
+/// # Errors
+/// Malformed ordering delimiters and exhausted lookahead allowances are located.
+pub fn starts_common_expression(
+    reader: &ArgumentReader<'_>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<bool, QueryError> {
+    let mut head = reader.at(reader.position())?;
+    let mut groups = 0usize;
+    let first = loop {
+        match syntax_token(&mut head) {
+            Some(token) if token.value == "(" => groups += 1,
+            token => break token,
+        }
+    };
+    if first.as_ref().is_some_and(|t| {
+        t.value
+            .starts_with(|ch: char| ch.is_ascii_digit() || ch == '"')
+            || matches!(t.value, "+" | "-" | "true" | "false" | "null" | "not")
+    }) {
+        return Ok(true);
+    }
+    let end = expression_boundary(reader);
+    if has_collection_syntax(&reader.source()[reader.position()..end]) {
+        return Ok(true);
+    }
+    let mut probe = reader.at(reader.position())?;
+    let array_head = {
+        let mut start = probe.at(probe.position())?;
+        syntax_token(&mut start).is_some_and(|t| t.value == "[")
+    };
+    let mut depth = 0usize;
+    let mut previous = "[";
+    while let Some(token) = syntax_token(&mut probe) {
+        let word = token.value;
+        match word {
+            "[" if depth == 0 && is_unquoted_binding_name(previous) => return Ok(true),
+            "[" | "{" | "(" => depth += 1,
+            "]" | "}" | ")" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Ok(
+                        syntax_token(&mut probe).is_some_and(|t| is_value_continuation(t.value))
+                    );
+                }
+            }
+            "|" if array_head && depth == 1 => {
+                let mut tail = probe.at(probe.position())?;
+                while let Some(next) = syntax_token(&mut tail) {
+                    if matches!(next.value, ";") {
+                        break;
+                    }
+                    if next.value == "in" {
+                        return Ok(true);
+                    }
+                }
+            }
+            "for" if array_head && depth == 1 && !matches!(previous, "[" | ",") => return Ok(true),
+            "|" | ";" if depth == 0 => return Ok(false),
+            "." if depth > 0 && depth <= groups => {}
+            "," if depth > 0 && depth <= groups => return Ok(true),
+            "default" if !matches!(previous, "[" | "(" | "{" | "," | ":" | ";" | "=" | "|") => {
+                return Ok(true);
+            }
+            word if depth <= groups && is_value_continuation(word) => {
+                return Ok(true);
+            }
+            word if is_common_control_call(word) => {
+                let mut start = reader.at(token.range.start)?;
+                start.word()?;
+                if start.consume('(')
+                    || matches!(word, "queue" | "identity_set") && start.consume('<')
+                {
+                    return Ok(true);
+                }
+            }
+            word if is_common_value_call(word) => {
+                let mut start = reader.at(token.range.start)?;
+                if matches!(
+                    word,
+                    "sort" | "sort_by" | "min" | "max" | "min_by" | "max_by"
+                ) {
+                    if probe_ordering_call(&start, budget, nesting)? {
+                        return Ok(true);
+                    }
+                } else {
+                    start.word()?;
+                    if start.consume('(') {
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => {}
+        }
+        previous = word;
+    }
+    Ok(false)
+}
+
+/// Common state/control calls that require the shared value reader. Native
+/// primitive names remain inputs to host recognition.
+pub fn is_common_control_call(name: &str) -> bool {
+    matches!(
+        name,
+        "match"
+            | "loop"
+            | "fold"
+            | "scan"
+            | "queue"
+            | "pop_front"
+            | "push_back_all"
+            | "identity_set"
+            | "insert"
+    )
+}
+
+/// Recognize a dotted native capture followed by a pipeline. Hosts apply their
+/// field-source policy separately; no cursor or budget is consumed.
+pub fn has_native_field_pipeline(reader: &ArgumentReader<'_>) -> bool {
+    let mut probe = reader.at(reader.position()).expect("reader boundary");
+    if probe.word().is_err() || !probe.consume('.') {
+        return false;
+    }
+    loop {
+        if probe.word().is_err() {
+            return false;
+        }
+        if !probe.consume('.') {
+            return probe.consume('|');
+        }
+    }
+}
+
 /// One supported constructed collection suffix. Hosts can retain this syntax
 /// until their existing type facts distinguish constructed from native input.
 #[derive(Debug, PartialEq)]
@@ -1671,9 +2281,94 @@ fn typed_arguments_end(
     Ok(None)
 }
 
+/// Distinguish constructed ordering helpers from native selectors without
+/// consuming the reader. `sort`, `min` and `max` take values; their `_by`
+/// forms take values only when a comma occurs at their argument delimiter level.
+/// Quotes, comments, source boundaries and byte coordinates are preserved.
+/// Scanning uses the active budget and remaining nesting allowance.
+///
+/// # Errors
+/// Malformed delimiters, unterminated input and exhausted allowances are located.
+pub fn probe_ordering_call(
+    reader: &ArgumentReader<'_>,
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<bool, QueryError> {
+    let mut probe = reader.at(reader.position())?;
+    let Ok(name) = probe.word() else {
+        return Ok(false);
+    };
+    if !matches!(
+        name.value,
+        "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
+    ) || !probe.consume('(')
+    {
+        return Ok(false);
+    }
+    if matches!(name.value, "sort" | "min" | "max") {
+        return Ok(true);
+    }
+    // A top-level comma distinguishes constructed helpers from native selectors.
+    let mut stack = ScanDelimiters::new();
+    while !probe.remaining().is_empty() {
+        if stack.is_empty() {
+            if probe.remaining().starts_with(')') {
+                return Ok(false);
+            }
+            if probe.remaining().starts_with(',') {
+                return Ok(true);
+            }
+        }
+        scan_step(
+            &mut probe,
+            &mut stack,
+            budget,
+            nesting
+                .min(crate::MAX_NESTING)
+                .min(budget.remaining_nesting()),
+        )?;
+    }
+    Err(probe.error("unterminated ordering call"))
+}
+
+struct ScanDelimiters {
+    closers: [char; crate::MAX_NESTING],
+    len: usize,
+}
+impl ScanDelimiters {
+    fn new() -> Self {
+        Self {
+            closers: [' '; crate::MAX_NESTING],
+            len: 0,
+        }
+    }
+    fn closing(closer: char) -> Self {
+        let mut stack = Self::new();
+        stack.push(closer);
+        stack
+    }
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    fn last(&self) -> Option<&char> {
+        self.len.checked_sub(1).map(|i| &self.closers[i])
+    }
+    fn push(&mut self, closer: char) {
+        self.closers[self.len] = closer;
+        self.len += 1;
+    }
+    fn pop(&mut self) -> Option<char> {
+        self.len = self.len.checked_sub(1)?;
+        Some(self.closers[self.len])
+    }
+}
+
 fn scan_step(
     reader: &mut ArgumentReader<'_>,
-    stack: &mut Vec<char>,
+    stack: &mut ScanDelimiters,
     budget: &mut Budget,
     nesting: usize,
 ) -> Result<(), QueryError> {
@@ -2328,36 +3023,6 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             .expect("reader byte boundary");
         probe.word().is_ok_and(|word| word.value == name) && probe.consume('(')
     }
-    fn ordering_call(&mut self) -> Result<bool, QueryError> {
-        let mut probe = self.reader.at(self.reader.position())?;
-        let Ok(name) = probe.word() else {
-            return Ok(false);
-        };
-        if !matches!(
-            name.value,
-            "sort" | "min" | "max" | "sort_by" | "min_by" | "max_by"
-        ) || !probe.consume('(')
-        {
-            return Ok(false);
-        }
-        if matches!(name.value, "sort" | "min" | "max") {
-            return Ok(true);
-        }
-        // A top-level comma distinguishes constructed helpers from native selectors.
-        let mut stack = Vec::new();
-        while !probe.remaining().is_empty() {
-            if stack.is_empty() {
-                if probe.remaining().starts_with(')') {
-                    return Ok(false);
-                }
-                if probe.remaining().starts_with(',') {
-                    return Ok(true);
-                }
-            }
-            scan_step(&mut probe, &mut stack, self.budget, self.nesting)?;
-        }
-        Err(probe.error("unterminated ordering call"))
-    }
     fn descending_option(&mut self) -> Result<bool, QueryError> {
         if !self.reader.consume(',') {
             return Ok(false);
@@ -2385,7 +3050,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         if !probe.keyword("match") || !probe.consume('(') {
             return Ok(false);
         }
-        let mut stack = vec![')'];
+        let mut stack = ScanDelimiters::closing(')');
         while !probe.remaining().is_empty() {
             scan_step(&mut probe, &mut stack, self.budget, self.nesting)?;
             if stack.is_empty() {
@@ -2404,24 +3069,8 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     // Default readers retain their native capture postfix route. Value-capable
     // and constructed-only readers select fields through the value tree.
     fn field_pipeline(&self) -> bool {
-        if self.host.field_pipeline_source() != FieldPipelineSource::NativeCapture {
-            return false;
-        }
-        let mut probe = self
-            .reader
-            .at(self.reader.position())
-            .expect("reader byte boundary");
-        if probe.word().is_err() || !probe.consume('.') {
-            return false;
-        }
-        loop {
-            if probe.word().is_err() {
-                return false;
-            }
-            if !probe.consume('.') {
-                return probe.consume('|');
-            }
-        }
+        self.host.field_pipeline_source() == FieldPipelineSource::NativeCapture
+            && has_native_field_pipeline(self.reader)
     }
     fn is_local(&mut self, name: &str, range: &Range<usize>) -> Result<bool, QueryError> {
         for local in self.locals.iter().rev() {
@@ -2538,30 +3187,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 if rest.starts_with("=>") {
                     break;
                 }
-                let operator = [
-                    ("or", 1, Some(B::Or)),
-                    ("\\/", 1, Some(B::Or)),
-                    ("and", 2, Some(B::And)),
-                    ("/\\", 2, Some(B::And)),
-                    ("==", 3, Some(B::Equal)),
-                    ("!=", 3, Some(B::NotEqual)),
-                    ("<=", 4, Some(B::LessEqual)),
-                    (">=", 4, Some(B::GreaterEqual)),
-                    ("in", 4, Some(B::In)),
-                    ("<", 4, Some(B::Less)),
-                    (">", 4, Some(B::Greater)),
-                    ("=", 3, Some(B::Equal)),
-                    ("++", 5, Some(B::Concatenate)),
-                    ("..", 6, None),
-                    ("+", 7, Some(B::Add)),
-                    ("-", 7, Some(B::Subtract)),
-                    ("*", 8, Some(B::Multiply)),
-                    ("/", 8, Some(B::Divide)),
-                    ("div", 8, Some(B::IntegerDivide)),
-                    ("mod", 8, Some(B::Modulo)),
-                ]
-                .into_iter()
-                .find(|(word, _, _)| {
+                let operator = VALUE_OPERATORS.iter().copied().find(|(word, _, _)| {
                     rest.starts_with(word)
                         && (!word.as_bytes()[0].is_ascii_alphabetic() || self.word_is(word))
                 });
@@ -2730,10 +3356,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         if matches!(word.value, "queue" | "identity_set")
             && (probe.remaining().starts_with('(')
                 || probe.remaining().starts_with('<') && self.typed_worklist_call()?)
-            || matches!(
-                word.value,
-                "pop_front" | "push_back_all" | "insert" | "fold" | "scan"
-            ) && probe.remaining().starts_with('(')
+            || is_common_control_call(word.value)
+                && !matches!(word.value, "loop" | "match" | "queue" | "identity_set")
+                && probe.remaining().starts_with('(')
         {
             return self.worklist_call(depth);
         }
@@ -2804,7 +3429,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             let name = self.name()?;
             return self.node(K::PredicateSubject, name.range);
         }
-        let ordering_call = self.ordering_call()?;
+        let ordering_call = probe_ordering_call(self.reader, self.budget, self.nesting)?;
         let mut next = self.reader.at(probe.position())?;
         let set_operand = (local || self.host.is_binding(word.value))
             && next
@@ -3213,7 +3838,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             let segment_start = self.reader.position();
             let mut probe = self.reader.at(segment_start)?;
             probe.set_end(self.reader.end());
-            let mut stack = Vec::new();
+            let mut stack = ScanDelimiters::new();
             while !probe.remaining().is_empty()
                 && !(stack.is_empty() && probe.remaining().starts_with('|'))
             {
@@ -3241,7 +3866,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 let header = if keyed && row == 0 && columns.is_none() {
                     let mut probe = self.reader.at(self.reader.position())?;
                     probe.set_end(segment_end);
-                    let mut stack = Vec::new();
+                    let mut stack = ScanDelimiters::new();
                     let mut colon = false;
                     while !probe.remaining().is_empty() {
                         if stack.is_empty() && probe.remaining().starts_with(':') {
@@ -3670,7 +4295,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             };
             let mut probe = self.reader.at(range.start)?;
             probe.set_end(range.end);
-            let mut stack = Vec::new();
+            let mut stack = ScanDelimiters::new();
             let mut previous = None;
             let mut field = false;
             while !probe.remaining().is_empty() {
@@ -3814,7 +4439,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let source = self.reader.source();
         let mut probe = ArgumentReader::new(source, self.reader.position())?;
         probe.set_end(self.reader.end());
-        let mut stack = Vec::new();
+        let mut stack = ScanDelimiters::new();
         let mut found: Option<(usize, bool)> = None;
         let mut names = Vec::new();
         loop {
@@ -4455,7 +5080,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     fn predicate_pattern(&mut self, depth: usize) -> Result<Option<crate::Pattern>, QueryError> {
         let mut probe = self.reader.at(self.reader.position())?;
         probe.skip_whitespace();
-        let mut stack = Vec::new();
+        let mut stack = ScanDelimiters::new();
         while !probe.remaining().is_empty() {
             if stack.is_empty()
                 && (probe.remaining().starts_with("=>")
@@ -4557,8 +5182,8 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     "tally must be the terminal stage",
                 ));
             }
-            let suffix = match stage.value.as_str() {
-                "filter" | "map" | "flat_map" => {
+            let suffix = match ValueSuffixKind::named(&stage.value) {
+                Some(ValueSuffixKind::Filter | ValueSuffixKind::Map | ValueSuffixKind::FlatMap) => {
                     self.reader.expect('(')?;
                     let mut predicate = PredicateArgumentGuard(Some(
                         self.predicate_argument(depth + wrappers + 1)?,
@@ -4571,24 +5196,21 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         _ => ValueSuffix::Filter(argument),
                     }
                 }
-                "windows" => {
+                Some(ValueSuffixKind::Windows) => {
                     self.reader.expect('(')?;
                     let size = ValueGuard::new(self.expression(0, depth + wrappers + 1)?);
                     self.reader.expect(')')?;
                     self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
                     ValueSuffix::Windows(Box::new(size.into_value()))
                 }
-                "runs_by" => {
+                Some(ValueSuffixKind::RunsBy) => {
                     self.reader.expect('(')?;
                     let field = self.string()?;
                     self.reader.expect(')')?;
                     ValueSuffix::RunsBy(field)
                 }
-                "count" => ValueSuffix::Count,
-                "sort" => ValueSuffix::Sort,
-                "unique" => ValueSuffix::Unique,
-                "tally" => ValueSuffix::Tally,
-                _ => {
+                Some(kind) => kind.without_arguments().expect("argument-free suffix"),
+                None => {
                     return Err(QueryError::query(
                         stage.range,
                         "unsupported constructed pipeline stage",
@@ -4647,7 +5269,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             return Ok(false);
         }
         // A following value operator/postfix keeps the parentheses with its operand.
-        let mut stack = vec![')'];
+        let mut stack = ScanDelimiters::closing(')');
         self.depth(depth + 1)?;
         while !probe.remaining().is_empty() {
             scan_step(

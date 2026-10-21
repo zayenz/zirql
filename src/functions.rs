@@ -366,7 +366,10 @@ fn register<'a, Q: 'a, K: 'a>(
     for (index, d) in declarations.clone().enumerate() {
         let location = Location::Query(d.name.range.clone());
         budget.charge(d.name.value.len() + 1, location.clone())?;
-        if d.name.value == "_" || builtin(&d.name.value) || conflict(&d.name.value) {
+        if d.name.value == "_"
+            || crate::is_common_operation_name(&d.name.value)
+            || conflict(&d.name.value)
+        {
             return Err(QueryError::query(
                 d.name.range.clone(),
                 "function conflicts with a reserved operation name",
@@ -398,53 +401,6 @@ fn register<'a, Q: 'a, K: 'a>(
         )?;
     }
     Ok(())
-}
-fn builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "queue"
-            | "pop_front"
-            | "push_back_all"
-            | "identity_set"
-            | "insert"
-            | "fold"
-            | "scan"
-            | "one"
-            | "occurs"
-            | "absent"
-            | "lookup"
-            | "has_key"
-            | "index_set"
-            | "entries"
-            | "zip_exact"
-            | "contains"
-            | "filter"
-            | "fixpoint"
-            | "where_exists"
-            | "starts_with"
-            | "ends_with"
-            | "length"
-            | "sum"
-            | "forall"
-            | "exists"
-            | "sort"
-            | "sort_by"
-            | "min"
-            | "max"
-            | "min_by"
-            | "max_by"
-            | "group_by"
-            | "windows"
-            | "runs_by"
-            | "align"
-            | "require"
-            | "project"
-            | "match"
-            | "paths"
-            | "map_by"
-            | "default"
-            | "if"
-    )
 }
 
 /// Execute constructed functions without a native host. The same runner powers

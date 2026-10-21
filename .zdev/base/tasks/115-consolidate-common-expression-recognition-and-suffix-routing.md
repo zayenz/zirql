@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-115"
 key = "common-reader-routing"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -25,13 +25,21 @@ Read brief.md section Consolidate language machinery and data rendering (2026-10
 
 ## Done when
 
-- [ ] A bounded common ordering-call probe replaces Zirium’s copy, preserving consumed positions, nested delimiters, comments, locations and budget behavior.
-- [ ] Common expression-start and suffix classification used by both hosts moves into existing reader APIs; remove replaced host grammar lists/scanners where their decision is wholly shared. Retain only documented native-stage/legacy-literal/effect distinctions.
-- [ ] Constructed and native calls with overlapping names, comments/strings and saved-result suffixes follow one common grammar decision; legacy parsing limits are preserved or explicitly reconciled in docs rather than accidentally bypassed.
-- [ ] Context-specific common keyword, operation-name and unquoted-binding checks are shared by core registration, both hosts and CSV/words where applicable. Hosts add only their domain/input exclusions; quoted forms and deliberate lexical differences remain explicit, with no universal reserved-name list or registry.
-- [ ] Embedding guidance explains the smaller reader adapter and name-admission rules; host and CSV embedding docs reflect their remaining exclusions. Whole-program assembly belongs to the separate common-program-reader task.
+- [x] A bounded common ordering-call probe replaces Zirium’s copy, preserving consumed positions, nested delimiters, comments, locations and budget behavior.
+- [x] Common expression-start and suffix classification used by both hosts moves into existing reader APIs; remove replaced host grammar lists/scanners where their decision is wholly shared. Retain only documented native-stage/legacy-literal/effect distinctions.
+- [x] Constructed and native calls with overlapping names, comments/strings and saved-result suffixes follow one common grammar decision; legacy parsing limits are preserved or explicitly reconciled in docs rather than accidentally bypassed.
+- [x] Context-specific common keyword, operation-name and unquoted-binding checks are shared by core registration, both hosts and CSV/words where applicable. Hosts add only their domain/input exclusions; quoted forms and deliberate lexical differences remain explicit, with no universal reserved-name list or registry.
+- [x] Embedding guidance explains the smaller reader adapter and name-admission rules; host and CSV embedding docs reflect their remaining exclusions. Whole-program assembly belongs to the separate common-program-reader task.
 
 ## Validation
 
 - Use existing parsing tests plus a compact ambiguous ordering/suffix example and located malformed-input/limit check. Reuse name-collision tests and add only a missing common/domain name or contextual-keyword distinction.
 - Run the brief’s Rust checks in every changed Rust repository and affected host/Python checks; git diff --check and zdev check base --format json for records. Record separate consumer commits and accepted Zirql dependency revisions.
+
+## Result
+
+Consolidated common syntax probes, expression recognition, suffix classification and contextual name admission in Zirql. Removed duplicated Zirium scanners and host common-form lists while retaining native precedence, lexical policies and Zincite forward-result recovery. Updated embedding, host and CSV docs. Zincite 89eb586e0615e16cdf58eb74bc49af65783a2327; Zirium e6f1f59ad0652cd1a480c9a9d3e80178c335d7a3; both pin cumulative Zirql 62b2d350f61d52e5bfd554724d750143ed451008.
+
+Validation:
+
+- Independent full review PASS W84f8e6e723f77165; core and both consumer states unchanged. All three formatting, fatal Clippy, workspace tests and docs builds passed; Zirium required all-target/all-feature tests and Python 178 passed with two existing skips. Documented CSV example printed 4; words and host ordering examples passed.

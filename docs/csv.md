@@ -321,10 +321,30 @@ one final expression; named function declarations are unsupported.
 
 Use exactly one unnamed file, or only named files. Named tables use ASCII
 identifiers: a letter or underscore followed by letters, digits or underscores.
-`_`, `rows`, `input`, literals and control/operator keywords are reserved. Names
-must be unique. One named table also supplies `rows` and the implicit current
+`_`, `rows`, `input`, literals and control/operator keywords are reserved. This
+external table-name rule uses Zirql's common keyword classification plus the
+CSV `rows` alias. A callable name such as `lookup` can still name a table.
+Names must be unique. One named table also supplies `rows` and the implicit current
 input. With several tables, use their names explicitly; neither `rows` nor
 `count` chooses a file for you.
+
+## Sort rows and reuse the result
+
+Constructed `sort_by(rows, "name")` takes both a collection and a field name.
+Its comma belongs to the call; commas or closing delimiters inside a string or
+comment do not change how the reader classifies it. A saved result accepts the
+same constructed suffixes:
+
+```sh
+cargo run --locked --example csv -- '
+let ordered = sort_by(rows, "name");
+ordered | map(_.name) | count
+' examples/csv/people.csv
+```
+
+This prints `4`. Hosts with native stages also accept selector forms such as
+Zirium's `sort_by(names)`; the shared reader distinguishes those calls before
+reading their arguments.
 
 ## Build a dictionary report
 

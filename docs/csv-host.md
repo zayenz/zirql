@@ -192,8 +192,11 @@ struct CsvHost<'a> {
 }
 ```
 
-`InputSpec` stores an optional name and a path. `admit_inputs` checks names and
-rejects duplicates or a mixture of named and unnamed inputs. With one table,
+`InputSpec` stores an optional name and a path. `admit_inputs` checks table
+names with `is_unquoted_binding_name` and `is_common_keyword`, then excludes
+the host's `rows` alias. This external-name context rejects `for` and `input`,
+while `lookup` remains a valid table name. It also rejects duplicates or a
+mixture of named and unnamed inputs. With one table,
 `implicit` returns it; with several, it returns a diagnostic asking the user to
 choose a named table.
 

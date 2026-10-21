@@ -13197,3 +13197,61 @@ fn scalar_facts_keep_declared_contracts_and_explicit_deferral() {
         );
     }
 }
+
+#[test]
+fn ordering_lookahead_keeps_offsets_quotes_and_request_limits() {
+    use zirql::{ArgumentReader, probe_ordering_call};
+    let source = "prefix sort_by((saved /* , ] */ | 'a,b'))";
+    let reader = ArgumentReader::new(source, 7).unwrap();
+    assert!(!probe_ordering_call(&reader, &mut Budget::for_program(limits()), 16).unwrap());
+    assert_eq!(reader.position(), 7);
+
+    let source = "prefix sort_by([{\"key\": \"comma,)\"}], # ignored , )\n\"key\")";
+    let reader = ArgumentReader::new(source, 7).unwrap();
+    assert!(probe_ordering_call(&reader, &mut Budget::for_program(limits()), 16).unwrap());
+    assert_eq!(reader.position(), 7);
+
+    let source = "prefix sort_by([1})";
+    let error = probe_ordering_call(
+        &ArgumentReader::new(source, 7).unwrap(),
+        &mut Budget::for_program(limits()),
+        16,
+    )
+    .unwrap_err();
+    let Location::Query(range) = error.location else {
+        panic!("query location")
+    };
+    assert_eq!(&source[range], "}");
+    let reader = ArgumentReader::new("prefix sort_by(((saved)))", 7).unwrap();
+    let error = probe_ordering_call(&reader, &mut Budget::for_program(limits()), 2).unwrap_err();
+    assert!(error.message.contains("nesting"));
+    assert!(matches!(error.location, Location::Query(range) if range.start >= 7));
+    let error = probe_ordering_call(
+        &reader,
+        &mut Budget::for_program(ProgramLimits {
+            work: 0,
+            ..limits()
+        }),
+        16,
+    )
+    .unwrap_err();
+    assert_eq!(error.category, QueryErrorCategory::WorkLimit);
+    assert!(matches!(error.location, Location::Query(range) if range.start >= 7));
+
+    // Admission must preserve the lightweight path for ordinary legacy text.
+    assert!(!zirql::has_common_expression_syntax(
+        r#"{"text":"sort_by(a,b) for word in words"}"#,
+        |_| false,
+    ));
+    assert!(!zirql::has_common_expression_syntax(
+        "sort_by(names)",
+        |_| false
+    ));
+    assert!(zirql::has_common_expression_syntax(
+        "# leading comment\nfn f(n:int)->int { n }",
+        |_| false
+    ));
+    assert!(zirql::has_common_expression_syntax("sort_by([1},", |_| {
+        false
+    }));
+}

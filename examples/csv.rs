@@ -258,43 +258,7 @@ fn admit_inputs(inputs: &[InputSpec], budget: &mut Budget) -> Result<(), QueryEr
 }
 
 fn is_table_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && !matches!(
-            name,
-            "_" | "rows"
-                | "input"
-                | "true"
-                | "false"
-                | "null"
-                | "absent"
-                | "let"
-                | "report"
-                | "param"
-                | "fn"
-                | "for"
-                | "in"
-                | "if"
-                | "else"
-                | "then"
-                | "end"
-                | "match"
-                | "case"
-                | "where"
-                | "bind"
-                | "from"
-                | "and"
-                | "or"
-                | "not"
-                | "mod"
-                | "div"
-                | "default"
-                | "loop"
-                | "continue"
-                | "break"
-                | "return"
-        )
+    zirql::is_unquoted_binding_name(name) && !zirql::is_common_keyword(name) && name != "rows"
 }
 
 #[derive(Debug)]
@@ -942,6 +906,9 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         assert_eq!(error.error.category, QueryErrorCategory::ResultLimit);
         let mut budget = Budget::for_program(LIMITS);
         assert!(admit_inputs(&[InputSpec::parse("rows=no.csv".into())], &mut budget).is_err());
+        assert!(admit_inputs(&[InputSpec::parse("for=no.csv".into())], &mut budget).is_err());
+        assert!(admit_inputs(&[InputSpec::parse("input=no.csv".into())], &mut budget).is_err());
+        assert!(admit_inputs(&[InputSpec::parse("lookup=no.csv".into())], &mut budget).is_ok());
         assert!(
             admit_inputs(
                 &[

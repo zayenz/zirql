@@ -107,6 +107,50 @@ comprehensions and lexical forms. Zincite retains its Data admission policy and
 model facts; Zirium retains MLIR/diff meanings and native ownership. Both use
 the same expression grammar without a whole-expression CST hook.
 
+## Recognize shared syntax before choosing a host path
+
+When a frontend retains native stages or legacy literals, Zirql supplies its
+common routing decisions. Call `probe_ordering_call(reader, budget, nesting)`
+before giving an overlapping ordering name to the native parser. The probe
+leaves the reader unchanged. `sort(rows)` is a constructed call;
+`sort_by(names)` is a native selector; `sort_by(rows, "score")` is a constructed
+call. Only a comma at the argument's own delimiter level distinguishes the two
+`_by` forms. Nested delimiters, quoted names, strings and supported comments
+cannot supply that comma. Malformed input and exhausted work/result/nesting
+allowances retain the original byte locations.
+
+After applying native-stage precedence and binding facts, use
+`starts_common_expression(reader, budget, nesting)` to select the shared value
+reader. `has_named_value_postfix` identifies a grouped or bare name followed by
+field access; `has_native_field_pipeline` recognizes capture fields continued
+by a pipeline. The host chooses their native or constructed meaning from its
+existing kind facts. `ValueSuffixKind::named` classifies constructed suffixes,
+including terminal `tally`. Read them with `read_value_suffix`, or map an
+already parsed host payload to `ValueSuffix` and use `lower_value_suffix`.
+Zincite retains that payload mapping for forward functions whose result kind
+becomes known after their bodies have been read.
+
+Before allocating a separate host token stream,
+`has_common_expression_syntax(source, is_native_call)` gives an allocation-free
+admission prediction. Supply only native calls that also require value parsing.
+`has_collection_syntax` distinguishes computed collection syntax from plain
+JSON-shaped literals. These predictions spend no request allowance; charge
+known lexer storage before allocation, then use the active request budget for
+checked lookahead and reading. Zirium keeps its established lightweight
+allowance for legacy literals and text containing common words. Recognized
+malformed common forms still receive the common parsing charges and diagnosis.
+Hosts keep their emission/edit stopping boundary and token cursor updates.
+Function collection and complete program assembly remain frontend work.
+
+Name admission has separate contexts. `is_unquoted_binding_name` checks ASCII
+identifier spelling. `is_common_keyword` identifies syntax words for an external
+name policy, such as CSV table names; it does not prohibit every such word as a
+lexical binding. `is_common_operation_name` identifies conflicts with named
+function declarations and is also used by core function registration. Hosts
+append native operation and input/document exclusions. Preserve quoted identity
+and contextual names: a valid saved `if`, `report` or `lookup` binding does not
+become invalid because the same word has a grammatical use elsewhere.
+
 ## Inspect and transform shared syntax
 
 Zirql owns expression child order and native-payload mapping. Use
