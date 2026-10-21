@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 111
-- Ready: 0
+- Total: 112
+- Ready: 1
 - Blocked: 0
 - Done: 111
 
@@ -120,3 +120,4 @@
 | [base-109](tasks/109-design-explanatory-finding-records-for-small-linters.md) | Design explanatory finding records for small linters | done | — |
 | [base-110](tasks/110-design-record-matching-and-native-templates-for-query-by-exa.md) | Design record matching and native templates for query by example | done | — |
 | [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | done | — |
+| [base-112](tasks/112-organize-a-complete-library-reference-with-function-and-oper.md) | Organize a complete library reference with function and operator navigation | ready | — |
