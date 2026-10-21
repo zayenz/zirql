@@ -487,11 +487,68 @@ pub fn evaluate_pattern_functions(
     crate::value::run_function_refs(&retained, entry, bindings, budget, limits)
 }
 
+/// One eager, pure, explicit-argument native function. A host returns a definition
+/// by name; preparation retains its signature and execution uses `checked_invoke`.
+/// Native ownership, completeness and domain validation remain in the host.
+///
+/// An identity definition can use the host's explicit native declaration:
+/// ```
+/// use zirql::{Budget, DeclaredType, FunctionHost, Location, NativeFunction,
+///     OperationSignature, ProjectionHost, QueryError, copy_declaration};
+/// fn identity<C, H: FunctionHost<C>>(
+///     declaration: &DeclaredType<<H as ProjectionHost<C>>::Kind>,
+///     budget: &mut Budget,
+/// ) -> Result<NativeFunction<C, H>, QueryError> {
+///     let location = Location::Query(0..0);
+///     let parameter = copy_declaration(declaration, budget, &location)?;
+///     let result = copy_declaration(declaration, budget, &location)?;
+///     budget.charge(std::mem::size_of_val(&parameter), location.clone())?;
+///     budget.charge_results(1, location)?;
+///     Ok(NativeFunction {
+///         name: "identity",
+///         signature: OperationSignature { parameters: vec![parameter], result },
+///         invoke: |_, mut arguments, _, _, _| Ok(arguments.pop().unwrap().value),
+///     })
+/// }
+/// ```
+/// Return this definition from [`FunctionHost::native_function`]. Read an ordinary
+/// `identity(argument)` call, prepare it with [`PreparedFunctions::prepare_value`],
+/// and evaluate it with that unit's current context and cumulative budget.
+pub struct NativeFunction<C, H: FunctionHost<C>> {
+    pub name: &'static str,
+    pub signature: crate::OperationSignature<Kind<C, H>>,
+    pub invoke: NativeFunctionImplementation<C, H>,
+}
+/// A native implementation receives admitted arguments in written order, their
+/// original ranges, and the active request context and budget.
+pub type NativeFunctionImplementation<C, H> =
+    fn(
+        &H,
+        Vec<Located<<H as ProgramHost<C>>::Value>>,
+        &mut C,
+        &mut Budget,
+        &Range<usize>,
+    ) -> Result<<H as ProgramHost<C>>::Value, EvaluationError<<H as ProgramHost<C>>::Error>>;
+
 /// Missing concrete function hooks over the existing projection/admission APIs.
 /// Existing hosts opt in only when they expose named functions.
 pub trait FunctionHost<C>:
     ProjectionHost<C> + RuntimeTypeHost<C, Kind = <Self as ProjectionHost<C>>::Kind>
 {
+    /// Look up an eager pure native function. All arguments are explicit; the
+    /// definition cannot capture lexical bindings or relative input. Charge
+    /// signature allocation before constructing it, using the active budget.
+    fn native_function(
+        &self,
+        _name: &str,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<Option<NativeFunction<C, Self>>, QueryError>
+    where
+        Self: Sized,
+    {
+        Ok(None)
+    }
     /// Expose an ordinary host-owned set. Its elements retain native handles;
     /// iteration order is insertion order and equality uses membership.
     fn set_view<'v>(&self, _value: &'v Self::Value) -> Option<&'v [Self::Value]> {
@@ -794,6 +851,7 @@ struct AlignmentSide<K> {
 struct Preflight<'h, 'a, C, H: FunctionHost<C>> {
     host: &'h H,
     declarations: Vec<DeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+    native_functions: Vec<NativeFunction<C, H>>,
     scope: BTreeMap<String, Kind<C, H>>,
     generator_kinds: BTreeMap<String, Kind<C, H>>,
     relative: Option<Kind<C, H>>,
@@ -822,9 +880,21 @@ impl<'h, 'a, C, H: FunctionHost<C>> Preflight<'h, 'a, C, H> {
         register(retained.iter().copied(), budget, |name| {
             host.is_operation_name(name)
         })?;
+        for declaration in &retained {
+            if host
+                .native_function(&declaration.name.value, budget, &declaration.name.range)?
+                .is_some()
+            {
+                return Err(QueryError::query(
+                    declaration.name.range.clone(),
+                    "function name conflicts with a native function",
+                ));
+            }
+        }
         Ok(Self {
             host,
             declarations: retained,
+            native_functions: Vec::new(),
             scope: BTreeMap::new(),
             generator_kinds: BTreeMap::new(),
             relative: None,
@@ -903,6 +973,30 @@ where
 }
 
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
+    fn declared_function(
+        &mut self,
+        name: &Located<String>,
+        budget: &mut Budget,
+    ) -> Result<(usize, usize), QueryError> {
+        let resolved = self.function(name, budget)?;
+        if resolved.0 >= self.declarations.len() {
+            return Err(QueryError::query(
+                name.range.clone(),
+                "accumulator step requires a declared function",
+            ));
+        }
+        Ok(resolved)
+    }
+    fn result_declaration(&self, id: usize) -> &DeclaredType<Kind<C, H>> {
+        match self.declarations.get(id) {
+            Some(declaration) => &declaration.result.value,
+            None => {
+                &self.native_functions[id - self.declarations.len()]
+                    .signature
+                    .result
+            }
+        }
+    }
     fn value_types(
         &mut self,
         entry: &ValueExpression<Query<C, H>>,
@@ -1212,7 +1306,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 ValueExpressionKind::Call { function, .. } => {
                     let (id, _) = self.function(function, budget)?;
                     Some(crate::runtime_types::copy_declaration(
-                        &self.declarations[id].result.value,
+                        self.result_declaration(id),
                         budget,
                         &location,
                     )?)
@@ -1842,18 +1936,18 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 ValueExpressionKind::Call { function, .. } => {
                     let (id, _) = self.function(function, budget)?;
                     Some(self.host.declaration_kind(
-                        &self.declarations[id].result.value,
+                        self.result_declaration(id),
                         budget,
                         &value.range,
                     )?)
                 }
                 ValueExpressionKind::Fold { step, .. } => {
-                    let (id, _) = self.function(step, budget)?;
+                    let (id, _) = self.declared_function(step, budget)?;
                     let state = accumulator_state(&self.declarations[id], step, budget)?;
                     Some(self.host.declaration_kind(state, budget, &value.range)?)
                 }
                 ValueExpressionKind::Scan { step, .. } => {
-                    let (id, _) = self.function(step, budget)?;
+                    let (id, _) = self.declared_function(step, budget)?;
                     let state = accumulator_state(&self.declarations[id], step, budget)?;
                     let sequence =
                         DeclaredType::Sequence(Box::new(crate::runtime_types::copy_declaration(
@@ -2063,16 +2157,15 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
                 arguments,
             } => {
                 let (id, _) = self.function(function, budget)?;
-                for (v, p) in arguments
-                    .iter()
-                    .zip(self.declarations[id].parameters.iter())
-                {
-                    self.expect(v, p.declaration, budget)?;
+                if let Some(declaration) = self.declarations.get(id).copied() {
+                    for (v, p) in arguments.iter().zip(declaration.parameters.iter()) {
+                        self.expect(v, p.declaration, budget)?;
+                    }
                 }
             }
             ValueExpressionKind::Fold { initial, step, .. }
             | ValueExpressionKind::Scan { initial, step, .. } => {
-                let (id, _) = self.function(step, budget)?;
+                let (id, _) = self.declared_function(step, budget)?;
                 let d = accumulator_state(&self.declarations[id], step, budget)?;
                 self.expect(initial, d, budget)?;
             }
@@ -2233,10 +2326,101 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
                 return Ok((id, d.parameters.len()));
             }
         }
+        for (index, definition) in self.native_functions.iter().enumerate() {
+            budget.charge(
+                1 + name.value.len().min(definition.name.len()),
+                Location::Query(name.range.clone()),
+            )?;
+            if name.value == definition.name {
+                return Ok((
+                    self.declarations.len() + index,
+                    definition.signature.parameters.len(),
+                ));
+            }
+        }
+        if let Some(definition) = self
+            .host
+            .native_function(&name.value, budget, &name.range)?
+        {
+            let location = Location::Query(name.range.clone());
+            for parameter in &definition.signature.parameters {
+                crate::runtime_types::validate_declaration(parameter, budget, &location)?;
+            }
+            crate::runtime_types::validate_declaration(
+                &definition.signature.result,
+                budget,
+                &location,
+            )?;
+            let id = self.declarations.len() + self.native_functions.len();
+            let arity = definition.signature.parameters.len();
+            crate::projection::admit_slots::<NativeFunction<C, H>>(1, budget, &name.range)?;
+            self.native_functions.push(definition);
+            return Ok((id, arity));
+        }
         Err(QueryError::query(
             name.range.clone(),
             format!("undefined function: {}", name.value),
         ))
+    }
+    fn function_argument(
+        &mut self,
+        name: &Located<String>,
+        index: usize,
+        value: &ValueExpression<Query<C, H>>,
+        types: &[ValueType],
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        let (id, _) = self.function(name, budget)?;
+        if id < self.declarations.len() {
+            return Ok(());
+        }
+        let declaration = &self.native_functions[id - self.declarations.len()]
+            .signature
+            .parameters[index];
+        let expected = self
+            .host
+            .declaration_kind(declaration, budget, &value.range)?;
+        let location = Location::Query(value.range.clone());
+        let native = crate::runtime_types::contains_native(declaration, budget, &location)?;
+        if let Some(kind) = self.local_kind(value, budget)? {
+            if kind == expected && native {
+                return Ok(());
+            }
+            if self
+                .host
+                .scalar_types(&kind, budget, &value.range)?
+                .is_none()
+            {
+                return Err(QueryError::query(
+                    value.range.clone(),
+                    "native function argument type mismatch",
+                ));
+            }
+        }
+        let declaration = &self.native_functions[id - self.declarations.len()]
+            .signature
+            .parameters[index];
+        let scalar = match declaration {
+            DeclaredType::Boolean => Some(crate::ScalarType::Boolean),
+            DeclaredType::Integer => Some(crate::ScalarType::Integer),
+            DeclaredType::Float => Some(crate::ScalarType::Float),
+            DeclaredType::String => Some(crate::ScalarType::String),
+            _ => None,
+        };
+        for ty in types {
+            if let Some(scalar) = scalar {
+                crate::admit_scalar_type(
+                    ty,
+                    scalar,
+                    crate::TypeFactPolicy::Deferred,
+                    budget,
+                    &location,
+                )?;
+            } else {
+                crate::runtime_types::check_type_facts(ty, declaration, true, budget, &location)?;
+            }
+        }
+        Ok(())
     }
     fn function_types(
         &mut self,
@@ -2245,7 +2429,7 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
     ) -> Result<Vec<ValueType>, QueryError> {
         let (id, _) = self.function(name, budget)?;
         crate::value::function_facts(
-            &self.declarations[id].result.value,
+            self.result_declaration(id),
             budget,
             &Location::Query(name.range.clone()),
         )
@@ -2255,7 +2439,7 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         step: &Located<String>,
         budget: &mut Budget,
     ) -> Result<(usize, Vec<ValueType>), QueryError> {
-        let (id, _) = self.function(step, budget)?;
+        let (id, _) = self.declared_function(step, budget)?;
         let state = accumulator_state(&self.declarations[id], step, budget)?;
         Ok((
             id,
@@ -2817,6 +3001,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             contracts: &BTreeMap::new(),
             prepared: &value.prepared,
             body_prepared: &self.body_prepared,
+            native_functions: &self.preflight.native_functions,
             worklists: &self.preflight.worklist_contracts,
             source_function: None,
             relative,
@@ -3028,6 +3213,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             contracts: &BTreeMap::new(),
             prepared: &entry.prepared,
             body_prepared: &self.body_prepared,
+            native_functions: &self.preflight.native_functions,
             worklists: &self.preflight.worklist_contracts,
             source_function: None,
             relative,
@@ -3142,6 +3328,7 @@ struct Runtime<'r, 'a, C, H: FunctionHost<C>> {
     contracts: &'r BTreeMap<&'a str, &'a DeclaredType<Kind<C, H>>>,
     prepared: &'r BTreeMap<usize, Operand<Kind<C, H>>>,
     body_prepared: &'r [BTreeMap<usize, Operand<Kind<C, H>>>],
+    native_functions: &'a [NativeFunction<C, H>],
     worklists: &'r [Option<DeclaredType<Kind<C, H>>>],
     source_function: Option<usize>,
     relative: Option<&'r H::Value>,
@@ -3966,6 +4153,45 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         }
         Ok(())
     }
+    fn native_call(
+        &mut self,
+        index: usize,
+        arguments: Vec<HostValue<'a, C, H>>,
+        ranges: &[&Range<usize>],
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<HostValue<'a, C, H>, Self::Error> {
+        let definition = self.native_functions.get(index).ok_or_else(|| {
+            QueryError::query(
+                range.clone(),
+                "native function was not prepared in this request",
+            )
+        })?;
+        crate::projection::admit_slots::<Located<H::Value>>(arguments.len(), budget, range)?;
+        let mut values = Vec::with_capacity(arguments.len());
+        for (value, source) in arguments.into_iter().zip(ranges) {
+            values.push(Located::new(
+                self.finish_value(value, budget, &Location::Query((*source).clone()))?,
+                (*source).clone(),
+            ));
+        }
+        let value = crate::checked_invoke(
+            &definition.signature,
+            values,
+            self.host,
+            self.context,
+            budget,
+            range.clone(),
+            |values, context, budget| {
+                (definition.invoke)(self.host, values, context, budget, range)
+            },
+        )?;
+        budget.charge_results(1, Location::Query(range.clone()))?;
+        Ok(Value {
+            data: Data::Native(NativeView::new(std::sync::Arc::new(value))),
+            contract: Some(&definition.signature.result),
+        })
+    }
     fn native_constructed<'v>(&self, value: &'v H::Value) -> Option<&'v ConstructedValue> {
         self.host.constructed_value(value)
     }
@@ -4260,6 +4486,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         let host = self.host;
         let prepared = self.prepared;
         let body_prepared = self.body_prepared;
+        let native_functions = self.native_functions;
         let worklists = self.worklists;
         let limit = self.limit;
         let calls = &mut *self.calls;
@@ -4280,6 +4507,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
                     contracts: &contracts,
                     prepared,
                     body_prepared,
+                    native_functions,
                     worklists,
                     source_function,
                     bodies,
@@ -4447,6 +4675,7 @@ struct Arguments<'r, 'a, C, H: FunctionHost<C>> {
     contracts: &'r BTreeMap<&'a str, &'a DeclaredType<Kind<C, H>>>,
     prepared: &'r BTreeMap<usize, Operand<Kind<C, H>>>,
     body_prepared: &'r [BTreeMap<usize, Operand<Kind<C, H>>>],
+    native_functions: &'a [NativeFunction<C, H>],
     worklists: &'r [Option<DeclaredType<Kind<C, H>>>],
     source_function: Option<usize>,
     bodies: &'a Bodies<'a, C, H>,
@@ -4494,6 +4723,7 @@ impl<'a, C, H: FunctionHost<C>> Arguments<'_, 'a, C, H> {
             contracts: self.contracts,
             prepared: self.prepared,
             body_prepared: self.body_prepared,
+            native_functions: self.native_functions,
             worklists: self.worklists,
             source_function: self.source_function,
             relative: Some(input),

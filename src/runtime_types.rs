@@ -666,7 +666,7 @@ pub(crate) fn check_known_type(
     check_type_facts(actual, expected, true, budget, location)
 }
 
-fn check_type_facts<K>(
+pub(crate) fn check_type_facts<K>(
     actual: &ValueType,
     expected: &DeclaredType<K>,
     deferred: bool,

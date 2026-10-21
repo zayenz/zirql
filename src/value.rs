@@ -845,6 +845,17 @@ pub trait ValueQueryHost<Q> {
             "named functions require a function request",
         ))
     }
+    /// Check one argument's known facts after its ordinary scope analysis.
+    fn function_argument(
+        &mut self,
+        _name: &Located<String>,
+        _index: usize,
+        _value: &ValueExpression<Q>,
+        _types: &[ValueType],
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
     fn function_types(
         &mut self,
         name: &Located<String>,
@@ -3259,8 +3270,10 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 if arguments.len() != arity {
                     return Err(error(location, "function argument count mismatch"));
                 }
-                for argument in arguments {
-                    self.walk(argument, budget)?;
+                for (index, argument) in arguments.iter().enumerate() {
+                    let types = self.walk(argument, budget)?;
+                    self.queries
+                        .function_argument(function, index, argument, &types, budget)?;
                 }
                 self.queries.function_types(function, budget)
             }

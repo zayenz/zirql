@@ -107,6 +107,30 @@ comprehensions and lexical forms. Zincite retains its Data admission policy and
 model facts; Zirium retains MLIR/diff meanings and native ownership. Both use
 the same expression grammar without a whole-expression CST hook.
 
+## Define ordinary native functions
+
+`FunctionHost::native_function(name, budget, range)` directly returns one
+`NativeFunction`: its stable name, `OperationSignature` and implementation.
+Use this for eager pure functions with explicit arguments. The shared reader
+constructs ordinary `ValueExpressionKind::Call` nodes, and `PreparedFunctions`
+resolves the definitions alongside declared functions. It checks arity, scope
+and known argument types for every written call, including skipped branches.
+Execution evaluates selected arguments in written order, then `checked_invoke`
+admits their actual values and the result with the current context and budget.
+The retained signature supplies result facts even for empty native sequences.
+
+Charge signature allocations before constructing the definition. Implementations
+retain native owners and source coordinates and keep their singleton, current
+owner, stale-handle, completeness and domain checks. The definition receives no
+ambient bindings or relative input. Special identifier grammar remains in
+`parse_domain_call`; lazy predicates and effectful stages retain their hooks.
+
+The [embedding example](embedding-programs.md#define-a-native-function) shows a
+minimal definition and its ordinary read, prepare and evaluate sequence. A
+stage parser that has already consumed a callee and `(` can use
+`read_function_call_in_scope` to share argument parsing without reentering its
+stage recognizer.
+
 ## Recognize shared syntax before choosing a host path
 
 When a frontend retains native stages or legacy literals, Zirql supplies its

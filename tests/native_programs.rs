@@ -3620,6 +3620,27 @@ mod projection {
         }
     }
     impl zirql::FunctionHost<()> for Host {
+        fn native_function(
+            &self,
+            name: &str,
+            budget: &mut Budget,
+            range: &Range<usize>,
+        ) -> Result<Option<zirql::NativeFunction<(), Self>>, QueryError> {
+            let (name, declaration) = match name {
+                "native_keep" => ("native_keep", zirql::DeclaredType::Native(Kind::Subjects)),
+                "native_integer" => ("native_integer", zirql::DeclaredType::Integer),
+                _ => return Ok(None),
+            };
+            budget.charge_results(2, Location::Query(range.clone()))?;
+            Ok(Some(zirql::NativeFunction {
+                name,
+                signature: zirql::OperationSignature {
+                    parameters: vec![declaration.clone()],
+                    result: declaration,
+                },
+                invoke: |_, mut arguments, _, _, _| Ok(arguments.pop().unwrap().value),
+            }))
+        }
         fn retains_native_admission(&self) -> bool {
             true
         }
@@ -4159,7 +4180,10 @@ mod projection {
     fn named_native_functions_keep_arguments_results_projections_and_callback_limits() {
         use zirql::{DeclaredType as D, FunctionLimits, FunctionRequest, ValueBinaryOperator as B};
         let body = function_value(K::Conditional {
-            branches: vec![(fn_binary(B::Equal, fn_name("n"), fn_int(0)), fn_name("xs"))],
+            branches: vec![(
+                fn_binary(B::Equal, fn_name("n"), fn_int(0)),
+                function_call("native_keep", vec![fn_name("xs")]),
+            )],
             otherwise: Box::new(function_call(
                 "walk",
                 vec![
@@ -4216,6 +4240,64 @@ mod projection {
         .evaluate(&entry, &bindings)
         .unwrap();
         assert!(matches!(result,Value::Subjects(rows) if rows==vec!["alpha"]));
+        let empty =
+            Bindings::new([(super::at("input".into(), 60), Value::Subjects(vec![]))]).unwrap();
+        let call = function_call("native_keep", vec![fn_name("input")]);
+        let result = FunctionRequest::prepare(
+            &[],
+            &Host,
+            &mut (),
+            &mut budget,
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(&call, &empty)
+        .unwrap();
+        assert!(matches!(result, Value::Subjects(rows) if rows.is_empty()));
+        let bad = function_call("native_keep", vec![fn_int(7)]);
+        assert!(
+            FunctionRequest::prepare(
+                &[],
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 1 }
+            )
+            .unwrap()
+            .evaluate(&bad, &Bindings::new([]).unwrap())
+            .is_err()
+        );
+        // This host deliberately maps scalar declarations to one broad kind.
+        // Their concrete facts must still reject this unselected argument.
+        let boolean = zirql::FunctionDeclaration {
+            name: super::at("boolean_value".into(), 70),
+            parameters: vec![],
+            result: super::at(D::Boolean, 71),
+            bindings: vec![],
+            value: function_value(K::Literal(zirql::ConstructedValue::Boolean(true))),
+        };
+        let bad_scalar = function_value(K::Conditional {
+            branches: vec![(
+                function_value(K::Literal(zirql::ConstructedValue::Boolean(false))),
+                function_call(
+                    "native_integer",
+                    vec![function_call("boolean_value", vec![])],
+                ),
+            )],
+            otherwise: Box::new(fn_int(0)),
+        });
+        assert!(
+            FunctionRequest::prepare(
+                &[boolean],
+                &Host,
+                &mut (),
+                &mut budget,
+                FunctionLimits { active_depth: 1 }
+            )
+            .unwrap()
+            .evaluate(&bad_scalar, &Bindings::new([]).unwrap())
+            .is_err()
+        );
         let capture = Bindings::new([(
             super::at("row".into(), 60),
             Value::Capture(NativeCapture {
@@ -4602,7 +4684,7 @@ mod projection {
         let source = r#"
             fn odd(n: int) -> bool { let next = n - 1; if n == 0 { false } else { even(next) } }
             fn even(n: int) -> bool { if n == 0 { true } else if n == 1 { false } else { odd(n - 1) } }
-            fn identity(xs: Subjects) -> Subjects { let alias = xs; alias }
+            fn identity(xs: Subjects) -> Subjects { let alias = native_keep(xs); alias }
             fn counts(xs: sequence<Subjects>) -> int { sum([identity(item) | count for item in xs]) }
             fn ordered(xs: Subjects) -> int { native(if (min(sort([2, 1, 2, 1], descending=true)) default 0) == 1 { xs } else { identity(xs) }) | count }
             fn parameter(if: int) -> int { let saved = if; if saved == 0 { if } else { saved } }

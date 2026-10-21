@@ -32,11 +32,11 @@ pub use existence::filter_native_exists;
 pub use fixed_point::{evaluate_native_fixed_point, ordered_native_equal};
 pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
-    FunctionLimits, FunctionParameter, FunctionRequest, PatternFunctionDeclaration,
-    PatternFunctionDeclarationRef, PatternParameter, PatternParameterRef, PreparedFunctionValue,
-    PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
-    evaluate_functions, evaluate_pattern_functions, pattern_function_value_kind,
-    pattern_function_value_kind_borrowed,
+    FunctionLimits, FunctionParameter, FunctionRequest, NativeFunction,
+    NativeFunctionImplementation, PatternFunctionDeclaration, PatternFunctionDeclarationRef,
+    PatternParameter, PatternParameterRef, PreparedFunctionValue, PreparedFunctions,
+    PreparedPatternBinding, dispose_functions, dispose_pattern_functions, evaluate_functions,
+    evaluate_pattern_functions, pattern_function_value_kind, pattern_function_value_kind_borrowed,
 };
 pub use mapping::{
     MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,
@@ -77,12 +77,13 @@ pub use reader::{
     has_collection_syntax, has_common_expression_syntax, has_named_value_postfix,
     has_native_field_pipeline, is_common_control_call, is_common_keyword, is_common_operation_name,
     is_common_value_call, is_unquoted_binding_name, is_value_continuation, lower_value_suffix,
-    probe_ordering_call, read_constructed_filter, read_function_declaration, read_match,
-    read_native_expression, read_native_predicate_argument, read_paths, read_pattern,
-    read_pattern_function_declaration, read_pattern_let, read_predicate_argument, read_projection,
-    read_statement_prefix, read_unresolved_function_declaration,
-    read_unresolved_pattern_function_declaration, read_value_expression,
-    read_value_expression_in_scope, read_value_suffix, starts_common_expression,
+    probe_ordering_call, read_constructed_filter, read_function_call_in_scope,
+    read_function_declaration, read_match, read_native_expression, read_native_predicate_argument,
+    read_paths, read_pattern, read_pattern_function_declaration, read_pattern_let,
+    read_predicate_argument, read_projection, read_statement_prefix,
+    read_unresolved_function_declaration, read_unresolved_pattern_function_declaration,
+    read_value_expression, read_value_expression_in_scope, read_value_suffix,
+    starts_common_expression,
 };
 pub use rendering::{
     JsonLayout, JsonRepresentation, RenderContext, RenderHost, RenderView, render_json,

@@ -513,6 +513,20 @@ pub(crate) trait Host<'a, Q> {
         budget: &mut Budget,
         range: &std::ops::Range<usize>,
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error>;
+    fn native_call(
+        &mut self,
+        _index: usize,
+        _arguments: Vec<Value<'a, Self::Native, Self::Kind>>,
+        _ranges: &[&std::ops::Range<usize>],
+        _budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
+        Err(QueryError::query(
+            range.clone(),
+            "native function was not prepared in this request",
+        )
+        .into())
+    }
     fn admit_native(
         &mut self,
         value: &Self::Native,
@@ -1538,6 +1552,16 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                     PreparedKind::Accumulate { step, .. } => &step.range,
                                     _ => &expression.range,
                                 };
+                                if function >= bodies.len() {
+                                    result = Some(host.native_call(
+                                        function - bodies.len(),
+                                        arguments,
+                                        &ranges,
+                                        budget,
+                                        call_range,
+                                    )?);
+                                    return Ok(());
+                                }
                                 let body = bodies.get(function).ok_or_else(|| {
                                     error(&location, "function was not prepared in this request")
                                 })?;

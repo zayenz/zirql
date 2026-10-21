@@ -242,6 +242,65 @@ later sources after a false guard and refuses a final Unknown. Captures share
 their original outer binding map. Scoped preparation and the small clause-local
 binding metadata spend the continuing request allowance before growth.
 
+## Define a native function
+
+An eager pure host function uses the same `Call` node as a declared function.
+For example, inside `FunctionHost<MyContext> for MyHost`, a native identity
+function can retain one `Node` without copying its handle:
+
+```rust
+fn native_function(
+    &self, name: &str, budget: &mut Budget, range: &Range<usize>,
+) -> Result<Option<NativeFunction<MyContext, Self>>, QueryError> {
+    if name != "keep_node" { return Ok(None); }
+    let location = Location::Query(range.clone());
+    budget.charge(2 * std::mem::size_of::<DeclaredType<MyKind>>(), location.clone())?;
+    budget.charge_results(2, location)?;
+    Ok(Some(NativeFunction {
+        name: "keep_node",
+        signature: OperationSignature {
+            parameters: vec![DeclaredType::Native(MyKind::Node)],
+            result: DeclaredType::Native(MyKind::Node),
+        },
+        invoke: |_, mut arguments, _, _, _| Ok(arguments.pop().unwrap().value),
+    }))
+}
+```
+
+`MyKind::Node` is the host's singleton kind. Its `admit_native` implementation
+checks the actual owner, coordinates and singleton representation. Larger
+signatures use `copy_declaration` for charged copies of existing declarations.
+The compiled `NativeFunction` API example in `src/functions.rs` shows that
+pattern without requiring a concrete host.
+
+Read, prepare and evaluate with the existing request APIs:
+
+```rust
+let mut reader = ArgumentReader::new("keep_node(selected)", 0)?;
+let value = read_value_expression_in_scope(
+    &mut reader, &mut reader_host, &["selected"], &mut budget, 64,
+)?;
+let mut functions = PreparedFunctions::prepare([], &host, &mut budget)?;
+let entry = functions.prepare_value(&value, &scope, None, &mut budget)?;
+let result = functions.evaluate(
+    &entry, &bindings, None, &mut context, &mut budget,
+    FunctionLimits { active_depth: 32 },
+)?;
+```
+
+`scope` declares `selected`'s kind and `bindings` holds its actual value. The
+reader needs no function registry. Preparation retains the resolved definition,
+checks every written argument, and derives the result kind from its declaration.
+Execution passes admitted arguments with their written ranges to the native
+implementation. `checked_invoke` admits its result before it returns to the
+ordinary runner. Native and empty sequence results keep their declared facts;
+rendering remains a later explicit step. Native functions cannot be named
+`fold` or `scan` steps; those steps require a declared function body.
+
+Zincite's [recursive call counter](https://github.com/zayenz/zincite/blob/main/docs/queries.md#count-written-calls-with-a-function)
+and Zirium's [subtree cost program](https://github.com/zayenz/zirium/blob/main/examples/cli/subtree-cost.zirql)
+use this path with domain functions defined by their hosts.
+
 ## Destructure values and select match arms
 
 `Pattern` is a located `PatternKind`: a name, wildcard, fixed tuple, positional

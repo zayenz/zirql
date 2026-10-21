@@ -1072,6 +1072,33 @@ pub fn read_value_expression_in_scope<H: ValueReaderHost>(
     .expression(0, 0)
 }
 
+/// Read ordinary call arguments after the callee and opening `(` were consumed.
+/// Uses the same lexical scope, source ranges, parser and budget as value reading.
+/// Leaves any following pipeline suffix for the calling stage reader.
+///
+/// # Errors
+/// Invalid arguments, separators and exhausted allowances retain their ranges.
+pub fn read_function_call_in_scope<H: ValueReaderHost>(
+    reader: &mut ArgumentReader<'_>,
+    name: Located<String>,
+    host: &mut H,
+    locals: &[&str],
+    budget: &mut Budget,
+    nesting: usize,
+) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+    let locals = copy_reader_locals(locals, budget, reader.position())?;
+    Reader {
+        reader,
+        host,
+        nesting: nesting
+            .min(crate::MAX_NESTING)
+            .min(budget.remaining_nesting()),
+        budget,
+        locals,
+    }
+    .call_arguments(name, 0)
+}
+
 /// Whether a name is one of the fixed common value calls. Native operation
 /// names, native ordering argument shapes and declared functions remain host facts.
 pub fn is_common_value_call(name: &str) -> bool {
@@ -3697,6 +3724,17 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         name: Located<String>,
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let call = self.call_arguments(name, depth)?;
+        if self.reader.consume('|') {
+            return self.value_pipeline(call, depth);
+        }
+        Ok(call)
+    }
+    fn call_arguments(
+        &mut self,
+        name: Located<String>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let start = name.range.start;
         let mut arguments = ValueGuard::new(Located::new(K::Array(Vec::new()), start..start));
         if !self.reader.consume(')') {
@@ -3723,9 +3761,6 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             },
             start..self.reader.position(),
         )?;
-        if self.reader.consume('|') {
-            return self.value_pipeline(call, depth);
-        }
         Ok(call)
     }
     fn value_pipeline(
