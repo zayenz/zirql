@@ -1816,3 +1816,13 @@ Zirium examples, explicit native contracts, saved complete programs and deferred
 query aliases, pipeline sugar, imports and closures. It proposes zero runtime
 follow-ups and only bounded documentation/examples under the relevant host
 authority; this task imports no implementation work and changes no host support.
+
+### Explanatory findings: ordinary native records
+
+On 2026-10-21 the user delegated following the recommendation to use an ordered
+sequence of ordinary records with a message, retained native subject and optional
+details. This does not approve unseen syntax. [The design](../_notes/native-finding-reports.md)
+records the MiniZinc and MLIR examples, the source-checked unexecuted local demo,
+actual host rendering/uncertainty boundaries and deferred options. It proposes
+zero runtime follow-ups and bounded documentation slices under each host's
+authority; this task imports no implementation work or consumer changes.

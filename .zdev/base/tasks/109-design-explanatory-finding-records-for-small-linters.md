@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-109"
 key = "native-finding-reports"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 priority = "normal"
 blocked_by = []
@@ -24,10 +24,10 @@ require fails a calculation; ordinary records and native projection can already 
 
 ## Done when
 
-- [ ] Compare ordinary record conventions against a dedicated finding helper using message, native subject and optional details; prefer a convention if it meets both examples.
-- [ ] Define how host rendering locates the subject, how incomplete facts are reported, and how multiple findings remain distinct from runtime failures and budget exhaustion.
-- [ ] Record one chosen local demonstration path and any explicitly scoped host rendering follow-ups, with documentation showing actual supported output rather than promising editor integration.
-- [ ] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
+- [x] Compare ordinary record conventions against a dedicated finding helper using message, native subject and optional details; prefer a convention if it meets both examples.
+- [x] Define how host rendering locates the subject, how incomplete facts are reported, and how multiple findings remain distinct from runtime failures and budget exhaustion.
+- [x] Record one chosen local demonstration path and any explicitly scoped host rendering follow-ups, with documentation showing actual supported output rather than promising editor integration.
+- [x] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
 
 ## Validation
 
@@ -35,3 +35,12 @@ require fails a calculation; ordinary records and native projection can already 
 - Record the user decision; no new product tests are expected.
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Selected ordinary native finding records; documented domain evidence, local demonstration, rendering and error boundaries, and documentation follow-ups.
+
+Validation:
+
+- Independent verification passed against W0ffb125d136da77c; snapshot unchanged.
+- git diff --check and zdev check base --format json passed.

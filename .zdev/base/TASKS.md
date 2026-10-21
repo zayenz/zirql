@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 111
-- Ready: 3
+- Ready: 2
 - Blocked: 0
-- Done: 108
+- Done: 109
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -117,6 +117,6 @@
 | [base-106](tasks/106-construct-modified-records-with-immutable-with-expressions.md) | Construct modified records with immutable with expressions | done | — |
 | [base-107](tasks/107-align-two-record-sequences-by-unique-keys.md) | Align two record sequences by unique keys | done | — |
 | [base-108](tasks/108-design-reusable-named-pipeline-queries.md) | Design reusable named pipeline queries | done | — |
-| [base-109](tasks/109-design-explanatory-finding-records-for-small-linters.md) | Design explanatory finding records for small linters | ready | — |
+| [base-109](tasks/109-design-explanatory-finding-records-for-small-linters.md) | Design explanatory finding records for small linters | done | — |
 | [base-110](tasks/110-design-record-matching-and-native-templates-for-query-by-exa.md) | Design record matching and native templates for query by example | ready | — |
 | [base-111](tasks/111-design-an-inspectable-query-playground-with-holes.md) | Design an inspectable query playground with holes | ready | — |
