@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 129
-- Ready: 3
+- Ready: 2
 - Blocked: 14
-- Done: 112
+- Done: 113
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -130,7 +130,7 @@
 | [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | blocked | base-113, base-118 |
 | [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | blocked | base-118 |
 | [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | blocked | base-119, base-120 |
-| [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | ready | — |
+| [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | done | — |
 | [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122, base-128, base-129 |
 | [base-124](tasks/124-own-value-sources-and-projection-stages-in-zirql-and-migrate.md) | Own value sources and projection stages in Zirql and migrate both hosts | blocked | base-116 |
 | [base-125](tasks/125-own-remaining-shared-composition-stages-and-remove-host-disp.md) | Own remaining shared composition stages and remove host dispatch | blocked | base-124 |

@@ -31,15 +31,29 @@ Starlight supplies theme switching, search and mobile navigation.
 
 ## Syntax highlighting
 
-Use `zirql` on fenced query examples; keep output blocks labelled with their
-output format. `../assets/syntax/zirql.tmLanguage.json` supplies the TextMate
-grammar registered with Starlight's Shiki highlighter. Other documentation sites
-can register the same JSON grammar to render Zirql snippets consistently.
+Use `zirql` on fenced query examples; label output with its output format.
+Zirql owns `../assets/syntax/zirql.tmLanguage.json`. Starlight registers this
+TextMate grammar with Shiki. Author common keywords, operators, types, literals,
+comments and calls here; keep domain spellings in each host's overlay.
 
-The grammar highlights language keywords, operators, types, literals, comments
-and calls. Domain operation names are highlighted as calls without a separate
-list for each host. Highlighting is lexical; parsing and host validation decide
-whether a query is accepted.
+After committing a common grammar change, run this command from the Zirql root
+with its full commit ID and the consumer checkout paths:
+
+```sh
+node scripts/sync-syntax.mjs sync <full-Zirql-commit> ../zincite ../zirium
+node scripts/sync-syntax.mjs check <full-Zirql-commit> ../zincite ../zirium
+```
+
+The script copies the committed asset and records its source commit in each
+consumer's `assets/syntax/zirql-revision.txt`. Review and commit those files
+alongside any host overlay changes. To check an existing copy, pass the commit
+recorded in that marker. Each site builds from its checked-in asset without a
+sibling checkout or network fetch. Run each site's existing `check` and `build`
+commands after synchronization.
+
+Highlighting describes spelling. It does not validate queries or promise that
+a host supports a highlighted construct. Domain operations use ordinary call
+highlighting without a shared list of host operations.
 
 ## Build and preview
 
