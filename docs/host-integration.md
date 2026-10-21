@@ -755,6 +755,21 @@ types to the host's preflight kinds. `is_operation_name` reserves registered
 native operation names. The core separately reserves its builtins. Existing
 hosts can continue using their current APIs without implementing these hooks.
 
+`PreparedFunctions` also accepts an empty declaration iterator. A host can use
+one request path for ordinary expressions, projections and function calls:
+prepare the declaration unit, prepare each written entry with its lexical kinds
+and relative input, then execute the entries with the current bindings and
+budget. Zirium uses this path for textual queries and typed report builders,
+including programs without functions. Its native stages retain direct execution,
+document ownership checks and their existing budget policy.
+
+Keep lowered argument bodies in their owning stage when the prepared runner
+borrows them. Zirium retains the constructed bodies of overloaded `count`,
+`sort`, `unique` and `tally` stages, prepares them only for constructed input,
+and runs native input through its native implementation. Report-only entries
+require scalar data; entries that admit native values retain their host kinds
+and handles until an explicit projection.
+
 `PreparedFunctions::prepare` registers every signature before checking bodies. Each
 body can read its parameters and earlier immutable locals. The entry receives
 explicit `Bindings`; functions receive that data through call arguments. Host
