@@ -11,7 +11,7 @@ use crate::{
     ExpressionKind, Located, Location, NativeArguments, NativeExpression, ProgramHost,
     ProjectionHost, QueryError, RuntimeTypeHost, ValueExpression, ValueExpressionKind,
     ValueQueryHost, ValueType, admit_value, constructed_value_type, copy_constructed_value,
-    copy_value_types, dispose_native_value, native_expression_kind,
+    copy_value_types, dispose_native_value,
 };
 use std::{collections::BTreeMap, fmt, ops::Range};
 
@@ -843,6 +843,7 @@ struct Operand<K> {
     names: Vec<String>,
     kind: K,
     argument_kinds: BTreeMap<usize, K>,
+    projection_types: BTreeMap<usize, Vec<ValueType>>,
 }
 struct AlignmentSide<K> {
     row: DeclaredType<K>,
@@ -972,7 +973,79 @@ where
     .entry_kind(value, scope, relative, budget)
 }
 
+/// Discover a core expression's kind from complete pattern declarations.
+/// Like value-kind discovery, this checks signatures and written expression bodies
+/// without preparing declaration bodies.
+///
+/// # Errors
+/// Invalid signatures, scope, effects, transitions and exhausted allowances fail.
+pub fn pattern_function_expression_kind<'a, C, H: FunctionHost<C>>(
+    declarations: impl IntoIterator<Item = &'a PatternFunctionDeclaration<Query<C, H>, Kind<C, H>>>,
+    host: &H,
+    expression: &Query<C, H>,
+    scope: &BTreeMap<String, Kind<C, H>>,
+    relative: Option<Kind<C, H>>,
+    allow_effects: bool,
+    budget: &mut Budget,
+) -> Result<Kind<C, H>, QueryError>
+where
+    Query<C, H>: 'a,
+    Kind<C, H>: 'a,
+{
+    Preflight::new(
+        declarations
+            .into_iter()
+            .map(PatternFunctionDeclaration::as_borrowed),
+        host,
+        budget,
+    )?
+    .expression_kind(expression, scope, relative, allow_effects, budget)
+}
+
+/// Discover a core expression's kind with the request's borrowed function headers.
+/// This checks written expression bodies but does not prepare declaration bodies.
+///
+/// # Errors
+/// Invalid signatures, scope, effects, type transitions and limits are located.
+pub fn pattern_function_expression_kind_borrowed<'a, C, H: FunctionHost<C>>(
+    declarations: impl IntoIterator<Item = PatternFunctionDeclarationRef<'a, Query<C, H>, Kind<C, H>>>,
+    host: &H,
+    expression: &Query<C, H>,
+    scope: &BTreeMap<String, Kind<C, H>>,
+    relative: Option<Kind<C, H>>,
+    allow_effects: bool,
+    budget: &mut Budget,
+) -> Result<Kind<C, H>, QueryError>
+where
+    Query<C, H>: 'a,
+    Kind<C, H>: 'a,
+{
+    Preflight::new(
+        declarations.into_iter().map(DeclarationRef::from),
+        host,
+        budget,
+    )?
+    .expression_kind(expression, scope, relative, allow_effects, budget)
+}
+
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
+    fn expression_kind(
+        &mut self,
+        expression: &Query<C, H>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        allow_effects: bool,
+        budget: &mut Budget,
+    ) -> Result<Kind<C, H>, QueryError> {
+        self.scope = crate::projection::copy_scope::<C, H>(scope, budget, &expression.range)?;
+        self.relative = relative;
+        self.native(expression, &[], budget, false, allow_effects)?;
+        Ok(self
+            .prepared
+            .remove(&(expression as *const _ as usize))
+            .expect("checked expression")
+            .kind)
+    }
     fn declared_function(
         &mut self,
         name: &Located<String>,
@@ -1021,6 +1094,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         locals: &[(&str, Vec<ValueType>)],
         budget: &mut Budget,
         projected: bool,
+        allow_effects: bool,
     ) -> Result<Vec<ValueType>, QueryError> {
         let mut scope = crate::projection::copy_scope::<C, H>(&self.scope, budget, &query.range)?;
         for (name, types) in locals {
@@ -1046,7 +1120,21 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
             .relative
             .clone()
             .unwrap_or_else(|| self.host.constructed_kind(vec![ValueType::Unestablished]));
-        let kind = native_expression_kind(query, self.host, &input, &scope, budget)?;
+        let host = self.host;
+        let mut common_kinds = BTreeMap::new();
+        let kind = crate::projection::expression_kind(
+            query,
+            host,
+            self.relative.clone().as_ref(),
+            &scope,
+            allow_effects,
+            &mut |value, scope, relative, budget| {
+                let kind = self.scoped_value_kind(value, scope, relative, budget)?;
+                common_kinds.insert(value as *const _ as usize, kind.clone());
+                Ok(kind)
+            },
+            budget,
+        )?;
         crate::projection::admit_slots::<String>(scope.len(), budget, &query.range)?;
         let names = scope.keys().map(String::as_str).collect::<Vec<_>>();
         let native = crate::projection::prepared::PreparedNative::resolve::<C, H>(
@@ -1072,12 +1160,22 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 names,
                 kind: kind.clone(),
                 argument_kinds: BTreeMap::new(),
+                projection_types: BTreeMap::new(),
             },
         );
-        let arguments =
-            crate::projection::scoped_arguments::<C, H>(query, self.host, &input, &scope, budget)?;
-        let mut argument_kinds = BTreeMap::new();
+        let arguments = crate::projection::scoped_arguments_with::<C, H>(
+            query,
+            host,
+            &input,
+            &scope,
+            &mut |value, _, _, _| Ok(common_kinds[&(value as *const _ as usize)].clone()),
+            budget,
+        )?;
+        let mut argument_kinds = common_kinds;
         for argument in arguments {
+            if argument_kinds.contains_key(&(argument.expression as *const _ as usize)) {
+                continue;
+            }
             let saved = std::mem::replace(
                 &mut self.scope,
                 crate::projection::copy_scope::<C, H>(&scope, budget, &query.range)?,
@@ -1116,6 +1214,16 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
             self.relative = old;
             result?;
         }
+        let projection_types = crate::projection::prepared_projection_types(
+            query,
+            self.host,
+            &argument_kinds,
+            budget,
+        )?;
+        self.prepared
+            .get_mut(&(query as *const _ as usize))
+            .expect("prepared native query")
+            .projection_types = projection_types;
         self.prepared
             .get_mut(&(query as *const _ as usize))
             .expect("prepared native operand")
@@ -1131,6 +1239,37 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
     }
 }
 impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
+    fn scoped_value_kind(
+        &mut self,
+        entry: &ValueExpression<Query<C, H>>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Kind<C, H>, QueryError> {
+        self.enter_scope(budget, &entry.range)?;
+        let saved = std::mem::replace(&mut self.relative, relative);
+        self.scope = crate::projection::copy_scope::<C, H>(scope, budget, &entry.range)?;
+        let result = (|| {
+            let mut facts = BTreeMap::new();
+            for (name, kind) in scope {
+                budget_name(name, budget, &entry.range)?;
+                facts.insert(
+                    name.clone(),
+                    self.host
+                        .scalar_types(kind, budget, &entry.range)?
+                        .unwrap_or_else(|| vec![ValueType::Unestablished]),
+                );
+            }
+            let types = self.value_types(entry, &facts, budget)?;
+            Ok(self
+                .local_kind(entry, budget)?
+                .unwrap_or_else(|| self.host.constructed_kind(types)))
+        })();
+        self.relative = saved;
+        self.leave_scope();
+        result
+    }
+
     fn entry_kind(
         &mut self,
         entry: &ValueExpression<Query<C, H>>,
@@ -2128,7 +2267,10 @@ fn no_ambient_input<C, H: ProjectionHost<C>>(
             ExpressionKind::Sequence { input, steps } => {
                 let explicit = steps.first().is_some_and(|step| match &step.value {
                     crate::ExpressionStep::Stage(stage) => host.is_explicit_source(stage),
-                    crate::ExpressionStep::Emit { .. } => false,
+                    crate::ExpressionStep::Value(_) => true,
+                    crate::ExpressionStep::Projection(_) | crate::ExpressionStep::Emit { .. } => {
+                        false
+                    }
                 });
                 if !explicit {
                     pending.push(input);
@@ -2472,7 +2614,7 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         b: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
-        self.native(q, l, b, true)
+        self.native(q, l, b, true, false)
     }
     fn native_value_types(
         &mut self,
@@ -2481,7 +2623,7 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         b: &mut Budget,
         _: &Range<usize>,
     ) -> Result<Vec<ValueType>, QueryError> {
-        self.native(q, l, b, false)
+        self.native(q, l, b, false, false)
     }
     fn enter_scope(&mut self, budget: &mut Budget, range: &Range<usize>) -> Result<(), QueryError> {
         let scope = crate::projection::copy_scope::<C, H>(&self.scope, budget, range)?;
@@ -2695,6 +2837,20 @@ pub struct PreparedFunctionValue<'a, Q, K = ()> {
     identity: std::sync::Arc<()>,
 }
 
+/// A located core expression resolved by its request's prepared function unit.
+pub struct PreparedExpression<'a, Q, K = ()> {
+    source: &'a Q,
+    kind: K,
+    prepared: BTreeMap<usize, Operand<K>>,
+    arguments: Vec<PreparedArgument<'a, Q>>,
+    identity: std::sync::Arc<()>,
+}
+impl<Q, K> PreparedExpression<'_, Q, K> {
+    pub fn kind(&self) -> &K {
+        &self.kind
+    }
+}
+
 /// A prepared initializer and its atomic, ordered public bindings.
 pub struct PreparedPatternBinding<'a, Q, K> {
     pattern: &'a Pattern,
@@ -2835,6 +2991,112 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             body_prepared,
             identity: std::sync::Arc::new(()),
         })
+    }
+
+    /// Prepare one core/native expression in its actual lexical and relative scope.
+    /// Prepare every submitted expression before evaluating the first statement.
+    /// Host stages retain their effect admission and domain type rules.
+    ///
+    /// # Errors
+    /// Names, written value/projection bodies, transitions and allowances are checked.
+    #[expect(
+        clippy::type_complexity,
+        reason = "The entry borrows the host's existing native expression"
+    )]
+    pub fn prepare_expression(
+        &mut self,
+        expression: &'a Query<C, H>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<
+        PreparedExpression<'a, Query<C, H>, Kind<C, H>>,
+        FunctionError<EvaluationError<H::Error>>,
+    > {
+        let saved = std::mem::take(&mut self.preflight.prepared);
+        let saved_worklists = std::mem::take(&mut self.preflight.worklists);
+        let saved_tallies = std::mem::take(&mut self.preflight.general_key_expressions);
+        let result = (|| {
+            self.preflight.scope =
+                crate::projection::copy_scope::<C, H>(scope, budget, &expression.range)?;
+            self.preflight.relative = relative;
+            self.preflight.generator_kinds.clear();
+            self.preflight.contracts.clear();
+            self.preflight.worklists.clear();
+            self.preflight
+                .native(expression, &[], budget, false, true)?;
+            let kind = self.preflight.prepared[&(expression as *const _ as usize)]
+                .kind
+                .clone();
+            let mut preparation = Preparation::new();
+            preparation.general_key_expressions =
+                std::mem::take(&mut self.preflight.general_key_expressions);
+            let arguments = preparation.arguments(
+                expression,
+                &mut self.preflight,
+                budget,
+                &expression.range,
+            )?;
+            Ok(PreparedExpression {
+                source: expression,
+                kind,
+                prepared: std::mem::take(&mut self.preflight.prepared),
+                arguments,
+                identity: std::sync::Arc::clone(&self.identity),
+            })
+        })();
+        self.preflight.prepared = saved;
+        self.preflight.worklists = saved_worklists;
+        self.preflight.general_key_expressions = saved_tallies;
+        result
+    }
+
+    /// Execute a prepared core expression with current bindings and optional input.
+    ///
+    /// # Errors
+    /// Foreign entries, runtime contracts, host failures and limits retain locations.
+    pub fn evaluate_expression(
+        &self,
+        entry: &PreparedExpression<'a, Query<C, H>, Kind<C, H>>,
+        bindings: &Bindings<H::Value>,
+        relative: Option<&H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
+        if !std::sync::Arc::ptr_eq(&self.identity, &entry.identity) {
+            return Err(QueryError::query(
+                entry.source.range.clone(),
+                "expression belongs to a different prepared function program",
+            )
+            .into());
+        }
+        let mut calls = CallTrace::default();
+        let mut runtime = Runtime {
+            host: self.preflight.host,
+            context,
+            bindings,
+            contracts: &BTreeMap::new(),
+            prepared: &entry.prepared,
+            body_prepared: &self.body_prepared,
+            native_functions: &self.preflight.native_functions,
+            worklists: &self.preflight.worklist_contracts,
+            source_function: None,
+            relative,
+            limit: limits.active_depth,
+            calls: &mut calls,
+        };
+        let result = runtime.execute_native(
+            entry.source,
+            &entry.arguments,
+            &mut [],
+            &self.bodies,
+            0,
+            None,
+            budget,
+            &entry.source.range,
+        );
+        result.map_err(|error| self.function_error(error, calls))
     }
 
     /// Resolve one written value without executing native operations. Call this
@@ -4080,6 +4342,199 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
             })
         }
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Native execution retains active function frames and prepared argument borrows"
+    )]
+    fn execute_native(
+        &mut self,
+        query: &'a Query<C, H>,
+        arguments: &'a [PreparedArgument<'a, Query<C, H>>],
+        locals: &mut [(&'a str, HostValue<'a, C, H>)],
+        bodies: &'a Bodies<'a, C, H>,
+        depth: usize,
+        function: Option<usize>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<H::Value, EvaluationError<H::Error>> {
+        let lexical = function.is_some();
+        let source_function = function.or(self.source_function);
+        let prepared = match source_function {
+            Some(id) => &self.body_prepared[id],
+            None => self.prepared,
+        };
+        let operand = prepared
+            .get(&(query as *const _ as usize))
+            .expect("request native operand");
+        let mut values = BTreeMap::new();
+        let mut contracts = BTreeMap::new();
+        if !lexical {
+            crate::projection::admit_slots::<(&str, &DeclaredType<Kind<C, H>>)>(
+                self.contracts.len(),
+                budget,
+                range,
+            )?;
+            contracts.extend(
+                self.contracts
+                    .iter()
+                    .map(|(&name, &contract)| (name, contract)),
+            );
+        }
+        for (name, value) in locals {
+            budget_name(name, budget, range)?;
+            if let Some(contract) = value.contract {
+                crate::projection::admit_slots::<(&str, &DeclaredType<Kind<C, H>>)>(
+                    1, budget, range,
+                )?;
+                contracts.insert(*name, contract);
+            } else {
+                contracts.remove(*name);
+            }
+            let value = match &mut value.data {
+                Data::Native(owner) => {
+                    let owner = owner.share(budget, &Location::Query(range.clone()))?;
+                    self.owned_native(owner, budget, range)?
+                }
+                Data::Constructed(data) => {
+                    let value = data
+                        .share(budget, &Location::Query(range.clone()))?
+                        .into_shared(budget, &Location::Query(range.clone()))?;
+                    let types = vec![constructed_value_type(
+                        &value,
+                        budget,
+                        Location::Query(range.clone()),
+                    )?];
+                    std::sync::Arc::new(self.host.lift_shared_constructed(
+                        value,
+                        types,
+                        self.context,
+                        budget,
+                        range,
+                    )?)
+                }
+            };
+            values.insert((*name).to_owned(), value);
+        }
+        let bindings = if lexical {
+            Bindings::from_shared(values)
+        } else {
+            self.bindings.with_shared_values(values, budget, range)?
+        };
+        let outer = crate::projection::prepared::NativeOuter::Bindings {
+            values: &bindings,
+            names: &operand.names,
+        };
+        let input = if lexical {
+            None
+        } else {
+            self.relative
+                .map(|value| self.host.copy_value(value, self.context, budget, range))
+                .transpose()?
+        };
+        let host = self.host;
+        let prepared = self.prepared;
+        let body_prepared = self.body_prepared;
+        let native_functions = self.native_functions;
+        let worklists = self.worklists;
+        let limit = self.limit;
+        let calls = &mut *self.calls;
+        operand.native.execute(
+            query,
+            host,
+            input,
+            self.context,
+            &bindings,
+            &outer,
+            None,
+            &[],
+            &mut |step, declared, input, context, bindings, budget, range| {
+                let mut arguments = Arguments {
+                    host,
+                    context,
+                    bindings,
+                    contracts: &contracts,
+                    prepared,
+                    body_prepared,
+                    native_functions,
+                    worklists,
+                    source_function,
+                    bodies,
+                    arguments,
+                    declared,
+                    argument_kinds: &operand.argument_kinds,
+                    depth,
+                    limit,
+                    calls,
+                };
+                match step {
+                    crate::ExpressionStep::Stage(stage) => {
+                        budget.within_evaluation(0, Location::Query(range.clone()), |budget| {
+                            host.evaluate_stage_with_arguments(
+                                stage,
+                                input.expect("native stage input"),
+                                &mut arguments,
+                                budget,
+                                range,
+                            )
+                        })
+                    }
+                    crate::ExpressionStep::Value(expression) => host.transition(
+                        input,
+                        arguments.context,
+                        budget,
+                        range,
+                        |input, context, budget| {
+                            let mut arguments = Arguments {
+                                context,
+                                ..arguments
+                            };
+                            let value = arguments.run(expression, input.as_ref(), None, budget)?;
+                            let read = arguments.native_read(value, budget, &expression.range)?;
+                            match std::sync::Arc::try_unwrap(read.into_shared()) {
+                                Ok(value) => Ok(value),
+                                Err(value) => {
+                                    host.copy_value(&value, arguments.context, budget, range)
+                                }
+                            }
+                        },
+                    ),
+                    crate::ExpressionStep::Projection(projection) => host.transition(
+                        input,
+                        arguments.context,
+                        budget,
+                        range,
+                        |input, context, budget| {
+                            let mut arguments = Arguments {
+                                context,
+                                ..arguments
+                            };
+                            let types = &operand.projection_types
+                                [&(std::sync::Arc::as_ptr(projection) as usize)];
+                            let result = arguments.project(
+                                projection,
+                                input.expect("projection input"),
+                                types,
+                                budget,
+                            )?;
+                            host.lift_constructed(
+                                result.value,
+                                result.types,
+                                arguments.context,
+                                budget,
+                                range,
+                            )
+                        },
+                    ),
+                    crate::ExpressionStep::Emit { emitter, .. } => {
+                        let input = input.expect("emission input");
+                        host.emit(emitter, &input, arguments.context, budget, range)?;
+                        Ok(input)
+                    }
+                }
+            },
+            budget,
+        )
+    }
     fn finish_value(
         &mut self,
         value: Value<'a, H::Value, Kind<C, H>>,
@@ -4409,122 +4864,15 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<HostValue<'a, C, H>, Self::Error> {
-        let lexical = function.is_some();
-        let source_function = function.or(self.source_function);
-        let prepared = match source_function {
+        let value = self.execute_native(
+            query, arguments, locals, bodies, depth, function, budget, range,
+        )?;
+        let host = self.host;
+        let prepared = match function.or(self.source_function) {
             Some(id) => &self.body_prepared[id],
             None => self.prepared,
         };
-        let operand = prepared
-            .get(&(query as *const _ as usize))
-            .expect("request native operand");
-        let mut values = BTreeMap::new();
-        let mut contracts = BTreeMap::new();
-        if !lexical {
-            crate::projection::admit_slots::<(&str, &DeclaredType<Kind<C, H>>)>(
-                self.contracts.len(),
-                budget,
-                range,
-            )?;
-            contracts.extend(
-                self.contracts
-                    .iter()
-                    .map(|(&name, &contract)| (name, contract)),
-            );
-        }
-        for (name, value) in locals {
-            budget_name(name, budget, range)?;
-            if let Some(contract) = value.contract {
-                crate::projection::admit_slots::<(&str, &DeclaredType<Kind<C, H>>)>(
-                    1, budget, range,
-                )?;
-                contracts.insert(*name, contract);
-            } else {
-                contracts.remove(*name);
-            }
-            let value = match &mut value.data {
-                Data::Native(owner) => {
-                    let owner = owner.share(budget, &Location::Query(range.clone()))?;
-                    self.owned_native(owner, budget, range)?
-                }
-                Data::Constructed(data) => {
-                    let value = data
-                        .share(budget, &Location::Query(range.clone()))?
-                        .into_shared(budget, &Location::Query(range.clone()))?;
-                    let types = vec![constructed_value_type(
-                        &value,
-                        budget,
-                        Location::Query(range.clone()),
-                    )?];
-                    std::sync::Arc::new(self.host.lift_shared_constructed(
-                        value,
-                        types,
-                        self.context,
-                        budget,
-                        range,
-                    )?)
-                }
-            };
-            values.insert((*name).to_owned(), value);
-        }
-        let bindings = if lexical {
-            Bindings::from_shared(values)
-        } else {
-            self.bindings.with_shared_values(values, budget, range)?
-        };
-        let outer = crate::projection::prepared::NativeOuter::Bindings {
-            values: &bindings,
-            names: &operand.names,
-        };
-        let input = if lexical {
-            None
-        } else {
-            self.relative
-                .map(|value| self.host.copy_value(value, self.context, budget, range))
-                .transpose()?
-        };
-        let host = self.host;
-        let prepared = self.prepared;
-        let body_prepared = self.body_prepared;
-        let native_functions = self.native_functions;
-        let worklists = self.worklists;
-        let limit = self.limit;
-        let calls = &mut *self.calls;
-        let value = operand.native.execute(
-            query,
-            host,
-            input,
-            self.context,
-            &bindings,
-            &outer,
-            None,
-            &[],
-            &mut |stage, declared, input, context, bindings, budget, range| {
-                let mut arguments = Arguments {
-                    host,
-                    context,
-                    bindings,
-                    contracts: &contracts,
-                    prepared,
-                    body_prepared,
-                    native_functions,
-                    worklists,
-                    source_function,
-                    bodies,
-                    arguments,
-                    declared,
-                    argument_kinds: &operand.argument_kinds,
-                    depth,
-                    limit,
-                    calls,
-                };
-                // Synchronous host callbacks retain the existing bounded reentry guard.
-                budget.within_evaluation(0, Location::Query(range.clone()), |budget| {
-                    host.evaluate_stage_with_arguments(stage, input, &mut arguments, budget, range)
-                })
-            },
-            budget,
-        )?;
+        let operand = &prepared[&(query as *const _ as usize)];
         if projected || host.scalar_types(&operand.kind, budget, range)?.is_some() {
             let value = host.project_value(value, self.context, budget, range)?;
             constructed_value_type(&value, budget, Location::Query(range.clone()))?;
@@ -4690,7 +5038,7 @@ impl<'a, C, H: FunctionHost<C>> Arguments<'_, 'a, C, H> {
     fn run(
         &mut self,
         expression: &ValueExpression<Query<C, H>>,
-        input: &H::Value,
+        input: Option<&H::Value>,
         bindings: Option<&Bindings<H::Value>>,
         budget: &mut Budget,
     ) -> Result<HostValue<'a, C, H>, EvaluationError<H::Error>> {
@@ -4726,7 +5074,7 @@ impl<'a, C, H: FunctionHost<C>> Arguments<'_, 'a, C, H> {
             native_functions: self.native_functions,
             worklists: self.worklists,
             source_function: self.source_function,
-            relative: Some(input),
+            relative: input,
             limit: self.limit,
             calls: self.calls,
         };
@@ -4751,7 +5099,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
         input: H::Value,
         budget: &mut Budget,
     ) -> Result<ConstructedRead, EvaluationError<H::Error>> {
-        let value = self.run(expression, &input, None, budget)?;
+        let value = self.run(expression, Some(&input), None, budget)?;
         let location = Location::Query(expression.range.clone());
         let declaration = if let Some(contract) = value.contract {
             if crate::runtime_types::contains_native(contract, budget, &location)? {
@@ -4797,7 +5145,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
         captures: Option<&Bindings<H::Value>>,
         budget: &mut Budget,
     ) -> Result<bool, EvaluationError<H::Error>> {
-        let value = self.run(expression, &input, captures, budget)?;
+        let value = self.run(expression, Some(&input), captures, budget)?;
         let Data::Constructed(value) = value.data else {
             return Err(QueryError::query(
                 expression.range.clone(),
@@ -4817,7 +5165,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
         input: H::Value,
         budget: &mut Budget,
     ) -> Result<crate::NativeRead<H::Value, Kind<C, H>>, EvaluationError<H::Error>> {
-        let value = self.run(expression, &input, None, budget)?;
+        let value = self.run(expression, Some(&input), None, budget)?;
         self.native_read(value, budget, &expression.range)
     }
     fn evaluate_match_value(
@@ -4827,7 +5175,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
         bindings: &Bindings<H::Value>,
         budget: &mut Budget,
     ) -> Result<crate::NativeRead<H::Value, Kind<C, H>>, EvaluationError<H::Error>> {
-        let value = self.run(expression, &input, Some(bindings), budget)?;
+        let value = self.run(expression, Some(&input), Some(bindings), budget)?;
         self.native_read(value, budget, &expression.range)
     }
     fn evaluate_projection(
@@ -4893,40 +5241,50 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
                 )?;
             }
             let types = crate::projection::projection_result_types(projection, positions, budget)?;
-            let bindings = self
-                .bindings
-                .with_shared_values(BTreeMap::new(), budget, range)?;
-            let subjects = self.host.subjects(input, self.context, budget, range)?;
-            let value = crate::projection::projection_rows(
-                projection,
-                subjects,
-                &bindings,
-                self,
-                budget,
-                |index, local, runner, budget| {
-                    let expression = &projection.fields[index].1;
-                    let relative = local.get(&projection.subject.value, range.clone())?;
-                    let value = runner.run(expression, relative, Some(local), budget)?;
-                    let read = runner.native_read(value, budget, &expression.range)?;
-                    let value = match std::sync::Arc::try_unwrap(read.into_shared()) {
-                        Ok(value) => value,
-                        Err(value) => runner.host.copy_value(
-                            &value,
-                            runner.context,
-                            budget,
-                            &expression.range,
-                        )?,
-                    };
-                    runner
-                        .host
-                        .project_value(value, runner.context, budget, &expression.range)
-                },
-            )?;
-            Ok(crate::ConstructedResult { value, types })
+            self.project(projection, input, &types, budget)
         })
     }
 }
 impl<C, H: FunctionHost<C>> Arguments<'_, '_, C, H> {
+    fn project(
+        &mut self,
+        projection: &crate::Projection<Query<C, H>>,
+        input: H::Value,
+        types: &[ValueType],
+        budget: &mut Budget,
+    ) -> Result<crate::ConstructedResult, EvaluationError<H::Error>> {
+        let range = &projection.subject.range;
+        let types = copy_value_types(types, budget, Location::Query(range.clone()))?;
+        let bindings = self
+            .bindings
+            .with_shared_values(BTreeMap::new(), budget, range)?;
+        let subjects = self.host.subjects(input, self.context, budget, range)?;
+        let value = crate::projection::projection_rows(
+            projection,
+            subjects,
+            &bindings,
+            self,
+            budget,
+            |index, local, runner, budget| {
+                let expression = &projection.fields[index].1;
+                let relative = local.get(&projection.subject.value, range.clone())?;
+                let value = runner.run(expression, Some(relative), Some(local), budget)?;
+                let read = runner.native_read(value, budget, &expression.range)?;
+                let value = match std::sync::Arc::try_unwrap(read.into_shared()) {
+                    Ok(value) => value,
+                    Err(value) => {
+                        runner
+                            .host
+                            .copy_value(&value, runner.context, budget, &expression.range)?
+                    }
+                };
+                runner
+                    .host
+                    .project_value(value, runner.context, budget, &expression.range)
+            },
+        )?;
+        Ok(crate::ConstructedResult { value, types })
+    }
     #[expect(
         clippy::type_complexity,
         reason = "The selected argument retains the adapter's native value, kind and error types"

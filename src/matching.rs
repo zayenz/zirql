@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, ops::Range};
 use crate::{
     Bindings, Budget, EvaluationError, Located, Location, NativeArguments, NativeExpression,
     Predicate, PredicateKind, ProjectionHost, QueryError, QueryErrorCategory, Truth,
-    evaluate_expression, native_expression_kind,
+    evaluate_expression,
 };
 
 /// Ordered native fields. Values retain their host handles and source coordinates.
@@ -168,7 +168,7 @@ fn preflight_clauses<C, H: MatchHost<C>>(
                     ));
                 }
                 // Insert after preflight: a capture is absent in its own operand.
-                let kind = native_expression_kind(source, host, input, scope, budget)?;
+                let kind = host.expression_kind(source, input, scope, budget)?;
                 let kind = host.subject_kind(&kind, budget, &source.range)?;
                 budget.charge(
                     name.value

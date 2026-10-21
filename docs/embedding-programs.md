@@ -38,6 +38,36 @@ stages, set operators or emitters in it.
 A nested host selector can call it with relative input while retaining the
 same context and budget.
 
+## Build core value and projection steps
+
+In the development API, ordinary values and correlated projections are core
+steps inside `ExpressionKind::Sequence`. A typed caller can construct them
+without a host stage wrapper:
+
+```rust
+use zirql::{
+    ConstructedValue, Expression, ExpressionKind, ExpressionStep, Located,
+    Projection, ValueExpressionKind,
+};
+
+let value = Located::new(ValueExpressionKind::Literal(ConstructedValue::Integer(1)), 0..1);
+let expression: Expression<(), (), ()> = Located::new(ExpressionKind::Sequence {
+    input: Box::new(Located::new(ExpressionKind::Input, 0..1)),
+    steps: vec![Located::new(ExpressionStep::Value(value.into()), 0..1)],
+}, 0..1);
+let projection: ExpressionStep<(), (), ()> = ExpressionStep::Projection(Projection {
+    subject: Located::new("row".into(), 8..11),
+    fields: vec![(Located::new("n".into(), 14..17),
+        Located::new(ValueExpressionKind::Literal(ConstructedValue::Integer(1)), 19..20))],
+}.into());
+```
+
+The snippet constructs syntax only. The [native projection example](native-programs.md#project-a-native-selection)
+runs a projection through Zirium. To execute core steps, prepare the expression
+through the request's `PreparedFunctions` unit as below. `Stage` still carries
+domain operations and `Emit` carries explicit host output. Registry Zirql 0.2.0
+predates these core steps.
+
 ## Supply typed caller inputs
 
 Check all caller parameters before reading domain data. `admit_parameters`
@@ -120,14 +150,18 @@ depth of one. For the syntax it represents, see [function
 declarations](functions-and-control-flow.md#declare-a-function).
 
 For a native host, implement `FunctionHost` alongside `ProjectionHost` and
-`RuntimeTypeHost`. A submitted program prepares its declarations once, then
-resolves every written value in its lexical scope before executing statements:
+`RuntimeTypeHost`. Read a native expression with `read_native_expression`, or
+build the same located tree in Rust. A submitted program prepares its declarations
+once, then resolves every written expression in its lexical scope before
+executing statements:
 
 ```rust
 let mut functions = PreparedFunctions::prepare(&declarations, &host, &mut budget)?;
-let entry = functions.prepare_value(&value, &scope, Some(input_kind), &mut budget)?;
-// Prepare the remaining written values here, before any operation executes.
-let result = functions.evaluate(
+let entry = functions.prepare_expression(
+    &expression, &scope, Some(input_kind), &mut budget,
+)?;
+// Prepare the remaining written expressions before any operation executes.
+let result = functions.evaluate_expression(
     &entry, &bindings, Some(&input), &mut context, &mut budget,
     FunctionLimits { active_depth: 32 },
 )?;
@@ -139,21 +173,24 @@ submitted request, using the current host context and the same cumulative
 budget. Prepared entries carry their unit identity; another unit refuses them.
 Each execution releases its results and frames normally.
 
-For a projection,
-prepare each field with the subject name in its lexical scope and the singleton
-subject kind as relative input. Pass borrowed entries in written field order to
-`PreparedFunctions::evaluate_projection`, with the original projection, current
-input, bindings, context, budget and function limits. The shared executor binds
-each subject and constructs the rows; its `ConstructedResult` retains field types
-for empty reports. It checks that every entry belongs to this unit and matches
-its written field before enumerating subjects.
+`scope` maps visible names to the host's `ProjectionHost::Kind`. Pass `None` for
+the relative kind and input when the expression has no current input. A core `Value`
+step uses this actual optional input; its surrounding `ExpressionKind::Input`
+wrapper does not grant a function access to an ambient subject.
 
-When a projection is itself a native stage inside a prepared value or function,
-declare its fields through `ProjectionHost::value_arguments`. Its
-`scoped_value_arguments` supplies the subject local and singleton relative kind.
-Dispatch the stage through `NativeArguments::evaluate_projection`, which runs
-the fields with the active function's parameters and locals. Lift the returned
-value together with its types so empty projected reports retain their schema.
+A core `Projection` step uses this same preparation call. Zirql obtains the
+declared singleton kind, checks every field and retains its record alternatives
+before obtaining subjects. Execution runs fields in written order through the
+active function argument runner, including for nested projections. Hosts supply
+subject and scalar views and preserve the prepared types when lifting the
+result, so empty reports retain their schema. The existing
+`tests/native_programs.rs` controls exercise this sequence in
+`native_captures_keep_written_fields_and_feed_shared_projection` and nested
+function projections.
+
+Use `evaluate_program_with` to run statements through prepared entries while
+sharing the direct native program's sequencing, input copies and emission policy.
+The host retains declaration and statement bookkeeping around those entries.
 
 `Bindings::with_local` shares the outer map when introducing a local name;
 native argument callbacks retain that sharing. Declaration inputs can be
@@ -408,8 +445,7 @@ Lower that capture to `Statement::BindFields { names, expression }` to install
 its fields in an ordinary `Program`. Program preflight checks every new name
 against the outer scope. Execution verifies and copies every requested field
 through `capture_record` and `copy_value`, then installs the complete set.
-`Statement` and `Program` retain their `Eq` support; the host retains its pattern
-expression in its existing checked stage wrapper.
+The host retains its pattern expression in its existing checked stage wrapper.
 
 When releasing parsed native trees, use `dispose_native_value`,
 `dispose_pattern_functions` or `dispose_unresolved_pattern_functions`;

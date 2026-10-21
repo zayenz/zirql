@@ -241,6 +241,21 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         range: &Range<usize>,
     ) -> Result<Option<Vec<ValueType>>, QueryError>;
     fn constructed_kind(&self, types: Vec<ValueType>) -> Self::Kind;
+    /// Discover an opaque native operand using this request's registered signatures.
+    /// Function hosts delegate to the common borrowed-header preflight; the default
+    /// supports native-only adapters without function declarations.
+    fn expression_kind(
+        &self,
+        expression: &NativeExpression<C, Self>,
+        input: &Self::Kind,
+        scope: &BTreeMap<String, Self::Kind>,
+        budget: &mut Budget,
+    ) -> Result<Self::Kind, QueryError>
+    where
+        Self: Sized,
+    {
+        native_expression_kind(expression, self, input, scope, budget)
+    }
     fn stage_kind(
         &self,
         stage: &Self::Stage,
@@ -304,6 +319,18 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         _kind: &'k Self::Kind,
     ) -> Option<&'k crate::NativeCapture<Self::Kind>> {
         None
+    }
+    /// Preserve the host kind of an explicitly constructed native capture.
+    fn record_kind(
+        &self,
+        _fields: Vec<(String, Self::Kind)>,
+        _budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Self::Kind, QueryError> {
+        Err(QueryError::query(
+            range.clone(),
+            "native capture construction is unsupported by this host",
+        ))
     }
     /// Declared positions of an explicitly exposed native tuple view.
     fn tuple_view_kind<'k>(&self, _kind: &'k Self::Kind) -> Option<&'k [Self::Kind]> {
@@ -379,11 +406,55 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
     scope: &BTreeMap<String, H::Kind>,
     budget: &mut Budget,
 ) -> Result<H::Kind, QueryError> {
+    expression_kind(
+        expression,
+        host,
+        Some(input),
+        scope,
+        false,
+        &mut |value, scope, relative, budget| {
+            let facts = value_facts(host, scope, budget, &value.range)?;
+            let outer_names = scope.keys().map(String::as_str).collect::<Vec<_>>();
+            let mut prepared = BTreeMap::new();
+            let mut queries = NativeValues {
+                host,
+                input_kind: relative
+                    .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished])),
+                input: None,
+                context: None,
+                bindings: None,
+                scope,
+                outer_names: &outer_names,
+                outer: &[],
+                subject_name: None,
+                predicate_scope: false,
+                prepared: NativePreparation::Checking(&mut prepared),
+            };
+            Ok(host.constructed_kind(query_value_types(value, &facts, &mut queries, budget)?))
+        },
+        budget,
+    )
+}
+
+pub(crate) fn expression_kind<C, H: ProjectionHost<C>>(
+    expression: &NativeExpression<C, H>,
+    host: &H,
+    input: Option<&H::Kind>,
+    scope: &BTreeMap<String, H::Kind>,
+    allow_effects: bool,
+    value_kind: &mut impl FnMut(
+        &ValueExpression<NativeExpression<C, H>>,
+        &BTreeMap<String, H::Kind>,
+        Option<H::Kind>,
+        &mut Budget,
+    ) -> Result<H::Kind, QueryError>,
+    budget: &mut Budget,
+) -> Result<H::Kind, QueryError> {
     let location = Location::Query(expression.range.clone());
     budget.within_evaluation(expression.value.depth(), location.clone(), |budget| {
         budget.charge(1, location)?;
         match &expression.value {
-            ExpressionKind::Input => Ok(input.clone()),
+            ExpressionKind::Input => input.cloned().ok_or_else(|| QueryError::query(expression.range.clone(), "functions require explicit native inputs")),
             ExpressionKind::Binding(name) => scope.get(name).cloned().ok_or_else(|| {
                 QueryError::query(
                     expression.range.clone(),
@@ -391,10 +462,10 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
                 )
             }),
             ExpressionKind::Group(child) => {
-                native_expression_kind(child, host, input, scope, budget)
+                expression_kind(child, host, input, scope, allow_effects, value_kind, budget)
             }
             ExpressionKind::Field { value, field } => {
-                let kind = native_expression_kind(value, host, input, scope, budget)?;
+                let kind = expression_kind(value, host, input, scope, allow_effects, value_kind, budget)?;
                 let record = host.capture_record_kind(&kind).ok_or_else(|| {
                     QueryError::query(
                         field.range.clone(),
@@ -407,29 +478,32 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
                 input: source,
                 steps,
             } => {
-                let mut kind = native_expression_kind(source, host, input, scope, budget)?;
+                let source_wrapper = matches!(source.value, ExpressionKind::Input)
+                    && steps.first().is_some_and(|step| matches!(&step.value, ExpressionStep::Value(_)) || matches!(&step.value, ExpressionStep::Stage(stage) if host.is_explicit_source(stage)));
+                let mut kind = if source_wrapper { input.cloned() } else { Some(expression_kind(source, host, input, scope, allow_effects, value_kind, budget)?) };
                 for step in steps {
                     budget.charge(1, Location::Query(step.range.clone()))?;
-                    let ExpressionStep::Stage(stage) = &step.value else {
-                        return Err(QueryError::query(
-                            step.range.clone(),
-                            "constructed expressions cannot emit",
-                        ));
-                    };
-                    if !host.is_pure(stage) {
-                        return Err(QueryError::query(
-                            step.range.clone(),
-                            "constructed expressions cannot edit or emit",
-                        ));
-                    }
-                    for (query, relative) in host.nested_queries(stage, budget, &step.range)? {
-                        let result = native_expression_kind(&query, host, &relative, scope, budget);
-                        crate::dispose_expression(query);
-                        result?;
-                    }
-                    kind = host.stage_kind(stage, &kind, scope, budget, &step.range)?;
+                    kind = Some(match &step.value {
+                        ExpressionStep::Value(value) => value_kind(value, scope, kind, budget)?,
+                        ExpressionStep::Projection(projection) => projection_kind(projection,host,kind.as_ref(),scope,value_kind,budget)?,
+                        ExpressionStep::Stage(stage) => {
+                            if !allow_effects && !host.is_pure(stage) {
+                                return Err(QueryError::query(step.range.clone(), "constructed expressions cannot edit or emit"));
+                            }
+                            for (query, relative) in host.nested_queries(stage, budget, &step.range)? {
+                                let result = expression_kind(&query, host, Some(&relative), scope, false, value_kind, budget);
+                                crate::dispose_expression(query);
+                                result?;
+                            }
+                            let placeholder;
+                            let input = match &kind { Some(kind) => kind, None if host.is_explicit_source(stage) => { placeholder = host.constructed_kind(vec![ValueType::Unestablished]); &placeholder }, None => return Err(QueryError::query(step.range.clone(), "functions require explicit native inputs")) };
+                            host.stage_kind(stage, input, scope, budget, &step.range)?
+                        }
+                        ExpressionStep::Emit { .. } if allow_effects => kind.clone().ok_or_else(|| QueryError::query(step.range.clone(), "emission requires input"))?,
+                        ExpressionStep::Emit { .. } => return Err(QueryError::query(step.range.clone(), "constructed expressions cannot emit")),
+                    });
                 }
-                Ok(kind)
+                kind.ok_or_else(|| QueryError::query(expression.range.clone(), "functions require explicit native inputs"))
             }
             ExpressionKind::Set { .. } => {
                 let mut pending = Vec::new();
@@ -442,19 +516,141 @@ pub fn native_expression_kind<C, H: ProjectionHost<C>>(
                     pending.push((right.as_ref(), &operand.range));
                     operand = left;
                 }
-                let mut left = native_expression_kind(operand, host, input, scope, budget)?;
+                let mut left = expression_kind(operand, host, input, scope, allow_effects, value_kind, budget)?;
                 while let Some((right, range)) = pending.pop() {
-                    let right = native_expression_kind(right, host, input, scope, budget)?;
+                    let right = expression_kind(right, host, input, scope, allow_effects, value_kind, budget)?;
                     left = host.set_kind(&left, &right, budget, range)?;
                 }
                 Ok(left)
             }
-            ExpressionKind::Record(_) => Err(QueryError::query(
-                expression.range.clone(),
-                "native records require explicit scalar field projections",
-            )),
+            ExpressionKind::Record(fields) => {
+                admit_slots::<(String,H::Kind)>(fields.len(),budget,&expression.range)?;
+                let mut kinds = Vec::with_capacity(fields.len());
+                for (label,field) in fields {
+                    let kind = expression_kind(field,host,input,scope,allow_effects,value_kind,budget)?;
+                    budget.charge(label.value.len(),Location::Query(label.range.clone()))?;
+                    kinds.push((label.value.clone(),kind));
+                }
+                host.record_kind(kinds,budget,&expression.range)
+            }
         }
     })
+}
+
+fn projection_kind<C, H: ProjectionHost<C>>(
+    projection: &Projection<NativeExpression<C, H>>,
+    host: &H,
+    input: Option<&H::Kind>,
+    scope: &BTreeMap<String, H::Kind>,
+    value_kind: &mut impl FnMut(
+        &ValueExpression<NativeExpression<C, H>>,
+        &BTreeMap<String, H::Kind>,
+        Option<H::Kind>,
+        &mut Budget,
+    ) -> Result<H::Kind, QueryError>,
+    budget: &mut Budget,
+) -> Result<H::Kind, QueryError> {
+    let range = &projection.subject.range;
+    let input = input
+        .ok_or_else(|| QueryError::query(range.clone(), "projection requires explicit input"))?;
+    let subject = host.subject_kind(input, budget, range)?;
+    if scope.contains_key(&projection.subject.value) {
+        return Err(QueryError::query(
+            range.clone(),
+            "projection subject shadows an existing binding",
+        ));
+    }
+    let mut local = copy_scope::<C, H>(scope, budget, range)?;
+    budget.charge(
+        projection.subject.value.len() + 1,
+        Location::Query(range.clone()),
+    )?;
+    local.insert(projection.subject.value.clone(), subject.clone());
+    let types = projection_field_types(
+        projection,
+        host,
+        &mut |field, budget| value_kind(field, &local, Some(subject.clone()), budget),
+        budget,
+    )?;
+    Ok(host.constructed_kind(types))
+}
+
+fn projection_field_types<C, H: ProjectionHost<C>>(
+    projection: &Projection<NativeExpression<C, H>>,
+    host: &H,
+    field_kind: &mut impl FnMut(
+        &ValueExpression<NativeExpression<C, H>>,
+        &mut Budget,
+    ) -> Result<H::Kind, QueryError>,
+    budget: &mut Budget,
+) -> Result<Vec<ValueType>, QueryError> {
+    admit_slots::<Vec<ValueType>>(1, budget, &projection.subject.range)?;
+    let mut positions = vec![Vec::new()];
+    for (index, (_, field)) in projection.fields.iter().enumerate() {
+        check_projection_label(projection, index, budget)?;
+        let kind = field_kind(field, budget)?;
+        let types = host
+            .scalar_types(&kind, budget, &field.range)?
+            .ok_or_else(|| {
+                QueryError::query(
+                    field.range.clone(),
+                    "native handles require an explicit scalar projection",
+                )
+            })?;
+        positions = crate::value::extend_type_positions(
+            &positions,
+            &types,
+            budget,
+            &Location::Query(field.range.clone()),
+        )?;
+    }
+    projection_result_types(projection, positions, budget)
+}
+
+pub(crate) fn prepared_projection_types<C, H: ProjectionHost<C>>(
+    query: &NativeExpression<C, H>,
+    host: &H,
+    kinds: &BTreeMap<usize, H::Kind>,
+    budget: &mut Budget,
+) -> Result<BTreeMap<usize, Vec<ValueType>>, QueryError> {
+    admit_slots::<&NativeExpression<C, H>>(1, budget, &query.range)?;
+    let mut pending = vec![query];
+    let mut result = BTreeMap::new();
+    while let Some(query) = pending.pop() {
+        budget.charge(1, Location::Query(query.range.clone()))?;
+        match &query.value {
+            ExpressionKind::Sequence { input, steps } => {
+                admit_slots::<&NativeExpression<C, H>>(1, budget, &query.range)?;
+                pending.push(input);
+                for step in steps {
+                    if let ExpressionStep::Projection(projection) = &step.value {
+                        let types = projection_field_types(
+                            projection,
+                            host,
+                            &mut |field, _| Ok(kinds[&(field as *const _ as usize)].clone()),
+                            budget,
+                        )?;
+                        admit_slots::<(usize, Vec<ValueType>)>(1, budget, &step.range)?;
+                        result.insert(std::sync::Arc::as_ptr(projection) as usize, types);
+                    }
+                }
+            }
+            ExpressionKind::Group(child) | ExpressionKind::Field { value: child, .. } => {
+                admit_slots::<&NativeExpression<C, H>>(1, budget, &query.range)?;
+                pending.push(child);
+            }
+            ExpressionKind::Set { left, right, .. } => {
+                admit_slots::<&NativeExpression<C, H>>(2, budget, &query.range)?;
+                pending.extend([left.as_ref(), right.as_ref()]);
+            }
+            ExpressionKind::Record(fields) => {
+                admit_slots::<&NativeExpression<C, H>>(fields.len(), budget, &query.range)?;
+                pending.extend(fields.iter().map(|(_, field)| field));
+            }
+            _ => {}
+        }
+    }
+    Ok(result)
 }
 
 pub(crate) fn admit_slots<T>(
@@ -553,7 +749,7 @@ pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
 ) -> Result<DeclaredArguments<'q, C, H>, QueryError> {
     enum Pending<'q, S, O, E> {
         Expression(&'q Expression<S, O, E>),
-        Step(&'q Located<ExpressionStep<S, E>>),
+        Step(&'q Located<ExpressionStep<S, E, O>>),
     }
     admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter>>(1, budget, &query.range)?;
     let mut pending = vec![Pending::Expression(query)];
@@ -561,6 +757,25 @@ pub(crate) fn declared_arguments<'q, C, H: ProjectionHost<C>>(
     while let Some(node) = pending.pop() {
         match node {
             Pending::Step(step) => {
+                match &step.value {
+                    ExpressionStep::Value(value) => {
+                        admit_slots::<(&ValueExpression<NativeExpression<C, H>>, Option<H::Kind>)>(
+                            1,
+                            budget,
+                            &step.range,
+                        )?;
+                        result.push((value.as_ref(), None));
+                    }
+                    ExpressionStep::Projection(projection) => {
+                        admit_slots::<(&ValueExpression<NativeExpression<C, H>>, Option<H::Kind>)>(
+                            projection.fields.len(),
+                            budget,
+                            &step.range,
+                        )?;
+                        result.extend(projection.fields.iter().map(|(_, value)| (value, None)));
+                    }
+                    _ => {}
+                }
                 if let ExpressionStep::Stage(stage) = &step.value {
                     let arguments = host.value_arguments(stage, budget, &step.range)?;
                     admit_slots::<(&ValueExpression<NativeExpression<C, H>>, H::Kind)>(
@@ -635,9 +850,51 @@ pub(crate) fn scoped_arguments<'q, C, H: ProjectionHost<C>>(
     scope: &BTreeMap<String, H::Kind>,
     budget: &mut Budget,
 ) -> Result<ScopedNativeValueArguments<'q, C, H>, QueryError> {
+    scoped_arguments_with(
+        query,
+        host,
+        input,
+        scope,
+        &mut |value, scope, relative, budget| {
+            let facts = value_facts(host, scope, budget, &value.range)?;
+            let names = scope.keys().map(String::as_str).collect::<Vec<_>>();
+            let mut prepared = BTreeMap::new();
+            let mut queries = NativeValues {
+                host,
+                input_kind: relative
+                    .unwrap_or_else(|| host.constructed_kind(vec![ValueType::Unestablished])),
+                input: None,
+                context: None,
+                bindings: None,
+                scope,
+                outer_names: &names,
+                outer: &[],
+                subject_name: None,
+                predicate_scope: false,
+                prepared: NativePreparation::Checking(&mut prepared),
+            };
+            Ok(host.constructed_kind(query_value_types(value, &facts, &mut queries, budget)?))
+        },
+        budget,
+    )
+}
+
+pub(crate) fn scoped_arguments_with<'q, C, H: ProjectionHost<C>>(
+    query: &'q NativeExpression<C, H>,
+    host: &H,
+    input: &H::Kind,
+    scope: &BTreeMap<String, H::Kind>,
+    value_kind: &mut impl FnMut(
+        &ValueExpression<NativeExpression<C, H>>,
+        &BTreeMap<String, H::Kind>,
+        Option<H::Kind>,
+        &mut Budget,
+    ) -> Result<H::Kind, QueryError>,
+    budget: &mut Budget,
+) -> Result<ScopedNativeValueArguments<'q, C, H>, QueryError> {
     enum Pending<'q, S, O, E, K> {
         Expression(&'q Expression<S, O, E>, K),
-        Stage(&'q Located<ExpressionStep<S, E>>, K),
+        Stage(&'q Located<ExpressionStep<S, E, O>>, K),
     }
     admit_slots::<Pending<'_, H::Stage, H::SetOperator, H::Emitter, H::Kind>>(
         1,
@@ -649,6 +906,29 @@ pub(crate) fn scoped_arguments<'q, C, H: ProjectionHost<C>>(
     while let Some(next) = pending.pop() {
         match next {
             Pending::Stage(step, kind) => {
+                match &step.value {
+                    ExpressionStep::Value(expression) => result.push(ScopedNativeArgument {
+                        expression,
+                        relative: Some(kind.clone()),
+                        locals: Vec::new(),
+                    }),
+                    ExpressionStep::Projection(projection) => {
+                        let subject = host.subject_kind(&kind, budget, &step.range)?;
+                        for (_, expression) in &projection.fields {
+                            admit_slots::<ScopedNativeArgument<'_, NativeExpression<C, H>, H::Kind>>(
+                                1,
+                                budget,
+                                &step.range,
+                            )?;
+                            result.push(ScopedNativeArgument {
+                                expression,
+                                relative: Some(subject.clone()),
+                                locals: vec![(projection.subject.clone(), subject.clone())],
+                            });
+                        }
+                    }
+                    _ => {}
+                }
                 if let ExpressionStep::Stage(stage) = &step.value {
                     let arguments =
                         host.scoped_value_arguments(stage, &kind, scope, budget, &step.range)?;
@@ -680,17 +960,38 @@ pub(crate) fn scoped_arguments<'q, C, H: ProjectionHost<C>>(
                         steps,
                     } => {
                         let mut stages = Vec::new();
-                        admit_slots::<(&Located<ExpressionStep<H::Stage, H::Emitter>>, H::Kind)>(
-                            steps.len(),
+                        admit_slots::<(
+                            &Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>,
+                            H::Kind,
+                        )>(steps.len(), budget, &expression.range)?;
+                        let mut kind = expression_kind(
+                            source,
+                            host,
+                            Some(&input),
+                            scope,
+                            true,
+                            value_kind,
                             budget,
-                            &expression.range,
                         )?;
-                        let mut kind = native_expression_kind(source, host, &input, scope, budget)?;
                         for step in steps {
-                            if let ExpressionStep::Stage(stage) = &step.value {
-                                stages.push((step, kind.clone()));
-                                kind = host.stage_kind(stage, &kind, scope, budget, &step.range)?;
-                            }
+                            stages.push((step, kind.clone()));
+                            kind = match &step.value {
+                                ExpressionStep::Stage(stage) => {
+                                    host.stage_kind(stage, &kind, scope, budget, &step.range)?
+                                }
+                                ExpressionStep::Value(value) => {
+                                    value_kind(value, scope, Some(kind), budget)?
+                                }
+                                ExpressionStep::Projection(projection) => projection_kind(
+                                    projection,
+                                    host,
+                                    Some(&kind),
+                                    scope,
+                                    value_kind,
+                                    budget,
+                                )?,
+                                ExpressionStep::Emit { .. } => kind,
+                            };
                         }
                         pending.extend(
                             stages
@@ -811,7 +1112,9 @@ impl<C, H: ProjectionHost<C>> ValueQueryHost<Expression<H::Stage, H::SetOperator
                 )?),
             );
         }
-        let kind = native_expression_kind(query, self.host, &self.input_kind, &scope, budget)?;
+        let kind = self
+            .host
+            .expression_kind(query, &self.input_kind, &scope, budget)?;
         let prepared = PreparedNative::resolve::<C, H>(
             query,
             self.host,

@@ -7,7 +7,7 @@ use zirql::{
 };
 
 type Query = Expression<Stage, (), ()>;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Stage {
     Names,
     Missing,
@@ -85,9 +85,7 @@ impl ValueReaderHost for Words {
     fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) -> Stage {
         unreachable!()
     }
-    fn projection(&mut self, _: zirql::Projection<Query>, _: Range<usize>) -> Stage {
-        unreachable!()
-    }
+
     fn mapping(&mut self, map: NativeMap<Query>, _: Range<usize>) -> Result<Stage, QueryError> {
         Ok(Stage::Map(Box::new(map)))
     }

@@ -253,6 +253,29 @@ pub(crate) struct Preparation<'a> {
 }
 
 impl<'a> Preparation<'a> {
+    pub(crate) fn arguments<Q, H: ValueQueryHost<Q> + ?Sized>(
+        &mut self,
+        query: &'a Q,
+        queries: &mut H,
+        budget: &mut Budget,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Vec<PreparedArgument<'a, Q>>, QueryError> {
+        let sources = queries.query_arguments(query, budget, range)?;
+        let mut arguments = metadata_vec(sources.len(), budget, &Location::Query(range.clone()))?;
+        for source in sources {
+            let mut preparation = Self::new();
+            preparation.general_key_expressions = std::mem::take(&mut self.general_key_expressions);
+            let expression = preparation.resolve(source, queries, budget)?;
+            self.general_key_expressions = preparation.general_key_expressions;
+            arguments.push(PreparedArgument {
+                source,
+                expression,
+                names: preparation.names,
+            });
+        }
+        Ok(arguments)
+    }
+
     pub fn new() -> Self {
         Self {
             names: Vec::new(),
@@ -340,20 +363,8 @@ impl<'a> Preparation<'a> {
                 }
                 ValueExpressionKind::NativeQuery(query)
                 | ValueExpressionKind::NativeValue(query) => {
-                    let sources = queries.query_arguments(query, budget, &expression.range)?;
-                    let mut arguments = metadata_vec(sources.len(), budget, &location)?;
-                    for source in sources {
-                        let mut preparation = Self::new();
-                        preparation.general_key_expressions =
-                            std::mem::take(&mut self.general_key_expressions);
-                        let expression = preparation.resolve(source, queries, budget)?;
-                        self.general_key_expressions = preparation.general_key_expressions;
-                        arguments.push(PreparedArgument {
-                            source,
-                            expression,
-                            names: preparation.names,
-                        });
-                    }
+                    let arguments =
+                        self.arguments(query.as_ref(), queries, budget, &expression.range)?;
                     if matches!(expression.value, ValueExpressionKind::NativeValue(_)) {
                         PreparedKind::NativeValue {
                             query: query.as_ref(),

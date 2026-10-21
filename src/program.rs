@@ -291,7 +291,7 @@ pub type Expression<S, O, E> = Located<ExpressionKind<S, O, E>>;
 
 /// Native expression structure. Hosts validate opaque payloads, purity and
 /// supported value transitions before calling the shared runner.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum ExpressionKind<S, O, E> {
     Input,
     Binding(String),
@@ -303,7 +303,7 @@ pub enum ExpressionKind<S, O, E> {
     },
     Sequence {
         input: Box<Expression<S, O, E>>,
-        steps: Vec<Located<ExpressionStep<S, E>>>,
+        steps: Vec<Located<ExpressionStep<S, E, O>>>,
     },
     Set {
         operator: O,
@@ -323,15 +323,22 @@ impl<S, O, E> ExpressionKind<S, O, E> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum ExpressionStep<S, E> {
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExpressionStep<S, E, O = ()> {
+    /// An ordinary constructed or native value, evaluated with the current input.
+    Value(std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>),
+    /// Correlated scalar fields, prepared once for the declared singleton kind.
+    Projection(std::sync::Arc<crate::Projection<Expression<S, O, E>>>),
     Stage(S),
-    Emit { emitter: E, policy: EmissionPolicy },
+    Emit {
+        emitter: E,
+        policy: EmissionPolicy,
+    },
 }
 
 /// Evaluate starts from the program's retained input. None discards the result;
 /// Some requests implicit output unless the expression ends in a written emit.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Statement<S, O, E> {
     Bind {
         name: Located<String>,
@@ -361,7 +368,7 @@ impl<S, O, E> Statement<S, O, E> {
 
 /// Ordered, located statements lowered by a host frontend. Construction has no
 /// effects; execution preflights all core-visible names and expression structure.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct Program<S, O, E> {
     statements: Vec<Located<Statement<S, O, E>>>,
     range: Range<usize>,
@@ -561,6 +568,26 @@ pub trait ProgramHost<C> {
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>>;
 
+    /// Apply host value policy around a core value/projection transition.
+    /// The default runs the supplied transition with the same input and budget.
+    fn transition(
+        &self,
+        input: Option<Self::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        _range: &Range<usize>,
+        run: impl FnOnce(
+            Option<Self::Value>,
+            &mut C,
+            &mut Budget,
+        ) -> Result<Self::Value, EvaluationError<Self::Error>>,
+    ) -> Result<Self::Value, EvaluationError<Self::Error>>
+    where
+        Self: Sized,
+    {
+        run(input, context, budget)
+    }
+
     /// Both operands have run left to right from the same incoming value.
     /// Validate their kinds and handles before calling [`crate::combine_native_set`]
     /// with native identities and candidates in the host's required result order.
@@ -632,12 +659,45 @@ pub fn evaluate_program<C, H>(
     host: &H,
     input: H::Value,
     context: &mut C,
-    mut bindings: Bindings<H::Value>,
+    bindings: Bindings<H::Value>,
     budget: &mut Budget,
 ) -> Result<Bindings<H::Value>, EvaluationError<H::Error>>
 where
     H: ProgramHost<C>,
 {
+    evaluate_program_with(
+        program,
+        host,
+        input,
+        context,
+        bindings,
+        budget,
+        &mut |expression, input, context, bindings, budget| {
+            run_expression(expression, host, input, context, bindings, budget)
+        },
+    )
+}
+
+/// Execute ordered statements through their request's prepared expression runner.
+/// This shares binding, input ownership and emission sequencing with native-only programs.
+///
+/// # Errors
+/// Scope, structure, host execution and budget failures retain query locations.
+pub fn evaluate_program_with<C, H: ProgramHost<C>>(
+    program: &Program<H::Stage, H::SetOperator, H::Emitter>,
+    host: &H,
+    input: H::Value,
+    context: &mut C,
+    mut bindings: Bindings<H::Value>,
+    budget: &mut Budget,
+    run: &mut impl FnMut(
+        &Expression<H::Stage, H::SetOperator, H::Emitter>,
+        H::Value,
+        &mut C,
+        &Bindings<H::Value>,
+        &mut Budget,
+    ) -> Result<H::Value, EvaluationError<H::Error>>,
+) -> Result<Bindings<H::Value>, EvaluationError<H::Error>> {
     let mut names: BTreeSet<_> = bindings.iter().map(|(name, _)| name).collect();
     for statement in program.statements() {
         validate_expression(statement.value.expression(), &names, budget)?;
@@ -676,14 +736,7 @@ where
             )?
         };
         let expression = statement.value.expression();
-        let value = run_expression(
-            expression,
-            host,
-            statement_input,
-            context,
-            &bindings,
-            budget,
-        )?;
+        let value = run(expression, statement_input, context, &bindings, budget)?;
         match &statement.value {
             Statement::Bind { name, .. } => {
                 budget
@@ -805,6 +858,9 @@ where
                                     budget,
                                     &step.range,
                                 )?;
+                            }
+                            ExpressionStep::Value(_) | ExpressionStep::Projection(_) => {
+                                return Err(QueryError::query(step.range.clone(), "value and projection steps require prepared expression execution").into());
                             }
                             ExpressionStep::Emit { emitter, .. } => {
                                 host.emit(emitter, &value, context, budget, &step.range)?;
@@ -971,22 +1027,7 @@ fn validate_expression<S, O, E>(
 /// Release a retained native tree without recursively dropping its flat set spine.
 /// Hosts owning normalized operands use this when their immutable tree is released.
 pub fn dispose_expression<S, O, E>(expression: Expression<S, O, E>) {
-    let mut pending = vec![expression];
-    while let Some(expression) = pending.pop() {
-        match expression.value {
-            ExpressionKind::Input | ExpressionKind::Binding(_) => {}
-            ExpressionKind::Group(child) => pending.push(*child),
-            ExpressionKind::Field { value, .. } => pending.push(*value),
-            ExpressionKind::Sequence { input, .. } => pending.push(*input),
-            ExpressionKind::Set { left, right, .. } => {
-                pending.push(*left);
-                pending.push(*right);
-            }
-            ExpressionKind::Record(fields) => {
-                pending.extend(fields.into_iter().map(|(_, expression)| expression))
-            }
-        }
-    }
+    crate::reader::dispose_native_trees(Vec::new(), vec![expression]);
 }
 
 /// Inspect direct native-wrapper children in written order. Stage payloads remain
@@ -997,9 +1038,21 @@ pub fn for_each_expression_child<'a, S, O, E>(
 ) {
     match &expression.value {
         ExpressionKind::Input | ExpressionKind::Binding(_) => {}
-        ExpressionKind::Group(value)
-        | ExpressionKind::Field { value, .. }
-        | ExpressionKind::Sequence { input: value, .. } => visit(value),
+        ExpressionKind::Group(value) | ExpressionKind::Field { value, .. } => visit(value),
+        ExpressionKind::Sequence { input, steps } => {
+            visit(input);
+            for step in steps {
+                match &step.value {
+                    ExpressionStep::Value(value) => value_natives(value, &mut visit),
+                    ExpressionStep::Projection(projection) => {
+                        for (_, value) in &projection.fields {
+                            value_natives(value, &mut visit);
+                        }
+                    }
+                    ExpressionStep::Stage(_) | ExpressionStep::Emit { .. } => {}
+                }
+            }
+        }
         ExpressionKind::Set { left, right, .. } => {
             visit(left);
             visit(right);
@@ -1022,27 +1075,111 @@ pub fn walk_expression<'a, S, O, E>(
     nesting: usize,
     mut visit: impl FnMut(&'a Expression<S, O, E>, &mut Budget) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
+    enum Node<'a, S, O, E> {
+        Native(&'a Expression<S, O, E>),
+        Value(&'a crate::ValueExpression<Expression<S, O, E>>),
+    }
     budget.charge_results(1, Location::Query(expression.range.clone()))?;
-    let mut pending = vec![(expression, 0usize)];
-    while let Some((expression, depth)) = pending.pop() {
-        let location = Location::Query(expression.range.clone());
-        let depth = depth.saturating_add(expression.value.depth());
-        budget.check_evaluation_depth(depth, 0, location.clone())?;
-        if depth > nesting.min(64) {
-            return Err(QueryError::query(
-                expression.range.clone(),
-                "native expression nesting limit exceeded",
-            ));
-        }
-        budget.charge(1, location.clone())?;
-        visit(expression, budget)?;
-        let mut width = 0usize;
-        for_each_expression_child(expression, |_| width = width.saturating_add(1));
-        budget.charge(width, location.clone())?;
-        budget.charge_results(width, location)?;
+    let mut pending = vec![(Node::Native(expression), 0usize)];
+    while let Some((node, depth)) = pending.pop() {
         let start = pending.len();
-        for_each_expression_child(expression, |child| pending.push((child, depth)));
+        match node {
+            Node::Native(expression) => {
+                let depth = depth.saturating_add(expression.value.depth());
+                let location = Location::Query(expression.range.clone());
+                budget.check_evaluation_depth(depth, 0, location.clone())?;
+                if depth > nesting.min(64) {
+                    return Err(QueryError::query(
+                        expression.range.clone(),
+                        "native expression nesting limit exceeded",
+                    ));
+                }
+                budget.charge(1, location.clone())?;
+                visit(expression, budget)?;
+                let mut push = |node| -> Result<(), QueryError> {
+                    budget.charge(1, location.clone())?;
+                    budget.charge_results(1, location.clone())?;
+                    pending.push((node, depth));
+                    Ok(())
+                };
+                match &expression.value {
+                    ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+                    ExpressionKind::Group(child) | ExpressionKind::Field { value: child, .. } => {
+                        push(Node::Native(child))?
+                    }
+                    ExpressionKind::Sequence { input, steps } => {
+                        push(Node::Native(input))?;
+                        for step in steps {
+                            match &step.value {
+                                ExpressionStep::Value(value) => push(Node::Value(value))?,
+                                ExpressionStep::Projection(projection) => {
+                                    for (_, value) in &projection.fields {
+                                        push(Node::Value(value))?;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    ExpressionKind::Set { left, right, .. } => {
+                        push(Node::Native(left))?;
+                        push(Node::Native(right))?;
+                    }
+                    ExpressionKind::Record(fields) => {
+                        for (_, field) in fields {
+                            push(Node::Native(field))?;
+                        }
+                    }
+                }
+            }
+            Node::Value(value) => {
+                let depth = depth.saturating_add(1);
+                let location = Location::Query(value.range.clone());
+                budget.check_evaluation_depth(depth, 0, location.clone())?;
+                if depth > nesting.min(64) {
+                    return Err(QueryError::query(
+                        value.range.clone(),
+                        "native expression nesting limit exceeded",
+                    ));
+                }
+                budget.charge(1, location.clone())?;
+                match &value.value {
+                    crate::ValueExpressionKind::NativeQuery(query)
+                    | crate::ValueExpressionKind::NativeValue(query) => {
+                        budget.charge_results(1, location)?;
+                        pending.push((Node::Native(query), depth));
+                    }
+                    _ => {
+                        let mut width = 0usize;
+                        crate::for_each_value_child(value, |_| width = width.saturating_add(1));
+                        budget.charge(width, location.clone())?;
+                        budget.charge_results(width, location)?;
+                        crate::for_each_value_child(value, |child| {
+                            pending.push((Node::Value(child), depth))
+                        });
+                    }
+                }
+            }
+        }
         pending[start..].reverse();
     }
     Ok(())
+}
+
+fn value_natives<'a, S, O, E>(
+    value: &'a crate::ValueExpression<Expression<S, O, E>>,
+    visit: &mut impl FnMut(&'a Expression<S, O, E>),
+) {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match &value.value {
+            crate::ValueExpressionKind::NativeQuery(query)
+            | crate::ValueExpressionKind::NativeValue(query) => visit(query),
+            _ => {
+                let start = pending.len();
+                crate::for_each_value_child(value, |child| pending.push(child));
+                pending[start..].reverse();
+            }
+        }
+    }
 }

@@ -34,9 +34,11 @@ pub use functions::{
     FunctionCall, FunctionDeclaration, FunctionDeclarationRef, FunctionError, FunctionHost,
     FunctionLimits, FunctionParameter, FunctionRequest, NativeFunction,
     NativeFunctionImplementation, PatternFunctionDeclaration, PatternFunctionDeclarationRef,
-    PatternParameter, PatternParameterRef, PreparedFunctionValue, PreparedFunctions,
-    PreparedPatternBinding, dispose_functions, dispose_pattern_functions, evaluate_functions,
-    evaluate_pattern_functions, pattern_function_value_kind, pattern_function_value_kind_borrowed,
+    PatternParameter, PatternParameterRef, PreparedExpression, PreparedFunctionValue,
+    PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
+    evaluate_functions, evaluate_pattern_functions, pattern_function_expression_kind,
+    pattern_function_expression_kind_borrowed, pattern_function_value_kind,
+    pattern_function_value_kind_borrowed,
 };
 pub use mapping::{
     MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,
@@ -58,7 +60,7 @@ pub use paths::{
 pub use program::{
     Bindings, EmissionPolicy, Expression, ExpressionKind, ExpressionStep, ParameterDeclaration,
     ParameterInputs, ParameterType, Program, ProgramHost, Statement, admit_parameters,
-    dispose_expression, evaluate_expression, evaluate_program,
+    dispose_expression, evaluate_expression, evaluate_program, evaluate_program_with,
 };
 pub use projection::{
     ConstructedResult, NativeArguments, NativeExpression, NativeOperands, NativeRead,
@@ -69,7 +71,7 @@ pub use projection::{
     native_predicate_value_types, native_value_types, projection_types,
 };
 pub use reader::{
-    CommonStatement, FieldPipelineSource, ReadExpression, ResolvedFunctionSignature,
+    CommonStatement, FieldPipelineSource, ReadExpression, ReadStep, ResolvedFunctionSignature,
     ResolvedPatternFunctionSignature, SignatureType, UnresolvedFunctionDeclaration,
     UnresolvedFunctionParameter, UnresolvedPatternFunctionDeclaration,
     UnresolvedPatternFunctionParameter, ValueReaderHost, ValueSuffix, ValueSuffixKind,

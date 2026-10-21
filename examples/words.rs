@@ -5,9 +5,8 @@
 use std::{collections::BTreeMap, ops::Range};
 use zirql::{
     ArgumentReader, ArrayType, Budget, ConstructedValue, ExpressionStep, Location, Predicate,
-    ProgramLimits, Projection, QueryError, ReadExpression, ValueQueryHost, ValueReaderHost,
-    ValueType, copy_constructed_value, dispose_native_value, evaluate_query_value,
-    read_value_expression,
+    ProgramLimits, QueryError, ReadExpression, ValueQueryHost, ValueReaderHost, ValueType,
+    copy_constructed_value, dispose_native_value, evaluate_query_value, read_value_expression,
 };
 
 struct Words {
@@ -62,8 +61,6 @@ impl ValueReaderHost for Words {
     }
 
     fn filter(&mut self, _: Predicate<()>, _: Range<usize>) {}
-
-    fn projection(&mut self, _: Projection<ReadExpression<Self>>, _: Range<usize>) {}
 
     fn set_operator(&self, _: &str) -> Option<()> {
         None

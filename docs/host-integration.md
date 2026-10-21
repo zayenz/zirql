@@ -22,9 +22,17 @@ documentation for your selected dependency with `cargo doc --open`.
 | Text expressions over bindings | `ValueReaderHost`, `read_value_expression`, `ValueQueryHost`, `evaluate_query_value` | Binding names, type facts and budgeted value reads |
 | Constructed expression trees | `evaluate_value` | Located expressions and immutable constructed bindings |
 | Ordered native stages | `Host` and `evaluate` | Native input, predicates, identity and typed stages |
-| Native bindings and reports | `ProgramHost` and `evaluate_program` | Native values, stage/set payloads, copying and emitters |
-| Correlated report fields | `ProjectionHost` and `evaluate_projection` | Native subjects and pure projection operations |
+| Native bindings and reports | `ProgramHost`, `PreparedFunctions::prepare_expression` and `evaluate_expression` | Native values, remaining stage/set payloads, copying and emitters |
+| Correlated report fields | `ExpressionStep::Projection` and `ProjectionHost` | Native subjects, singleton kinds and explicit scalar projections |
 | Named pure functions | `FunctionHost`, `FunctionRequest`, `PreparedFunctions` | Type resolution and pure native operations |
+
+In the development API, `ExpressionStep::Value` carries an ordinary value
+expression and `ExpressionStep::Projection` carries its subject and fields.
+Both are prepared and executed by Zirql. `Stage` carries the remaining host
+operations; `Emit` retains the host's output policy. These core steps and the
+prepared-expression entry require the development dependency; registry 0.2.0
+predates them. The direct `evaluate_program` path remains available for
+native-only programs.
 
 The [word example](getting-started.md) uses the first row. Its reader recognizes
 one binding, `words`, and rejects native stages. Its value host returns a
@@ -194,8 +202,9 @@ For bounded preorder inspection or rewriting, use `walk_value` or
 Their callbacks receive the node, its depth and that budget. Walks admit known
 child storage before allocation and return located errors. They do not bind
 names or evaluate branches. Native-wrapper discovery uses `walk_expression`;
-input, binding and sequence wrappers add no logical nesting. Opaque stages
-remain host callbacks.
+input, binding and sequence wrappers add no logical nesting. Core value and
+projection steps expose their children to the shared walk; callbacks inspect
+only opaque host stages.
 
 For example, this renames a native payload while retaining its query range:
 
@@ -313,8 +322,12 @@ Rust representation. `Pipeline::new` accepts located typed stages;
 `Program` and `ValueExpression` describe programs and scalar/collection expressions.
 `read_value_expression` reads JSON-shaped values, operators, positional
 comprehensions, reducers and requirements. `read_projection` reads an explicit
-subject and ordered fields. A `ValueReaderHost` supplies one domain stage or
-predicate leaf; the reader owns native composition and Boolean wrappers.
+subject and ordered fields. The common reader lowers values and `project`
+directly to `ExpressionStep::Value` and `ExpressionStep::Projection`.
+`ValueReaderHost::parse_stage` and its scoped form return a whole `ReadStep`,
+normally `ExpressionStep::Stage` for a domain operation. The reader owns native
+composition and Boolean wrappers; hosts need no value-source or projection
+factories.
 `read_statement_prefix` recognizes contextual `let name =` and `report` forms.
 The frontend lowers ordered statements and defines emission policy. Zirql owns
 program sequencing, binding scope and nested execution.
@@ -343,11 +356,11 @@ such as `outer.items | filter(_ > 1)` continues:
 
 - `FieldPipelineSource::Constructed` uses the common constructed suffixes.
   CSV and the word example use this route and need no native query evaluator.
-- `FieldPipelineSource::ValueArgument` retains the shared `Field` value and
-  passes it to `value_source` before reading the host's native stages. Choose
-  this when the adapter executes that declared argument with the active
-  prepared runner. Its existing kind checks decide which stages accept the
-  selected value, including constructed values inside native reports.
+- `FieldPipelineSource::ValueArgument` retains the shared `Field` value in a
+  core `Value` step before reading the host's native stages. Choose this for
+  execution through the prepared expression runner. Its kind checks decide
+  which stages accept the selected value, including constructed values inside
+  native reports.
 - The default, `FieldPipelineSource::NativeCapture`, retains dotted-name
   native capture pipelines for direct native evaluation and standalone
   projections. `read_native_expression` always keeps native field postfixes.
@@ -383,6 +396,12 @@ For programs, `ProgramHost` owns native value copying, stage execution, set
 admission, native record construction and emission. `copy_value` need not
 copy an entire document. It must admit the new result representation before
 allocating it. `construct_record` receives already-admitted field slots.
+Core value and projection steps bypass `evaluate_stage`. The optional
+`transition` hook surrounds their execution with host value policy; its default
+runs the supplied callback with the same optional input, context and budget.
+Zincite uses it to require complete observations when needed and retain any
+incoming incomplete-selection evidence on the result. The hook does not
+dispatch common algorithms.
 
 In `combine`, validate both operand kinds and every handle before calling
 `combine_native_set`, including empty and discarded operands. Supply native
@@ -639,10 +658,13 @@ scope, type and purity checks.
 
 `ProjectionHost` extends `ProgramHost` with native kinds, stage applicability
 and effect facts, visible nested selector operands, subject extraction and
-scalar conversion. `native_expression_kind` walks bindings, grouping, sequences,
-sets and native capture fields and refuses effects and emitters. Domain hooks
-validate primitive arguments and retain native source failures. Handles require
-an explicit domain projection before becoming scalar report data.
+scalar conversion. `expression_kind` defaults to `native_expression_kind` for
+native-only hosts. Function hosts use their registered, borrowed declaration
+headers for kind discovery without preparing or copying function bodies.
+`record_kind` describes an explicitly constructed native capture; ordinary
+value records use `ValueExpressionKind::Record`. Domain hooks validate native
+arguments and retain source failures. Handles require an explicit domain
+projection before becoming scalar report data.
 
 `projection_types` and `native_value_types` retain inferred record alternatives,
 including schemas of empty row arrays. Keep these facts with saved constructed
@@ -825,9 +847,11 @@ hosts can continue using their current APIs without implementing these hooks.
 
 `PreparedFunctions` also accepts an empty declaration iterator. A host can use
 one request path for ordinary expressions, projections and function calls:
-prepare the declaration unit, prepare each written entry with its lexical kinds
-and relative input, then execute the entries with the current bindings and
-budget. Zirium uses this path for textual queries and typed report builders,
+prepare the declaration unit, call `prepare_expression` for each written
+expression with its lexical kinds and actual optional relative kind, then call
+`evaluate_expression` with current bindings, optional input, context and budget.
+`PreparedExpression::kind()` supplies the next expression's kind before any
+statement runs. Zirium uses this path for textual queries and typed report builders,
 including programs without functions. Its native stages retain direct execution,
 document ownership checks and their existing budget policy.
 
@@ -891,8 +915,10 @@ continues through `admit_value` in the current context, preserving owner and
 stale-handle refusals. No `Clone`, `Send`, `Sync` or `'static` bound is added to
 native values, and rendering is never used to pass them between calls.
 
-Resolve all written entries with `prepare_value` before executing statements.
-Each entry records its host kind and its owning unit; `evaluate` rejects an entry
+Resolve all written expressions before executing statements. Value-only callers
+can use `prepare_value` and `evaluate`; a core expression containing values,
+projections and native stages uses `prepare_expression` and `evaluate_expression`.
+Each entry records its host kind and its owning unit; execution rejects an entry
 from another unit before reading its resolved slots or call IDs. Native metadata
 belongs to its prepared entry or function body, so sharing an immutable native
 argument tree across lexical scopes cannot replace another body's kinds. The host keeps
@@ -906,25 +932,19 @@ The native argument bridge shares the program's outer binding map and overlays
 only the active lexical locals. Prepared native indices look up their selected
 binding directly, without rebuilding a vector for every caller binding per row.
 
-For native record projections, prepare the fields once with their subject name
-in scope and its singleton kind as relative input. Pass references to those
-entries in written order to `PreparedFunctions::evaluate_projection`. It checks
-unit and field association, duplicate labels, shadowing and scalar projection
-before obtaining subjects, including for empty input. The ordinary and prepared
-paths share subject binding, field order and row construction. Both return a
-`ConstructedResult` with every admitted record alternative, so an empty report
-retains its field schema. Hosts supply subject selection and scalar conversion;
-field execution keeps the current context, relative subject and cumulative budget.
+For a core projection step, preparation obtains `subject_kind` and checks each
+field once with the subject name in scope and its singleton kind as relative
+input. Duplicate labels, shadowing and missing scalar projections fail before
+subjects are enumerated, including for empty input. Execution binds each subject,
+runs fields in written order and lifts the result with its prepared record
+alternatives. Empty reports retain their field schemas. Nested projections use
+the active argument runner and keep current function parameters and locals.
+Hosts supply subjects, scalar conversion and value/kind lifting.
 
-A projection inside a native value or function body uses the active argument
-runner. Declare every field in `value_arguments`; `scoped_value_arguments` gives
-each field the subject's local name and singleton relative kind while retaining
-the incoming lexical scope. In `evaluate_stage_with_arguments`, call
-`NativeArguments::evaluate_projection` and lift its value with its returned types.
-The runner checks every written field before obtaining subjects and executes it
-with current function parameters and locals. Nested projections use the same
-runner and shared row construction; hosts do not prepare or enumerate fields
-again during execution.
+`evaluate_program_with` shares the native-only program's statement sequencing,
+input ownership and emission loop while using the request's prepared expression
+runner. Frontends retain declaration collection, written parameter introduction,
+statement and pattern-binding bookkeeping, and submitted-request ownership.
 
 `FunctionRequest` preserves the one-shot context/budget-borrowing facade.
 Normal return and failure release live slots and continuations. Use
@@ -941,16 +961,13 @@ embedding](embedding-programs.md#call-typed-pure-functions).
 A frontend that retains native expression results opts into
 `ValueReaderHost::retains_native_values`. This chooses `NativeValue` rather than
 `NativeQuery` result representation independently of `field_pipeline_source`.
-The `value_source` hook lowers an explicit function result, or a field selected
-with `FieldPipelineSource::ValueArgument`, to a host stage with one declared
-argument. Mark that stage with `ProjectionHost::is_explicit_source`;
-it must ignore the runner's absent input placeholder and evaluate its declared
-argument. This prevents a source such as `identity(op) | children` from reading
-an ambient subject. Register the value in `value_arguments` and execute it with
-`NativeArguments::evaluate_native` so native owners and constructed contracts
-survive selection. Keep this path available in ordinary reports as well as
-functions and predicates. Register pure native primitives through the same
-argument runner and admission hooks.
+The common reader represents an explicit function result or a field selected
+with `FieldPipelineSource::ValueArgument` as a core `Value` step. Preparation
+checks that value's own tree against the actual optional input. An `Input`
+wrapper around the step neither requires nor grants ambient input: a top-level
+expression can use its current input, while a function still receives only its
+explicit parameters and locals. `NativeValue` keeps native owners and constructed
+contracts through subsequent stages; `NativeQuery` retains scalar projection.
 
 Native `in` sources reuse `subjects` and `subject_kind`. Enumeration preserves
 the host's sequence order, including explicit empty-sequence kinds. Each binder

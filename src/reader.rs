@@ -15,6 +15,13 @@ pub type ReadExpression<H> = Expression<
     <H as ValueReaderHost>::Emitter,
 >;
 
+/// One shared pipeline step with this reader's opaque native payload types.
+pub type ReadStep<H> = ExpressionStep<
+    <H as ValueReaderHost>::Stage,
+    <H as ValueReaderHost>::Emitter,
+    <H as ValueReaderHost>::SetOperator,
+>;
+
 /// How an ordinary field value continues into a pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldPipelineSource {
@@ -45,7 +52,7 @@ pub trait ValueReaderHost {
         &mut self,
         reader: &mut ArgumentReader<'_>,
         budget: &mut Budget,
-    ) -> Result<ExpressionStep<Self::Stage, Self::Emitter>, QueryError>;
+    ) -> Result<ReadStep<Self>, QueryError>;
     fn parse_predicate_leaf(
         &mut self,
         reader: &mut ArgumentReader<'_>,
@@ -62,7 +69,7 @@ pub trait ValueReaderHost {
         _locals: &[&str],
         budget: &mut Budget,
         _nesting: usize,
-    ) -> Result<ExpressionStep<Self::Stage, Self::Emitter>, QueryError> {
+    ) -> Result<ReadStep<Self>, QueryError> {
         self.parse_stage(reader, budget)
     }
     /// Preserve the same lexical names when a domain predicate has value
@@ -132,13 +139,6 @@ pub trait ValueReaderHost {
     }
     fn filter(&mut self, predicate: Predicate<Self::Predicate>, range: Range<usize>)
     -> Self::Stage;
-    fn projection(
-        &mut self,
-        projection: Projection<ReadExpression<Self>>,
-        range: Range<usize>,
-    ) -> Self::Stage
-    where
-        Self: Sized;
     /// Wrap the shared match tree as a native stage. Supporting hosts retain
     /// this tree and delegate its type discovery and execution to Zirql.
     fn matching(
@@ -252,8 +252,7 @@ pub trait ValueReaderHost {
     /// Select field continuation for ordinary value expressions, including
     /// grouped fields. The default retains native capture pipelines.
     /// Constructed-only hosts choose [`FieldPipelineSource::Constructed`]. Hosts
-    /// that execute [`Self::value_source`] with the active prepared argument
-    /// runner choose [`FieldPipelineSource::ValueArgument`]. This is independent
+    /// using the active prepared argument runner choose [`FieldPipelineSource::ValueArgument`]. This is independent
     /// of whether native results are retained by [`Self::retains_native_values`].
     /// Explicit native readers keep their native field postfixes.
     fn field_pipeline_source(&self) -> FieldPipelineSource {
@@ -280,23 +279,6 @@ pub trait ValueReaderHost {
         Ok(None)
     }
 
-    /// Lower an explicit value source for a native pipeline. The host retains
-    /// this value as a declared native argument and evaluates it with the active
-    /// function runner. The default preserves scalar-only frontends.
-    fn value_source(
-        &mut self,
-        value: ValueExpression<ReadExpression<Self>>,
-        range: Range<usize>,
-    ) -> Result<Self::Stage, QueryError>
-    where
-        Self: Sized,
-    {
-        dispose_native_value(value);
-        Err(QueryError::query(
-            range,
-            "native value sources are unsupported by this host",
-        ))
-    }
     fn set_operator(&self, word: &str) -> Option<Self::SetOperator>;
 }
 
@@ -3790,14 +3772,17 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let value = ValueGuard::new(value);
         self.depth(depth)?;
         self.slots::<ReadExpression<H>>(2)?;
-        self.slots::<Located<ExpressionStep<H::Stage, H::Emitter>>>(1)?;
+        self.slots::<Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>>(1)?;
         let range = value.value().range.clone();
         let start = range.start;
-        let stage = self.host.value_source(value.into_value(), range.clone())?;
+        let value = value.into_value();
         let source = Located::new(
             ExpressionKind::Sequence {
                 input: Box::new(Located::new(ExpressionKind::Input, start..start)),
-                steps: vec![Located::new(ExpressionStep::Stage(stage), range.clone())],
+                steps: vec![Located::new(
+                    ExpressionStep::Value(value.into()),
+                    range.clone(),
+                )],
             },
             range,
         );
@@ -4661,7 +4646,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 .expect("native match source")
                 .range
                 .clone();
-            self.slots::<Located<ExpressionStep<H::Stage, H::Emitter>>>(1)?;
+            self.slots::<Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>>(1)?;
             let stage = self.host.matching(
                 matching.0.take().expect("native match source"),
                 range.clone(),
@@ -4878,10 +4863,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 )
             } else if self.projection_call() {
                 let projection = self.projection(depth + 1)?;
-                ExpressionStep::Stage(
-                    self.host
-                        .projection(projection, stage_start..self.reader.position()),
-                )
+                ExpressionStep::Projection(projection.into())
             } else if self.word_is("map_by") {
                 let mapping = self.mapping(depth + 1)?;
                 ExpressionStep::Stage(
@@ -4928,7 +4910,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                     .reader
                     .error("host stage parser did not consume a stage"));
             }
-            self.slots::<Located<ExpressionStep<H::Stage, H::Emitter>>>(1)?;
+            self.slots::<Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>>(1)?;
             steps.push(Located::new(step, stage_start..self.reader.position()));
             more = self.reader.consume('|');
         }
@@ -5534,8 +5516,51 @@ impl<S, O, E> Drop for ValueGuard<S, O, E> {
 /// Hosts remain responsible for trees inside opaque stage, set-operator,
 /// emitter and predicate payloads, which this helper drops without inspecting.
 pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>) {
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
+    dispose_native_trees(vec![value], Vec::new());
+}
+
+pub(crate) fn dispose_native_trees<S, O, E>(
+    mut pending: Vec<ValueExpression<Expression<S, O, E>>>,
+    mut native: Vec<Expression<S, O, E>>,
+) {
+    while !pending.is_empty() || !native.is_empty() {
+        if let Some(expression) = native.pop() {
+            match expression.value {
+                ExpressionKind::Input | ExpressionKind::Binding(_) => {}
+                ExpressionKind::Group(child) | ExpressionKind::Field { value: child, .. } => {
+                    native.push(*child)
+                }
+                ExpressionKind::Sequence { input, steps } => {
+                    native.push(*input);
+                    for step in steps {
+                        match step.value {
+                            ExpressionStep::Value(value) => {
+                                if let Ok(value) = std::sync::Arc::try_unwrap(value) {
+                                    pending.push(value);
+                                }
+                            }
+                            ExpressionStep::Projection(projection) => {
+                                if let Ok(projection) = std::sync::Arc::try_unwrap(projection) {
+                                    pending.extend(
+                                        projection.fields.into_iter().map(|(_, value)| value),
+                                    );
+                                }
+                            }
+                            ExpressionStep::Stage(_) | ExpressionStep::Emit { .. } => {}
+                        }
+                    }
+                }
+                ExpressionKind::Set { left, right, .. } => {
+                    native.push(*left);
+                    native.push(*right);
+                }
+                ExpressionKind::Record(fields) => {
+                    native.extend(fields.into_iter().map(|(_, value)| value))
+                }
+            }
+            continue;
+        }
+        let value = pending.pop().expect("remaining value tree");
         let clauses = match value.value {
             K::Literal(value) => {
                 crate::value::dispose_constructed_value(value);
@@ -5568,7 +5593,7 @@ pub fn dispose_native_value<S, O, E>(value: ValueExpression<Expression<S, O, E>>
                 continue;
             }
             K::NativeQuery(query) | K::NativeValue(query) => {
-                crate::dispose_expression(*query);
+                native.push(*query);
                 continue;
             }
             K::One(child)

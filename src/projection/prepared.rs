@@ -31,6 +31,7 @@ pub(crate) enum PreparedNative {
         input: Box<Self>,
         arguments: Vec<Vec<usize>>,
     },
+    Record(Vec<Self>),
     Set {
         left: Box<Self>,
         rights: Vec<Self>,
@@ -101,15 +102,36 @@ impl PreparedNative {
                         admit_slots::<Vec<usize>>(steps.len(), budget, &expression.range)?;
                         let mut arguments = Vec::with_capacity(steps.len());
                         for step in steps {
-                            let ExpressionStep::Stage(stage) = &step.value else {
-                                unreachable!("pure native stage preflight")
-                            };
-                            let declared = host.value_arguments(stage, budget, &step.range)?;
+                            let declared: Vec<&ValueExpression<NativeExpression<C, H>>> =
+                                match &step.value {
+                                    ExpressionStep::Stage(stage) => host
+                                        .value_arguments(stage, budget, &step.range)?
+                                        .into_iter()
+                                        .map(|(value, _)| value)
+                                        .collect::<Vec<_>>(),
+                                    ExpressionStep::Value(value) => {
+                                        admit_slots::<&ValueExpression<NativeExpression<C, H>>>(
+                                            1,
+                                            budget,
+                                            &step.range,
+                                        )?;
+                                        vec![value]
+                                    }
+                                    ExpressionStep::Projection(projection) => {
+                                        admit_slots::<&ValueExpression<NativeExpression<C, H>>>(
+                                            projection.fields.len(),
+                                            budget,
+                                            &step.range,
+                                        )?;
+                                        projection.fields.iter().map(|(_, value)| value).collect()
+                                    }
+                                    ExpressionStep::Emit { .. } => Vec::new(),
+                                };
                             admit_slots::<usize>(declared.len(), budget, &step.range)?;
                             arguments.push(
                                 declared
                                     .into_iter()
-                                    .map(|(expression, _)| expression as *const _ as usize)
+                                    .map(|expression| expression as *const _ as usize)
                                     .collect(),
                             );
                         }
@@ -137,11 +159,18 @@ impl PreparedNative {
                             rights,
                         }
                     }
-                    ExpressionKind::Record(_) => {
-                        return Err(QueryError::query(
-                            expression.range.clone(),
-                            "native records require explicit scalar field projections",
-                        ));
+                    ExpressionKind::Record(fields) => {
+                        admit_slots::<Self>(fields.len(), budget, &expression.range)?;
+                        Self::Record(
+                            fields
+                                .iter()
+                                .map(|(_, field)| {
+                                    Self::resolve::<C, H>(
+                                        field, host, outer, subject, locals, budget,
+                                    )
+                                })
+                                .collect::<Result<_, _>>()?,
+                        )
                     }
                 })
             },
@@ -176,7 +205,7 @@ impl PreparedNative {
             &NativeOuter::Slots(outer),
             Some(subject),
             locals,
-            &mut |stage, declared, value, context, bindings, budget, range| {
+            &mut |step, declared, value, context, bindings, budget, range| {
                 let mut arguments = StageArguments {
                     host,
                     context,
@@ -186,7 +215,45 @@ impl PreparedNative {
                     declared,
                     values: arguments,
                 };
-                host.evaluate_stage_with_arguments(stage, value, &mut arguments, budget, range)
+                match step {
+                    ExpressionStep::Stage(stage) => host.evaluate_stage_with_arguments(
+                        stage,
+                        value.expect("native stage input"),
+                        &mut arguments,
+                        budget,
+                        range,
+                    ),
+                    ExpressionStep::Value(expression) => {
+                        let input = value.expect("ordinary projection has relative input");
+                        let read = arguments.evaluate(expression, input, budget)?;
+                        let value = read.into_owned(budget)?;
+                        let types = vec![crate::constructed_value_type(
+                            &value,
+                            budget,
+                            Location::Query(range.clone()),
+                        )?];
+                        host.lift_constructed(value, types, arguments.context, budget, range)
+                    }
+                    ExpressionStep::Projection(projection) => {
+                        let result = arguments.evaluate_projection(
+                            projection,
+                            value.expect("projection input"),
+                            budget,
+                        )?;
+                        host.lift_constructed(
+                            result.value,
+                            result.types,
+                            arguments.context,
+                            budget,
+                            range,
+                        )
+                    }
+                    ExpressionStep::Emit { emitter, .. } => {
+                        let value = value.expect("emission input");
+                        host.emit(emitter, &value, arguments.context, budget, range)?;
+                        Ok(value)
+                    }
+                }
             },
             budget,
         )
@@ -206,9 +273,9 @@ impl PreparedNative {
         subject: Option<&H::Value>,
         locals: &[&H::Value],
         run_stage: &mut impl FnMut(
-            &H::Stage,
+            &ExpressionStep<H::Stage, H::Emitter, H::SetOperator>,
             &[usize],
-            H::Value,
+            Option<H::Value>,
             &mut C,
             &Bindings<H::Value>,
             &mut Budget,
@@ -267,38 +334,57 @@ impl PreparedNative {
                         let explicit = matches!(source.value, ExpressionKind::Input)
                             && steps.first().is_some_and(|step| match &step.value {
                                 ExpressionStep::Stage(stage) => host.is_explicit_source(stage),
-                                ExpressionStep::Emit { .. } => false,
+                                ExpressionStep::Value(_) => true,
+                                ExpressionStep::Projection(_) | ExpressionStep::Emit { .. } => {
+                                    false
+                                }
                             });
-                        let mut value = if explicit {
+                        let mut value = if explicit
+                            && input.is_none()
+                            && matches!(
+                                steps.first().map(|step| &step.value),
+                                Some(ExpressionStep::Value(_))
+                            ) {
+                            None
+                        } else if explicit
+                            && input.is_none()
+                            && matches!(
+                                steps.first().map(|step| &step.value),
+                                Some(ExpressionStep::Stage(_))
+                            )
+                        {
                             budget.charge_results(1, Location::Query(expression.range.clone()))?;
-                            host.lift_constructed(
+                            Some(host.lift_constructed(
                                 crate::ConstructedValue::Absent,
                                 vec![crate::ValueType::Absent],
                                 context,
                                 budget,
                                 &expression.range,
-                            )?
+                            )?)
                         } else {
-                            prepared.execute(
+                            Some(prepared.execute(
                                 source, host, input, context, bindings, outer, subject, locals,
                                 run_stage, budget,
-                            )?
+                            )?)
                         };
                         for (step, declared) in steps.iter().zip(declared) {
-                            let ExpressionStep::Stage(stage) = &step.value else {
-                                unreachable!("prepared native query is pure")
-                            };
-                            value = run_stage(
-                                stage,
+                            value = Some(run_stage(
+                                &step.value,
                                 declared,
                                 value,
                                 context,
                                 bindings,
                                 budget,
                                 &step.range,
-                            )?;
+                            )?);
                         }
-                        Ok(value)
+                        value.ok_or_else(|| {
+                            QueryError::query(
+                                expression.range.clone(),
+                                "native input requires an explicit argument input",
+                            )
+                            .into()
+                        })
                     }
                     (Self::Set { left, rights }, ExpressionKind::Set { .. }) => {
                         let mut pending = Vec::new();
@@ -346,6 +432,40 @@ impl PreparedNative {
                             value = host.combine(operator, value, right, context, budget, range)?;
                         }
                         Ok(value)
+                    }
+                    (Self::Record(prepared), ExpressionKind::Record(fields)) => {
+                        budget.charge_results(
+                            fields.len().checked_add(1).ok_or_else(|| {
+                                QueryError::query(expression.range.clone(), "result limit exceeded")
+                            })?,
+                            Location::Query(expression.range.clone()),
+                        )?;
+                        let mut values = Vec::with_capacity(fields.len());
+                        let mut input = input;
+                        for (index, ((label, field), prepared)) in
+                            fields.iter().zip(prepared).enumerate()
+                        {
+                            let relative = if index + 1 == fields.len() {
+                                input.take()
+                            } else {
+                                input
+                                    .as_ref()
+                                    .map(|value| {
+                                        host.copy_value(value, context, budget, &field.range)
+                                    })
+                                    .transpose()?
+                            };
+                            let value = prepared.execute(
+                                field, host, relative, context, bindings, outer, subject, locals,
+                                run_stage, budget,
+                            )?;
+                            budget.charge_program_work(
+                                label.value.len(),
+                                Location::Query(label.range.clone()),
+                            )?;
+                            values.push((label.value.clone(), value));
+                        }
+                        host.construct_record(values, context, budget, &expression.range)
                     }
                     _ => unreachable!("prepared native expression matches its borrowed source"),
                 }

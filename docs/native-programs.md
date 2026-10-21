@@ -99,6 +99,12 @@ The result has rows `{"name":"double","n":2}`, `{"name":"mix","n":3}` and
 fields read that same operation; `one` requires exactly one name, while `count`
 counts its immediate children. The host supplies the MLIR operations and
 attributes. Zirql evaluates projection fields and assembles their dictionaries.
+The common reader and Rust builders represent the projection as a core
+`ExpressionStep::Projection`. Preparation checks every written field once,
+including on empty input, and preserves the result schema for later stages.
+Hosts supply native subjects, kinds and explicit scalar projections. The
+[Rust embedding guide](embedding-programs.md#build-core-value-and-projection-steps)
+shows the read/build, prepare and evaluate path in the development API.
 
 The [Zirium language guide](https://zayenz.se/zirium/guides/query-language/)
 explains its native stages. Zincite similarly projects MiniZinc items and

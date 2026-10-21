@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-124"
 key = "core-value-projection-stages"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -26,12 +26,20 @@ Read brief.md sections Consolidate language machinery and data rendering (2026-1
 
 ## Done when
 
-- [ ] The existing core representation directly owns these common forms and their prepared arguments, type discovery and execution; hosts do not manually redispatch a new common-stage wrapper.
-- [ ] Both hosts use the shared forms and delete superseded variants, reader factories and common argument/type/execution branches; any retained wrapper has a concrete domain responsibility recorded in the result.
-- [ ] Nested native/constructed projections retain lexical scope, relative input, source locations, native owners, declared empty shapes and cumulative limits; host-specific emission and edits retain their contracts.
-- [ ] Rust embedding docs show the new core/native boundary; both consumer architecture/support guides and relevant projection reference links describe actual adopted behavior.
+- [x] The existing core representation directly owns these common forms and their prepared arguments, type discovery and execution; hosts do not manually redispatch a new common-stage wrapper.
+- [x] Both hosts use the shared forms and delete superseded variants, reader factories and common argument/type/execution branches; any retained wrapper has a concrete domain responsibility recorded in the result.
+- [x] Nested native/constructed projections retain lexical scope, relative input, source locations, native owners, declared empty shapes and cumulative limits; host-specific emission and edits retain their contracts.
+- [x] Rust embedding docs show the new core/native boundary; both consumer architecture/support guides and relevant projection reference links describe actual adopted behavior.
 
 ## Validation
 
 - Reuse public native projection, constructed record, saved-binding and typed-builder controls in both hosts; add only a missing relative-input or declared-empty case. Reuse base-116 measurement evidence unless this change gives a concrete reason to measure again.
 - Run the brief’s Rust checks in every changed Rust repository and affected host/Python checks; run documented examples and affected docs content/link checks, git diff --check and zdev check base --format json. Retain separate consumer commits and accepted Zirql dependency revisions.
+
+## Result
+
+Core ExpressionStep now owns ordinary values and correlated projections; PreparedFunctions prepares and executes them through existing argument runners, with cached projection schemas. Both hosts delete common carriers, factories and dispatch. Zincite retains completeness/model/edit policy; Zirium retains stable native selector storage, bounded disposal and reserved-subject admission. Remaining composition payloads belong to base-125 and Session statement bookkeeping to base-117. Canonical Zirql dependency: 5d6a466a6ee9bac2a90c2dfbc5579a0b0c12f08d. Consumer commits: Zincite e4ee4c02aa11f4275e23d52e262e8884dcb6bcd0; Zirium 8c9b7f4883bcb332af5c0ada73945882bff4501b.
+
+Validation:
+
+- Independent whole-task review and focused recheck passed at W4aaff3baf3c86527 after restoring host projection-name admission. Required Rust checks passed in all repositories; Zirium all-feature/all-target tests 669 passed/5 ignored, rebuilt Python 179 passed/2 skipped, Ruff/ty and documentation checks passed. All three site builds/link checks, compiled embedding snippets, normal words/CSV and host projection/examples passed. Exact core and consumer states remained unchanged; git diff checks and zdev check passed.

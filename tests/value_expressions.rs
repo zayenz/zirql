@@ -4451,12 +4451,7 @@ impl zirql::ValueReaderHost for WordInput {
         Err(reader.error("no native predicates"))
     }
     fn filter(&mut self, _: zirql::Predicate<()>, _: std::ops::Range<usize>) {}
-    fn projection(
-        &mut self,
-        _: zirql::Projection<zirql::ReadExpression<Self>>,
-        _: std::ops::Range<usize>,
-    ) {
-    }
+
     fn set_operator(&self, _: &str) -> Option<()> {
         None
     }

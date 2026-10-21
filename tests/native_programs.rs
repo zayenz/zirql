@@ -213,7 +213,7 @@ fn at<T>(value: T, start: usize) -> Located<T> {
 
 fn sequence<S, O, E>(
     input: Expression<S, O, E>,
-    steps: Vec<Located<ExpressionStep<S, E>>>,
+    steps: Vec<Located<ExpressionStep<S, E, O>>>,
 ) -> Expression<S, O, E> {
     Located::new(
         ExpressionKind::Sequence {
@@ -321,7 +321,7 @@ impl PartialEq for SourceValue<'_> {
 
 type SourceExpression = Expression<SourceStage, (), &'static str>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum SourceStage {
     Order(Box<zirql::NativeOrdering<SourceExpression>>),
     FixedPoint(Box<SourceExpression>),
@@ -2302,7 +2302,7 @@ enum DocumentValue {
     Record(Vec<(String, DocumentValue)>),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum DocumentStage {
     Pipeline(Pipeline<&'static str>),
     Select(Box<Expression<DocumentStage, (), &'static str>>),
@@ -2870,7 +2870,6 @@ mod projection {
         Fail,
         Edit,
         Saved(String),
-        Projection(Box<Projection<Query>>),
         Match(Box<NativeMatch<Query, Guard>>),
         Paths(Box<NativePaths<Stage, Guard>>),
         Neighbors,
@@ -3038,10 +3037,6 @@ mod projection {
                 Stage::Saved(name) => {
                     self.copy_value(bindings.get(name, range.clone())?, context, budget, range)
                 }
-                Stage::Projection(projection) => {
-                    zirql::evaluate_projection(projection, self, value, context, bindings, budget)
-                        .map(Value::Constructed)
-                }
                 Stage::Match(matching) => {
                     let input_kind = self.kind(&value, budget, range)?;
                     let mut scope = BTreeMap::new();
@@ -3160,14 +3155,6 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<zirql::NativeValueArguments<'s, (), Self>, QueryError> {
-            if let Stage::Projection(projection) = stage {
-                budget.charge(projection.fields.len(), Location::Query(range.clone()))?;
-                return Ok(projection
-                    .fields
-                    .iter()
-                    .map(|(_, value)| (value, Kind::Subjects))
-                    .collect());
-            }
             if let Stage::Match(matching) = stage {
                 let mut values = Vec::new();
                 for clause in &matching.clauses {
@@ -3208,19 +3195,6 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Vec<zirql::ScopedNativeArgument<'s, Query, Kind>>, QueryError> {
-            if let Stage::Projection(projection) = stage {
-                let kind = self.subject_kind(input, budget, range)?;
-                budget.charge(projection.fields.len(), Location::Query(range.clone()))?;
-                return Ok(projection
-                    .fields
-                    .iter()
-                    .map(|(_, expression)| zirql::ScopedNativeArgument {
-                        expression,
-                        relative: Some(kind.clone()),
-                        locals: vec![(projection.subject.clone(), kind.clone())],
-                    })
-                    .collect());
-            }
             if let Stage::Match(matching) = stage {
                 let mut locals: Vec<(Located<String>, Kind)> = Vec::new();
                 let mut arguments = Vec::new();
@@ -3272,11 +3246,6 @@ mod projection {
             budget: &mut Budget,
             range: &Range<usize>,
         ) -> Result<Value, EvaluationError<QueryError>> {
-            if let Stage::Projection(projection) = stage {
-                return arguments
-                    .evaluate_projection(projection, input, budget)
-                    .map(|result| Value::Constructed(result.value));
-            }
             if let Stage::Match(matching) = stage {
                 let (context, bindings) = arguments.parts();
                 let input_kind = self.kind(&input, budget, range)?;
@@ -3486,15 +3455,6 @@ mod projection {
                 Stage::Paths(paths) => Ok(Kind::Captures(Arc::new(zirql::path_types(
                     paths, self, input, scope, budget,
                 )?))),
-                Stage::Projection(projection) => Ok(Kind::Constructed(Arc::new(
-                    zirql::projection_types::<(), _>(
-                        projection,
-                        self,
-                        input.clone(),
-                        scope.clone(),
-                        budget,
-                    )?,
-                ))),
                 Stage::NativeArgument(_) => Ok(Kind::Subjects),
                 Stage::Argument { .. } => Ok(Kind::Count),
                 Stage::Names if *input == Kind::Subjects => Ok(Kind::Strings),
@@ -3681,6 +3641,12 @@ mod projection {
     }
     fn function_value(value: K<Query>) -> zirql::ValueExpression<Query> {
         Located::new(value, 40..50)
+    }
+    fn projection_operand(projection: Projection<Query>) -> Query {
+        super::sequence(
+            super::at(ExpressionKind::Binding("xs".into()), 20),
+            vec![super::at(ExpressionStep::Projection(projection.into()), 21)],
+        )
     }
     fn native_operand(stage: Stage) -> Query {
         super::sequence(
@@ -5721,13 +5687,7 @@ mod projection {
         fn field_pipeline_source(&self) -> zirql::FieldPipelineSource {
             zirql::FieldPipelineSource::ValueArgument
         }
-        fn value_source(
-            &mut self,
-            value: zirql::ValueExpression<Query>,
-            range: Range<usize>,
-        ) -> Result<Stage, QueryError> {
-            Host.value_source(value, range)
-        }
+
         fn is_binding(&self, name: &str) -> bool {
             self.0.contains(&name)
         }
@@ -5789,9 +5749,7 @@ mod projection {
         fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
             unreachable!()
         }
-        fn projection(&mut self, _: Projection<Query>, _: Range<usize>) -> Stage {
-            unreachable!()
-        }
+
         fn parse_path_edge(
             &mut self,
             edge: Located<&str>,
@@ -5977,13 +5935,7 @@ mod projection {
         fn filter(&mut self, _: Predicate<Guard>, _: Range<usize>) -> Stage {
             unreachable!()
         }
-        fn projection(
-            &mut self,
-            projection: Projection<ReadExpression<Self>>,
-            _: Range<usize>,
-        ) -> Stage {
-            Stage::Projection(Box::new(projection))
-        }
+
         fn matching(
             &mut self,
             matching: NativeMatch<ReadExpression<Self>, Guard>,
@@ -6001,13 +5953,7 @@ mod projection {
                 _ => Err(QueryError::query(edge.range, "unsupported path edge")),
             }
         }
-        fn value_source(
-            &mut self,
-            value: zirql::ValueExpression<Query>,
-            _: Range<usize>,
-        ) -> Result<Stage, QueryError> {
-            Ok(Stage::NativeArgument(Arc::new(value)))
-        }
+
         fn set_operator(&self, word: &str) -> Option<()> {
             (word == "union").then_some(())
         }
@@ -6298,13 +6244,7 @@ mod projection {
         fn filter(&mut self, predicate: Predicate<Guard>, range: Range<usize>) -> Stage {
             Host.filter(predicate, range)
         }
-        fn projection(
-            &mut self,
-            projection: Projection<ReadExpression<Self>>,
-            range: Range<usize>,
-        ) -> Stage {
-            Host.projection(projection, range)
-        }
+
         fn set_operator(&self, word: &str) -> Option<()> {
             Host.set_operator(word)
         }
@@ -6789,9 +6729,7 @@ mod projection {
             r#"project(row, {"name": one(row | names), "offset": offset, "nested": row | project(inner, {"name": one(inner | names), "n": n})})"#,
             &mut function_budget(),
         );
-        let value = function_value(K::NativeQuery(Box::new(native_operand(Stage::Projection(
-            Box::new(projection),
-        )))));
+        let value = function_value(K::NativeQuery(Box::new(projection_operand(projection))));
         let mut make = native_function("make", value);
         make.bindings.push((
             super::at("offset".into(), 5),
@@ -6867,9 +6805,7 @@ mod projection {
         }
         let scope = BTreeMap::from([("xs".into(), Kind::Subjects)]);
         let projection = parse(r#"project(row, {"z": 1})"#, &mut function_budget());
-        let value = function_value(K::NativeQuery(Box::new(native_operand(Stage::Projection(
-            Box::new(projection),
-        )))));
+        let value = function_value(K::NativeQuery(Box::new(projection_operand(projection))));
         let entry = functions
             .prepare_value(&value, &scope, None, &mut function_budget())
             .unwrap();
@@ -6897,9 +6833,7 @@ mod projection {
             r#"project(row, {"z": missing})"#,
         ] {
             let projection = parse(source, &mut function_budget());
-            let value = function_value(K::NativeQuery(Box::new(native_operand(
-                Stage::Projection(Box::new(projection)),
-            ))));
+            let value = function_value(K::NativeQuery(Box::new(projection_operand(projection))));
             let mut functions =
                 PreparedFunctions::prepare([&make], &Host, &mut function_budget()).unwrap();
             assert!(
@@ -7004,15 +6938,31 @@ mod projection {
         let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
         let query =
             zirql::read_native_expression(&mut reader, &mut Host, &mut budget(), 32).unwrap();
-        let value = zirql::evaluate_expression(
-            &query,
-            &Host,
-            Value::Subjects(vec!["alpha"]),
-            &mut (),
-            &Bindings::default(),
-            &mut budget(),
-        )
-        .unwrap();
+        let mut allowance_for_core = budget();
+        let input = Value::Subjects(vec!["alpha"]);
+        let input_kind = Host
+            .kind(&input, &mut allowance_for_core, &query.range)
+            .unwrap();
+        let mut unit =
+            zirql::PreparedFunctions::prepare([], &Host, &mut allowance_for_core).unwrap();
+        let prepared = unit
+            .prepare_expression(
+                &query,
+                &BTreeMap::new(),
+                Some(input_kind),
+                &mut allowance_for_core,
+            )
+            .unwrap();
+        let value = unit
+            .evaluate_expression(
+                &prepared,
+                &Bindings::default(),
+                Some(&input),
+                &mut (),
+                &mut allowance_for_core,
+                zirql::FunctionLimits { active_depth: 64 },
+            )
+            .unwrap();
         let Value::Constructed(V::Array(values)) = value else {
             panic!("projected rows")
         };
@@ -7031,15 +6981,17 @@ mod projection {
                 ),
             ])
         );
-        let empty = zirql::evaluate_expression(
-            &query,
-            &Host,
-            Value::Subjects(vec![]),
-            &mut (),
-            &Bindings::default(),
-            &mut budget(),
-        )
-        .unwrap();
+        let empty_input = Value::Subjects(vec![]);
+        let empty = unit
+            .evaluate_expression(
+                &prepared,
+                &Bindings::default(),
+                Some(&empty_input),
+                &mut (),
+                &mut allowance_for_core,
+                zirql::FunctionLimits { active_depth: 64 },
+            )
+            .unwrap();
         assert_eq!(empty, Value::Constructed(V::Array(vec![])));
         zirql::dispose_expression(query);
         for paths in [paths, zero, one] {
@@ -7238,15 +7190,22 @@ mod projection {
         let query =
             zirql::read_native_expression(&mut reader, &mut Host, &mut allowance, 32).unwrap();
         assert!(reader.remaining().is_empty());
-        let result = zirql::evaluate_expression(
-            &query,
-            &Host,
-            Value::Subjects(vec!["beta", "alpha", "beta"]),
-            &mut (),
-            &Bindings::default(),
-            &mut allowance,
-        )
-        .unwrap();
+        let input = Value::Subjects(vec!["beta", "alpha", "beta"]);
+        let input_kind = Host.kind(&input, &mut allowance, &query.range).unwrap();
+        let mut unit = zirql::PreparedFunctions::prepare([], &Host, &mut allowance).unwrap();
+        let prepared = unit
+            .prepare_expression(&query, &BTreeMap::new(), Some(input_kind), &mut allowance)
+            .unwrap();
+        let result = unit
+            .evaluate_expression(
+                &prepared,
+                &Bindings::default(),
+                Some(&input),
+                &mut (),
+                &mut allowance,
+                zirql::FunctionLimits { active_depth: 64 },
+            )
+            .unwrap();
         let row = |name: &str| {
             V::Record(vec![
                 ("name".into(), V::String(name.into())),
@@ -9116,7 +9075,7 @@ fn shared_reader_releases_native_values_on_errors() {
             &mut self,
             reader: &mut zirql::ArgumentReader<'_>,
             _: &mut Budget,
-        ) -> Result<ExpressionStep<(), ()>, QueryError> {
+        ) -> Result<ExpressionStep<(), (), Rc<()>>, QueryError> {
             Err(reader.error("no domain stages"))
         }
         fn is_predicate_leaf(&self, _: &str) -> bool {
@@ -9136,15 +9095,7 @@ fn shared_reader_releases_native_values_on_errors() {
         fn parse_path_edge(&mut self, _: Located<&str>, _: &mut Budget) -> Result<(), QueryError> {
             Ok(())
         }
-        fn projection(
-            &mut self,
-            projection: zirql::Projection<zirql::ReadExpression<Self>>,
-            _: Range<usize>,
-        ) {
-            for (_, value) in projection.fields {
-                zirql::dispose_native_value(value);
-            }
-        }
+
         fn set_operator(&self, word: &str) -> Option<Rc<()>> {
             if word != "union" {
                 return None;
@@ -9771,8 +9722,6 @@ fn loop_native_state_keeps_borrowed_identity_aliases_and_failure_cleanup() {
 fn prepared_binding_and_program_capture_fields_keep_native_values() {
     use std::collections::BTreeMap;
     use zirql::{FunctionLimits, PreparedFunctions, ProjectionHost, ValueExpressionKind as K};
-    fn eq_capable<T: Eq>() {}
-    eq_capable::<Program<(), (), ()>>();
     let source = String::from("alpha beta");
     let mut context = SourceContext {
         source: &source,
@@ -11061,13 +11010,6 @@ fn common_reader_executes_loops_named_reducers_and_native_worklist_calls() {
         fn filter(&mut self, _: zirql::Predicate<Truth>, _: Range<usize>) -> SourceStage {
             unreachable!("no domain predicates")
         }
-        fn projection(
-            &mut self,
-            _: zirql::Projection<SourceExpression>,
-            _: Range<usize>,
-        ) -> SourceStage {
-            unreachable!("no domain projections")
-        }
     }
     let text = r#"
 fn add((count, total): tuple<int,int>, item: int) -> tuple<int,int> {
@@ -11272,13 +11214,7 @@ fn native_ordering_keeps_borrowed_coordinates_and_common_reader_semantics() {
         fn filter(&mut self, _: zirql::Predicate<()>, _: Range<usize>) -> SourceStage {
             unreachable!()
         }
-        fn projection(
-            &mut self,
-            _: zirql::Projection<SourceExpression>,
-            _: Range<usize>,
-        ) -> SourceStage {
-            unreachable!()
-        }
+
         fn ordering(
             &mut self,
             ordering: zirql::NativeOrdering<SourceExpression>,
