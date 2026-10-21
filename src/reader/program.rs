@@ -112,10 +112,16 @@ pub trait ProgramReaderHost: ValueReaderHost {
         _index: usize,
         _budget: &mut Budget,
     ) -> Result<Option<Located<ReadStatement<Self>>>, QueryError> {
-        Err(QueryError::query(
+        _budget.charge(
+            declaration.name.value.len(),
+            Location::Query(declaration.name.range.clone()),
+        )?;
+        Ok(Some(Located::new(
+            Statement::Parameter {
+                declaration: declaration.clone(),
+            },
             declaration.name.range.clone(),
-            "parameter declarations are unavailable in this host",
-        ))
+        )))
     }
     fn binding_statement(
         &mut self,
@@ -124,14 +130,18 @@ pub trait ProgramReaderHost: ValueReaderHost {
         expression: ReadExpression<Self>,
         _budget: &mut Budget,
     ) -> Result<ReadStatement<Self>, QueryError> {
-        let range = pattern.range.clone();
-        crate::dispose_pattern(pattern);
-        crate::dispose_expression(expression);
-        Err(QueryError::query(
-            range,
-            "native program bindings are unavailable in this host",
-        ))
+        if let crate::PatternKind::Name(name) = pattern.value {
+            Ok(Statement::Bind { name, expression })
+        } else {
+            let range = expression.range.clone();
+            let value = Located::new(K::NativeValue(Box::new(expression)), range);
+            Ok(Statement::BindPattern {
+                pattern: pattern.into(),
+                value: value.into(),
+            })
+        }
     }
+
     fn implicit_output(&mut self, _purpose: ProgramExpression) -> Option<Self::Emitter> {
         None
     }
@@ -684,6 +694,16 @@ fn dispose_statement<S, O, E>(statement: Statement<S, O, E>) {
         Statement::Bind { expression, .. }
         | Statement::BindFields { expression, .. }
         | Statement::Evaluate { expression, .. } => expression,
+        Statement::Parameter { .. } => return,
+        Statement::BindPattern { pattern, value } => {
+            if let Ok(pattern) = std::sync::Arc::try_unwrap(pattern) {
+                crate::dispose_pattern(pattern);
+            }
+            if let Ok(value) = std::sync::Arc::try_unwrap(value) {
+                crate::dispose_native_value(value);
+            }
+            return;
+        }
     };
     crate::dispose_expression(expression);
 }

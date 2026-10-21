@@ -2871,6 +2871,11 @@ impl<Q, K> PreparedFunctionValue<'_, Q, K> {
     }
 }
 
+enum EntryInput<'v, V> {
+    Borrowed(Option<&'v V>),
+    Owned(Option<V>),
+}
+
 impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
     /// Register signatures and prepare every body, including unused functions.
     ///
@@ -3012,6 +3017,24 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         PreparedExpression<'a, Query<C, H>, Kind<C, H>>,
         FunctionError<EvaluationError<H::Error>>,
     > {
+        self.prepare_expression_in_context(expression, scope, relative, true, budget)
+    }
+
+    #[expect(
+        clippy::type_complexity,
+        reason = "The entry retains the existing host expression and kind types"
+    )]
+    fn prepare_expression_in_context(
+        &mut self,
+        expression: &'a Query<C, H>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        allow_effects: bool,
+        budget: &mut Budget,
+    ) -> Result<
+        PreparedExpression<'a, Query<C, H>, Kind<C, H>>,
+        FunctionError<EvaluationError<H::Error>>,
+    > {
         let saved = std::mem::take(&mut self.preflight.prepared);
         let saved_worklists = std::mem::take(&mut self.preflight.worklists);
         let saved_tallies = std::mem::take(&mut self.preflight.general_key_expressions);
@@ -3023,7 +3046,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             self.preflight.contracts.clear();
             self.preflight.worklists.clear();
             self.preflight
-                .native(expression, &[], budget, false, true)?;
+                .native(expression, &[], budget, false, allow_effects)?;
             let kind = self.preflight.prepared[&(expression as *const _ as usize)]
                 .kind
                 .clone();
@@ -3063,6 +3086,29 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
         budget: &mut Budget,
         limits: FunctionLimits,
     ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
+        self.evaluate_expression_with_input(
+            entry,
+            bindings,
+            EntryInput::Borrowed(relative),
+            context,
+            budget,
+            limits,
+        )
+    }
+
+    fn evaluate_expression_with_input(
+        &self,
+        entry: &PreparedExpression<'a, Query<C, H>, Kind<C, H>>,
+        bindings: &Bindings<H::Value>,
+        input: EntryInput<'_, H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+        limits: FunctionLimits,
+    ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
+        let (relative, input) = match input {
+            EntryInput::Borrowed(relative) => (relative, None),
+            EntryInput::Owned(input) => (None, input),
+        };
         if !std::sync::Arc::ptr_eq(&self.identity, &entry.identity) {
             return Err(QueryError::query(
                 entry.source.range.clone(),
@@ -3094,6 +3140,7 @@ impl<'a, 'h, C, H: FunctionHost<C>> PreparedFunctions<'a, 'h, C, H> {
             None,
             budget,
             &entry.source.range,
+            input,
         );
         result.map_err(|error| self.function_error(error, calls))
     }
@@ -4307,6 +4354,7 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
         function: Option<usize>,
         budget: &mut Budget,
         range: &Range<usize>,
+        input: Option<H::Value>,
     ) -> Result<H::Value, EvaluationError<H::Error>> {
         let lexical = function.is_some();
         let source_function = function.or(self.source_function);
@@ -4377,6 +4425,8 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
         };
         let input = if lexical {
             None
+        } else if input.is_some() {
+            input
         } else {
             self.relative
                 .map(|value| self.host.copy_value(value, self.context, budget, range))
@@ -4978,7 +5028,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
         range: &Range<usize>,
     ) -> Result<HostValue<'a, C, H>, Self::Error> {
         let value = self.execute_native(
-            query, arguments, locals, bodies, depth, function, budget, range,
+            query, arguments, locals, bodies, depth, function, budget, range, None,
         )?;
         let host = self.host;
         let prepared = match function.or(self.source_function) {
@@ -5257,7 +5307,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
             native_functions: self.native_functions,
             worklists: self.worklists,
             source_function: self.source_function,
-            relative: input.as_ref(),
+            relative: None,
             limit: self.limit,
             calls: self.calls,
         };
@@ -5270,6 +5320,7 @@ impl<C, H: FunctionHost<C>> NativeArguments<C, H> for Arguments<'_, '_, C, H> {
             None,
             budget,
             &body.value().range,
+            input,
         )
     }
     fn evaluate(
@@ -5584,5 +5635,286 @@ pub(crate) fn dispose_declaration<K>(declaration: DeclaredType<K>) {
             | DeclaredType::Native(_)
             | DeclaredType::IdentitySet(_) => {}
         }
+    }
+}
+
+/// Request-local preparation of one canonical lowered program. Function bodies
+/// remain isolated from entry bindings and current input. Context, results and
+/// the continuing budget are supplied only during execution.
+#[expect(
+    clippy::type_complexity,
+    reason = "Request entries retain the existing host expression and kind types"
+)]
+pub struct PreparedProgram<'a, 'h, C, H: FunctionHost<C>> {
+    program: &'a crate::Program<H::Stage, H::SetOperator, H::Emitter>,
+    functions: PreparedFunctions<'a, 'h, C, H>,
+    expressions: BTreeMap<usize, PreparedExpression<'a, Query<C, H>, Kind<C, H>>>,
+    patterns: BTreeMap<usize, PreparedPatternBinding<'a, Query<C, H>, Kind<C, H>>>,
+    limits: FunctionLimits,
+}
+
+impl<E> From<EvaluationError<E>> for FunctionError<EvaluationError<E>> {
+    fn from(error: EvaluationError<E>) -> Self {
+        Self {
+            error,
+            calls: Vec::new(),
+            omitted_calls: 0,
+        }
+    }
+}
+
+impl<'a, 'h, C, H: FunctionHost<C>> PreparedProgram<'a, 'h, C, H> {
+    /// Prepare every statement in written order before any statement executes.
+    /// Initial kinds describe immutable shared bindings; relative describes the
+    /// optional current input. Admitted parameter values enter scope only at
+    /// their own statements.
+    ///
+    /// # Errors
+    /// Invalid scope, patterns, effects, types and exhausted limits are located.
+    pub fn prepare(
+        functions: PreparedFunctions<'a, 'h, C, H>,
+        program: &'a crate::Program<H::Stage, H::SetOperator, H::Emitter>,
+        initial: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        limits: FunctionLimits,
+        budget: &mut Budget,
+    ) -> Result<Self, FunctionError<EvaluationError<H::Error>>> {
+        let mut prepared = Self {
+            program,
+            functions,
+            expressions: BTreeMap::new(),
+            patterns: BTreeMap::new(),
+            limits,
+        };
+        let mut scope = crate::projection::copy_scope::<C, H>(initial, budget, &program.range())?;
+        for statement in program.statements() {
+            match &statement.value {
+                crate::Statement::Parameter { declaration } => {
+                    if scope.contains_key(&declaration.name.value) {
+                        return Err(QueryError::query(
+                            declaration.name.range.clone(),
+                            "binding is already defined",
+                        )
+                        .into());
+                    }
+                    budget_name(&declaration.name.value, budget, &declaration.name.range)?;
+                    let kind = prepared
+                        .functions
+                        .preflight
+                        .host
+                        .constructed_kind(vec![declaration.ty.value.into()]);
+                    scope.insert(declaration.name.value.clone(), kind);
+                }
+                crate::Statement::BindPattern { pattern, value } => {
+                    let entry = prepared.functions.prepare_binding(
+                        pattern,
+                        value,
+                        &scope,
+                        relative.clone(),
+                        budget,
+                    )?;
+                    for (name, kind) in entry.bindings() {
+                        budget_name(&name.value, budget, &name.range)?;
+                        scope.insert(name.value.clone(), kind.clone());
+                    }
+                    crate::projection::admit_slots::<usize>(1, budget, &statement.range)?;
+                    prepared
+                        .patterns
+                        .insert(&statement.value as *const _ as usize, entry);
+                }
+                crate::Statement::Bind { name, expression } => {
+                    if scope.contains_key(&name.value) {
+                        return Err(QueryError::query(
+                            name.range.clone(),
+                            "binding is already defined",
+                        )
+                        .into());
+                    }
+                    let kind = prepared.prepare_statement_expression(
+                        expression,
+                        &scope,
+                        relative.clone(),
+                        false,
+                        budget,
+                    )?;
+                    budget_name(&name.value, budget, &name.range)?;
+                    scope.insert(name.value.clone(), kind);
+                }
+                crate::Statement::BindFields { names, expression } => {
+                    let kind = prepared.prepare_statement_expression(
+                        expression,
+                        &scope,
+                        relative.clone(),
+                        false,
+                        budget,
+                    )?;
+                    let fields = prepared
+                        .functions
+                        .preflight
+                        .host
+                        .capture_record_kind(&kind)
+                        .ok_or_else(|| {
+                            QueryError::query(
+                                expression.range.clone(),
+                                "binding requires a native capture record",
+                            )
+                        })?;
+                    for name in names {
+                        if scope.contains_key(&name.value) {
+                            return Err(QueryError::query(
+                                name.range.clone(),
+                                "binding is already defined",
+                            )
+                            .into());
+                        }
+                        budget_name(&name.value, budget, &name.range)?;
+                        let kind = fields
+                            .fields
+                            .iter()
+                            .find(|(field, _)| field == &name.value)
+                            .map(|(_, kind)| kind.clone())
+                            .ok_or_else(|| {
+                                QueryError::query(name.range.clone(), "undefined capture field")
+                            })?;
+                        scope.insert(name.value.clone(), kind);
+                    }
+                }
+                crate::Statement::Evaluate { expression, .. } => {
+                    prepared.prepare_expression(expression, &scope, relative.clone(), budget)?;
+                }
+            }
+        }
+        Ok(prepared)
+    }
+
+    /// Retain a host's nested native operand in its actual lexical/input scope.
+    /// The borrowed expression must be the same expression supplied at execution.
+    ///
+    /// # Errors
+    /// Invalid operands and exhausted limits are located before execution.
+    pub fn prepare_expression(
+        &mut self,
+        expression: &'a Query<C, H>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<Kind<C, H>, FunctionError<EvaluationError<H::Error>>> {
+        self.prepare_statement_expression(expression, scope, relative, true, budget)
+    }
+
+    fn prepare_statement_expression(
+        &mut self,
+        expression: &'a Query<C, H>,
+        scope: &BTreeMap<String, Kind<C, H>>,
+        relative: Option<Kind<C, H>>,
+        allow_effects: bool,
+        budget: &mut Budget,
+    ) -> Result<Kind<C, H>, FunctionError<EvaluationError<H::Error>>> {
+        let entry = self.functions.prepare_expression_in_context(
+            expression,
+            scope,
+            relative,
+            allow_effects,
+            budget,
+        )?;
+        let kind = entry.kind().clone();
+        crate::projection::admit_slots::<usize>(1, budget, &expression.range)?;
+        self.expressions
+            .insert(expression as *const _ as usize, entry);
+        Ok(kind)
+    }
+
+    /// Run a retained expression with the same immutable bindings and budget.
+    ///
+    /// # Errors
+    /// Unknown entries, runtime contracts, host failures and limits are located.
+    pub fn evaluate_expression(
+        &self,
+        expression: &Query<C, H>,
+        bindings: &Bindings<H::Value>,
+        input: Option<H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+    ) -> Result<H::Value, FunctionError<EvaluationError<H::Error>>> {
+        let entry = self
+            .expressions
+            .get(&(expression as *const _ as usize))
+            .ok_or_else(|| {
+                QueryError::query(expression.range.clone(), "expression was not prepared")
+            })?;
+        self.functions.evaluate_expression_with_input(
+            entry,
+            bindings,
+            EntryInput::Owned(input),
+            context,
+            budget,
+            self.limits,
+        )
+    }
+
+    /// Execute the prepared statements. Caller parameters must already have been
+    /// admitted; values move into bindings at their written declaration positions.
+    ///
+    /// # Errors
+    /// Missing values, runtime contracts, host failures and limits retain locations.
+    pub fn evaluate(
+        &self,
+        bindings: Bindings<H::Value>,
+        parameters: Vec<(Located<String>, H::Value)>,
+        input: Option<H::Value>,
+        context: &mut C,
+        budget: &mut Budget,
+    ) -> Result<Bindings<H::Value>, FunctionError<EvaluationError<H::Error>>> {
+        crate::projection::admit_slots::<(String, H::Value)>(
+            parameters.len(),
+            budget,
+            &self.program.range(),
+        )?;
+        let mut parameters: BTreeMap<_, _> = parameters
+            .into_iter()
+            .map(|(name, value)| (name.value, value))
+            .collect();
+        crate::program::drive_program(
+            self.program,
+            self.functions.preflight.host,
+            input,
+            context,
+            bindings,
+            budget,
+            &mut |statement, input, context, bindings, budget| match statement {
+                crate::Statement::Parameter { declaration } => parameters
+                    .remove(&declaration.name.value)
+                    .map(crate::program::StatementValue::Value)
+                    .ok_or_else(|| {
+                        QueryError::query(
+                            declaration.name.range.clone(),
+                            "missing admitted parameter",
+                        )
+                        .into()
+                    }),
+                crate::Statement::BindPattern { .. } => {
+                    let entry = &self.patterns[&(statement as *const _ as usize)];
+                    self.functions
+                        .evaluate_binding(
+                            entry,
+                            bindings,
+                            input.as_ref(),
+                            context,
+                            budget,
+                            self.limits,
+                        )
+                        .map(crate::program::StatementValue::Fields)
+                }
+                _ => self
+                    .evaluate_expression(
+                        statement.expression().expect("expression statement"),
+                        bindings,
+                        input,
+                        context,
+                        budget,
+                    )
+                    .map(crate::program::StatementValue::Value),
+            },
+        )
     }
 }

@@ -4,8 +4,8 @@
 
 - Total: 133
 - Ready: 3
-- Blocked: 3
-- Done: 127
+- Blocked: 2
+- Done: 128
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -125,7 +125,7 @@
 | [base-114](tasks/114-share-budgeted-declaration-copying-and-structural-inspection.md) | Share declaration metadata and scalar argument admission | done | base-113 |
 | [base-115](tasks/115-consolidate-common-expression-recognition-and-suffix-routing.md) | Consolidate common syntax routing and name admission | done | base-113 |
 | [base-116](tasks/116-use-the-prepared-path-for-all-shared-zirium-report-expressio.md) | Use the prepared path for all shared Zirium report expressions | done | base-113 |
-| [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | ready | base-116, base-114, base-125, base-126, base-127 |
+| [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | done | base-116, base-114, base-125, base-126, base-127 |
 | [base-118](tasks/118-provide-common-json-rendering-for-all-zirql-data-and-adopt-i.md) | Provide common JSON rendering for all Zirql data and adopt it in CSV | done | — |
 | [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | done | base-113, base-118 |
 | [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | done | base-118 |
@@ -136,7 +136,7 @@
 | [base-125](tasks/125-own-remaining-shared-composition-stages-and-remove-host-disp.md) | Own remaining shared composition stages and remove host dispatch | done | base-124 |
 | [base-126](tasks/126-declare-ordinary-native-functions-once-and-share-call-admiss.md) | Declare ordinary native functions once and share call admission | done | base-114 |
 | [base-127](tasks/127-read-common-programs-in-zirql-and-adopt-the-reader-in-all-th.md) | Read common programs in Zirql and adopt the reader in all three integrations | done | base-115, base-124 |
-| [base-128](tasks/128-provide-a-constructed-program-api-and-simplify-csv-and-words.md) | Provide a constructed-program API and simplify CSV and words | blocked | base-117, base-120 |
+| [base-128](tasks/128-provide-a-constructed-program-api-and-simplify-csv-and-words.md) | Provide a constructed-program API and simplify CSV and words | ready | base-117, base-120 |
 | [base-129](tasks/129-add-explicit-scalar-conversions-with-csv-and-consumer-exampl.md) | Add explicit scalar conversions with CSV and consumer examples | done | base-115 |
 | [base-130](tasks/130-use-one-structural-ordering-contract-for-value-and-native-op.md) | Use one structural ordering contract for value and native operations | ready | base-125 |
 | [base-131](tasks/131-align-collection-selection-and-cardinality-across-native-and.md) | Align collection selection and cardinality across native and value paths | ready | base-125 |

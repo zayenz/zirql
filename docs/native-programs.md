@@ -49,6 +49,14 @@ CSV's final expression renders JSON or Markdown. It accepts no final semicolon,
 `report`, parameter declaration or named function declaration. Native hosts
 accept an optional final semicolon; every binding and parameter requires one.
 
+A Rust embedding lowers parameter declarations to `Statement::Parameter` and
+pattern lets to `Statement::BindPattern`. `PreparedProgram` checks every statement
+before execution, carrying kinds forward only after each declaration. Its shared
+statement driver installs pattern fields atomically and passes the actual current
+input and shared bindings to entry expressions. Named functions receive explicit
+arguments. The [embedding guide](embedding-programs.md#call-typed-pure-functions) describes
+the prepare/run sequence.
+
 ## Required caller parameters
 
 Required parameters let a caller supply typed data without constructing query

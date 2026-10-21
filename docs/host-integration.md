@@ -914,10 +914,20 @@ alternatives. Empty reports retain their field schemas. Nested projections use
 the active argument runner and keep current function parameters and locals.
 Hosts supply subjects, scalar conversion and value/kind lifting.
 
-`evaluate_program_with` shares the native-only program's statement sequencing,
-input ownership and emission loop while using the request's prepared expression
-runner. Frontends retain declaration collection, written parameter introduction,
-statement and pattern-binding bookkeeping, and submitted-request ownership.
+For a submitted program, pass the prepared functions and canonical lowered
+`Program` to `PreparedProgram::prepare`, together with initial binding kinds,
+optional current-input kind, function limits and the active budget. Then call
+`evaluate` with the initial immutable bindings, admitted caller parameters,
+optional current input and mutable context. Zirql retains prepared entries and
+advances statement scope for `Parameter`, `Bind`, `BindPattern` and `BindFields`.
+The existing statement driver owns input retention and emission sequencing.
+
+Native relative groups use `ExpressionStep::Group` with `NativeBody`. They run
+through the same argument machinery as selectors and retain the host result
+shape. Entry groups inherit the surrounding effect allowance; function bodies
+and pure selectors remain pure. `ProjectionHost::admit_emitter` checks native
+output-kind restrictions during preparation, before any emission executes.
+Hosts retain source syntax, domain reserved names, native ownership and effects.
 
 `FunctionRequest` preserves the one-shot context/budget-borrowing facade.
 Normal return and failure release live slots and continuations. Use

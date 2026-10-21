@@ -687,6 +687,19 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
     {
         native_expression_kind(expression, self, input, scope, budget)
     }
+    /// Admit a written emitter against the incoming native kind before execution.
+    /// Hosts retain domain output restrictions; common preparation owns its position.
+    fn admit_emitter(
+        &self,
+        _emitter: &Self::Emitter,
+        _input: &Self::Kind,
+        _scope: &BTreeMap<String, Self::Kind>,
+        _budget: &mut Budget,
+        _range: &Range<usize>,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
+
     fn stage_kind(
         &self,
         stage: &Self::Stage,
@@ -1032,7 +1045,11 @@ pub(crate) fn expression_kind_with_arguments<'q, C, H: ProjectionHost<C>>(
                             host.stage_kind(stage, input, scope, budget, &step.range)?
                         }
                         common if crate::composition::is_common(common) => crate::composition::kind(common,host,kind.as_ref(),scope,value_kind,allow_effects,arguments.as_deref_mut(),budget,&step.range)?,
-                        ExpressionStep::Emit { .. } if allow_effects => kind.clone().ok_or_else(|| QueryError::query(step.range.clone(), "emission requires input"))?,
+                        ExpressionStep::Emit { emitter, .. } if allow_effects => {
+                            let input = kind.as_ref().ok_or_else(|| QueryError::query(step.range.clone(), "emission requires input"))?;
+                            host.admit_emitter(emitter, input, scope, budget, &step.range)?;
+                            input.clone()
+                        },
                         ExpressionStep::Emit { .. } => return Err(QueryError::query(step.range.clone(), "constructed expressions cannot emit")),
                         _ => unreachable!("common step handled above"),
                     });

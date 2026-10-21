@@ -39,7 +39,8 @@ pub enum SelectionShape {
 pub(crate) fn is_common<S, E, O>(step: &ExpressionStep<S, E, O>) -> bool {
     matches!(
         step,
-        ExpressionStep::Filter(_)
+        ExpressionStep::Group(_)
+            | ExpressionStep::Filter(_)
             | ExpressionStep::Match(_)
             | ExpressionStep::Ordering(_)
             | ExpressionStep::Mapping(_)
@@ -57,6 +58,7 @@ pub(crate) fn is_common<S, E, O>(step: &ExpressionStep<S, E, O>) -> bool {
 pub(crate) fn explicit_source<S, E, O>(step: &ExpressionStep<S, E, O>) -> bool {
     match step {
         ExpressionStep::Value(_) => true,
+        ExpressionStep::Group(body) => explicit_expression(body.query()),
         ExpressionStep::Match(matching) => {
             matching.clauses.iter().all(|clause| match &clause.value {
                 MatchClause::From { source, .. } | MatchClause::Bind { value: source, .. } => {
@@ -147,7 +149,9 @@ pub(crate) fn arguments<'a, C, H: ProjectionHost<C>>(
             values.push(mapping.key.value());
             values.push(mapping.value.value());
         }
-        ExpressionStep::WhereExists(body) | ExpressionStep::FixedPoint(body) => {
+        ExpressionStep::Group(body)
+        | ExpressionStep::WhereExists(body)
+        | ExpressionStep::FixedPoint(body) => {
             crate::projection::admit_slots::<&ValueExpression<NativeExpression<C, H>>>(
                 1, budget, range,
             )?;
@@ -239,6 +243,13 @@ pub(crate) fn kind<'q, C, H: ProjectionHost<C>>(
         }
     };
     match step {
+        ExpressionStep::Group(body) => value_kind(
+            body.value(),
+            scope,
+            Some(input.clone()),
+            allow_effects,
+            budget,
+        ),
         ExpressionStep::Filter(predicate) => {
             let subject = host.subject_kind(input, budget, range)?;
             guard_arguments(predicate, host, &subject, scope, value_kind, budget)?;
@@ -514,6 +525,7 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
     range: &Range<usize>,
 ) -> Result<H::Value, EvaluationError<H::Error>> {
     match step {
+        ExpressionStep::Group(body) => arguments.evaluate_body(body, Some(input), None, budget),
         ExpressionStep::Filter(predicate) => {
             let items = host.selection_items(&input, arguments.parts().0, budget, range)?;
             let bindings =
@@ -827,7 +839,9 @@ impl<S, E, O> ExpressionStep<S, E, O> {
                 visit(mapping.key.value());
                 visit(mapping.value.value());
             }
-            Self::WhereExists(body) | Self::FixedPoint(body) => visit(body.value()),
+            Self::Group(body) | Self::WhereExists(body) | Self::FixedPoint(body) => {
+                visit(body.value())
+            }
             _ => {}
         }
     }
@@ -921,7 +935,9 @@ pub(crate) fn dispose_step<S, O, E>(
                 values.push(mapping.value.into_value());
             }
         }
-        ExpressionStep::WhereExists(body) | ExpressionStep::FixedPoint(body) => {
+        ExpressionStep::Group(body)
+        | ExpressionStep::WhereExists(body)
+        | ExpressionStep::FixedPoint(body) => {
             if let Ok(body) = std::sync::Arc::try_unwrap(body) {
                 values.push(body.into_value());
             }
@@ -962,6 +978,9 @@ pub(crate) fn scoped_arguments<'a, C, H: ProjectionHost<C>>(
         Ok::<_, QueryError>(())
     };
     match step {
+        ExpressionStep::Group(body) => {
+            add_body(body, input.clone(), Vec::new(), allow_effects, budget)?
+        }
         ExpressionStep::Ordering(ordering) => {
             if let Some(body) = &ordering.selector {
                 add_body(

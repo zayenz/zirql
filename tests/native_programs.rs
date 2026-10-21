@@ -13289,3 +13289,187 @@ fn ordering_lookahead_keeps_offsets_quotes_and_request_limits() {
         false
     }));
 }
+
+#[test]
+fn prepared_program_combines_functions_parameters_patterns_and_current_input() {
+    use std::collections::BTreeMap;
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionParameter, ParameterDeclaration,
+        ParameterInputs, ParameterType, PreparedFunctions, PreparedProgram,
+        ValueBinaryOperator as B, ValueExpressionKind as K,
+    };
+    let mut budget = Budget::for_program(ProgramLimits {
+        work: 100_000,
+        results: 10_000,
+        nesting: 64,
+        ..limits()
+    });
+    let function_limits = FunctionLimits { active_depth: 8 };
+    let name = |text: &str| at(K::Name(text.to_owned()), 0);
+    let add = |left, right| {
+        at(
+            K::Binary {
+                operator: B::Add,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            0,
+        )
+    };
+    let functions = [zirql::FunctionDeclaration {
+        name: at("increment".to_owned(), 0),
+        bindings: Vec::new(),
+        parameters: vec![at(
+            FunctionParameter {
+                name: at("value".to_owned(), 0),
+                declaration: DeclaredType::Integer,
+            },
+            0,
+        )],
+        result: at(DeclaredType::Integer, 0),
+        value: add(name("value"), at(K::Literal(V::Integer(1)), 0)),
+    }];
+    let parameter = ParameterDeclaration {
+        name: at("factor".to_owned(), 1),
+        ty: at(ParameterType::Int, 1),
+    };
+    let pattern = zirql::read_pattern(
+        &mut zirql::ArgumentReader::new("{n: n}", 0).unwrap(),
+        &mut budget,
+        64,
+    )
+    .unwrap();
+    let input_value = at(K::NativeValue(Box::new(at(ExpressionKind::Input, 2))), 2);
+    let result = at(
+        K::Call {
+            function: at("increment".to_owned(), 3),
+            arguments: vec![add(add(name("n"), name("factor")), name("shared"))],
+        },
+        3,
+    );
+    let program = Program::new(
+        vec![
+            at(
+                Statement::Parameter {
+                    declaration: parameter.clone(),
+                },
+                1,
+            ),
+            at(
+                Statement::BindPattern {
+                    pattern: pattern.into(),
+                    value: input_value.into(),
+                },
+                2,
+            ),
+            bind(
+                "answer",
+                3,
+                sequence(
+                    at(ExpressionKind::Input, 3),
+                    vec![at(ExpressionStep::Value(result.into()), 3)],
+                ),
+            ),
+        ],
+        0..100,
+    );
+    let admitted = zirql::admit_parameters(
+        &[parameter],
+        ParameterInputs::Typed(&[("factor".to_owned(), V::Integer(2))]),
+        &[],
+        0..100,
+        &mut budget,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|(name, value)| (name, SourceValue::Constructed(value)))
+    .collect();
+    let shared = SourceValue::Constructed(V::Integer(4));
+    let scope = BTreeMap::from([(
+        "shared".to_owned(),
+        SourceHost.kind(&shared, &mut budget, &(0..100)).unwrap(),
+    )]);
+    let initial = Bindings::new([(at("shared".to_owned(), 0), shared)]).unwrap();
+    let input = SourceValue::Constructed(V::Record(vec![("n".to_owned(), V::Integer(3))]));
+    let input_kind = SourceHost.kind(&input, &mut budget, &(0..100)).unwrap();
+    let functions = PreparedFunctions::prepare(&functions, &SourceHost, &mut budget).unwrap();
+    let prepared = PreparedProgram::prepare(
+        functions,
+        &program,
+        &scope,
+        Some(input_kind),
+        function_limits,
+        &mut budget,
+    )
+    .unwrap();
+    let mut context = SourceContext {
+        source: "",
+        prefix: "",
+        emissions: Vec::new(),
+    };
+    let bindings = prepared
+        .evaluate(initial, admitted, Some(input), &mut context, &mut budget)
+        .unwrap();
+    let SourceValue::Constructed(answer) = bindings.get("answer", 3..4).unwrap() else {
+        panic!("constructed result")
+    };
+    assert_eq!(answer.data(), &V::Integer(10));
+
+    let grouped = || {
+        sequence(
+            at(ExpressionKind::Input, 4),
+            vec![at(
+                ExpressionStep::Group(
+                    zirql::NativeBody::new(
+                        sequence(
+                            at(ExpressionKind::Input, 4),
+                            vec![emit("mark", EmissionPolicy::PassThrough, 4)],
+                        ),
+                        4..5,
+                    )
+                    .into(),
+                ),
+                4,
+            )],
+        )
+    };
+    let impure = Program::new(vec![bind("invalid", 4, grouped())], 0..100);
+    let functions = PreparedFunctions::prepare([], &SourceHost, &mut budget).unwrap();
+    let error = PreparedProgram::prepare(
+        functions,
+        &impure,
+        &BTreeMap::new(),
+        Some(SourceKind::Words),
+        function_limits,
+        &mut budget,
+    )
+    .err()
+    .expect("a binding group cannot emit");
+    assert!(
+        matches!(error.error, EvaluationError::Core(ref error) if error.message.contains("cannot emit"))
+    );
+    let emitted = Program::new(vec![output(grouped(), Some("implicit"))], 0..100);
+    let functions = PreparedFunctions::prepare([], &SourceHost, &mut budget).unwrap();
+    let prepared = PreparedProgram::prepare(
+        functions,
+        &emitted,
+        &BTreeMap::new(),
+        Some(SourceKind::Words),
+        function_limits,
+        &mut budget,
+    )
+    .unwrap();
+    prepared
+        .evaluate(
+            Bindings::default(),
+            Vec::new(),
+            Some(SourceValue::Words(Vec::new())),
+            &mut context,
+            &mut budget,
+        )
+        .unwrap();
+    assert_eq!(
+        context.emissions,
+        vec![("mark", SourceValue::Words(Vec::new()))]
+    );
+}

@@ -2,7 +2,8 @@
 
 The word executable reads a single expression. A host that supports several
 statements can use `read_program` to read the common language into located
-`Statement` forms, then prepare and execute its existing `ProgramHost` path.
+`Statement` forms, then prepare them with `PreparedProgram` and execute them
+with its existing native host.
 A typed query builder can construct that same representation directly in Rust.
 
 The examples below are adapter fragments. They assume the host types and context
@@ -32,7 +33,7 @@ allowance. The driver borrows initial and lexical names, admits its source scan
 and retained metadata against that budget, and releases partial trees on failure.
 A host admits its own lexer and native syntax storage without charging the common
 source scan again. Other callbacks admit native signatures and binding patterns, lower
-parameters and patterns to existing statements, recognize domain statements or
+parameters and patterns to core statements, recognize domain statements or
 legacy headers, and select implicit output. They do not maintain another common
 statement loop. Zincite's callback retains its atomic edit grammar; Zirium's
 retains `do`, legacy bindings and pass-through emission.
@@ -109,7 +110,7 @@ let projection: ExpressionStep<(), (), ()> = ExpressionStep::Projection(Projecti
 
 The snippet constructs syntax only. The [native projection example](native-programs.md#project-a-native-selection)
 runs a projection through Zirium. To execute core steps, prepare the expression
-through the request's `PreparedFunctions` unit as below. `Stage` still carries
+through the request's `PreparedProgram` as below. `Stage` still carries
 domain operations and `Emit` carries explicit host output. Registry Zirql 0.2.0
 predates these core steps.
 
@@ -199,9 +200,9 @@ through erasure, appended stages and composition. Validate that metadata on ever
 
 Native hosts lift admitted `ConstructedValue` scalars into their result wrapper.
 The example above uses initial bindings, as typed root builders do. For a text
-program, retain the admitted values and lower each declaration to an ordinary
-`Statement::Bind` at its written position. A host stage returns that
-already-admitted scalar; the shared runner introduces its name into scope. An
+program, retain the admitted values and use `Statement::Parameter` at each
+written declaration. Pass the admitted values to `PreparedProgram::evaluate`;
+the shared statement driver moves each scalar into scope at that position. An
 earlier local scope can therefore use the same spelling as a parameter that is
 not yet visible. The later declaration must still satisfy the program's
 no-shadowing rule. Execute and render with the same `Budget`; repeated reads and
@@ -241,22 +242,39 @@ once, then resolves every written expression in its lexical scope before
 executing statements:
 
 ```rust
-let mut functions = PreparedFunctions::prepare(&declarations, &host, &mut budget)?;
-let entry = functions.prepare_expression(
-    &expression, &scope, Some(input_kind), &mut budget,
+let functions = PreparedFunctions::prepare(&declarations, &host, &mut budget)?;
+let prepared = PreparedProgram::prepare(
+    functions, &program, &scope, Some(input_kind),
+    FunctionLimits { active_depth: 32 }, &mut budget,
 )?;
-// Prepare the remaining written expressions before any operation executes.
-let result = functions.evaluate_expression(
-    &entry, &bindings, Some(&input), &mut context, &mut budget,
-    FunctionLimits { active_depth: 32 },
+let bindings = prepared.evaluate(
+    bindings, admitted_parameters, Some(input), &mut context, &mut budget,
 )?;
 ```
 
-`entry.kind()` supplies the host kind for subsequent program preflight. This
-prepared unit borrows the immutable source trees and host. Keep it within this
-submitted request, using the current host context and the same cumulative
-budget. Prepared entries carry their unit identity; another unit refuses them.
-Each execution releases its results and frames normally.
+`PreparedFunctions` owns callable declarations and checks every function body,
+including unused ones. `PreparedProgram` borrows the canonical lowered `Program`,
+retains its prepared entries and advances binding kinds in statement order.
+`Statement::BindPattern` retains a pattern and pure value initializer directly;
+its selected fields enter scope together after matching succeeds. Native capture
+selection can still use `BindFields` independently.
+
+Keep the prepared owner within the submitted request. Mutable context, results
+and the active budget remain outside it. The shared statement driver handles
+input copies, binding installation and output order for direct and prepared
+entry points. Hosts retain native admission, document ownership and emitters.
+
+The compiled control
+`prepared_program_combines_functions_parameters_patterns_and_current_input` in
+`tests/native_programs.rs` uses the existing borrowed-source host. It prepares
+`increment(value: int)`, admits `factor = 2`, destructures `n = 3` from constructed
+current input, reads the initial shared binding `shared = 4`, and saves
+`increment(n + factor + shared) = 10`. Admission, preparation and execution
+use one budget. Run the complete example with:
+
+```sh
+cargo test --locked --test native_programs prepared_program_combines_functions_parameters_patterns_and_current_input
+```
 
 `scope` maps visible names to the host's `ProjectionHost::Kind`. Pass `None` for
 the relative kind and input when the expression has no current input. A core `Value`

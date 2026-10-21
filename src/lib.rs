@@ -36,10 +36,10 @@ pub use functions::{
     FunctionLimits, FunctionParameter, FunctionRequest, NativeFunction,
     NativeFunctionImplementation, PatternFunctionDeclaration, PatternFunctionDeclarationRef,
     PatternParameter, PatternParameterRef, PreparedExpression, PreparedFunctionValue,
-    PreparedFunctions, PreparedPatternBinding, dispose_functions, dispose_pattern_functions,
-    evaluate_functions, evaluate_pattern_functions, pattern_function_expression_kind,
-    pattern_function_expression_kind_borrowed, pattern_function_value_kind,
-    pattern_function_value_kind_borrowed,
+    PreparedFunctions, PreparedPatternBinding, PreparedProgram, dispose_functions,
+    dispose_pattern_functions, evaluate_functions, evaluate_pattern_functions,
+    pattern_function_expression_kind, pattern_function_expression_kind_borrowed,
+    pattern_function_value_kind, pattern_function_value_kind_borrowed,
 };
 pub use mapping::{
     MapSelection, NativeMap, ScalarMapKey, map_native_by, select_map, sort_map_by_value,

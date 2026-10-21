@@ -319,7 +319,7 @@ impl<S, O, E> ExpressionKind<S, O, E> {
         match self {
             Self::Group(_) | Self::Field { .. } | Self::Set { .. } | Self::Record(_) => 1,
             Self::Sequence{steps,..}=>usize::from(steps.iter().any(|step|matches!(&step.value,
-                ExpressionStep::FixedPoint(_)|ExpressionStep::WhereExists(_)|ExpressionStep::Mapping(_)
+                ExpressionStep::Group(_)|ExpressionStep::FixedPoint(_)|ExpressionStep::WhereExists(_)|ExpressionStep::Mapping(_)
             ) || matches!(&step.value,ExpressionStep::Ordering(ordering) if ordering.selector.is_some()))),
             Self::Input | Self::Binding(_) => 0,
         }
@@ -350,6 +350,8 @@ pub enum ExpressionStep<S, E, O = ()> {
         operand: Option<std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>>,
         message: Option<std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>>,
     },
+    /// Run a relative native group, retaining its native result shape.
+    Group(std::sync::Arc<crate::NativeBody<Expression<S, O, E>>>),
     WhereExists(std::sync::Arc<crate::NativeBody<Expression<S, O, E>>>),
     FixedPoint(std::sync::Arc<crate::NativeBody<Expression<S, O, E>>>),
     Paths(std::sync::Arc<crate::NativePaths<S, S>>),
@@ -364,6 +366,13 @@ pub enum ExpressionStep<S, E, O = ()> {
 /// Some requests implicit output unless the expression ends in a written emit.
 #[derive(Debug, PartialEq)]
 pub enum Statement<S, O, E> {
+    /// Introduce an admitted caller value at its written position.
+    Parameter { declaration: ParameterDeclaration },
+    /// Evaluate and destructure one pure initializer atomically.
+    BindPattern {
+        pattern: std::sync::Arc<crate::Pattern>,
+        value: std::sync::Arc<crate::ValueExpression<Expression<S, O, E>>>,
+    },
     Bind {
         name: Located<String>,
         expression: Expression<S, O, E>,
@@ -381,11 +390,12 @@ pub enum Statement<S, O, E> {
 }
 
 impl<S, O, E> Statement<S, O, E> {
-    fn expression(&self) -> &Expression<S, O, E> {
+    pub fn expression(&self) -> Option<&Expression<S, O, E>> {
         match self {
             Self::Bind { expression, .. }
             | Self::BindFields { expression, .. }
-            | Self::Evaluate { expression, .. } => expression,
+            | Self::Evaluate { expression, .. } => Some(expression),
+            Self::Parameter { .. } | Self::BindPattern { .. } => None,
         }
     }
 }
@@ -712,7 +722,7 @@ pub fn evaluate_program_with<C, H: ProgramHost<C>>(
     host: &H,
     input: H::Value,
     context: &mut C,
-    mut bindings: Bindings<H::Value>,
+    bindings: Bindings<H::Value>,
     budget: &mut Budget,
     run: &mut impl FnMut(
         &Expression<H::Stage, H::SetOperator, H::Emitter>,
@@ -722,21 +732,84 @@ pub fn evaluate_program_with<C, H: ProgramHost<C>>(
         &mut Budget,
     ) -> Result<H::Value, EvaluationError<H::Error>>,
 ) -> Result<Bindings<H::Value>, EvaluationError<H::Error>> {
+    drive_program(
+        program,
+        host,
+        Some(input),
+        context,
+        bindings,
+        budget,
+        &mut |statement, input, context, bindings, budget| {
+            let expression = statement.expression().ok_or_else(|| {
+                QueryError::query(
+                    program.range(),
+                    "parameters and patterns require prepared program execution",
+                )
+            })?;
+            run(
+                expression,
+                input.expect("direct execution has an input"),
+                context,
+                bindings,
+                budget,
+            )
+            .map(StatementValue::Value)
+        },
+    )
+}
+
+pub(crate) enum StatementValue<V> {
+    Value(V),
+    Fields(crate::NativeCapture<V>),
+}
+
+/// The single statement driver owns scope, retained input, binding installation
+/// and implicit emission for both direct and prepared execution.
+pub(crate) fn drive_program<
+    C,
+    H: ProgramHost<C>,
+    E: From<QueryError> + From<EvaluationError<H::Error>>,
+>(
+    program: &Program<H::Stage, H::SetOperator, H::Emitter>,
+    host: &H,
+    mut input: Option<H::Value>,
+    context: &mut C,
+    mut bindings: Bindings<H::Value>,
+    budget: &mut Budget,
+    run: &mut impl FnMut(
+        &Statement<H::Stage, H::SetOperator, H::Emitter>,
+        Option<H::Value>,
+        &mut C,
+        &Bindings<H::Value>,
+        &mut Budget,
+    ) -> Result<StatementValue<H::Value>, E>,
+) -> Result<Bindings<H::Value>, E> {
     let mut names: BTreeSet<_> = bindings.iter().map(|(name, _)| name).collect();
     for statement in program.statements() {
-        validate_expression(statement.value.expression(), &names, budget)?;
+        if let Some(expression) = statement.value.expression() {
+            validate_expression(expression, &names, budget)?;
+        }
+        let pattern_names;
         let bound = match &statement.value {
+            Statement::Parameter { declaration } => std::slice::from_ref(&declaration.name),
             Statement::Bind { name, .. } => std::slice::from_ref(name),
             Statement::BindFields { names, .. } => names.as_slice(),
+            Statement::BindPattern { pattern, .. } => {
+                pattern_names = crate::pattern_names(pattern, budget)?;
+                for name in &pattern_names {
+                    if !names.insert(&name.value) {
+                        return Err(QueryError::query(
+                            name.range.clone(),
+                            "binding is already defined",
+                        )
+                        .into());
+                    }
+                }
+                continue;
+            }
             Statement::Evaluate { .. } => &[],
         };
         for name in bound {
-            if matches!(statement.value, Statement::BindFields { .. }) {
-                budget.charge_program_work(
-                    name.value.len() + 1,
-                    Location::Query(name.range.clone()),
-                )?;
-            }
             if !names.insert(&name.value) {
                 return Err(
                     QueryError::query(name.range.clone(), "binding is already defined").into(),
@@ -744,31 +817,44 @@ pub fn evaluate_program_with<C, H: ProgramHost<C>>(
             }
         }
     }
-
-    let mut input = Some(input);
     for (index, statement) in program.statements().iter().enumerate() {
-        let statement_input = if index + 1 == program.statements().len() {
-            input
-                .take()
-                .expect("the final statement owns retained input")
+        let statement_input = if matches!(statement.value, Statement::Parameter { .. }) {
+            None
+        } else if index + 1 == program.statements().len() {
+            input.take()
         } else {
-            host.copy_value(
-                input.as_ref().expect("earlier statements retain input"),
-                context,
-                budget,
-                &statement.range,
-            )?
+            input
+                .as_ref()
+                .map(|value| host.copy_value(value, context, budget, &statement.range))
+                .transpose()?
         };
-        let expression = statement.value.expression();
-        let value = run(expression, statement_input, context, &bindings, budget)?;
-        match &statement.value {
-            Statement::Bind { name, .. } => {
+        let result = run(
+            &statement.value,
+            statement_input,
+            context,
+            &bindings,
+            budget,
+        )?;
+        match (&statement.value, result) {
+            (
+                Statement::Parameter {
+                    declaration: ParameterDeclaration { name, .. },
+                }
+                | Statement::Bind { name, .. },
+                StatementValue::Value(value),
+            ) => {
                 budget
                     .charge_program_work(name.value.len(), Location::Query(name.range.clone()))?;
                 std::sync::Arc::make_mut(&mut bindings.values)
                     .insert(name.value.clone(), std::sync::Arc::new(value));
             }
-            Statement::BindFields { names, .. } => {
+            (Statement::BindPattern { .. }, StatementValue::Fields(fields)) => {
+                let values = std::sync::Arc::make_mut(&mut bindings.values);
+                for (name, value) in fields.fields {
+                    values.insert(name, std::sync::Arc::new(value));
+                }
+            }
+            (Statement::BindFields { names, expression }, StatementValue::Value(value)) => {
                 let record = host.capture_record(&value).ok_or_else(|| {
                     QueryError::query(
                         expression.range.clone(),
@@ -782,10 +868,9 @@ pub fn evaluate_program_with<C, H: ProgramHost<C>>(
                         name.value.len() + 1,
                         Location::Query(name.range.clone()),
                     )?;
-                    let field = record.get(name, budget)?;
                     selected.push((
                         name.value.clone(),
-                        host.copy_value(field, context, budget, &name.range)?,
+                        host.copy_value(record.get(name, budget)?, context, budget, &name.range)?,
                     ));
                 }
                 let values = std::sync::Arc::make_mut(&mut bindings.values);
@@ -793,15 +878,20 @@ pub fn evaluate_program_with<C, H: ProgramHost<C>>(
                     values.insert(name, std::sync::Arc::new(value));
                 }
             }
-            Statement::Evaluate {
-                implicit_output, ..
-            } => {
+            (
+                Statement::Evaluate {
+                    expression,
+                    implicit_output,
+                },
+                StatementValue::Value(value),
+            ) => {
                 if final_emission(expression).is_none()
                     && let Some(emitter) = implicit_output
                 {
                     host.emit(emitter, &value, context, budget, &statement.range)?;
                 }
             }
+            _ => unreachable!("statement runner returns its statement's result form"),
         }
     }
     Ok(bindings)
@@ -967,6 +1057,10 @@ fn final_emission<S, O, E>(expression: &Expression<S, O, E>) -> Option<EmissionP
                     value: ExpressionStep::Emit { policy, .. },
                     ..
                 }) => return Some(*policy),
+                Some(Located {
+                    value: ExpressionStep::Group(body),
+                    ..
+                }) => expression = body.query(),
                 Some(_) => return None,
                 None => expression = input,
             },
@@ -1018,13 +1112,16 @@ fn validate_expression<S, O, E>(
                             "a step cannot follow terminal emission",
                         ));
                     }
-                    terminal = matches!(
-                        step.value,
-                        ExpressionStep::Emit {
-                            policy: EmissionPolicy::Terminal,
-                            ..
+                    if let ExpressionStep::Group(body) = &step.value {
+                        pending.push((body.query(), depth, calls));
+                    }
+                    terminal = match &step.value {
+                        ExpressionStep::Emit { policy, .. } => *policy == EmissionPolicy::Terminal,
+                        ExpressionStep::Group(body) => {
+                            final_emission(body.query()) == Some(EmissionPolicy::Terminal)
                         }
-                    );
+                        _ => false,
+                    };
                 }
                 pending.push((input, depth, calls));
             }
