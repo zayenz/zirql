@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-110"
 key = "query-by-example"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 priority = "normal"
 blocked_by = []
@@ -24,10 +24,10 @@ Existing value patterns can already match literals, wildcards and record shapes.
 
 ## Done when
 
-- [ ] Work through a record selection and a copied MiniZinc or MLIR fragment with holes; document expected matches, captures and a deliberately nonmatching example.
-- [ ] Decide whether the first slice is just record matching sugar or a bounded host template. Define repeated-hole equality, name binding, extra fields, mismatch versus errors and unsupported native semantics for the chosen slice.
-- [ ] Identify shared matching versus host syntax/semantic responsibilities and propose a bounded implementation and documentation example; no generic AST interchange or text-based native identity.
-- [ ] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
+- [x] Work through a record selection and a copied MiniZinc or MLIR fragment with holes; document expected matches, captures and a deliberately nonmatching example.
+- [x] Decide whether the first slice is just record matching sugar or a bounded host template. Define repeated-hole equality, name binding, extra fields, mismatch versus errors and unsupported native semantics for the chosen slice.
+- [x] Identify shared matching versus host syntax/semantic responsibilities and propose a bounded implementation and documentation example; no generic AST interchange or text-based native identity.
+- [x] The brief and a focused .zdev/_notes/ design document record examples, the user decision, unresolved/deferred options, affected reader/API/host documentation, and a bounded proposed implementation split.
 
 ## Validation
 
@@ -35,3 +35,12 @@ Existing value patterns can already match literals, wildcards and record shapes.
 - Record the user decision; no new product tests are expected.
 - git diff --check
 - zdev check base --format json
+
+## Result
+
+Selected existing case generators for query by example; documented record selection, explanatory MLIR holes, native match equivalent, semantics and documentation/adoption follow-ups.
+
+Validation:
+
+- Independent verification passed against Wd816ad57080fa75c; snapshot unchanged.
+- git diff --check and zdev check base --format json passed.

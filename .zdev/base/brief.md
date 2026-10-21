@@ -1826,3 +1826,12 @@ records the MiniZinc and MLIR examples, the source-checked unexecuted local demo
 actual host rendering/uncertainty boundaries and deferred options. It proposes
 zero runtime follow-ups and bounded documentation slices under each host's
 authority; this task imports no implementation work or consumer changes.
+
+### Query by example: existing selective generators
+
+On 2026-10-21 the user delegated following the recommendation to reuse record
+patterns in existing `for case` / `| case` generators; base-103 is implemented.
+This does not approve unseen native-template syntax. [The design](../_notes/query-by-example.md)
+records the measurement and copied MLIR examples, host boundaries and deferred templates.
+It proposes zero runtime follow-ups and at most bounded documentation/adoption work under
+each host's authority; this task imports no work or consumer changes.
