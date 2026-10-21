@@ -1,9 +1,8 @@
-# JSON rendering
+# JSON and Markdown rendering
 
-Zirql converts constructed results to JSON after evaluation. The caller chooses
-the representation and layout, passes the request's remaining budget, and
-receives a complete buffer. These Rust APIs belong to the working checkout;
-published Zirql 0.2.0 does not include them. They are not query-language calls.
+Zirql renders constructed results after evaluation. The caller chooses JSON or
+Markdown, passes the request's remaining budget, and receives a complete buffer.
+These Rust APIs belong to the working checkout; published Zirql 0.2.0 does not include them. They are not query-language calls.
 
 ## to_json_value
 
@@ -104,6 +103,59 @@ identity sets are outside `ConstructedValue` and these APIs. Evaluation keeps
 native handles and ordinary values directly; rendering is an explicit final
 step. See [library results and rendering](host-integration.md#library-results-and-rendering).
 
+## render_markdown
+
+`render_markdown(value, budget, location)` borrows a `ConstructedValue` and
+returns `Result<Vec<u8>, QueryError>`. It uses these layouts:
+
+| Zirql value | Markdown |
+| --- | --- |
+| Scalar | A paragraph; an integer count appears on its own line |
+| Array, tuple, set | One `Value` column, in stored order |
+| Record, dictionary | `Key` and `Value` columns, in insertion order |
+| Collection of records | Record fields as columns, in input row order |
+| Record or dictionary whose values are all records | A leading `Key` column, then record fields |
+| Empty collection, record or dictionary | `_No entries._` |
+| Nominal member, explicit keyed array | Compact ordinary JSON with its tagged shape |
+
+Record tables use the first-seen union of field labels. A later field adds a
+column without reordering earlier columns. Missing fields and absent cells are
+blank. A sequence of empty records uses a `Value` column containing `{}` for
+each row; a keyed empty record still displays its key.
+
+Strings and field labels retain their content with Markdown escaping. Pipes,
+backslashes, backticks, stars, underscores, brackets and tildes are escaped.
+Ampersands and angle brackets use HTML entities. CRLF, CR and LF become `<br>`.
+Scalar strings also escape `#`, `+`, `-`, `.`, `)` and `=` and encode leading
+spaces and tabs as HTML character references. This keeps their content in a
+paragraph instead of creating a heading, list or indented code block. Table
+cells retain the escaping described above.
+Nested cells and structural dictionary keys use compact shared ordinary JSON,
+then the same escaping. Nominal members and keyed arrays therefore retain their
+explicit tags, axes and present cells. The renderer does not stringify the whole
+report before choosing a table layout.
+
+```rust
+use zirql::{Budget, ConstructedValue as V, Location, ProgramLimits, render_markdown};
+
+let mut budget = Budget::for_program(ProgramLimits {
+    work: 10_000, results: 10_000, nesting: 64, stream_items: 100,
+});
+let result = V::Array(vec![
+    V::Record(vec![("name".into(), V::String("Ada".into()))]),
+    V::Record(vec![("count".into(), V::Integer(2))]),
+]);
+let bytes = render_markdown(&result, &mut budget, Location::Query(0..5))?;
+assert_eq!(bytes, b"\n| name | count |\n| --- | --- |\n| Ada |  |\n|  | 2 |\n\n");
+```
+
+Markdown output includes leading and trailing blank lines, matching the existing
+Zirium report layout. The [CSV table example](csv.md#render-a-markdown-table)
+selects this format explicitly. The Rust API and CSV executable in this checkout
+support it; Zincite and Zirium adoption is separate integration work. Native
+leaves require host projections, and computational queues and identity sets
+remain outside this constructed-data API.
+
 ## Budget and errors
 
 Pass the same `Budget` used for reading and evaluation. Conversion checks known
@@ -118,3 +170,10 @@ Errors preserve the supplied `Location`, including source ranges, and retain
 Buffered calls return only complete output; the caller receives no partial tree
 or bytes on failure. [Runtime limits](runtime-limits.md) explains the request
 allowances and diagnostic categories.
+
+Markdown also checks the rectangular cell count, including the header, against
+`stream_items` before expanding sparse rows. It charges column storage and each
+table cell to work and result allowance, then charges scalar/JSON conversion
+and actual escaped output bytes under that same budget. A short sparse input
+can exceed the limit when its rows introduce many distinct columns. Limit
+failures preserve their supplied location and return no partial Markdown.

@@ -48,10 +48,11 @@ export default defineConfig({
       { label: 'Start here', items: [{ label: 'Overview', slug: '' }, 'guides/examples', 'guides/getting-started', 'guides/csv'] },
       { label: 'Library reference', items: [
         { label: 'Overview and alphabetical index', slug: 'guides/library-reference' },
-        libraryGroup('JSON rendering (Rust API)', 'library-rendering', [
+        libraryGroup('JSON and Markdown rendering (Rust API)', 'library-rendering', [
           ['to_json_value', 'to_json_value'],
           ['render_json', 'render_json'],
           ['render_json_value', 'render_json_value'],
+          ['render_markdown', 'render_markdown'],
         ]),
         libraryGroup('Strings', 'library-strings', [
           ['contains', 'contains'],

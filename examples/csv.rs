@@ -1,4 +1,4 @@
-//! CSV rows as constructed Zirql values, with named inputs and buffered JSON.
+//! CSV rows as constructed Zirql values, with named inputs and buffered output.
 //!
 //! [Query examples](https://zayenz.se/zirql/guides/csv/) show the inputs and results.
 //! [Build the CSV host](https://zayenz.se/zirql/guides/csv-host/) explains this adapter.
@@ -17,7 +17,7 @@ use zirql::{
     QueryError, ReadExpression, ValueExpression, ValueExpressionKind as K, ValueQueryHost,
     ValueReaderHost, ValueType, copy_constructed_value, declare_constructed, dispose_native_value,
     dispose_pattern, evaluate_query_value, pattern_names, read_pattern_let, read_value_expression,
-    render_json,
+    render_json, render_markdown,
 };
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -70,17 +70,51 @@ impl InputSpec {
     }
 }
 
+#[derive(Clone, Copy)]
+enum OutputFormat {
+    Json,
+    Markdown,
+}
+
+fn output_arguments(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(OutputFormat, Vec<InputSpec>), String> {
+    let mut format = OutputFormat::Json;
+    let mut inputs = Vec::new();
+    let mut arguments = arguments;
+    while let Some(argument) = arguments.next() {
+        if argument == "--format" {
+            format = match arguments.next().as_deref() {
+                Some("json") => OutputFormat::Json,
+                Some("markdown") => OutputFormat::Markdown,
+                _ => return Err("--format requires json or markdown".into()),
+            };
+        } else {
+            inputs.push(InputSpec::parse(argument));
+        }
+    }
+    Ok((format, inputs))
+}
+
 fn main() {
     let mut arguments = std::env::args().skip(1);
     let Some(query) = arguments.next() else {
-        eprintln!("usage: cargo run --example csv -- 'QUERY' FILE.csv | name=FILE.csv ...");
+        eprintln!(
+            "usage: cargo run --example csv -- 'QUERY' [--format json|markdown] FILE.csv | name=FILE.csv ..."
+        );
         std::process::exit(1);
     };
-    let inputs: Vec<_> = arguments.map(InputSpec::parse).collect();
-    match run(&query, &inputs, LIMITS) {
+    let (format, inputs) = match output_arguments(arguments) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    match run(&query, &inputs, format, LIMITS) {
         Ok(output) => {
             if let Err(error) = io::stdout().lock().write_all(&output) {
-                eprintln!("writing JSON: {error}");
+                eprintln!("writing output: {error}");
                 std::process::exit(1);
             }
         }
@@ -91,7 +125,12 @@ fn main() {
     }
 }
 
-fn run(query: &str, inputs: &[InputSpec], limits: ProgramLimits) -> Result<Vec<u8>, CsvError> {
+fn run(
+    query: &str,
+    inputs: &[InputSpec],
+    format: OutputFormat,
+    limits: ProgramLimits,
+) -> Result<Vec<u8>, CsvError> {
     let context = || {
         format!(
             "query {query:?}; inputs: {}",
@@ -156,17 +195,25 @@ fn run(query: &str, inputs: &[InputSpec], limits: ProgramLimits) -> Result<Vec<u
     dispose_native_value(expression);
     let result = result.map_err(query_error)?;
     let location = Location::Query(0..query.len());
-    let mut output = render_json(
-        &result,
-        JsonRepresentation::Ordinary,
-        JsonLayout::Compact,
-        &mut budget,
-        location.clone(),
-    )
-    .map_err(query_error)?;
-    budget.charge(1, location.clone()).map_err(query_error)?;
-    budget.charge_results(1, location).map_err(query_error)?;
-    output.push(b'\n');
+    let output = match format {
+        OutputFormat::Json => {
+            let mut output = render_json(
+                &result,
+                JsonRepresentation::Ordinary,
+                JsonLayout::Compact,
+                &mut budget,
+                location.clone(),
+            )
+            .map_err(query_error)?;
+            budget.charge(1, location.clone()).map_err(query_error)?;
+            budget.charge_results(1, location).map_err(query_error)?;
+            output.push(b'\n');
+            output
+        }
+        OutputFormat::Markdown => {
+            render_markdown(&result, &mut budget, location).map_err(query_error)?
+        }
+    };
     Ok(output)
 }
 
@@ -645,10 +692,10 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
         .collect()
     }
     fn text(query: &str, inputs: &[InputSpec]) -> String {
-        String::from_utf8(run(query, inputs, LIMITS).unwrap()).unwrap()
+        String::from_utf8(run(query, inputs, OutputFormat::Json, LIMITS).unwrap()).unwrap()
     }
     fn refusal(query: &str, inputs: &[InputSpec], message: &str) -> CsvError {
-        let error = run(query, inputs, LIMITS).unwrap_err();
+        let error = run(query, inputs, OutputFormat::Json, LIMITS).unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
         assert!(error.context.contains(&format!("{query:?}")));
         assert!(matches!(error.error.location, Location::Query(_)));

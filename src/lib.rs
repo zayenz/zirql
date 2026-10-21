@@ -82,7 +82,7 @@ pub use reader::{
     read_value_expression_in_scope, read_value_suffix,
 };
 pub use rendering::{
-    JsonLayout, JsonRepresentation, render_json, render_json_value, to_json_value,
+    JsonLayout, JsonRepresentation, render_json, render_json_value, render_markdown, to_json_value,
 };
 pub use runtime_types::{
     DeclaredType, OperationSignature, RuntimeTypeHost, admit_constructed, admit_value,

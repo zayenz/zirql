@@ -29,7 +29,7 @@ runtime errors in skipped branches remain unexecuted. See
 - [Functions and control flow](library-control.md)
 - [Queues and native identity sets](library-worklists.md)
 - [Shared native forms](library-native.md)
-- [JSON rendering (Rust API)](library-rendering.md)
+- [JSON and Markdown rendering (Rust API)](library-rendering.md)
 
 The [language reference](language-reference.md) covers grammar and scope;
 [the word tutorial](examples.md) and [CSV examples](csv.md) develop full queries.
@@ -144,6 +144,7 @@ support. `present` is a pattern.
 | `record` | [Collections and reductions](library-collections.md#dictionaries-and-records) |
 | `render_json` (Rust) | [JSON rendering](library-rendering.md#render_json) |
 | `render_json_value` (Rust) | [JSON rendering](library-rendering.md#render_json_value) |
+| `render_markdown` (Rust) | [Markdown rendering](library-rendering.md#render_markdown) |
 | `report` | [Functions and control flow](library-control.md#report) |
 | `require` | [Presence and lookup](library-presence.md#require) |
 | `reverse` | [Shared native forms](library-native.md#reverse) |

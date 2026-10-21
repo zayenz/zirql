@@ -1,4 +1,7 @@
-//! Explicit JSON conversion and buffered output after evaluation.
+//! Explicit JSON and Markdown rendering after evaluation.
+
+mod markdown;
+pub use markdown::render_markdown;
 
 use std::io::{self, Write};
 
@@ -102,7 +105,7 @@ pub fn render_json_value(
     location: Location,
 ) -> Result<Vec<u8>, QueryError> {
     visit_json(value, budget, &location)?;
-    let mut writer = JsonBuffer {
+    let mut writer = OutputBuffer {
         bytes: Vec::new(),
         budget,
         location: &location,
@@ -391,20 +394,20 @@ fn visit_json(value: &Value, budget: &mut Budget, location: &Location) -> Result
     })
 }
 
-struct JsonBuffer<'a> {
+struct OutputBuffer<'a> {
     bytes: Vec<u8>,
     budget: &'a mut Budget,
     location: &'a Location,
     error: Option<QueryError>,
 }
 
-impl JsonBuffer<'_> {
+impl OutputBuffer<'_> {
     fn append(&mut self, bytes: &[u8]) -> Result<(), QueryError> {
         let length = self
             .bytes
             .len()
             .checked_add(bytes.len())
-            .ok_or_else(|| failure(self.location, "JSON size overflow"))?;
+            .ok_or_else(|| failure(self.location, "rendered output size overflow"))?;
         allocation::<u8>(length, self.location)?;
         self.budget.charge(bytes.len(), self.location.clone())?;
         self.budget
@@ -414,7 +417,7 @@ impl JsonBuffer<'_> {
     }
 }
 
-impl Write for JsonBuffer<'_> {
+impl Write for OutputBuffer<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if let Err(error) = self.append(bytes) {
             self.error = Some(error);

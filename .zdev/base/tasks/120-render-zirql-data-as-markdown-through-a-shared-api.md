@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-120"
 key = "shared-markdown-data"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -25,12 +25,22 @@ Read brief.md section Consolidate language machinery and data rendering (2026-10
 
 ## Done when
 
-- [ ] The common renderer supports scalars, scalar collections, records/dictionaries, record-row sequences and keyed row maps with stable first-seen columns, missing/absent blank cells, escaped content and explicit empty results.
-- [ ] Nested cells and structural keys use compact shared JSON; nominal/keyed data remain representable, while computational values receive a located refusal at the bridge.
-- [ ] Table rectangular expansion, scalar conversion and output bytes share one request budget, with checks before known allocations and no partial buffered result on failure.
-- [ ] CSV can render a complete query result as Markdown; Rust API docs, library entry/sidebar and runnable table examples document shape, escaping and budget behavior.
+- [x] The common renderer supports scalars, scalar collections, records/dictionaries, record-row sequences and keyed row maps with stable first-seen columns, missing/absent blank cells, escaped content and explicit empty results.
+- [x] Nested cells and structural keys use compact shared JSON; nominal/keyed data remain representable, while computational values receive a located refusal at the bridge.
+- [x] Table rectangular expansion, scalar conversion and output bytes share one request budget, with checks before known allocations and no partial buffered result on failure.
+- [x] CSV can render a complete query result as Markdown; Rust API docs, library entry/sidebar and runnable table examples document shape, escaping and budget behavior.
 
 ## Validation
 
 - Reuse/adapt the meaningful Zirium table examples; check mixed columns, nested cells, empty data, Markdown/HTML-sensitive text and bounded rectangular expansion using a few focused cases.
 - Run Zirql Rust checks and the documented CSV Markdown example; git diff --check, zdev check and docs content/link checks.
+
+## Result
+
+Added bounded Markdown rendering with stable record columns, nested JSON cells, explicit empty results, paragraph escaping and CSV output format selection; documented Rust API, reference/sidebar and CSV examples.
+
+Validation:
+
+- Independent full review plus one accepted escaping correction and fresh focused recheck passed; snapshot W578ba9c5ef1198c6 compared equal.
+- cargo fmt --all -- --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace passed.
+- Documented CSV Markdown and scalar paragraph controls, Astro check/build, generated content/links, git diff --check and zdev check passed.

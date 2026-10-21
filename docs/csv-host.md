@@ -2,8 +2,9 @@
 
 The CSV host turns files into arrays of records and makes them available to
 Zirql by name. Zirql reads and evaluates the query, then its shared renderer
-converts the result to JSON. This tutorial follows that implementation so you
-can adapt it to your own application. The [CSV guide](csv.md) shows what its users can query.
+converts the result to JSON or Markdown. This tutorial follows that implementation
+so you can adapt it to your own application. The [CSV guide](csv.md) shows what
+its users can query.
 
 The complete implementation is [examples/csv.rs](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs). Code
 blocks below are excerpts from that file, with the surrounding responsibilities
@@ -31,7 +32,7 @@ In the copied `src/main.rs`, change the usage message in `main` to name your
 application:
 
 ```rust
-eprintln!("usage: csv-query 'QUERY' FILE.csv | name=FILE.csv ...");
+eprintln!("usage: csv-query 'QUERY' [--format json|markdown] FILE.csv | name=FILE.csv ...");
 ```
 
 The original message names the repository's Cargo example. The copied test
@@ -51,8 +52,8 @@ serde_json = "1"
 
 In Zirql's own manifest, `csv` is a development dependency because it serves an
 example. Your application needs it as an ordinary dependency. `csv` decodes
-quoted records. Zirql reads and evaluates the query language and renders JSON.
-The copied tests use `serde_json` to inspect results; the application itself
+quoted records. Zirql reads and evaluates the query language and renders JSON or
+Markdown. The copied tests use `serde_json` to inspect results; the application itself
 does not call it.
 
 Run a selection through your new application:
@@ -399,12 +400,13 @@ to 1,000 rows per table and 1,000 columns per header. The separate
 decoder buffers before Zirql values exist.
 
 The core charges its own operations; the host charges its file reads, metadata,
-allocations and copies. The shared renderer charges JSON conversion and output.
+allocations and copies. The shared renderers charge conversion, table expansion
+and output.
 [Budget and diagnostic APIs](runtime-limits.md) describes that accounting.
 
 ## 8. Render only a completed result
 
-Call the shared [JSON renderer](library-rendering.md) after evaluation:
+Call a shared [renderer](library-rendering.md) after evaluation. The JSON branch is:
 
 ```rust
 let location = Location::Query(0..query.len());
@@ -432,9 +434,17 @@ unused declared key as well as the two present cells.
 Zirql checks constructed data, applies the active nesting/reentry guard and
 charges conversion, copied text and escaped output bytes. Rendering returns a
 complete buffer or the original located failure, including its budget category.
-The host adds its framing newline under the same budget.
+The JSON branch adds its framing newline under the same budget.
 
-`run` builds all output in a `Vec<u8>`, including the final newline. `main`
+For `--format markdown`, call `render_markdown(&result, &mut budget, location)`
+instead. Import it from `zirql`. It returns a complete buffer with its own blank
+line framing. The same constructed rows become a table; nested cells use compact
+shared JSON. Table expansion and escaped bytes spend the remaining request
+budget, and errors retain the supplied query range. The small `output_arguments`
+function selects `json` or `markdown` after the positional query while preserving
+both positional and named file inputs.
+
+`run` builds all output in a `Vec<u8>`, including its framing. `main`
 writes that buffer only after the request succeeds. Parsing, evaluation and
 rendering failures leave stdout empty; diagnostics go to stderr. An I/O error
 while writing the completed buffer is still possible.
@@ -463,8 +473,7 @@ the example preserves them as empty strings.
 
 Decide which names users can reference, whether one source can be implicit and
 how callers receive the final value. A library API can return the constructed
-value directly. A command-line tool can keep the buffered JSON renderer or
-choose another output format.
+value directly. A command-line tool can select either shared buffered renderer.
 
 Reuse Zirql's grammar and evaluator for filters, saved values, correlated
 iteration and collection operations. Add native interfaces when your domain

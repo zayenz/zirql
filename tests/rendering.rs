@@ -365,3 +365,148 @@ fn active_nesting_and_malformed_values_preserve_locations() {
         assert_eq!(error.location, location);
     }
 }
+
+fn markdown(value: &V) -> String {
+    String::from_utf8(
+        zirql::render_markdown(
+            value,
+            &mut Budget::for_program(limits()),
+            Location::Query(2..8),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn markdown_record_rows_use_first_seen_columns_and_blank_missing_cells() {
+    let rows = V::Array(vec![
+        V::Record(vec![
+            ("z|".into(), V::String("<tag>&\r\nnext".into())),
+            ("a".into(), V::Absent),
+        ]),
+        V::Record(vec![
+            ("a".into(), V::Integer(2)),
+            ("nested".into(), V::Array(vec![V::Integer(3)])),
+        ]),
+    ]);
+    assert_eq!(
+        markdown(&rows),
+        "\n| z\\| | a | nested |\n| --- | --- | --- |\n| &lt;tag&gt;&amp;<br>next |  |  |\n|  | 2 | \\[3\\] |\n\n"
+    );
+    assert_eq!(
+        markdown(&V::Array(vec![V::Record(vec![]), V::Record(vec![])])),
+        "\n| Value |\n| --- |\n| {} |\n| {} |\n\n"
+    );
+}
+
+#[test]
+fn markdown_maps_keep_keyed_rows_and_shared_json_for_structural_cells() {
+    let rows = V::Dictionary(
+        vec![
+            (
+                V::Tuple(vec![V::Integer(2), V::String("key".into())]),
+                V::Record(vec![("count".into(), V::Integer(4))]),
+            ),
+            (
+                V::Integer(9),
+                V::Record(vec![("note".into(), V::String("`*_[]~\\".into()))]),
+            ),
+        ]
+        .into(),
+    );
+    assert_eq!(
+        markdown(&rows),
+        "\n| Key | count | note |\n| --- | --- | --- |\n| \\[2,\"key\"\\] | 4 |  |\n| 9 |  | \\`\\*\\_\\[\\]\\~\\\\ |\n\n"
+    );
+    let mut fields = match fixture() {
+        V::Record(fields) => fields,
+        _ => unreachable!(),
+    };
+    let keyed = fields.pop().unwrap();
+    let member = fields.pop().unwrap();
+    let rendered = markdown(&V::Record(vec![member, keyed]));
+    assert!(rendered.starts_with("\n| Key | Value |\n| --- | --- |\n| member | {\"kind\":\"member\",\"enum\":\"Color\",\"name\":\"Blue\"} |\n"));
+    assert!(rendered.contains("\"indexing\":\"explicit\""));
+    assert!(rendered.contains("{\"kind\":\"integer\",\"value\":9}"));
+    assert_eq!(
+        markdown(&V::Record(vec![("first".into(), V::Record(vec![]))])),
+        "\n| Key |\n| --- |\n| first |\n\n"
+    );
+}
+
+#[test]
+fn markdown_scalars_ordered_values_and_empty_results_have_explicit_layouts() {
+    assert_eq!(markdown(&V::Integer(3)), "\n3\n\n");
+    assert_eq!(
+        markdown(&V::String(
+            "    # heading\r\n- item\n+ item\n1. item\n2) item\n---\n===\n> quote\n```code".into()
+        )),
+        "\n&#32;&#32;&#32;&#32;\\# heading<br>\\- item<br>\\+ item<br>1\\. item<br>2\\) item<br>\\-\\-\\-<br>\\=\\=\\=<br>&gt; quote<br>\\`\\`\\`code\n\n"
+    );
+    assert_eq!(
+        markdown(&V::Set {
+            element_type: Some(SetElementType::Integer),
+            elements: vec![V::Integer(9), V::Integer(1)].into(),
+        }),
+        "\n| Value |\n| --- |\n| 9 |\n| 1 |\n\n"
+    );
+    assert_eq!(markdown(&V::Array(vec![])), "\n_No entries._\n\n");
+    assert_eq!(markdown(&V::Record(vec![])), "\n_No entries._\n\n");
+}
+
+#[test]
+fn markdown_checks_sparse_rectangle_and_escaped_bytes_before_growth() {
+    let location = Location::Source(12..18);
+    let sparse = V::Array(
+        (0..12)
+            .map(|index| V::Record(vec![(format!("column{index}"), V::Integer(index))]))
+            .collect(),
+    );
+    let error = zirql::render_markdown(
+        &sparse,
+        &mut Budget::for_program(limits()),
+        location.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, QueryErrorCategory::ItemLimit);
+    assert_eq!(error.location, location);
+
+    let output_limits = ProgramLimits {
+        work: 400,
+        ..limits()
+    };
+    zirql::render_markdown(
+        &V::Array(vec![V::String("x".repeat(100))]),
+        &mut Budget::for_program(output_limits),
+        location.clone(),
+    )
+    .unwrap();
+    let error = zirql::render_markdown(
+        &V::Array(vec![V::String("&".repeat(100))]),
+        &mut Budget::for_program(output_limits),
+        location.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, QueryErrorCategory::WorkLimit);
+    assert_eq!(error.location, location);
+    let error = zirql::render_markdown(
+        &V::Array(vec![V::String("x".repeat(100))]),
+        &mut Budget::for_program(ProgramLimits {
+            results: 50,
+            ..limits()
+        }),
+        location.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(error.category, QueryErrorCategory::ResultLimit);
+    assert_eq!(error.location, location);
+    let error = zirql::render_markdown(
+        &V::Array(vec![V::Integer(1), V::Float(f64::INFINITY)]),
+        &mut Budget::for_program(limits()),
+        location.clone(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("nonfinite"));
+    assert_eq!(error.location, location);
+}

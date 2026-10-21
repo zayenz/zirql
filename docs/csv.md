@@ -6,12 +6,13 @@ and combine named files in a report. To build an application like this one, foll
 [Build the CSV host](csv-host.md).
 
 These commands run from the root of this working checkout with Rust 1.88 or
-later. Its shared JSON renderer is newer than published Zirql 0.2.0. This is a
+later. Its shared JSON and Markdown renderers are newer than published Zirql 0.2.0. This is a
 Cargo example executable; installing the library does not install a CSV command.
 
 Use the tabs to compare a query, its input and its result, or copy a command.
 The commands pass a multiline query as one quoted shell argument. Results below
-are indented for reading; the executable writes compact JSON.
+are indented for reading; the executable writes compact JSON by default. Pass `--format json` or
+`--format markdown` after the query to choose the output format.
 
 ## Select rows from one file
 
@@ -101,6 +102,43 @@ selected | count
 ```
 
 This prints `3`.
+
+## Render a Markdown table
+
+Use the same selection with `--format markdown` to produce a table:
+
+```sh
+cargo run --locked --example csv -- '
+let selected = rows | filter(_.active == "yes");
+[{"name": p.name, "note": p.note} for p in selected]
+' --format markdown examples/csv/people.csv
+```
+
+```markdown
+| name | note |
+| --- | --- |
+| Grace Hopper | Said "hello" |
+| Ada, Lovelace | First line<br>second line |
+| Barbara Liskov |  |
+```
+
+The output includes a blank line before and after the table. Columns follow the
+first-seen field order, and rows follow the selected input order. Missing and
+absent cells are blank. Pipes and Markdown punctuation are escaped; angle
+brackets and ampersands use HTML entities, and newlines become `<br>`. Nested
+cells and structural dictionary keys use compact JSON with the same escaping.
+
+A scalar count prints on its own line, scalar collections use a `Value` column,
+and records or dictionaries use `Key`/`Value` columns. A keyed map of record
+rows adds `Key` before the field columns. Empty collections and maps print
+`_No entries._`. See [Markdown rendering](library-rendering.md#render_markdown)
+for the complete shape rules and Rust API.
+
+Parsing, evaluation and rendering share one budget. The renderer checks the
+complete rectangular table size before expansion, so many sparse columns can
+exceed the limit even with few input rows. A failure leaves stdout empty.
+`--format json` selects the default compact JSON output; positional and named
+file arguments work with either format.
 
 ## Map people within each team
 

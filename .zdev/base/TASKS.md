@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 129
-- Ready: 2
+- Ready: 1
 - Blocked: 13
-- Done: 114
+- Done: 115
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -128,7 +128,7 @@
 | [base-117](tasks/117-move-common-program-preparation-bookkeeping-into-zirql.md) | Move common program preparation bookkeeping into Zirql | blocked | base-116, base-114, base-125, base-126, base-127 |
 | [base-118](tasks/118-provide-common-json-rendering-for-all-zirql-data-and-adopt-i.md) | Provide common JSON rendering for all Zirql data and adopt it in CSV | done | — |
 | [base-119](tasks/119-replace-consumer-data-serializers-with-shared-zirql-json-ren.md) | Replace consumer data serializers with shared Zirql JSON rendering | blocked | base-113, base-118 |
-| [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | ready | base-118 |
+| [base-120](tasks/120-render-zirql-data-as-markdown-through-a-shared-api.md) | Render Zirql data as Markdown through a shared API | done | base-118 |
 | [base-121](tasks/121-adopt-shared-markdown-output-in-both-consumers.md) | Adopt shared Markdown output in both consumers | blocked | base-119, base-120 |
 | [base-122](tasks/122-synchronize-one-canonical-zirql-highlighting-asset-with-host.md) | Synchronize one canonical Zirql highlighting asset with host overlays | done | — |
 | [base-123](tasks/123-make-the-zirql-library-reference-authoritative-across-all-th.md) | Make the Zirql library reference authoritative across all three sites | blocked | base-117, base-115, base-121, base-122, base-128, base-129 |
