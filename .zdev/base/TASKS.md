@@ -2,9 +2,9 @@
 
 # Tasks: base
 
-- Total: 129
+- Total: 132
 - Ready: 1
-- Blocked: 3
+- Blocked: 6
 - Done: 125
 
 | ID | Task | State | Blocked by |
@@ -138,3 +138,6 @@
 | [base-127](tasks/127-read-common-programs-in-zirql-and-adopt-the-reader-in-all-th.md) | Read common programs in Zirql and adopt the reader in all three integrations | done | base-115, base-124 |
 | [base-128](tasks/128-provide-a-constructed-program-api-and-simplify-csv-and-words.md) | Provide a constructed-program API and simplify CSV and words | blocked | base-117, base-120 |
 | [base-129](tasks/129-add-explicit-scalar-conversions-with-csv-and-consumer-exampl.md) | Add explicit scalar conversions with CSV and consumer examples | done | base-115 |
+| [base-130](tasks/130-use-one-structural-ordering-contract-for-value-and-native-op.md) | Use one structural ordering contract for value and native operations | blocked | base-125 |
+| [base-131](tasks/131-align-collection-selection-and-cardinality-across-native-and.md) | Align collection selection and cardinality across native and value paths | blocked | base-125 |
+| [base-132](tasks/132-share-structural-unique-and-tally-semantics-across-value-and.md) | Share structural unique and tally semantics across value and native collections | blocked | base-125, base-131 |

@@ -2062,3 +2062,41 @@ missing controls for changed ownership/scope, declared empty data and conversion
 boundaries. No new test matrix, plugin framework, evaluator or benchmark system.
 Each task's completion records the duplicate host responsibilities deleted and
 the domain responsibilities retained.
+
+## Coherent native and constructed operations (2026-10-21)
+
+The user authorized fixing meaningful differences between native and constructed
+versions of common operations, beyond removing duplicate reference labels. The
+follow-up covers ordering and extrema; filter, count, head, tail, reverse and
+check; and unique/tally. Historical frontend, container and host restrictions
+are not reasons for different semantics. Native ownership, domain subjects,
+completeness/Unknown, effect admission and explicit indexed shape remain real
+constraints. Base-125 remains the migration of existing behavior; the designated
+follow-up tasks replace the accidental policies it preserves.
+
+Use the existing structural comparison and identity contracts and the existing
+evaluator. The same actual keys must receive the same order through native and
+constructed representations. Preserve the established constructed kind order,
+without scalar coercion, and extend the integer domain losslessly for native
+unsigned keys. Sorting is stable; single extrema retain the first tie and
+all-ties forms retain incoming order. Admit all selected keys before choosing
+results, including nonwinning keys and contradictory nominal metadata. Empty
+extrema succeed after normal preflight: constructed single extrema return
+typed absence and native extrema retain an empty selection of the admitted
+kind. Native default projections and intrinsic result shapes remain explicit.
+
+Selection and cardinality operations retain collection meaning, entry order,
+native identity and declared empty schemas. Unique and tally use structural
+identity for constructed data and exact native leaf identity, including owner
+and source/diff side. Keep actual tally keys until explicit rendering; names
+and serialized text are not identities. Keyed arrays retain their coordinates,
+axes and missing cells and require explicit conversion for reordering/removal.
+Do not add an iterable protocol, comparator framework, second evaluator or
+legacy compatibility switches.
+
+Each implementation slice updates its API/embedding docs and affected host
+guides, with focused public controls for the changed behavior. The final
+reference task presents each shared operation once, organized by purpose,
+with admitted input forms and necessary domain distinctions in that entry.
+Keep genuinely different contracts, such as native capture matching and value
+matching, distinct. Apply the existing Testing and Validation rules.
