@@ -2054,8 +2054,8 @@ branches. Charge input scanning and known output allocation to the active
 budget. CSV decoding remains lossless and string-valued; no automatic coercion
 or trimming is added. Numeric report examples demonstrate filtering, summaries
 and labels, with a malformed-cell refusal. Do not widen the approved Zincite
-data-edit subset as a side effect. Trimming, regex and template formatting are
-deferred until supported by a concrete query.
+data-edit subset as a side effect. Trimming and regex are deferred until supported by a concrete query. String
+formatting follows the selected contract below.
 
 Use the existing focused public tests and required repository checks. Add only
 missing controls for changed ownership/scope, declared empty data and conversion
@@ -2129,3 +2129,59 @@ and host documentation. All added explanatory prose receives an Astra medium
 copyedit using unslop and zayenz-writing-style. Keep the implementation small
 and remove the host code it replaces. Development pins, isolated worktrees,
 serial integration and independent verification remain the integration contract.
+
+## String formatting and interpolation (2026-10-22)
+
+Report labels and text output need string formatting and interpolation. Use
+lowercase `f"..."` literals with `{expression}` replacement fields and optional `:spec`, plus the pure call `format(value, spec)`. Both use
+one scalar formatter. Plain strings keep their literal meaning. Python f-strings
+keep expressions beside text; Rust uses brace fields and a format specification;
+JavaScript uses backticks and `${expression}`. Choose f-strings to reuse Zirql's
+double-quoted string conventions while keeping interpolation explicit.
+
+Fields evaluate ordinary Zirql expressions once, from left to right, in the
+current scope. Nested expressions, quoted strings, collections, pipelines and
+nested f-strings retain the shared reader and evaluator rules. `{{` and `}}`
+produce literal braces in text. Existing JSON escapes apply to literal text;
+escapes do not introduce replacement fields. A bare closing brace or empty field
+fails. Field specifications are literal text; dynamic nested specifications,
+conversion flags, debug fields and runtime template evaluation are outside this
+increment. `format(value, spec)` accepts a string specification computed normally.
+
+An empty specification follows `to_string` for Booleans, signed integers,
+finite floats and strings. Absence, collections, nominal values and native objects
+require explicit handling or scalar projection. Declared primitive wrappers
+remain transparent. Rendering whole values remains an explicit operation.
+
+Specifications use `[align][0][width][.precision][type]`, with optional components.
+Alignment is `<`, `>` or `^`; width counts Unicode scalar values, not bytes or
+terminal cells, and never truncates. Centering puts an extra space on the right.
+Strings and Booleans default to left alignment, numbers to right alignment.
+Zero padding applies to numbers, follows a minus sign, and cannot be combined
+with explicit alignment. Types are `s` for strings, `d`, `x`, `X`, `b` for integers,
+and `f`, `e`, `E` for finite floats. Integer bases use a leading minus and magnitude,
+with no prefix. Floating `f` is fixed decimal; `e`/`E` use Rust's locale-independent
+scientific notation. These float types default to six fractional digits;
+precision is accepted only with an explicit float type. Integer-to-float
+coercion, locale grouping, custom fill, sign flags and alternate prefixes are
+unsupported.
+
+Known operand types receive normal preflight checks, including unused functions
+and skipped branches. Field specification syntax is checked during reading;
+value-dependent formatting and dynamic specifications run only when evaluated.
+Errors retain original source byte ranges. Parsing, field evaluation, scanning,
+padding and output allocation share the request budget. Output expansion is
+checked before allocation. Use the existing expression/preparation/disposal machinery,
+not a second evaluator or a general templating framework.
+
+Update the scalar/string library reference, language and embedding documentation,
+and a CSV report example. Keep the existing sidebar organization. Add focused
+public behavior checks for interpolation, formatting, source diagnostics, preflight,
+lazy evaluation and budget refusal. The implementation remains in Zirql; this
+increment does not change consumer dependency pins or host-specific emitters.
+All added explanatory prose receives an Astra medium copyedit using unslop and
+zayenz-writing-style. Use the area's existing Testing and Validation rules.
+
+Sources: [Python f-strings](https://docs.python.org/3/reference/lexical_analysis.html#f-strings),
+[Rust formatting](https://doc.rust-lang.org/std/fmt/), and
+[JavaScript template literals](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals).

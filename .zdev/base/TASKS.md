@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 143
-- Ready: 0
+- Total: 144
+- Ready: 1
 - Blocked: 0
 - Done: 143
 
@@ -152,3 +152,4 @@
 | [base-141](tasks/141-sort-and-group-retained-rows-without-materializing-native-pa.md) | Sort and group retained rows without materializing native payloads | done | — |
 | [base-142](tasks/142-use-the-common-program-reader-for-zirium-diff-reports.md) | Use the common program reader for Zirium diff reports | done | — |
 | [base-143](tasks/143-keep-declared-string-tally-results-consistent.md) | Keep declared-string tally results consistent | done | — |
+| [base-144](tasks/144-add-scalar-formatting-and-f-string-interpolation.md) | Add scalar formatting and f-string interpolation | ready | — |
