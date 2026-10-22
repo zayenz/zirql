@@ -27,6 +27,20 @@ as `{name: 1}` reads the binding `name`; quote a static brace field.
 `dict<K, V>` and `record {field: T}` are declaration types, not calls.
 See [dictionaries](values.md#dictionaries-and-collection-order).
 
+A `dict<K, V>` contract checks the retained key and value schema before entries,
+even when the dictionary is empty. Nested dictionary contracts use the same rule;
+optional contracts allow absence without changing the underlying schema.
+Each present key is admitted before its value. Host dictionaries can retain
+native keys and values, whose owner and source checks remain with the host.
+
+```zirql
+fn size(d: dict<string, dict<string, int>>) -> int { length(d) }
+size({"counts": {"ash": 2}})
+```
+
+This returns `1` after checking the inner string keys and integer values.
+An empty dictionary with an incompatible retained schema still fails admission.
+
 ## Sets
 
 `{value, ...} -> set`; `set<T>() -> empty set`

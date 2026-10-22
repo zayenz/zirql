@@ -4,8 +4,8 @@
 
 - Total: 143
 - Ready: 7
-- Blocked: 1
-- Done: 135
+- Blocked: 0
+- Done: 136
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -144,9 +144,9 @@
 | [base-133](tasks/133-align-infix-comparison-admission-for-native-and-constructed.md) | Align infix comparison admission for native and constructed data | done | base-125 |
 | [base-134](tasks/134-distinguish-equality-from-legacy-assignment-in-zirium.md) | Distinguish equality from legacy assignment in Zirium | done | — |
 | [base-135](tasks/135-expose-unique-and-tally-on-zirium-report-builders.md) | Expose unique and tally on Zirium report builders | done | — |
-| [base-136](tasks/136-share-dictionary-declaration-admission.md) | Share dictionary declaration admission | ready | — |
+| [base-136](tasks/136-share-dictionary-declaration-admission.md) | Share dictionary declaration admission | done | — |
 | [base-137](tasks/137-admit-present-native-values-in-optional-sequences.md) | Admit present native values in optional sequences | ready | — |
-| [base-138](tasks/138-use-retained-dictionaries-throughout-zincite-reports.md) | Use retained dictionaries throughout Zincite reports | blocked | base-136 |
+| [base-138](tasks/138-use-retained-dictionaries-throughout-zincite-reports.md) | Use retained dictionaries throughout Zincite reports | ready | base-136 |
 | [base-139](tasks/139-read-zincite-function-result-suffixes-through-the-common-rea.md) | Read Zincite function-result suffixes through the common reader | ready | — |
 | [base-140](tasks/140-make-zirium-native-retention-depend-on-the-expression-contex.md) | Make Zirium native retention depend on the expression context | ready | — |
 | [base-141](tasks/141-sort-and-group-retained-rows-without-materializing-native-pa.md) | Sort and group retained rows without materializing native payloads | ready | — |

@@ -492,6 +492,14 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
     ) -> Option<&'v [(Self::Value, Self::Value)]> {
         None
     }
+    /// Borrow the retained key and value kinds of an exposed dictionary, including
+    /// its schema when empty.
+    fn dictionary_view_kind<'k>(
+        &self,
+        _kind: &'k Self::Kind,
+    ) -> Option<&'k (Self::Kind, Self::Kind)> {
+        None
+    }
     /// Retain admitted dictionary entries and their native owners in insertion
     /// order. The shared runner checks duplicate keys before calling this hook.
     fn construct_dictionary(

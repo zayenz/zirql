@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-136"
 key = "dictionary-admission"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -26,12 +26,22 @@ Nearly identical schema admission rules appear in Zincite program/functions.rs a
 
 ## Done when
 
-- [ ] One focused core admission path replaces the duplicated dictionary schema and entry rules in ordinary Zincite, ordinary Zirium and Zirium diff.
-- [ ] Empty declared dictionaries, nested dictionaries and native keys/values retain their admission, owner and side checks.
-- [ ] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
+- [x] One focused core admission path replaces the duplicated dictionary schema and entry rules in ordinary Zincite, ordinary Zirium and Zirium diff.
+- [x] Empty declared dictionaries, nested dictionaries and native keys/values retain their admission, owner and side checks.
+- [x] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
 
 ## Validation
 
 - Run the affected repositories' required Rust checks from AGENTS.md, plus git diff --check. Use the existing offline dependency cache.
 - Reuse existing declaration/dictionary tests, adding only a missing public control for a changed contract.
 - Exercise a dictionary with native contents and an incompatible empty schema in each affected admission path.
+
+## Result
+
+Zincite, Zirium and Zirium diff use shared dictionary admission. Retained schemas are checked before entries, including empty dictionaries; native ownership and side checks remain with the hosts.
+
+Validation:
+
+- Independent required Rust checks passed in all three repositories. Native dictionary, empty schema and ownership controls passed.
+- Executable documentation examples passed. Added prose received Astra medium copyediting.
+- Both consumers use Zirql b5bee66f912be25264beab10157d19affe2420a2. Consumer commits: {"zincite": "4b492c4f131300b2bb681a0d55f2d55673fcc18a", "zirium": "775759839c5801d884d2484a49b56d7e64b0b87c"}

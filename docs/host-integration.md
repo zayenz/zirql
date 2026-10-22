@@ -1249,6 +1249,20 @@ including a dictionary's key and value contracts when it has no entries. It
 uses the existing declaration rules; hosts still admit actual native kinds,
 owners and values through `admit_value` and `RuntimeTypeHost::admit_native`.
 
+For dictionaries exposed by `ProjectionHost::dictionary_view`, implement
+`dictionary_view_kind` to borrow the retained key and value kinds, including
+the schema of an empty dictionary. Call `admit_dictionary(value, expected, host, context, budget, location,
+&string_key_kind)` from `RuntimeTypeHost::admit_native` after any computational
+admission. A `true` result completes dictionary admission; `false` leaves other
+native kinds to the host.
+
+The helper checks nested schemas before entries, then admits each key before
+its value. For example, a `dict<string, dict<string, int>>` declaration checks
+both levels even when an inner dictionary is empty. The string-stream kind is
+treated as a scalar string only in key position. Ordinary wrappers use constructed
+admission; native leaves return to the host for owner, source and side checks.
+A `Native` dictionary declaration requires the exact retained schema.
+
 `admit_scalar_type` checks Boolean, integer, float or string facts through the
 existing runtime type checker. `TypeFactPolicy::Strict` requires established
 actual facts. `Deferred` permits `Unestablished` and `ScalarKind`; it still

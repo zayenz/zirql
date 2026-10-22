@@ -1,8 +1,9 @@
 use std::ops::Range;
 
 use crate::{
-    ArrayType, Budget, ConstructedValue, EvaluationError, Located, Location, NominalTypeId,
-    ProgramHost, QueryError, QueryErrorCategory, SetElementType, ValueType, constructed_value_type,
+    ArrayType, Budget, ConstructedValue, EvaluationError, FunctionHost, Located, Location,
+    NominalTypeId, ProgramHost, ProjectionHost, QueryError, QueryErrorCategory, SetElementType,
+    ValueType, constructed_value_type,
 };
 
 /// An opt-in interface contract, distinct from discovered [`ValueType`] facts.
@@ -138,6 +139,161 @@ pub fn admit_value<C, H: RuntimeTypeHost<C>>(
 ) -> Result<(), EvaluationError<H::Error>> {
     validate_declaration(expected, budget, &location)?;
     admit_host_value(value, expected, host, context, budget, location)
+}
+
+/// Admit an exposed host dictionary's retained schema, then every key and value.
+/// Returns `false` when the host exposes no dictionary view. Native leaves use
+/// the host's admission checks; ordinary wrappers use constructed admission.
+/// `string_key_kind` identifies a host string stream used as scalar keys.
+///
+/// # Errors
+/// Errors for incompatible schemas use `location`, including for empty
+/// dictionaries. Native admission preserves host errors and source coordinates.
+pub fn admit_dictionary<C, H: FunctionHost<C>>(
+    value: &H::Value,
+    expected: &DeclaredType<<H as ProjectionHost<C>>::Kind>,
+    host: &H,
+    context: &mut C,
+    budget: &mut Budget,
+    location: Location,
+    string_key_kind: &<H as ProjectionHost<C>>::Kind,
+) -> Result<bool, EvaluationError<H::Error>> {
+    let Some(entries) = host.dictionary_view(value) else {
+        return Ok(false);
+    };
+    let range = match &location {
+        Location::Query(range) | Location::Source(range) => range,
+    };
+    let kind = host.kind(value, budget, range)?;
+    let Some(schema) = host.dictionary_view_kind(&kind) else {
+        return Err(refusal(
+            "dictionary schema does not satisfy its declaration",
+            budget,
+            &location,
+        )?
+        .into());
+    };
+    let mut expected = expected;
+    while let DeclaredType::Optional(inner) = expected {
+        budget.charge(1, location.clone())?;
+        expected = inner;
+    }
+    let declarations = match expected {
+        DeclaredType::Dictionary(key, value) => {
+            admit_dictionary_schema::<C, H>(
+                host,
+                schema,
+                key,
+                value,
+                string_key_kind,
+                budget,
+                &location,
+            )?;
+            Some((key.as_ref(), value.as_ref()))
+        }
+        DeclaredType::Native(expected) if expected == &kind => None,
+        _ => {
+            return Err(refusal(
+                "dictionary schema does not satisfy its declaration",
+                budget,
+                &location,
+            )?
+            .into());
+        }
+    };
+    for (key, value) in entries {
+        for (value, declaration) in [
+            (key, declarations.map(|(key, _)| key)),
+            (value, declarations.map(|(_, value)| value)),
+        ] {
+            if let Some(declaration) = declaration {
+                if let Some(ordinary) = host.ordinary_value(value, context, budget, range)? {
+                    admit_constructed(&ordinary, declaration, budget, location.clone())?;
+                } else {
+                    admit_value(value, declaration, host, context, budget, location.clone())?;
+                }
+            } else if let Some(value) = host.constructed_value(value) {
+                admit_constructed(value, &DeclaredType::<()>::Value, budget, location.clone())?;
+            } else if host
+                .ordinary_value(value, context, budget, range)?
+                .is_none()
+            {
+                let kind = host.kind(value, budget, range)?;
+                host.admit_native(
+                    value,
+                    &DeclaredType::Native(kind),
+                    context,
+                    budget,
+                    location.clone(),
+                )?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn admit_dictionary_schema<C, H: FunctionHost<C>>(
+    host: &H,
+    schema: &(
+        <H as ProjectionHost<C>>::Kind,
+        <H as ProjectionHost<C>>::Kind,
+    ),
+    expected_key: &DeclaredType<<H as ProjectionHost<C>>::Kind>,
+    expected_value: &DeclaredType<<H as ProjectionHost<C>>::Kind>,
+    string_key_kind: &<H as ProjectionHost<C>>::Kind,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
+    budget.within_evaluation(1, location.clone(), |budget| {
+        let range = match location {
+            Location::Query(range) | Location::Source(range) => range,
+        };
+        for (kind, expected, is_key) in [
+            (&schema.0, expected_key, true),
+            (&schema.1, expected_value, false),
+        ] {
+            let mut underlying = expected;
+            while let DeclaredType::Optional(inner) = underlying {
+                budget.charge(1, location.clone())?;
+                underlying = inner;
+            }
+            if let (Some(schema), DeclaredType::Dictionary(key, value)) =
+                (host.dictionary_view_kind(kind), underlying)
+            {
+                admit_dictionary_schema::<C, H>(
+                    host,
+                    schema,
+                    key,
+                    value,
+                    string_key_kind,
+                    budget,
+                    location,
+                )?;
+                continue;
+            }
+            if is_key && kind == string_key_kind {
+                budget.charge_results(1, location.clone())?;
+                admit_type_facts(
+                    &ValueType::String,
+                    expected,
+                    TypeFactPolicy::Deferred,
+                    budget,
+                    location,
+                )?;
+            } else if let Some(facts) = host.scalar_types(kind, budget, range)? {
+                for fact in facts {
+                    admit_type_facts(&fact, expected, TypeFactPolicy::Deferred, budget, location)?;
+                }
+            } else if *kind != host.declaration_kind(underlying, budget, range)? {
+                return Err(refusal(
+                    "dictionary schema does not satisfy its declaration",
+                    budget,
+                    location,
+                )?);
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Check actual constructed data, including all nested elements and the current
