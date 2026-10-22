@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-135"
 key = "report-builders"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -25,11 +25,21 @@ Textual unique/tally and native builders already work. The ReportExpr builders i
 
 ## Done when
 
-- [ ] Rust and Python ReportExpr.unique() and ReportExpr.tally() execute the same operations as text.
-- [ ] Bindings and stubs agree and retain parameter/function metadata.
-- [ ] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
+- [x] Rust and Python ReportExpr.unique() and ReportExpr.tally() execute the same operations as text.
+- [x] Bindings and stubs agree and retain parameter/function metadata.
+- [x] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
 
 ## Validation
 
 - Run the affected repositories' required Rust checks from AGENTS.md, plus git diff --check. Use the existing offline dependency cache.
 - Run the affected existing Python build, tests, Ruff and ty checks; add only a small public builder control for the missing methods.
+
+## Result
+
+Rust and Python ReportExpr builders expose unique() and tally(), preserving parameter and function declarations.
+
+Validation:
+
+- Independent Rust and Python verification passed, including 182 Python tests, Ruff and ty.
+- Site checks, build, links and documented Python example passed. Added prose received Astra medium copyediting.
+- Zirium commit cedc79b49ca0622af0b215c3a4855b37630881a3
