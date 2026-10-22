@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-142"
 key = "diff-program-reader"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -25,12 +25,12 @@ Diff execution already uses PreparedProgram, but query/diff_text.rs splits state
 
 ## Done when
 
-- [ ] Diff reading uses read_program/ProgramReaderHost and the shared expression/operand grammar. The generic statement, binding and argument splitting it replaces is removed.
-- [ ] Diff reports accept existing common constructed expressions, pattern lets, parameters and named pure functions under ordinary scope rules.
-- [ ] The existing callable diff APIs and CLI --param arguments pass declared parameters through common admission and use its ordinary diagnostics for missing, extra and invalid arguments.
-- [ ] Computed head/tail/check arguments use common admission and diagnostics.
-- [ ] Diff-native stages, before/after ownership, comparison subjects, mutation refusal and statement-end emission remain local and compatible.
-- [ ] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
+- [x] Diff reading uses read_program/ProgramReaderHost and the shared expression/operand grammar. The generic statement, binding and argument splitting it replaces is removed.
+- [x] Diff reports accept existing common constructed expressions, pattern lets, parameters and named pure functions under ordinary scope rules.
+- [x] The existing callable diff APIs and CLI --param arguments pass declared parameters through common admission and use its ordinary diagnostics for missing, extra and invalid arguments.
+- [x] Computed head/tail/check arguments use common admission and diagnostics.
+- [x] Diff-native stages, before/after ownership, comparison subjects, mutation refusal and statement-end emission remain local and compatible.
+- [x] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
 
 ## Validation
 
@@ -38,3 +38,13 @@ Diff execution already uses PreparedProgram, but query/diff_text.rs splits state
 - Extend existing public diff program tests with a computed count and a small let/function constructed report; reuse side-ownership, mutation and buffered-error controls.
 - Exercise the existing small-query preparation benchmark without a new threshold.
 - Exercise the public diff CLI with --param and the callable API with a declared parameter used in a computed count. Use the existing admission controls to check missing arguments, extra arguments and invalid argument types.
+
+## Result
+
+Zirium diff reports use the shared program reader for functions, pattern bindings, parameters and computed collection arguments. Callable APIs and CLI parameters use the same admission checks. Diff ownership, mutation refusal and statement-end output remain local to Zirium.
+
+Validation:
+
+- Required offline locked Rust formatting, Clippy and tests passed in affected repositories; Zirium doctests and warnings-denied docs passed. Focused public controls passed.
+- Astra medium reviewed added prose using unslop and zayenz-writing-style. Both consumers use canonical Zirql fda88b5ddcef255c24a66aeb86b1a98600f77349.
+- Independent verifier passed; exact core snapshot and consumer states matched before completion.

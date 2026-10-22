@@ -5164,6 +5164,10 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let value = ValueGuard::new(self.common_value_suffixes(value, depth)?);
         if self.reader.consume('|') {
+            if self.host.field_pipeline_source() == FieldPipelineSource::ValueArgument {
+                let value = self.value_pipeline(value.into_value(), depth)?;
+                return self.native_sets(value, depth);
+            }
             let stage = self.name()?;
             return Err(QueryError::query(
                 stage.range,

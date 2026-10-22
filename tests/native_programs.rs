@@ -7162,6 +7162,10 @@ mod projection {
             ("m.add | names | one", V::String("alpha".into())),
             ("(m.add) | names | one", V::String("alpha".into())),
             (
+                "[1, 2] | reverse | native(m.add) | names | one",
+                V::String("alpha".into()),
+            ),
+            (
                 "m.add | names union (m.add | names)",
                 V::Array(vec![V::String("alpha".into())]),
             ),
@@ -13489,6 +13493,12 @@ fn constructed_programs_share_declared_bindings_parameters_patterns_and_current_
         results: 10_000,
         ..limits()
     });
+    let source = "let n = 1";
+    let error = ConstructedProgram::read(source, &[], &mut budget, 64)
+        .err()
+        .unwrap();
+    assert_eq!(error.location, Location::Query(source.len()..source.len()));
+    assert_eq!(error.message, "expected ';'");
     let numbers = ConstructedBinding::new(
         V::Array(vec![V::Integer(1), V::Integer(3), V::Integer(5)]),
         D::Sequence(Box::new(D::Integer)),

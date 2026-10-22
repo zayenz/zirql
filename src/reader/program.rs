@@ -88,6 +88,11 @@ pub trait ProgramReaderHost: ValueReaderHost {
     ) -> Result<Option<Pattern>, QueryError> {
         Ok(None)
     }
+    /// Allow `read_binding` bindings to omit `;` at the end of a program.
+    /// Common `let` bindings still require `;`; the default is `false`.
+    fn allows_unterminated_host_binding(&self) -> bool {
+        false
+    }
     /// Recognize a host evaluation prefix such as `do`.
     fn read_output_prefix(
         &mut self,
@@ -377,7 +382,9 @@ fn read_program_into<'s, H: ProgramReaderHost>(
             });
             continue;
         }
-        let pattern = match host.read_binding(&mut reader, budget)? {
+        let host_pattern = host.read_binding(&mut reader, budget)?;
+        let host_binding = host_pattern.is_some();
+        let pattern = match host_pattern {
             Some(pattern) => Some(pattern),
             None => read_pattern_let(&mut reader, budget, nesting)?,
         };
@@ -432,7 +439,12 @@ fn read_program_into<'s, H: ProgramReaderHost>(
         )?));
         reader.skip_trivia()?;
         if purpose == ProgramExpression::Binding || purpose == ProgramExpression::Suppressed {
-            reader.expect(';')?;
+            if !host_binding
+                || !host.allows_unterminated_host_binding()
+                || !reader.remaining().is_empty()
+            {
+                reader.expect(';')?;
+            }
         } else if values.is_some() {
             if !reader.remaining().is_empty() {
                 return Err(reader.error("expected the end of the expression"));

@@ -85,7 +85,15 @@ source scan again. Other callbacks admit native signatures and binding patterns,
 parameters and patterns to core statements, recognize domain statements or
 legacy headers, and select implicit output. They do not maintain another common
 statement loop. Zincite's callback retains its atomic edit grammar; Zirium's
-retains `do`, legacy bindings and pass-through emission.
+retains `do`, legacy bindings and pass-through emission. Zirium's diff frontend
+also uses this reader. The host retains side-owned values and controls
+statement-end output.
+
+For `FieldPipelineSource::ValueArgument` hosts, a constructed expression can
+continue through common suffixes and then a host stage, for example
+`[1, 2] | reverse | json` in Zirium diff reports. The reader retains the value
+as a core `Value` step and uses the existing native continuation. Preparation
+still checks the stage's admitted input and effects.
 
 For a constructed data application, use `ConstructedProgram` above to connect
 these steps. The lower-level `read_value_program` entry remains available for

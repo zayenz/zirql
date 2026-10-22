@@ -328,6 +328,8 @@ factories.
 positions and pattern bindings. Implement `ProgramReaderHost` to supply native
 expressions/types, host-only statements and implicit output. The smaller
 `read_statement_prefix` helper remains available for deliberately limited readers.
+Zirium's ordinary and diff frontends both use this entry point; diff sides and
+statement-end output remain host decisions.
 See [text programs](embedding-programs.md#read-text-programs).
 Comprehension-local names take precedence over native stage names in value
 expressions. The head sees every binder; each source sees earlier binders, and
@@ -366,7 +368,10 @@ such as `outer.items | filter(_ > 1)` continues:
 
 The constructed and value-argument routes accept grouped and ungrouped fields
 equally. This hook describes the field source's execution path. It does not
-classify names or change `read_value_suffix`, which always reads constructed stages.
+classify names. After common suffixes, the value-argument route can continue
+through host stages from any constructed prefix, including an array or
+dictionary. For example, Zirium diff accepts `[1, 2] | reverse | json`.
+Constructed-only hosts continue to refuse unsupported host stages.
 
 `ArgumentReader` retains original UTF-8 byte offsets. It has word, integer and
 quoted-string helpers that skip whitespace, `#`/`%` line comments and nonnested
