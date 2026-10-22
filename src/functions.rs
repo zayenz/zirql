@@ -348,8 +348,12 @@ fn accumulator_state<'a, Q, K: PartialEq>(
         .next()
         .expect("two parameters")
         .declaration;
-    if !crate::runtime_types::compatible_state(state, &declaration.result.value, budget, &location)?
-    {
+    if !crate::runtime_types::declarations_compatible(
+        state,
+        &declaration.result.value,
+        budget,
+        &location,
+    )? {
         return Err(QueryError::query(
             step.range.clone(),
             "accumulator result is incompatible with state",

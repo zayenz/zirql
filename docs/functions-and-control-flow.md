@@ -43,6 +43,13 @@ program API, with repeated `--param name=value` inputs. See the
 [orders report](csv.md#calculate-with-numeric-cells). These example APIs are
 newer than registry Zirql 0.2.0.
 
+A `sequence<opt T>` parameter accepts a sequence of present `T` values when
+the element declarations are compatible. This also applies to host-native types,
+such as Zincite's `Node` and Zirium's `Operation`, and to worklist inputs such as
+`queue<opt T>(values)`. Each member must still pass runtime admission.
+An empty sequence retains its element declaration, so an empty sequence of a
+different native kind is rejected.
+
 ## Conditions and local bindings
 
 A conditional has a required final `else`. Each branch is a block with optional

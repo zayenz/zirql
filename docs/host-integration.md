@@ -480,6 +480,13 @@ order remain actual runtime facts. Nominal declarations use `NominalTypeId`, so
 equal names do not make distinct types compatible. Integers do not implicitly
 satisfy float contracts.
 
+`declarations_compatible(left, right, budget, location)` uses the existing rules
+to compare the underlying types of two declarations with the same host kind type.
+It ignores optional wrappers and compares native kinds by equality. Use this check
+before admitting members of a native container, including an empty container
+whose schema must still match. Compatibility alone does not admit a value;
+`admit_value` must still check each member in its current host context.
+
 Use `admit_constructed` for borrowed constructed data:
 
 ```rust

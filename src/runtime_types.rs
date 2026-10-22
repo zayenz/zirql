@@ -513,7 +513,14 @@ pub(crate) fn compatible_declarations<K>(
     compatible_declarations_with(left, right, budget, location, &|_, _| false)
 }
 
-pub(crate) fn compatible_state<K: PartialEq>(
+/// Check whether two declarations describe compatible underlying types.
+/// Optional wrappers do not change compatibility; native kinds must be equal.
+/// This checks schemas, including those of empty containers. It does not admit values.
+/// Hosts must still admit every member in its current owner and source context.
+///
+/// # Errors
+/// Returns a located error when the active work or nesting allowance is exhausted.
+pub fn declarations_compatible<K: PartialEq>(
     left: &DeclaredType<K>,
     right: &DeclaredType<K>,
     budget: &mut Budget,

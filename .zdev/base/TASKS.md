@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 143
-- Ready: 6
+- Ready: 5
 - Blocked: 0
-- Done: 137
+- Done: 138
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -145,7 +145,7 @@
 | [base-134](tasks/134-distinguish-equality-from-legacy-assignment-in-zirium.md) | Distinguish equality from legacy assignment in Zirium | done | — |
 | [base-135](tasks/135-expose-unique-and-tally-on-zirium-report-builders.md) | Expose unique and tally on Zirium report builders | done | — |
 | [base-136](tasks/136-share-dictionary-declaration-admission.md) | Share dictionary declaration admission | done | — |
-| [base-137](tasks/137-admit-present-native-values-in-optional-sequences.md) | Admit present native values in optional sequences | ready | — |
+| [base-137](tasks/137-admit-present-native-values-in-optional-sequences.md) | Admit present native values in optional sequences | done | — |
 | [base-138](tasks/138-use-retained-dictionaries-throughout-zincite-reports.md) | Use retained dictionaries throughout Zincite reports | ready | base-136 |
 | [base-139](tasks/139-read-zincite-function-result-suffixes-through-the-common-rea.md) | Read Zincite function-result suffixes through the common reader | done | — |
 | [base-140](tasks/140-make-zirium-native-retention-depend-on-the-expression-contex.md) | Make Zirium native retention depend on the expression context | ready | — |

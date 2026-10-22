@@ -2482,7 +2482,7 @@ fn accumulator_source<'a, Q, H: Host<'a, Q>>(
     let items_value = host.normalize(items_value, budget, location)?;
     if let Some(previous) = items_value.contract
         && let Some(previous) = sequence_element(previous, budget, location)?
-        && !crate::runtime_types::compatible_state(previous, element, budget, location)?
+        && !crate::runtime_types::declarations_compatible(previous, element, budget, location)?
     {
         return Err(error(location, "incompatible declared underlying types").into());
     }
@@ -2826,7 +2826,7 @@ fn check_state_contract<'a, Q, H: Host<'a, Q>>(
 ) -> Result<(), H::Error> {
     let borrowed = match value.contract {
         Some(previous) => {
-            crate::runtime_types::compatible_state(previous, expected, budget, location)?
+            crate::runtime_types::declarations_compatible(previous, expected, budget, location)?
         }
         None => true,
     };
@@ -2939,7 +2939,7 @@ fn admit<'a, Q, H: Host<'a, Q> + ?Sized>(
     }
     if let Some(previous) = value.contract
         && !std::ptr::eq(previous, expected)
-        && !crate::runtime_types::compatible_state(previous, expected, budget, location)?
+        && !crate::runtime_types::declarations_compatible(previous, expected, budget, location)?
     {
         return Err(error(location, "incompatible declared underlying types").into());
     }

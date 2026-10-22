@@ -190,7 +190,7 @@ impl<'a, K> InfixDeclaration<'a, K> {
     {
         match (self, other) {
             (Self::Host(a), Self::Host(b)) => {
-                crate::runtime_types::compatible_state(a, b, budget, location)
+                crate::runtime_types::declarations_compatible(a, b, budget, location)
             }
             (Self::Data(a), Self::Data(b)) => {
                 crate::runtime_types::compatible_declarations(a, b, budget, location)
