@@ -78,9 +78,8 @@ cells. Keyed capacity updates remain a separate design question, including how
 keys, missing cells and declared axes should behave.
 
 The shared reader, callable evaluator and local word/CSV hosts support `with`
-in this development checkout. Installed Zincite and Zirium frontends need
-[consumer adoption](host-integration.md#immutable-record-adoption) before they can
-advertise this syntax. This ordinary value operation adds no symbolic CP form.
+in Zirql 0.3.0. Zincite 0.3.0 and Zirium 0.7.0 expose it through their
+[report frontends](host-integration.md#immutable-record-adoption). This ordinary value operation adds no symbolic CP form.
 
 ## Operators and precedence
 
@@ -351,8 +350,8 @@ ignores set/dictionary insertion order. A later equal key starts another run
 when a different key intervenes. Empty input returns `[]`.
 
 Both operations accept positional sources only, with no selector callbacks.
-They are available through the shared reader and callable evaluator in this
-development checkout, including the local word and CSV examples. See the
+They are available through the shared reader and callable evaluator, including
+the word and CSV examples. See the
 [runnable word and operation-name reports](examples.md#find-adjacent-word-pairs)
 and [consumer adoption requirements](host-integration.md#sequence-neighbourhood-adoption).
 
@@ -392,7 +391,7 @@ Work, indexing, comparisons and result construction share the request budget;
 exhaustion fails the request.
 
 The shared reader, callable evaluator and local CSV/word hosts support this call
-in the development checkout. Run the [benchmark comparison](examples.md#compare-benchmark-tables)
+in Zirql 0.3.0. Run the [benchmark comparison](examples.md#compare-benchmark-tables)
 for a report that reads timings only from present sides. Consumer adoption is
 [separate](host-integration.md#record-alignment-adoption); `align` is an ordinary
 value operation and adds no symbolic CP support.

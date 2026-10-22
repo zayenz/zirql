@@ -86,7 +86,7 @@ the array and its type facts; it adds no collection parser or evaluator.
 
 ## Count unordered neighbouring word pairs
 
-The development checkout returns a dictionary whose keys are the word sets. Run:
+The word example returns a dictionary whose keys are the word sets. Run:
 
 ```sh
 cargo run --locked --example words -- '[{words[i], words[i + 1]} | i in index_set(words) where i < length(words)] | tally'
@@ -132,7 +132,7 @@ retains the order of the selected words.
 ## Find adjacent word pairs
 
 Use complete overlapping windows to form pairs of neighbouring words, also
-called bigrams. Run this in the development checkout:
+called bigrams. Run this in the Zirql 0.3.0 checkout:
 
 ```sh
 cargo run --locked --example words -- 'words | windows(2) | map(_[1] ++ " " ++ _[2])'
@@ -184,7 +184,7 @@ adoption](host-integration.md#sequence-neighbourhood-adoption).
 
 A benchmark report needs to retain removed and new cases as well as cases with
 two timings. Run this comparison of constructed tables through the local CSV
-host in the development checkout:
+host in the Zirql 0.3.0 checkout:
 
 ```sh
 cargo run --locked --example csv -- '

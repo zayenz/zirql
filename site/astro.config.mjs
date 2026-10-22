@@ -192,7 +192,7 @@ export default defineConfig({
       ] },
       { label: 'Language reference', items: ['guides/language-reference', 'guides/values', 'guides/functions-and-control-flow', 'guides/shared-concepts', 'guides/native-programs', 'guides/diagnostics-and-limits'] },
       { label: 'Implementation reference', items: ['guides/implementation-reference', { label: 'Constructed data programs', link: new URL(`${prefix}guides/embedding-programs/#constructed-data-programs`, site).href }, 'guides/csv-host', 'guides/host-integration', 'guides/value-runtime', 'guides/embedding-programs', { label: 'Native composition in Rust', link: new URL(`${prefix}guides/embedding-programs/#build-native-composition-steps`, site).href }, 'guides/runtime-limits', 'guides/language-direction', 'guides/semantic-models', 'guides/computation'] },
-      { label: 'Rust API reference', link: 'https://docs.rs/zirql/0.2.0/zirql/' },
+      { label: 'Rust API reference', link: 'https://docs.rs/zirql/0.3.0/zirql/' },
       { label: 'Zincite guides', link: 'https://zayenz.se/zincite/' },
       { label: 'Zirium guides', link: 'https://zayenz.se/zirium/' },
       { label: 'Projects on zayenz.se', link: 'https://zayenz.se/projects/' },

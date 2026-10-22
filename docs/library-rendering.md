@@ -2,7 +2,7 @@
 
 Zirql renders constructed results after evaluation. The caller chooses JSON or
 Markdown, passes the request's remaining budget, and receives a complete buffer.
-These Rust APIs belong to the working checkout; published Zirql 0.2.0 does not include them. They are not query-language calls.
+These Rust APIs are not query-language calls.
 
 ## to_json_value
 

@@ -1,6 +1,6 @@
 # Zirql
 
-These guides cover Zirql 0.2.0 and marked development APIs. See [setup](getting-started.md) for the Rust
+These guides cover Zirql 0.3.0. See [setup](getting-started.md) for the Rust
 dependency and runnable word and CSV examples.
 
 Zirql lets users write analyses that an application's built-in reports do not
@@ -111,8 +111,7 @@ Record fields can contain expressions and nested collections.
 <!-- examples:end -->
 
 [Work through the word analysis](examples.md), or [run these expressions from
-Rust](getting-started.md). The setup guide distinguishes the packaged 0.2.0 examples from the development
-constructed-program API.
+Rust](getting-started.md).
 
 ## Learn the language
 

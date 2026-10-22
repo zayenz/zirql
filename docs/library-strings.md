@@ -85,8 +85,7 @@ Errors retain the conversion's source location and spend the active request budg
 
 Rust callers construct `ValueExpressionKind::Unary` with
 `ValueUnaryOperator::ParseInt`, `ParseFloat` or `ToString` and the operand expression.
-These conversions are newer than published Zirql 0.2.0; use this checkout or a
-consumer revision that explicitly supports them.
+Check each host's guide for the conversions its frontend supports.
 
 ## format
 

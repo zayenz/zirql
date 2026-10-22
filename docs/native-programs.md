@@ -118,7 +118,7 @@ also use direct core steps. Their bodies keep one active lexical/function frame;
 hosts supply native subjects, kinds, guard facts, identity, shape and explicit
 scalar projections. The
 [Rust embedding guide](embedding-programs.md#build-core-value-and-projection-steps)
-shows the read/build, prepare and evaluate path in the development API.
+shows the read/build, prepare and evaluate path in the Rust API.
 
 The [Zirium language guide](https://zayenz.se/zirium/guides/query-language/)
 explains its native stages. Zincite similarly projects MiniZinc items and

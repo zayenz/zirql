@@ -41,8 +41,7 @@ Failures return located `FunctionError<QueryError>` values with bounded call
 frames. Render a completed result explicitly with the shared
 [JSON or Markdown renderer](library-rendering.md).
 
-This API is newer than registry Zirql 0.2.0. Use the working checkout described
-in [setup](getting-started.md#use-zirql-in-another-rust-project).
+See [setup](getting-started.md#use-zirql-in-another-rust-project) for the dependency.
 The [word host](getting-started.md#supply-the-input) binds an in-memory string
 sequence through this facade. [Build the CSV host](csv-host.md) follows file
 loading, declaration, binding, program execution and rendering. The
@@ -140,7 +139,7 @@ same context and budget.
 
 ## Build core value and projection steps
 
-In the development API, ordinary values and correlated projections are core
+Ordinary values and correlated projections are core
 steps inside `ExpressionKind::Sequence`. A typed caller can construct them
 without a host stage wrapper:
 
@@ -165,8 +164,7 @@ let projection: ExpressionStep<(), (), ()> = ExpressionStep::Projection(Projecti
 The snippet constructs syntax only. The [native projection example](native-programs.md#project-a-native-selection)
 runs a projection through Zirium. To execute core steps, prepare the expression
 through the request's `PreparedProgram` as below. `Stage` still carries
-domain operations and `Emit` carries explicit host output. Registry Zirql 0.2.0
-predates these core steps.
+domain operations and `Emit` carries explicit host output.
 
 ## Build native composition steps
 
@@ -290,7 +288,7 @@ key and value contract, including when the result is empty.
 For constructed values, `evaluate_functions` takes declarations, an entry
 expression, explicit bindings, the active budget and `FunctionLimits`. The
 [compiled accumulator example in the API
-source](https://github.com/zayenz/zirql/blob/v0.2.0/src/functions.rs) shows the
+source](https://github.com/zayenz/zirql/blob/v0.3.0/src/functions.rs) shows the
 full declaration construction. It counts down from 100 with an active function
 depth of one. For the syntax it represents, see [function
 declarations](functions-and-control-flow.md#declare-a-function).
@@ -616,7 +614,7 @@ under the active budget, without parsing generated text or copying matched data.
 Rust callers use `ValueExpressionKind::Fold { items, initial, step }` or `Scan`
 with the same fields. `step` is a located function name in this closed position.
 The [compiled fold example in the API
-source](https://github.com/zayenz/zirql/blob/v0.2.0/src/value.rs) adds `[2, 3]` to
+source](https://github.com/zayenz/zirql/blob/v0.3.0/src/value.rs) adds `[2, 3]` to
 initial state `0` with one active function frame. Replacing `Fold` with `Scan`
 returns `[2, 5]`. The common reader parses `fold(items, initial, step)` and
 `scan(items, initial, step)`, where `step` names a registered pure function.
@@ -664,7 +662,7 @@ function boundary. Even unused branches and function bodies receive these
 checks during preparation.
 
 The [compiled
-accumulator](https://github.com/zayenz/zirql/blob/v0.2.0/src/value.rs) adds 1
+accumulator](https://github.com/zayenz/zirql/blob/v0.3.0/src/value.rs) adds 1
 through 10,000 with an active function depth of one. `Continue` reads every
 operand against the complete old state, checks every fixed state contract, then
 installs the whole tuple. For example, a two-slot swap uses:
@@ -694,7 +692,7 @@ let nested = node(K::Loop {
 
 An inner `Continue` similarly advances only its own state. The Rust API checks
 in
-[`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/v0.2.0/tests/value_expressions.rs)
+[`tests/value_expressions.rs`](https://github.com/zayenz/zirql/blob/v0.3.0/tests/value_expressions.rs)
 combine inner continues with outer block/match transfers, simultaneous swaps,
 contract failures and ordinary work-limit refusal. A body containing only
 `Continue` is valid; it eventually exhausts work rather than returning an
@@ -769,16 +767,15 @@ A failed request returns no partial report.
 ## Consumer adoption
 
 The word and CSV examples expose mapping through `ConstructedProgram` and the
-common reader. The development [Zincite report frontend](https://zayenz.se/zincite/guides/query-comprehension-contract/#transform-report-rows)
+common reader. The [Zincite report frontend](https://zayenz.se/zincite/guides/query-comprehension-contract/#transform-report-rows)
 and [Zirium report frontend](https://zayenz.se/zirium/guides/query-language/#transform-positional-reports)
 use the same `Map`/`FlatMap` nodes. Their positional value/kind views and
 list/record constructors retain native children alongside calculated data.
 
 Zincite retains MiniZinc model facts and its closed Data/edit policy. Zirium
 retains MLIR kinds, handle identity and source coordinates. Both supply native
-leaf projections and output envelopes to the shared renderers. Installed
-releases retain their published support; these integrations require the
-consumer development revisions identified in their guides.
+leaf projections and output envelopes to the shared renderers. These integrations
+are available in Zincite 0.3.0 and Zirium 0.7.0.
 
 ## Select matching generator candidates
 

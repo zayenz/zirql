@@ -1,8 +1,7 @@
 # Library reference
 
 Find a shared function, pipeline stage, operator or special form here. The
-entries describe supported behavior in this checkout, including the current
-extensions. Hosts may pin earlier Zirql versions or expose a smaller frontend;
+entries describe Zirql 0.3.0. Hosts may pin earlier Zirql versions or expose a smaller frontend;
 check their own guides before using a form in a consumer.
 
 A shared operation can support ordinary values, native inputs, or both. Each
@@ -39,9 +38,8 @@ and share [declaration metadata and scalar argument admission](host-integration.
 
 The [language reference](language-reference.md) covers grammar and scope;
 [the word tutorial](examples.md) and [CSV examples](csv.md) develop full queries.
-The [published Rust API](https://docs.rs/zirql/0.2.0/zirql/) describes registry
-0.2.0. Run `cargo doc --open` in this checkout for the development APIs used by
-these guides. Reader forms and Rust enum variants are not interchangeable:
+The [published Rust API](https://docs.rs/zirql/0.3.0/zirql/) describes registry
+0.3.0. Run `cargo doc --open` for local API documentation. Reader forms and Rust enum variants are not interchangeable:
 for example, there is no ordinary `array(...)` call, and nominal member
 construction needs a host resolver.
 

@@ -9,7 +9,7 @@ evaluator runs.
 
 ## Dependency and toolchain
 
-Add Zirql to a Rust crate with Cargo. Zirql 0.2.0 uses edition 2024 and requires
+Add Zirql to a Rust crate with Cargo. Zirql 0.3.0 uses edition 2024 and requires
 Rust 1.88 or newer. The
 [setup guide](getting-started.md#use-zirql-in-another-rust-project)
 shows the registry dependency and a complete executable. Generate API
@@ -44,10 +44,8 @@ adapters expose domain leaves and native views. `Stage` carries domain primitive
 and guard payloads, while `Emit` retains explicit host output policy. The smaller
 `evaluate_program` API handles programs containing only opaque native stages.
 
-These program, facade and composition APIs require this development checkout;
-registry Zirql 0.2.0 predates them. Use `cargo doc --open` for the selected
-checkout's callable signatures. The [published Rust API](https://docs.rs/zirql/0.2.0/zirql/)
-describes the released version.
+Use `cargo doc --open` for the selected checkout's callable signatures, or
+consult the [published Rust API](https://docs.rs/zirql/0.3.0/zirql/).
 
 The [borrowed-word example](../README.md#a-borrowed-source-query) implements
 `Host` for string slices, retaining their source through evaluation. Use native
@@ -216,10 +214,10 @@ projection, the closed Data subset and atomic edit checks.
 Its eager native discovery skips `default` fallbacks; full written admission
 still inspects them. Zirium uses the operations for report normalization and
 native-root discovery. It keeps document/operation ownership, stale-handle
-checks, dialect meanings, diff sides and effects. Both development integrations
+checks, dialect meanings, diff sides and effects. Both integrations
 adopt `map`, `flat_map`, selective generators, `windows`, `runs_by`, `with` and
 `align` through the common reader and their existing builder entry points.
-They pin the accepted Git revision; registry 0.2.0 predates these integrations.
+Zincite 0.3.0 and Zirium 0.7.0 use Zirql 0.3.0.
 
 ## Scoped predicates
 
@@ -641,7 +639,6 @@ after evaluation. `to_json_value` produces an ordered JSON tree;
 `render_json` returns compact or pretty buffered bytes. `render_json_value`
 also writes existing JSON trees with host-owned document/completeness envelopes.
 All three share the request budget and preserve supplied error locations.
-These APIs belong to this working checkout, beyond published Zirql 0.2.0.
 For mixed reports, implement `RenderHost::view` to expose borrowed containers
 and project native leaves. Zirql owns recursive traversal and ordinary JSON and
 Markdown layout through the [mixed-report bridge](library-rendering.md#mixed-native-reports).
@@ -663,8 +660,8 @@ receive no automatic rollback from Zirql. Source-edit safety and transaction
 rules belong to the host.
 
 For signatures and budget charging helpers, run `cargo doc --open` for your
-selected dependency. The [published Rust API](https://docs.rs/zirql/0.2.0/zirql/)
-describes registry 0.2.0 and does not include the development APIs above. The [budget and diagnostic
+selected dependency. The [published Rust API](https://docs.rs/zirql/0.3.0/zirql/)
+describes Zirql 0.3.0. The [budget and diagnostic
 reference](runtime-limits.md) explains how to translate errors and account for
 host work.
 
@@ -1237,11 +1234,9 @@ sequences. Matching labels do not establish native identity or cross-document
 ownership. The [benchmark comparison](examples.md#compare-benchmark-tables)
 uses explicit guards before reading optional sides.
 
-The development [Zincite](https://zayenz.se/zincite/guides/query-comprehension-contract/#transform-report-rows)
+The [Zincite](https://zayenz.se/zincite/guides/query-comprehension-contract/#transform-report-rows)
 and [Zirium](https://zayenz.se/zirium/guides/query-language/#transform-positional-reports)
-report frontends expose these common forms. Their guides identify the supported
-dependency revisions; registry Zirql 0.2.0 and installed consumer releases retain
-their documented support. Zincite keeps model facts, MiniZinc admission and Data
+report frontends expose these common forms in Zincite 0.3.0 and Zirium 0.7.0. Zincite keeps model facts, MiniZinc admission and Data
 edit restrictions. Zirium keeps native MLIR/diff meaning, handle ownership and
 source-edit policy. The shared evaluator and renderer add no solver integration.
 
@@ -1260,7 +1255,7 @@ and identity sets as requiring native handling. It does not interpret native
 kind payloads. Zincite deliberately classifies its native scalar/value wrappers
 as constructed in its local admission logic; that classification cannot use
 this structural test. Zirium uses the shared structural inspection directly.
-Both development adapters use the shared copy operation while retaining their
+Both adapters use the shared copy operation while retaining their
 `Rc` and `Arc` storage respectively.
 
 `admit_type_facts` checks retained structured facts against a declaration,
@@ -1296,5 +1291,4 @@ explicit in the adapters.
 and indices, refusing negatives and platform overflow at the supplied location.
 The host supplies the diagnostic message for its argument context. Domain kind
 conversion, MiniZinc admission, MLIR ownership and native value admission remain
-host responsibilities. These APIs require the development revision pinned by
-the adapters; the published 0.2.0 crate does not contain them.
+host responsibilities.

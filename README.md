@@ -1,6 +1,6 @@
 # Zirql
 
-Zirql 0.2.0 is a Rust library for bounded query programs over application data.
+Zirql 0.3.0 is a Rust library for bounded query programs over application data.
 It supplies a shared expression reader and evaluator, immutable bindings,
 comprehensions, collection operations and typed pure functions. Native objects
 retain their host's ownership, identity and source coordinates throughout a
@@ -16,12 +16,11 @@ newer and is licensed under MIT OR Apache-2.0.
 
 ```toml
 [dependencies]
-zirql = "0.2.0"
+zirql = "0.3.0"
 ```
 
 The [setup guide](https://zayenz.se/zirql/guides/getting-started/) explains how to run the examples from
-an extracted crate or a matching checkout. The current constructed-program
-examples below run from this working checkout:
+an extracted crate or a matching checkout. The examples below run from the matching checkout:
 
 ```sh
 cargo run --locked --example words
@@ -56,9 +55,7 @@ of those computational values are unsupported. The common reader recognizes
 these forms; each host connects its native types, operations and program syntax.
 The word and CSV executables use `ConstructedBinding` and `ConstructedProgram`
 for declared data, typed parameters, named functions, pattern lets and one final
-value. Functions receive data explicitly. This constructed-program API and the
-shared JSON/Markdown renderers are development APIs newer than registry 0.2.0;
-use the working checkout for them.
+value. Functions receive data explicitly. The shared JSON/Markdown renderers format the completed value.
 
 | Integration | Public entry points |
 | --- | --- |
@@ -78,7 +75,7 @@ projections and identity. Native values need no JSON conversion, `Clone`,
 
 Use the [language reference](https://zayenz.se/zirql/guides/language-reference/) for syntax and limits,
 the [implementation reference](https://zayenz.se/zirql/guides/implementation-reference/) for adapter
-choices, and the [Rust API reference](https://docs.rs/zirql/0.2.0/zirql/) for
+choices, and the [Rust API reference](https://docs.rs/zirql/0.3.0/zirql/) for
 signatures. [Function and control-flow rules](https://zayenz.se/zirql/guides/functions-and-control-flow/)
 describe the shared forms and host requirements.
 
@@ -153,8 +150,8 @@ assert_eq!(result.value, NativeValue::Count(1));
 
 ## Release notes and development
 
-[CHANGELOG.md](https://github.com/zayenz/zirql/blob/v0.2.0/CHANGELOG.md) records releases and the earlier prereleases.
-[RELEASING.md](https://github.com/zayenz/zirql/blob/v0.2.0/RELEASING.md) describes publication order and checks.
+[CHANGELOG.md](https://github.com/zayenz/zirql/blob/v0.3.0/CHANGELOG.md) records releases and the earlier prereleases.
+[RELEASING.md](https://github.com/zayenz/zirql/blob/v0.3.0/RELEASING.md) describes publication order and checks.
 A local package check does not establish that a version is available on crates.io.
 
 ```sh

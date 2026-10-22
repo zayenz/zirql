@@ -1,13 +1,12 @@
 # Query CSV files with Zirql
 
-The [CSV example](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs) reads each file as a table of string
+The [CSV example](https://github.com/zayenz/zirql/blob/v0.3.0/examples/csv.rs) reads each file as a table of string
 fields, using its first row as column names. You can filter rows, select fields
 and combine named files in a report. To build an application like this one, follow
 [Build the CSV host](csv-host.md).
 
-These commands run from the root of this working checkout with Rust 1.88 or
-later. Its constructed-program API and shared JSON and Markdown renderers are newer than published Zirql 0.2.0. This is a
-Cargo example executable; installing the library does not install a CSV command.
+These commands run from the root of the Zirql 0.3.0 checkout with Rust 1.88 or
+later. This is a Cargo example executable; installing the library does not install a CSV command.
 
 Use the tabs to compare a query, its input and its result, or copy a command.
 The commands pass a multiline query as one quoted shell argument. Results below

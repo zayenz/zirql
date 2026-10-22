@@ -5,11 +5,9 @@ values by name, then asks Zirql to read and run a program. Its last step renders
 the completed value into a JSON or Markdown buffer. The application owns file
 access and CSV rules; Zirql owns the common program machinery.
 
-The [complete implementation](https://github.com/zayenz/zirql/blob/feature/extensions/examples/csv.rs)
+The [complete implementation](https://github.com/zayenz/zirql/blob/v0.3.0/examples/csv.rs)
 is a runnable starting point. The [CSV guide](csv.md) shows its queries and
-results. `ConstructedBinding`, `ConstructedProgram` and the shared renderers are
-development APIs newer than registry Zirql 0.2.0. Use this working checkout and
-Rust 1.88 or newer.
+results. Use Zirql 0.3.0 and Rust 1.88 or newer.
 
 ## 1. Start with a runnable application
 

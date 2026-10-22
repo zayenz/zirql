@@ -49,7 +49,7 @@ value with its declaration, read the common program, then evaluate with borrowed
 bindings, optional current input and `ParameterInputs`. Compact schema facts
 retain declared empty fields and positional meaning. The
 [minimal example](embedding-programs.md#constructed-data-programs) shows the call
-sequence. This facade is a development API newer than registry 0.2.0.
+sequence.
 
 Use the native interfaces for handles, domain operations and host effects.
 Functions in both routes receive all values through explicit arguments.
@@ -98,8 +98,7 @@ core charges and what the host must account for.
 Results can remain Rust values. The application chooses when to call Zirql's
 [JSON renderer](library-rendering.md), inspect returned records or use native
 handles in another operation. The evaluator does not require a JSON conversion
-between stages. The renderer is available in this working checkout; published
-Zirql 0.2.0 does not include it.
+between stages.
 
 If an application supports edits, it owns their legality and commit policy.
 Pure expression and function contexts must reject effects during preflight.

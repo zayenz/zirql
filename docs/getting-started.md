@@ -10,9 +10,8 @@ This guide connects the [word tutorial](examples.md) to its Rust implementation.
 
 ## Run the example
 
-Use Rust 1.88 or newer and run from this working checkout. Its constructed-program
-API is newer than registry Zirql 0.2.0. The published crate and `v0.2.0` tag also
-include word and CSV examples, using their matching release APIs.
+Use Rust 1.88 or newer and run from the Zirql 0.3.0 checkout or extracted crate.
+Both include the word and CSV examples.
 
 ```sh
 cargo run --locked --example words
@@ -34,7 +33,7 @@ The three commands return `["ash", "apple", "apple"]`, `["apple", "ash"]` and th
 `{"ash": 1, "apple": 2}`, respectively.
 
 The tally returns fields in first-seen order: `ash: 1`, then `apple: 2`.
-The development checkout also supports [tallying unordered neighbouring word
+The word example also supports [tallying unordered neighbouring word
 sets](examples.md#count-unordered-neighbouring-word-pairs), with an exact command
 and printed output.
 
@@ -120,24 +119,24 @@ and rendering in that accounting; see [budget and diagnostic APIs](runtime-limit
 
 ## Use Zirql in another Rust project
 
-Add the 0.2.0 registry dependency to your manifest:
+Add the 0.3.0 registry dependency to your manifest:
 
 ```toml
 [dependencies]
-zirql = "0.2.0"
+zirql = "0.3.0"
 ```
 
 Or use Cargo to add the same requirement:
 
 ```sh
-cargo add zirql@0.2.0
+cargo add zirql@0.3.0
 ```
 
-The registry API reference describes Zirql 0.2.0. The earlier `0.1.0-alpha.5` registry package
+The registry API reference describes Zirql 0.3.0. The earlier `0.1.0-alpha.5` registry package
 has a smaller language and API. Use the matching
-[Rust API reference](https://docs.rs/zirql/0.2.0/zirql/), or generate documentation
-for the dependency selected in your lockfile. For the constructed-program API
-used above, depend on this checkout instead:
+[Rust API reference](https://docs.rs/zirql/0.3.0/zirql/), or generate documentation
+for the dependency selected in your lockfile. For local development, you can
+depend on a matching checkout:
 
 ```toml
 [dependencies]

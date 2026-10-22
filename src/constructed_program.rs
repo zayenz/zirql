@@ -55,7 +55,6 @@ impl ConstructedBinding {
 
 /// A parsed common program with functions, parameters, ordered lets and one final
 /// value. Native handles and domain operations use the native embedding interfaces.
-/// This development API is newer than registry version 0.2.0.
 ///
 /// ```
 /// use zirql::{Budget, ConstructedBinding, ConstructedProgram, ConstructedValue as V,

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- Add scoped `map` and `flat_map`, selective `case` generators, windows, consecutive runs, immutable record updates and keyed record alignment.
+- Add explicit scalar conversions, scalar formatting and f-string interpolation with the shared query budget and native projection rules.
+- Share JSON and Markdown rendering, program reading and preparation, native function admission and composition across hosts.
+- Align ordering, selection, cardinality, unique and tally across native and constructed collections while retaining native values and empty schemas.
+- Provide `ConstructedProgram` for small hosts and expand the CSV example with typed parameters, named functions, numeric cells and formatted reports.
+- Organize the shared library reference by purpose, with direct sidebar links for functions and operators.
+
+Host adapters adopting 0.3.0 must update their reader, program and declaration interfaces. Zirql remains one library crate; hosts retain domain meaning, native ownership and effects.
+
 ## 0.2.0
 
 This release changes public collection types. Hosts adopting 0.2 must update

@@ -6,7 +6,7 @@ patterns and functions express those choices. Bindings are immutable, and
 functions receive outer data through explicit arguments.
 
 Conditions and value matches below run in the [word
-example](getting-started.md). In the development checkout, words and CSV use
+example](getting-started.md). The word and CSV examples use
 `ConstructedProgram` to read and prepare named functions as well. Functions
 receive their data through explicit arguments.
 
@@ -32,7 +32,7 @@ functions in programs supplied with `--program` or `--program-file`; its
 [query guide](https://zayenz.se/zincite/guides/queries/) uses MiniZinc source
 selections and values.
 
-The development word executable can run the same pure calculation directly:
+The word executable can run the same pure calculation directly:
 
 ```sh
 cargo run --locked --example words -- 'fn twice(n: int) -> int { n * 2 } twice(3)'
@@ -40,8 +40,7 @@ cargo run --locked --example words -- 'fn twice(n: int) -> int { n * 2 } twice(3
 
 CSV also accepts typed parameters and named functions through the constructed
 program API, with repeated `--param name=value` inputs. See the
-[orders report](csv.md#calculate-with-numeric-cells). These example APIs are
-newer than registry Zirql 0.2.0.
+[orders report](csv.md#calculate-with-numeric-cells).
 
 A `sequence<opt T>` parameter accepts a sequence of present `T` values when
 the element declarations are compatible. This also applies to host-native types,

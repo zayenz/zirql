@@ -11,7 +11,7 @@ blocked. Keep the existing build command, functions, environment and domains.
 
 ## Prepare the reviewed build
 
-Choose a reviewed Zirql commit. Check that current-behavior guides and dependency
+Use the Zirql 0.3.0 release source. Check that current-behavior guides and dependency
 pins describe it, and that proposed language examples remain visibly labelled.
 From the Zirql checkout:
 
