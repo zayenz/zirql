@@ -156,8 +156,9 @@ pub trait ValueReaderHost {
             "native paths are unsupported by this host",
         ))
     }
-    /// Retain native values instead of requiring an immediate scalar projection.
-    /// Function-bearing frontends opt in; ordinary readers preserve their path.
+    /// Retain native expression results for hosts that admit native values.
+    /// Preparation checks each expression's actual scalar or native context.
+    /// The default requires an immediate scalar projection.
     fn retains_native_values(&self) -> bool {
         false
     }
@@ -4565,12 +4566,13 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
             self.slots::<ReadExpression<H>>(1)?;
             self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
             let mut guard = guard;
-            value = ValueGuard::new(Located::new(
-                K::NativeQuery(Box::new(
-                    guard.0.take().expect("retained native expression"),
-                )),
-                range,
-            ));
+            let query = Box::new(guard.0.take().expect("retained native expression"));
+            let kind = if self.host.retains_native_values() {
+                K::NativeValue(query)
+            } else {
+                K::NativeQuery(query)
+            };
+            value = ValueGuard::new(Located::new(kind, range));
         }
         Ok(value.into_value())
     }

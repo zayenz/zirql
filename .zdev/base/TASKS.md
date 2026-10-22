@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 143
-- Ready: 3
+- Ready: 2
 - Blocked: 0
-- Done: 140
+- Done: 141
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -148,7 +148,7 @@
 | [base-137](tasks/137-admit-present-native-values-in-optional-sequences.md) | Admit present native values in optional sequences | done | — |
 | [base-138](tasks/138-use-retained-dictionaries-throughout-zincite-reports.md) | Use retained dictionaries throughout Zincite reports | done | base-136 |
 | [base-139](tasks/139-read-zincite-function-result-suffixes-through-the-common-rea.md) | Read Zincite function-result suffixes through the common reader | done | — |
-| [base-140](tasks/140-make-zirium-native-retention-depend-on-the-expression-contex.md) | Make Zirium native retention depend on the expression context | ready | — |
+| [base-140](tasks/140-make-zirium-native-retention-depend-on-the-expression-contex.md) | Make Zirium native retention depend on the expression context | done | — |
 | [base-141](tasks/141-sort-and-group-retained-rows-without-materializing-native-pa.md) | Sort and group retained rows without materializing native payloads | ready | — |
 | [base-142](tasks/142-use-the-common-program-reader-for-zirium-diff-reports.md) | Use the common program reader for Zirium diff reports | ready | — |
 | [base-143](tasks/143-keep-declared-string-tally-results-consistent.md) | Keep declared-string tally results consistent | done | — |

@@ -952,6 +952,10 @@ embedding](embedding-programs.md#call-typed-pure-functions).
 A frontend that retains native expression results opts into
 `ValueReaderHost::retains_native_values`. This chooses `NativeValue` rather than
 `NativeQuery` result representation independently of `field_pipeline_source`.
+The policy applies to native sources and set expressions in any program,
+including reports without function declarations. Preparation resolves names and
+checks each expression's actual kind and admission context; scalar operations
+still require an explicit projection.
 The common reader represents an explicit function result or a field selected
 with `FieldPipelineSource::ValueArgument` as a core `Value` step. Preparation
 checks that value's own tree against the actual optional input. An `Input`

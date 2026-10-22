@@ -5047,6 +5047,29 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     ) -> Result<HostValue<'a, C, H>, Self::Error> {
         budget.charge(1, Location::Query(range.clone()))?;
         let mut value = self.retained(self.bindings.shared(name, range.clone())?, budget, range)?;
+        if let Data::Native(view) = &value.data {
+            let native = native_view::<C, H>(view, self.host);
+            if self.host.capture_record(native).is_none()
+                && self.host.tuple_view(native).is_none()
+                && self.host.positional_view(native).is_none()
+                && self.host.set_view(native).is_none()
+                && self.host.dictionary_view(native).is_none()
+            {
+                let kind = self.host.kind(native, budget, range)?;
+                if self.host.scalar_types(&kind, budget, range)?.is_some() {
+                    let native = self.host.copy_value(native, self.context, budget, range)?;
+                    let data = self
+                        .host
+                        .project_value(native, self.context, budget, range)?;
+                    crate::value::admitted_constructed_facts(
+                        &data,
+                        budget,
+                        &Location::Query(range.clone()),
+                    )?;
+                    value.data = Data::Constructed(RuntimeValue::Owned(data));
+                }
+            }
+        }
         value.contract = self.contracts.get(name).copied();
         Ok(value)
     }
