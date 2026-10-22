@@ -246,7 +246,8 @@ plums,1,3
 The saved `examples/csv/numeric-orders.zirql` declares a minimum quantity and a
 report label. Its named function receives the table, threshold and label
 explicitly, parses quantity for filtering and summation, and parses price for
-line totals:
+line totals. F-strings format prices and totals in each line label to two decimal
+places:
 
 ```zirql
 param minimum_quantity: int;
@@ -263,7 +264,7 @@ fn report_orders(
     "lines": [{
       "item": row.item,
       "total": parse_float(row.quantity) * parse_float(row.price),
-      "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
+      "label": f"{row.item}: {parse_int(row.quantity)} × {parse_float(row.price):.2f} = {parse_float(row.quantity) * parse_float(row.price):.2f}"
     } for row in selected]
   }
 }
@@ -300,8 +301,9 @@ The parameter strings are values, not query fragments. `name=FILE` arguments
 still select files; `--param name=value` supplies parameters. Missing, duplicate,
 unknown or mistyped parameters fail before execution.
 
-The report has label `"orders"` and quantity `12`, with line totals `25.0` and labels `"apples: 2"` and
-`"pears: 10"`. The original `"02"` and exponent spelling remain in their CSV cells.
+The report has label `"orders"` and quantity `12`, with line totals `25.0` and
+labels `"apples: 2 × 12.50 = 25.00"` and `"pears: 10 × 2.50 = 25.00"`.
+The original `"02"` and exponent spelling remain in their CSV cells.
 The [scalar reference](library-strings.md#parse_int) defines both decimal grammars.
 Whitespace is rejected without trimming; `" 2"` fails just like malformed or empty
 text. These two commands deliberately fail at the conversion and leave stdout empty:

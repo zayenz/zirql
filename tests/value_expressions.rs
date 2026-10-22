@@ -8856,3 +8856,169 @@ fn field_sorting_and_grouping_keep_constructed_rows_and_empty_declarations() {
         }
     ));
 }
+
+#[test]
+fn scalar_formats_share_empty_conversion_and_use_explicit_numeric_types() {
+    let value = run_query(
+        r#"[format(true, ""), format(-7, ""), format(-0.0, ""), format("é", ""), format("é", "^4s"), format(false, "8"), format(-31, "06x"), format(-9223372036854775808, "X"), format(-5, "b"), format(12.5, ".2f"), format(12.5, ".1e"), format(12.5, "E"), format(-0.0, "08.2f")]"#,
+        V::Absent,
+        &mut ample(),
+    ).unwrap();
+    assert_eq!(
+        value,
+        V::Array(
+            [
+                "true",
+                "-7",
+                "-0.0",
+                "é",
+                " é  ",
+                "false   ",
+                "-0001f",
+                "-8000000000000000",
+                "-101",
+                "12.50",
+                "1.2e1",
+                "1.250000E1",
+                "-0000.00",
+            ]
+            .into_iter()
+            .map(|text| V::String(text.into()))
+            .collect()
+        )
+    );
+    let expression = binary(
+        B::Format,
+        literal(V::Declared {
+            value: Box::new(V::Integer(7)),
+            declaration: D::Integer,
+        }),
+        literal(V::String("03d".into())),
+    );
+    assert_eq!(
+        evaluate_value(&expression, &Bindings::default(), &mut ample()).unwrap(),
+        V::String("007".into())
+    );
+}
+
+#[test]
+fn interpolation_keeps_nested_syntax_scope_and_literal_escapes() {
+    let source = r#"[f"{{{n}}}: {f"{({"key": [n, 2]}["key"] | count):02d}"} {"a}b"} {1 /* } : */ + 1}\n\u007bplain\u007d" for n in [3, 4]]"#;
+    assert!(zirql::has_common_expression_syntax(source, |_| false));
+    assert!(zirql::has_common_expression_syntax("é f\"{1}\"", |_| {
+        false
+    }));
+    assert!(zirql::has_collection_syntax(r#"f"{1}""#));
+    let value = run_query(source, V::Absent, &mut ample()).unwrap();
+    assert_eq!(
+        value,
+        V::Array(vec![
+            V::String("{3}: 02 a}b 2\n{plain}".into()),
+            V::String("{4}: 02 a}b 2\n{plain}".into()),
+        ])
+    );
+    assert_eq!(
+        run_query(r#"[2, 3] | map(n => f"n={n}")"#, V::Absent, &mut ample()).unwrap(),
+        V::Array(vec![V::String("n=2".into()), V::String("n=3".into()),])
+    );
+    assert_eq!(
+        run_query(r#""{plain}""#, V::Absent, &mut ample()).unwrap(),
+        V::String("{plain}".into())
+    );
+    let source = format!("f\"{}\"", "{1}".repeat(100));
+    assert_eq!(
+        run_query(&source, V::Absent, &mut ample()).unwrap(),
+        V::String("1".repeat(100))
+    );
+}
+
+#[test]
+fn formatting_checks_syntax_types_and_selected_values_at_their_source_ranges() {
+    for source in [r#"f"{}""#, r#"f"}""#, r#"f"{1:>04d}""#, r#"f"{1:{2}}""#] {
+        assert!(
+            run_query(source, V::Absent, &mut ample()).is_err(),
+            "{source}"
+        );
+    }
+    for source in [
+        r#"format(null, "")"#,
+        r#"format([], "")"#,
+        r#"format(1, 2)"#,
+        r#"format(1, "f")"#,
+        r#"format(1.0, "d")"#,
+        r#"format("x", "02s")"#,
+        r#"format(1, "+d")"#,
+        r#"format(1, ".2")"#,
+        r#"if true then "yes" else format([], "") endif"#,
+        r#"[format(words, "") for x in words]"#,
+    ] {
+        assert!(
+            run_query(
+                source,
+                V::Declared {
+                    value: Box::new(V::Array(vec![])),
+                    declaration: D::Sequence(Box::new(D::Integer)),
+                },
+                &mut ample()
+            )
+            .is_err(),
+            "{source}"
+        );
+    }
+    assert_eq!(
+        run_query(
+            r#"if true then f"{2}" else format(1, "bad") endif"#,
+            V::Absent,
+            &mut ample(),
+        )
+        .unwrap(),
+        V::String("2".into())
+    );
+    assert_eq!(
+        run_query(
+            r#"if true then "ok" else f"{1:.2f}" endif"#,
+            V::Absent,
+            &mut ample(),
+        )
+        .unwrap(),
+        V::String("ok".into())
+    );
+    let source = r#"f"é {parse_int("first")} {parse_int("second")}""#;
+    let error = run_query(source, V::Absent, &mut ample()).unwrap_err();
+    let start = source.find("parse_int").unwrap();
+    assert_eq!(
+        error.location,
+        Location::Query(start..start + r#"parse_int("first")"#.len())
+    );
+    let source = r#"f"é {1:f}""#;
+    let error = run_query(source, V::Absent, &mut ample()).unwrap_err();
+    assert_eq!(error.location, Location::Query(5..10));
+}
+
+#[test]
+fn formatting_refuses_output_expansion_before_allocating_it() {
+    let V::String(text) = run_query(r#"format(1.25, ".70000e")"#, V::Absent, &mut ample()).unwrap()
+    else {
+        panic!("formatted float")
+    };
+    assert_eq!(text.len(), 70_004);
+    assert!(text.starts_with("1.2500") && text.ends_with("000e0"));
+    for (value, spec) in [
+        (V::Integer(1), "1000000000d"),
+        (V::Float(1.0), ".1000000000f"),
+    ] {
+        let expression = binary(B::Format, literal(value), literal(V::String(spec.into())));
+        let error = evaluate_value(
+            &expression,
+            &Bindings::default(),
+            &mut budget(10_000, 10_000, 64),
+        )
+        .unwrap_err();
+        assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+        assert_eq!(error.location, Location::Query(0..1));
+    }
+    let source = r#"f"{1:1000d}{2:1000d}{3:1000d}""#;
+    let error = run_query(source, V::Absent, &mut budget(8_000, 10_000, 64)).unwrap_err();
+    assert_eq!(error.category, zirql::QueryErrorCategory::WorkLimit);
+    assert!(matches!(error.location, Location::Query(_)));
+}

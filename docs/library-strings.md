@@ -87,3 +87,56 @@ Rust callers construct `ValueExpressionKind::Unary` with
 `ValueUnaryOperator::ParseInt`, `ParseFloat` or `ToString` and the operand expression.
 These conversions are newer than published Zirql 0.2.0; use this checkout or a
 consumer revision that explicitly supports them.
+
+## format
+
+`format(value: bool | int | float | string, spec: string) -> string`
+
+Format a scalar with `[align][0][width][.precision][type]`. Each part is optional.
+An empty specification produces the same text as `to_string`. Width counts
+Unicode scalar values and never truncates. Strings and Booleans align left by
+default; numbers align right. `<`, `>` and `^` select left, right and center
+alignment. Centering puts an extra space on the right. Numeric `0` padding follows
+a minus sign and cannot accompany explicit alignment.
+
+| Type | Value | Example | Result |
+| --- | --- | --- | --- |
+| `s` | String | `format("é", "^4s")` | `" é  "` |
+| `d` | Integer, decimal | `format(-7, "04d")` | `"-007"` |
+| `x`, `X` | Integer, hexadecimal | `format(-31, "x")` | `"-1f"` |
+| `b` | Integer, binary | `format(5, "b")` | `"101"` |
+| `f` | Float, fixed decimal | `format(12.5, ".2f")` | `"12.50"` |
+| `e`, `E` | Float, scientific | `format(12.5, ".2e")` | `"1.25e1"` |
+
+Negative integers use a leading minus and magnitude in every base. No base prefix
+is included. Explicit
+float types default to six fractional digits and use Rust's locale-independent
+notation. Precision requires an explicit float type. Numeric types remain strict:
+`format(2, ".2f")` fails; integers are not coerced to floats. Booleans accept
+alignment and width without a type letter. Custom fill, sign flags, alternate
+prefixes and locale grouping are unsupported.
+
+Absence, collections, nominal members and native objects require explicit
+handling or scalar projection. Declared primitive wrappers are transparent.
+Known incompatible operand types fail preflight, including in unused functions
+and skipped branches. The specification expression evaluates normally; malformed
+dynamic specifications and value-dependent failures occur only when evaluated.
+Parsing, scanning, precision work, padding and output allocation use the active
+request budget. Oversized output fails before allocation.
+
+## F-strings
+
+`f"{expression}"` formats an ordinary expression in the current scope. Add a
+literal specification after `:`: `f"price={12.5:.2f}"` returns `"price=12.50"`.
+Fields evaluate once, from left to right. Collections, pipelines, quoted strings
+and nested f-strings retain their ordinary expression meaning.
+
+`{{` and `}}` produce literal braces: `f"{{{2}}}"` returns `"{2}"`. Literal text
+uses the same JSON escapes as plain strings. Escaped Unicode braces remain text
+and do not create fields. Plain strings retain their literal braces.
+
+Empty fields, bare closing braces and invalid specification syntax fail during
+reading. Specifications within fields are literal text; nested specifications,
+conversion flags and debug fields are unsupported. Use `format(value, spec)` for
+a specification computed by an expression. Fields use the same scope, effect
+and budget checks as other expressions. Errors retain original source byte ranges.

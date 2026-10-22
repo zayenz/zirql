@@ -11,6 +11,11 @@ pub struct ArgumentReader<'a> {
     end: usize,
 }
 
+pub(crate) struct StringField {
+    pub expression: std::ops::Range<usize>,
+    pub specification: std::ops::Range<usize>,
+}
+
 impl<'a> ArgumentReader<'a> {
     /// Start at an original source byte boundary.
     pub fn new(source: &'a str, position: usize) -> Result<Self, QueryError> {
@@ -154,7 +159,15 @@ impl<'a> ArgumentReader<'a> {
 
     /// Skip a quote or comment while inspecting delimiters. No source is rewritten.
     pub(crate) fn protected_span(&mut self) -> Result<bool, QueryError> {
+        self.protected_span_at_depth(0)
+    }
+
+    fn protected_span_at_depth(&mut self, depth: usize) -> Result<bool, QueryError> {
         let start = self.position;
+        if self.remaining().starts_with("f\"") {
+            self.f_string_span(depth)?;
+            return Ok(true);
+        }
         if self.remaining().starts_with(['#', '%']) || self.remaining().starts_with("/*") {
             self.skip_trivia()?;
             return Ok(true);
@@ -184,6 +197,95 @@ impl<'a> ArgumentReader<'a> {
             } else {
                 "unterminated quoted identifier"
             },
+        ))
+    }
+
+    fn f_string_span(&mut self, depth: usize) -> Result<(), QueryError> {
+        if depth >= MAX_NESTING {
+            return Err(self.error("value nesting limit exceeded"));
+        }
+        let start = self.position;
+        self.advance(2)?;
+        while let Some(ch) = self.remaining().chars().next() {
+            match ch {
+                '\\' => {
+                    self.advance(1)?;
+                    if let Some(ch) = self.remaining().chars().next() {
+                        self.advance(ch.len_utf8())?;
+                    }
+                }
+                '"' => return self.advance(1),
+                '{' if self.remaining().starts_with("{{") => self.advance(2)?,
+                '}' if self.remaining().starts_with("}}") => self.advance(2)?,
+                '{' => {
+                    self.advance(1)?;
+                    self.string_field(depth + 1)?;
+                }
+                '}' => return Err(self.error("bare closing brace in f-string")),
+                _ => self.advance(ch.len_utf8())?,
+            }
+        }
+        Err(QueryError::query(
+            start..self.position,
+            "unterminated f-string",
+        ))
+    }
+
+    pub(crate) fn string_field(&mut self, depth: usize) -> Result<StringField, QueryError> {
+        let start = self.position;
+        let mut closers = [' '; MAX_NESTING];
+        let mut count = 0;
+        while let Some(ch) = self.remaining().chars().next() {
+            if count == 0 && matches!(ch, ':' | '}') {
+                let expression = start..self.position;
+                if ch == ':' {
+                    self.advance(1)?;
+                }
+                let spec_start = self.position;
+                while ch == ':' && !self.remaining().starts_with('}') {
+                    let Some(next) = self.remaining().chars().next() else {
+                        return Err(self.error("unterminated f-string field"));
+                    };
+                    if matches!(next, '{' | '"') {
+                        return Err(self.error("invalid scalar format specification"));
+                    }
+                    self.advance(next.len_utf8())?;
+                }
+                let specification = spec_start..self.position;
+                self.advance(1)?;
+                return Ok(StringField {
+                    expression,
+                    specification,
+                });
+            }
+            if self.protected_span_at_depth(depth + count)? {
+                continue;
+            }
+            match ch {
+                '(' | '[' | '{' => {
+                    if depth + count >= MAX_NESTING {
+                        return Err(self.error("value nesting limit exceeded"));
+                    }
+                    closers[count] = match ch {
+                        '(' => ')',
+                        '[' => ']',
+                        _ => '}',
+                    };
+                    count += 1;
+                }
+                ')' | ']' | '}' => {
+                    if count == 0 || closers[count - 1] != ch {
+                        return Err(self.error("mismatched f-string field delimiter"));
+                    }
+                    count -= 1;
+                }
+                _ => {}
+            }
+            self.advance(ch.len_utf8())?;
+        }
+        Err(QueryError::query(
+            start..self.position,
+            "unterminated f-string field",
         ))
     }
 

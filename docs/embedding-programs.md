@@ -49,6 +49,15 @@ loading, declaration, binding, program execution and rendering. The
 [parameterized orders report](csv.md#calculate-with-numeric-cells) demonstrates
 named functions and repeated CLI parameter values.
 
+The common reader accepts `format(value, spec)` and lowercase f-strings in
+programs and functions. For example, `f"count={2:03d}"` produces `"count=002"`.
+The [scalar/string reference](library-strings.md#format) defines the grammar and
+scalar boundaries. Typed builders use `ValueExpressionKind::Binary` with
+`ValueBinaryOperator::Format`; the right operand must be a string specification.
+The reader lowers replacement fields to that operator and joins the segments
+with `Concatenate`. Preparation, lexical scope, native projection, effects,
+source ranges and request budgets follow the ordinary expression path.
+
 The remaining examples are native adapter fragments. They assume the host types
 and context described in [embedding in Rust](host-integration.md).
 

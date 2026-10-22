@@ -192,10 +192,12 @@ at `ConstructedBinding::new`. The [minimal Rust example](embedding-programs.md#c
 shows that path without CSV.
 
 Keep decoded CSV columns string-valued when following this example. Queries use
-[`parse_int`, `parse_float` and `to_string`](library-strings.md#parse_int) for
-explicit numeric work. A loader that chooses typed columns must construct those
-actual values, declare their types and report malformed cells at their source
-positions.
+[`parse_int` and `parse_float`](library-strings.md#parse_int) for explicit numeric
+work. [F-strings and `format`](library-strings.md#format) construct labels from
+those scalars; the [orders report](csv.md#calculate-with-numeric-cells) formats
+prices and totals to two decimal places. A loader that chooses typed columns
+must construct those actual values, declare their types and report malformed
+cells at their source positions.
 
 For native nodes, model objects, source coordinates or domain operations, use
 the [native embedding interfaces](host-integration.md). Those interfaces retain

@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::{self, Write};
 use std::mem::size_of;
 
 mod traversal;
@@ -8,6 +7,8 @@ pub use traversal::{
     for_each_value_child, for_each_value_child_mut, map_value_payloads, value_child_count,
     walk_value, walk_value_mut,
 };
+
+pub(crate) mod formatting;
 
 mod collection;
 pub(crate) use collection::{
@@ -261,6 +262,8 @@ pub enum ValueBinaryOperator {
     And,
     Or,
     Concatenate,
+    /// Format a primitive scalar with a string specification.
+    Format,
     /// Exact case-sensitive substring matching. Empty search strings match.
     Contains,
     /// Exact case-sensitive prefix matching. Empty prefixes match.
@@ -3301,6 +3304,20 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
         self.walk_control(expression, budget, None)
     }
 
+    fn scalar_operand_types(
+        &mut self,
+        expression: &'a ValueExpression<Q>,
+        budget: &mut Budget,
+    ) -> Result<Vec<ValueType>, QueryError> {
+        if let ValueExpressionKind::NativeValue(query) = &expression.value {
+            budget.charge(1, Location::Query(expression.range.clone()))?;
+            self.queries
+                .query_types(query, &self.locals, budget, &expression.range)
+        } else {
+            self.walk(expression, budget)
+        }
+    }
+
     fn walk_control(
         &mut self,
         expression: &'a ValueExpression<Q>,
@@ -3331,6 +3348,14 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
             ValueExpressionKind::Map { .. }
                 | ValueExpressionKind::FlatMap { .. }
                 | ValueExpressionKind::Align { .. }
+                | ValueExpressionKind::Binary {
+                    operator: ValueBinaryOperator::Format,
+                    ..
+                }
+                | ValueExpressionKind::Unary {
+                    operator: ValueUnaryOperator::ToString,
+                    ..
+                }
         ) {
             self.queries.prepare_computation(expression, budget)?;
         }
@@ -3755,7 +3780,13 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 result
             }
             ValueExpressionKind::Unary { operator, operand } => {
-                let types = self.walk(operand, budget)?;
+                let types = if *operator == ValueUnaryOperator::ToString {
+                    let types = self.scalar_operand_types(operand, budget)?;
+                    self.queries.prepare_computation(expression, budget)?;
+                    types
+                } else {
+                    self.walk(operand, budget)?
+                };
                 let mut result = metadata_vec(types.len(), budget, location)?;
                 for ty in types {
                     budget.charge(1, location.clone())?;
@@ -3795,8 +3826,14 @@ impl<'a, 'h, Q: 'a, H: ValueQueryHost<Q>> Analysis<'a, 'h, Q, H> {
                 left,
                 right,
             } => {
-                let left = self.walk(left, budget)?;
-                let right = self.walk(right, budget)?;
+                let (left, right) = if *operator == ValueBinaryOperator::Format {
+                    let left = self.scalar_operand_types(left, budget)?;
+                    let right = self.scalar_operand_types(right, budget)?;
+                    self.queries.prepare_computation(expression, budget)?;
+                    (left, right)
+                } else {
+                    (self.walk(left, budget)?, self.walk(right, budget)?)
+                };
                 let mut result = Vec::new();
                 for a in &left {
                     for b in &right {
@@ -5466,6 +5503,17 @@ pub(crate) fn binary_type(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ValueType, QueryError> {
+    if operator == ValueBinaryOperator::Format {
+        require_stringifiable_type(left, budget, location)?;
+        crate::admit_scalar_type(
+            right,
+            crate::ScalarType::String,
+            crate::TypeFactPolicy::Deferred,
+            budget,
+            location,
+        )?;
+        return Ok(ValueType::String);
+    }
     if !matches!(
         operator,
         ValueBinaryOperator::Equal | ValueBinaryOperator::NotEqual
@@ -5580,6 +5628,7 @@ pub(crate) fn binary_type(
                 )),
             }
         }
+        ValueBinaryOperator::Format => unreachable!("format operands were admitted above"),
         ValueBinaryOperator::Concatenate => match (left, right) {
             (ValueType::String, ValueType::String)
             | (
@@ -5737,27 +5786,9 @@ fn unary(
         (ValueUnaryOperator::ParseInt | ValueUnaryOperator::ParseFloat, _) => {
             return Err(error(location, "scalar parsing needs a string"));
         }
-        (ValueUnaryOperator::ToString, value) => match value {
-            value @ ConstructedValue::String(_) => value,
-            ConstructedValue::Boolean(value) => {
-                return scalar_text(format_args!("{value}"), 5, budget, location);
-            }
-            ConstructedValue::Integer(value) => {
-                return scalar_text(format_args!("{value}"), 20, budget, location);
-            }
-            ConstructedValue::Float(value) => {
-                finite(value, location)?;
-                // Debug's shortest float representation retains negative zero and
-                // uses decimal/exponent spelling accepted by parse_float.
-                return scalar_text(format_args!("{value:?}"), 24, budget, location);
-            }
-            _ => {
-                return Err(error(
-                    location,
-                    "to_string needs a Boolean, integer, finite float or string",
-                ));
-            }
-        },
+        (ValueUnaryOperator::ToString, value) => {
+            return formatting::format(&value, "", budget, location);
+        }
         _ => return Err(error(location, "operation needs numeric operands")),
     };
     scalar(value, budget, location)
@@ -5852,33 +5883,6 @@ fn decimal_float_grammar(text: &str) -> Option<bool> {
     (position == bytes.len()).then_some(nonzero)
 }
 
-fn scalar_text(
-    arguments: fmt::Arguments<'_>,
-    work_bound: usize,
-    budget: &mut Budget,
-    location: &Location,
-) -> Result<ConstructedValue, QueryError> {
-    struct ByteCount(usize);
-    impl Write for ByteCount {
-        fn write_str(&mut self, text: &str) -> fmt::Result {
-            self.0 += text.len();
-            Ok(())
-        }
-    }
-    budget.charge(work_bound, location.clone())?;
-    let mut count = ByteCount(0);
-    count
-        .write_fmt(arguments)
-        .expect("counting text cannot fail");
-    allocation::<u8>(count.0, location)?;
-    budget.charge(count.0, location.clone())?;
-    budget.charge_results(1, location.clone())?;
-    let mut text = String::with_capacity(count.0);
-    text.write_fmt(arguments)
-        .expect("writing to String cannot fail");
-    Ok(ConstructedValue::String(text))
-}
-
 fn string_operand_error(budget: &mut Budget, location: &Location) -> QueryError {
     let message = "string matching needs two strings";
     match budget.charge(message.len(), location.clone()) {
@@ -5963,6 +5967,12 @@ pub(crate) fn binary(
         )
     };
     match operator {
+        ValueBinaryOperator::Format => {
+            let ConstructedValue::String(specification) = right else {
+                return Err(error(location, "format specification must be a string"));
+            };
+            formatting::format(&left, &specification, budget, location)
+        }
         ValueBinaryOperator::Contains
         | ValueBinaryOperator::StartsWith
         | ValueBinaryOperator::EndsWith => {

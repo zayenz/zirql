@@ -299,3 +299,19 @@ sequence/array element and dictionary key/value declarations before splitting
 containers. Removing record fields weakens their presence to optional; moving
 entries retains required fields. Do not copy stale positional facts into a
 reordered result or infer an empty schema from retained rows.
+
+## Scalar text formatting
+
+`ValueBinaryOperator::Format` takes a primitive scalar and a string specification
+and returns a string. An empty specification uses `ToString` conversion;
+explicit formats use the [scalar specification grammar](library-strings.md#format).
+Declared primitive wrappers remain transparent. Preparation refuses known
+incompatible types throughout the tree. Dynamic specifications are checked and
+value-dependent failures occur only when the expression is evaluated.
+
+F-strings lower to `Format` fields and balanced `Concatenate` expressions.
+Fields retain their original source byte ranges and evaluate once in written
+order. These nodes use the existing traversal, preparation, runtime and disposal
+paths. Native objects require scalar projection, and formatting performs no
+implicit rendering. Scanning, numeric precision, padding and output bytes are
+charged to the active budget before proportional work or allocation.

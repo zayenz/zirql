@@ -94,6 +94,7 @@ support. `present` is a pattern.
 | `entries` | [Collections and reductions](library-collections.md#entries) |
 | `except` | [Shared native forms](library-native.md#native-set-operators) |
 | `exists` | [Collections and reductions](library-collections.md#exists) |
+| `f"..."` | [F-strings](library-strings.md#f-strings) |
 | `filter` | [Collection pipeline stages](library-pipelines.md#filter) |
 | `fixpoint` | [Shared native forms](library-native.md#fixpoint) |
 | `flat_map` | [Collection pipeline stages](library-pipelines.md#flat_map) |
@@ -101,6 +102,7 @@ support. `present` is a pattern.
 | `fold` | [Functions and control flow](library-control.md#fold) |
 | `for` | [Collections and reductions](library-collections.md#comprehensions) |
 | `forall` | [Collections and reductions](library-collections.md#forall) |
+| `format` | [Scalars and strings](library-strings.md#format) |
 | `from` | [Shared native forms](library-native.md#native-capture-match) |
 | `function call` | [Functions and control flow](library-control.md#fn-and-calls) |
 | `group_by` | [Grouping and neighbourhoods](library-grouping.md#group_by) |

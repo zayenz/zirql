@@ -827,6 +827,7 @@ pub trait FunctionHost<C>:
 }
 type Kind<C, H> = <H as ProjectionHost<C>>::Kind;
 type Query<C, H> = NativeExpression<C, H>;
+type LoopState<C, H> = (Located<String>, ValueExpression<Query<C, H>>);
 type HostValue<'a, C, H> = Value<'a, <H as ProgramHost<C>>::Value, Kind<C, H>>;
 type Bodies<'a, C, H> = [Body<'a, Query<C, H>, Kind<C, H>>];
 type Declaration<C, H> = FunctionDeclaration<Query<C, H>, Kind<C, H>>;
@@ -1968,17 +1969,50 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
         })
     }
 
+    fn loop_result_kind(
+        &mut self,
+        states: &[LoopState<C, H>],
+        body: &ValueExpression<Query<C, H>>,
+        check_scalar_results: bool,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Option<Kind<C, H>>, QueryError> {
+        crate::projection::admit_slots::<Option<Kind<C, H>>>(states.len(), budget, range)?;
+        let mut kinds = Vec::with_capacity(states.len());
+        for (_, value) in states {
+            kinds.push(self.local_kind(value, budget)?);
+        }
+        self.enter_scope(budget, range)?;
+        let result = (|| {
+            for ((name, _), kind) in states.iter().zip(kinds) {
+                if let Some(kind) = kind {
+                    budget.charge(name.value.len() + 1, Location::Query(name.range.clone()))?;
+                    self.scope.insert(name.value.clone(), kind);
+                }
+            }
+            self.loop_kind(body, check_scalar_results, budget)
+        })();
+        self.leave_scope();
+        result.map(Option::flatten)
+    }
+
     // The outer Option distinguishes no break (continue) from a constructed
     // break result. Nested loops are ordinary values, never outer exits.
     fn loop_kind(
         &mut self,
         value: &ValueExpression<Query<C, H>>,
+        check_scalar_results: bool,
         budget: &mut Budget,
     ) -> Result<Option<Option<Kind<C, H>>>, QueryError> {
         budget.within_evaluation(1, Location::Query(value.range.clone()), |budget| {
             budget.charge(1, Location::Query(value.range.clone()))?;
             match &value.value {
-                ValueExpressionKind::Break(value) => Ok(Some(self.local_kind(value, budget)?)),
+                ValueExpressionKind::Break(value) => {
+                    if check_scalar_results {
+                        self.require_scalar_result(value, budget)?;
+                    }
+                    Ok(Some(self.local_kind(value, budget)?))
+                }
                 ValueExpressionKind::Continue(_) => Ok(None),
                 ValueExpressionKind::Block { bindings, value } => {
                     self.enter_scope(budget, &value.range)?;
@@ -1987,7 +2021,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                             let kind = self.local_kind(source, budget)?;
                             self.pattern_kind(PatternRef::Pattern(pattern), kind, None, budget)?;
                         }
-                        self.loop_kind(value, budget)
+                        self.loop_kind(value, check_scalar_results, budget)
                     })();
                     self.leave_scope();
                     result
@@ -1996,13 +2030,17 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     branches,
                     otherwise,
                 } => {
-                    let mut kind = self.loop_kind(otherwise, budget)?;
+                    let mut kind = self.loop_kind(otherwise, check_scalar_results, budget)?;
                     for (_, branch) in branches {
-                        if let Some(next) = self.loop_kind(branch, budget)? {
+                        if let Some(next) = self.loop_kind(branch, check_scalar_results, budget)? {
                             if kind.as_ref().is_some_and(|previous| *previous != next) {
-                                return Ok(Some(None));
+                                if !check_scalar_results {
+                                    return Ok(Some(None));
+                                }
+                                kind = Some(None);
+                            } else {
+                                kind = Some(next);
                             }
-                            kind = Some(next);
                         }
                     }
                     Ok(kind)
@@ -2019,20 +2057,98 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                                 None,
                                 budget,
                             )?;
-                            self.loop_kind(&arm.value, budget)
+                            self.loop_kind(&arm.value, check_scalar_results, budget)
                         })();
                         self.leave_scope();
                         if let Some(next) = result? {
                             if kind.as_ref().is_some_and(|previous| *previous != next) {
-                                return Ok(Some(None));
+                                if !check_scalar_results {
+                                    return Ok(Some(None));
+                                }
+                                kind = Some(None);
+                            } else {
+                                kind = Some(next);
                             }
-                            kind = Some(next);
                         }
                     }
                     Ok(kind)
                 }
                 _ => Ok(None), // Structural preparation reports a missing terminal transfer.
             }
+        })
+    }
+
+    fn require_scalar_result(
+        &mut self,
+        value: &ValueExpression<Query<C, H>>,
+        budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        budget.within_evaluation(1, Location::Query(value.range.clone()), |budget| {
+            budget.charge(1, Location::Query(value.range.clone()))?;
+            match &value.value {
+                ValueExpressionKind::Loop { states, body } => {
+                    self.loop_result_kind(states, body, true, budget, &value.range)?;
+                }
+                ValueExpressionKind::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    for (_, branch) in branches {
+                        self.require_scalar_result(branch, budget)?;
+                    }
+                    self.require_scalar_result(otherwise, budget)?;
+                }
+                ValueExpressionKind::Default { value, fallback } => {
+                    self.require_scalar_result(value, budget)?;
+                    self.require_scalar_result(fallback, budget)?;
+                }
+                ValueExpressionKind::Block { bindings, value } => {
+                    self.enter_scope(budget, &value.range)?;
+                    let result = (|| {
+                        for (pattern, source) in bindings {
+                            let kind = self.local_kind(source, budget)?;
+                            self.pattern_kind(PatternRef::Pattern(pattern), kind, None, budget)?;
+                        }
+                        self.require_scalar_result(value, budget)
+                    })();
+                    self.leave_scope();
+                    result?;
+                }
+                ValueExpressionKind::Require { value, .. } | ValueExpressionKind::Break(value) => {
+                    self.require_scalar_result(value, budget)?;
+                }
+                ValueExpressionKind::ValueMatch { subject, arms } => {
+                    let kind = self.local_kind(subject, budget)?;
+                    for arm in arms {
+                        self.enter_scope(budget, &arm.pattern.range)?;
+                        let result = (|| {
+                            self.pattern_kind(
+                                PatternRef::Pattern(&arm.pattern),
+                                kind.clone(),
+                                None,
+                                budget,
+                            )?;
+                            self.require_scalar_result(&arm.value, budget)
+                        })();
+                        self.leave_scope();
+                        result?;
+                    }
+                }
+                _ => {
+                    if let Some(kind) = self.local_kind(value, budget)?
+                        && self
+                            .host
+                            .scalar_types(&kind, budget, &value.range)?
+                            .is_none()
+                    {
+                        return Err(QueryError::query(
+                            value.range.clone(),
+                            "native handles require an explicit scalar projection",
+                        ));
+                    }
+                }
+            }
+            Ok(())
         })
     }
 
@@ -2146,30 +2262,7 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                     }
                 }
                 ValueExpressionKind::Loop { states, body } => {
-                    crate::projection::admit_slots::<Option<Kind<C, H>>>(
-                        states.len(),
-                        budget,
-                        &value.range,
-                    )?;
-                    let mut kinds = Vec::with_capacity(states.len());
-                    for (_, value) in states {
-                        kinds.push(self.local_kind(value, budget)?);
-                    }
-                    self.enter_scope(budget, &value.range)?;
-                    let result = (|| {
-                        for ((name, _), kind) in states.iter().zip(kinds) {
-                            if let Some(kind) = kind {
-                                budget.charge(
-                                    name.value.len() + 1,
-                                    Location::Query(name.range.clone()),
-                                )?;
-                                self.scope.insert(name.value.clone(), kind);
-                            }
-                        }
-                        self.loop_kind(body, budget)
-                    })();
-                    self.leave_scope();
-                    result?.flatten()
+                    self.loop_result_kind(states, body, false, budget, &value.range)?
                 }
                 ValueExpressionKind::Break(value) => self.local_kind(value, budget)?,
                 ValueExpressionKind::Block { bindings, value } => {
@@ -2302,6 +2395,20 @@ impl<C, H: FunctionHost<C>> ValueQueryHost<Query<C, H>> for Preflight<'_, '_, C,
         budget: &mut Budget,
     ) -> Result<(), QueryError> {
         match &expression.value {
+            ValueExpressionKind::Binary {
+                operator: crate::ValueBinaryOperator::Format,
+                left,
+                right,
+            } => {
+                self.require_scalar_result(left, budget)?;
+                self.require_scalar_result(right, budget)?;
+            }
+            ValueExpressionKind::Unary {
+                operator: crate::ValueUnaryOperator::ToString,
+                operand,
+            } => {
+                self.require_scalar_result(operand, budget)?;
+            }
             ValueExpressionKind::Call {
                 function,
                 arguments,

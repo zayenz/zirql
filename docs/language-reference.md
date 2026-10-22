@@ -393,3 +393,25 @@ be redeclared as functions. [Scalars and strings](library-strings.md#parse_int)
 defines the exact decimal grammar, finite numeric boundaries and scalar formatting.
 Known incompatible operands fail preflight; malformed text in an unchosen branch
 is not parsed.
+
+## String formatting and interpolation
+
+`format(value, spec)` formats a Boolean, integer, finite float or string. An empty
+specification matches `to_string`; `[align][0][width][.precision][type]` selects
+alignment, numeric zero padding, Unicode-scalar width and explicit numeric
+formatting. See [scalar formats](library-strings.md#format) for the supported
+types and strict operand rules.
+
+Use lowercase `f"..."` for interpolation: `f"count={2:03d}"` returns `"count=002"`.
+Each `{expression}` evaluates once, from left to right, in the current scope;
+`:spec` supplies a literal format specification. Nested expressions, collections,
+pipelines, strings and f-strings use the shared reader. `{{` and `}}` produce
+literal braces, and JSON escapes apply to literal text. Escapes do not create
+fields. Empty fields, bare closing braces and malformed specifications fail
+while reading. Dynamic nested specifications, conversion flags and debug fields
+are unsupported. Plain strings keep their literal meaning.
+
+Known types receive preflight checks even in skipped branches and unused
+functions. Dynamic specification contents and value-dependent formatting remain
+lazy. Native values require explicit scalar projection. Parsing and output
+expansion share the request budget, and errors retain original byte ranges.

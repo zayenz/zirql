@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-144"
 key = "string-formatting"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -26,12 +26,21 @@ The user requested readable text construction beyond to_string and ++. Read the 
 
 ## Done when
 
-- [ ] f-strings and format(value, spec) follow the contract in the brief when used in expressions, functions and CSV reports.
-- [ ] Field scope, effects, type preparation, native boundaries, left-to-right evaluation, original source locations and cumulative budget limits follow existing expression rules.
-- [ ] The scalar/string reference, language and embedding docs describe supported formats and limitations; a runnable CSV example uses interpolation. All added explanatory text receives the requested Astra medium copyedit.
+- [x] f-strings and format(value, spec) follow the contract in the brief when used in expressions, functions and CSV reports.
+- [x] Field scope, effects, type preparation, native boundaries, left-to-right evaluation, original source locations and cumulative budget limits follow existing expression rules.
+- [x] The scalar/string reference, language and embedding docs describe supported formats and limitations; a runnable CSV example uses interpolation. All added explanatory text receives the requested Astra medium copyedit.
 
 ## Validation
 
 - Run cargo fmt --all -- --check, cargo clippy --offline --locked --workspace --all-targets -- -D warnings, and cargo test --offline --locked --workspace.
 - Add focused public behavior checks for fields containing nested syntax, escaped braces, alignment/base/precision formatting, strict scalar refusals and known-type preflight, lazy value failures, source ranges and oversized output budget refusal. Reuse current test helpers.
 - Run the documented CSV example, git diff --check and zdev check base --format json. Existing site organization needs no new page or build system.
+
+## Result
+
+Reports construct text with f-strings and format(value, spec). Both use the shared scalar formatter, type checks and request budget. The scalar reference, language and embedding guides, and runnable CSV example describe the supported formats.
+
+Validation:
+
+- Rust formatting checks passed, as did offline locked workspace Clippy with warnings denied and workspace tests. The documented CSV example produced the expected JSON and Markdown.
+- Astra medium copyedited the added explanatory text using unslop and zayenz-writing-style. Independent verification passed against an unchanged destination snapshot.

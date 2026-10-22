@@ -62,6 +62,8 @@ export default defineConfig({
           ['parse_float', 'parse_float'],
           ['parse_int', 'parse_int'],
           ['to_string', 'to_string'],
+          ['format', 'format'],
+          ['F-strings', 'f-strings'],
           ['++', 'string-concatenation'],
         ]),
         libraryGroup('Presence and lookup', 'library-presence', [

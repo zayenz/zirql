@@ -1259,7 +1259,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Absent(_)
                                             | PreparedKind::Reduce { .. }
                                             | PreparedKind::Binary {
-                                                operator: ValueBinaryOperator::Contains
+                                                operator: ValueBinaryOperator::Format
+                                                    | ValueBinaryOperator::Contains
                                                     | ValueBinaryOperator::StartsWith
                                                     | ValueBinaryOperator::EndsWith,
                                                 ..
@@ -4289,6 +4290,20 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             budget,
             &location,
         )?)));
+    }
+    if let PreparedKind::Binary {
+        operator: ValueBinaryOperator::Format,
+        ..
+    } = &expression.value
+    {
+        let value = host.scalar(&values[0], budget, &location)?;
+        let specification = host.scalar(&values[1], budget, &location)?;
+        let ConstructedValue::String(specification) = specification.data() else {
+            return Err(error(&location, "format specification must be a string").into());
+        };
+        return Ok(Value::constructed(RuntimeValue::Owned(
+            super::formatting::format(value, specification, budget, &location)?,
+        )));
     }
     if let PreparedKind::Binary {
         operator:

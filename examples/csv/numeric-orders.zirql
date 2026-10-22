@@ -12,7 +12,7 @@ fn report_orders(
     "lines": [{
       "item": row.item,
       "total": parse_float(row.quantity) * parse_float(row.price),
-      "label": row.item ++ ": " ++ to_string(parse_int(row.quantity))
+      "label": f"{row.item}: {parse_int(row.quantity)} × {parse_float(row.price):.2f} = {parse_float(row.quantity) * parse_float(row.price):.2f}"
     } for row in selected]
   }
 }

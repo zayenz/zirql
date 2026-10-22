@@ -4604,6 +4604,70 @@ mod projection {
         }
     }
     #[test]
+    fn interpolation_requires_native_projection_and_keeps_effect_checks() {
+        let mut allowance = function_budget();
+        let source = r#"f"name={one(source | names)} count={source | count:03d} loop={
+            loop (nodes = source) {
+                let temporary = loop () { break nodes; };
+                if (temporary | count) > 0 {
+                    break temporary | count;
+                } else {
+                    continue(nodes);
+                }
+            }
+        }""#;
+        let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+        let expression =
+            zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 64).unwrap();
+        let mut functions = zirql::PreparedFunctions::prepare(&[], &Host, &mut allowance).unwrap();
+        let scope = BTreeMap::from([("source".into(), Kind::Subjects)]);
+        let prepared = functions
+            .prepare_value(&expression, &scope, None, &mut allowance)
+            .unwrap();
+        let bindings =
+            Bindings::new([(super::at("source".into(), 0), Value::Subjects(vec!["beta"]))])
+                .unwrap();
+        let result = functions
+            .evaluate(
+                &prepared,
+                &bindings,
+                None,
+                &mut (),
+                &mut allowance,
+                zirql::FunctionLimits { active_depth: 4 },
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            Value::Constructed(V::String("name=beta count=001 loop=1".into()))
+        );
+        drop(prepared);
+        drop(functions);
+        zirql::dispose_native_value(expression);
+        for source in [
+            r#"f"{source}""#,
+            r#"f"{if true then "ok" else source endif}""#,
+            r#"f"{loop () { if true { break "ok"; } else { break source; } }}""#,
+            r#"to_string(source)"#,
+            r#"f"{edit | count}""#,
+        ] {
+            let mut reader = zirql::ArgumentReader::new(source, 0).unwrap();
+            let expression =
+                zirql::read_value_expression(&mut reader, &mut Host, &mut allowance, 64).unwrap();
+            let mut functions =
+                zirql::PreparedFunctions::prepare(&[], &Host, &mut allowance).unwrap();
+            assert!(
+                functions
+                    .prepare_value(&expression, &scope, None, &mut allowance)
+                    .is_err(),
+                "{source}"
+            );
+            drop(functions);
+            zirql::dispose_native_value(expression);
+        }
+    }
+
+    #[test]
     fn parsed_string_helpers_share_prepared_native_arguments() {
         let source = r#"[contains("Ångström", "ström"), starts_with("Ångström", "ång"), ends_with("Ångström", ""), contains("é", "é"), starts_with("", ""), contains(one(source | names), "et")]"#;
         let mut allowance = function_budget();
@@ -13735,4 +13799,52 @@ fn field_sorting_and_grouping_retain_native_rows_and_empty_contracts() {
     assert!(
         matches!(element, DeclaredType::Record(ref fields) if fields[0].0 == "key" && fields[1].0 == "items")
     );
+}
+
+#[test]
+fn interpolation_in_programs_keeps_function_headers_and_preflight() {
+    use zirql::{ConstructedProgram, ConstructedValue as V, FunctionLimits, ParameterInputs};
+    let mut allowance = Budget::for_program(ProgramLimits {
+        work: 100_000,
+        results: 10_000,
+        nesting: 64,
+        stream_items: 100,
+    });
+    let source = r#"
+        fn outer(n: int) -> string { f"{inner(n)} {f"{n:03d}"} {"}; fn fake()"}" }
+        fn inner(n: int) -> string { f"{n + 1}" }
+        let label = "count";
+        f"{label}: {outer(2)}"
+    "#;
+    let program = ConstructedProgram::read(source, &[], &mut allowance, 64).unwrap();
+    let result = program
+        .evaluate(
+            &[],
+            None,
+            ParameterInputs::Cli(&[]),
+            FunctionLimits { active_depth: 16 },
+            &mut allowance,
+        )
+        .unwrap();
+    assert_eq!(
+        result.data(),
+        &V::String("count: 3 002 }; fn fake()".into())
+    );
+    let program = ConstructedProgram::read(
+        r#"fn unused() -> string { f"{[]}" } "ok""#,
+        &[],
+        &mut allowance,
+        64,
+    )
+    .unwrap();
+    let error = program
+        .evaluate(
+            &[],
+            None,
+            ParameterInputs::Cli(&[]),
+            FunctionLimits { active_depth: 16 },
+            &mut allowance,
+        )
+        .unwrap_err();
+    assert_eq!(error.error.location, Location::Query(24..31));
 }

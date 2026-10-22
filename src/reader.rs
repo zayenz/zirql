@@ -1020,6 +1020,7 @@ pub fn is_common_value_call(name: &str) -> bool {
             | "parse_int"
             | "parse_float"
             | "to_string"
+            | "format"
             | "require"
             | "length"
             | "sum"
@@ -1111,6 +1112,7 @@ pub fn is_common_operation_name(name: &str) -> bool {
             | "parse_int"
             | "parse_float"
             | "to_string"
+            | "format"
             | "length"
             | "sum"
             | "forall"
@@ -1201,6 +1203,9 @@ pub fn has_collection_syntax(source: &str) -> bool {
             break;
         };
         let start = reader.position();
+        if reader.remaining().starts_with("f\"") {
+            return true;
+        }
         reader
             .advance(character.len_utf8())
             .expect("character boundary");
@@ -1296,6 +1301,9 @@ pub fn has_common_expression_syntax(source: &str, is_native_call: impl Fn(&str) 
     let mut previous_for = false;
     let mut before_previous_for = false;
     while cursor < bytes.len() {
+        if bytes[cursor..].starts_with(b"f\"") {
+            return true;
+        }
         match bytes[cursor] {
             b'"' | b'\'' | b'#' | b'%' | b'/'
                 if bytes[cursor] != b'/' || source[cursor..].starts_with("/*") =>
@@ -1436,10 +1444,11 @@ fn syntax_token<'s>(reader: &mut ArgumentReader<'s>) -> Option<Located<&'s str>>
     reader.skip_trivia().ok()?;
     let start = reader.position();
     let first = reader.remaining().chars().next()?;
-    if first.is_ascii_alphabetic() || first == '_' || first == '\'' {
+    if reader.remaining().starts_with("f\"") {
+        reader.protected_span().ok()?;
+    } else if first.is_ascii_alphabetic() || first == '_' || first == '\'' {
         return reader.word().ok();
-    }
-    if first == '"' {
+    } else if first == '"' {
         reader.protected_span().ok()?;
     } else if first.is_ascii_digit() {
         reader.number_text().ok()?;
@@ -1535,8 +1544,9 @@ pub fn starts_common_expression(
         }
     };
     if first.as_ref().is_some_and(|t| {
-        t.value
-            .starts_with(|ch: char| ch.is_ascii_digit() || ch == '"')
+        t.value.starts_with("f\"")
+            || t.value
+                .starts_with(|ch: char| ch.is_ascii_digit() || ch == '"')
             || matches!(t.value, "+" | "-" | "true" | "false" | "null" | "not")
     }) {
         return Ok(true);
@@ -2311,9 +2321,10 @@ fn scan_step(
     nesting: usize,
 ) -> Result<(), QueryError> {
     let start = reader.position();
-    if reader
-        .remaining()
-        .starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
+    if !reader.remaining().starts_with("f\"")
+        && reader
+            .remaining()
+            .starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_')
     {
         let mut probe = reader.at(start)?;
         let word = probe.word()?;
@@ -3168,6 +3179,130 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         }
         Ok(left.into_value())
     }
+    fn f_string(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let start = self.reader.position();
+        let mut probe = self.reader.at(start)?;
+        probe.protected_span()?;
+        let end = probe.position();
+        let work = (end - start)
+            .checked_mul(8)
+            .ok_or_else(|| self.reader.error("value allocation size overflow"))?;
+        self.budget.charge(work, Location::Query(start..end))?;
+        self.reader.advance(2)?;
+        let mut literal_start = self.reader.position();
+        let mut segments = Vec::new();
+        while self.reader.position() < end - 1 {
+            let rest = self.reader.remaining();
+            if rest.starts_with("{{") || rest.starts_with("}}") {
+                self.reader.advance(2)?;
+            } else if rest.starts_with('\\') {
+                self.reader.advance(1)?;
+                let ch = self
+                    .reader
+                    .remaining()
+                    .chars()
+                    .next()
+                    .expect("complete f-string");
+                self.reader.advance(ch.len_utf8())?;
+            } else if rest.starts_with('{') {
+                if literal_start < self.reader.position() {
+                    let text = self.string_segment(literal_start..self.reader.position())?;
+                    self.slots::<ValueGuard<H::Stage, H::SetOperator, H::Emitter>>(1)?;
+                    segments.push(ValueGuard::new(text));
+                }
+                let field_start = self.reader.position();
+                self.reader.advance(1)?;
+                let field = self.reader.string_field(depth + 1)?;
+                let field_end = self.reader.position();
+                let value = ValueGuard::new(self.expression_span(field.expression, depth + 1)?);
+                let specification = &self.reader.source()[field.specification.clone()];
+                crate::value::formatting::Specification::parse(
+                    specification,
+                    &Location::Query(field.specification.clone()),
+                )?;
+                self.budget.charge(
+                    specification.len(),
+                    Location::Query(field.specification.clone()),
+                )?;
+                let specification = ValueGuard::new(self.node(
+                    K::Literal(V::String(specification.to_owned())),
+                    field.specification,
+                )?);
+                let formatted = self.node(
+                    K::Binary {
+                        operator: B::Format,
+                        left: Box::new(value.into_value()),
+                        right: Box::new(specification.into_value()),
+                    },
+                    field_start..field_end,
+                )?;
+                self.slots::<ValueGuard<H::Stage, H::SetOperator, H::Emitter>>(1)?;
+                segments.push(ValueGuard::new(formatted));
+                literal_start = field_end;
+            } else {
+                let ch = rest.chars().next().expect("complete f-string");
+                self.reader.advance(ch.len_utf8())?;
+            }
+        }
+        if literal_start < self.reader.position() || segments.is_empty() {
+            let text = self.string_segment(literal_start..self.reader.position())?;
+            self.slots::<ValueGuard<H::Stage, H::SetOperator, H::Emitter>>(1)?;
+            segments.push(ValueGuard::new(text));
+        }
+        self.reader.advance(1)?;
+        let count = segments.len();
+        let mut value = self.concatenate_segments(&mut segments.into_iter(), count, depth)?;
+        value.range = start..end;
+        Ok(value)
+    }
+
+    fn string_segment(
+        &mut self,
+        range: Range<usize>,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let raw = &self.reader.source()[range.clone()];
+        let escaped = raw
+            .replace("{{", "{")
+            .replace("}}", "}")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t");
+        let text = serde_json::from_str(&format!("\"{escaped}\"")).map_err(|_| {
+            QueryError::query(
+                range.clone(),
+                "invalid JSON string escape or Unicode sequence",
+            )
+        })?;
+        self.node(K::Literal(V::String(text)), range)
+    }
+
+    fn concatenate_segments(
+        &mut self,
+        segments: &mut impl Iterator<Item = ValueGuard<H::Stage, H::SetOperator, H::Emitter>>,
+        count: usize,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        self.depth(depth)?;
+        if count == 1 {
+            return Ok(segments
+                .next()
+                .expect("admitted string segment")
+                .into_value());
+        }
+        let left = ValueGuard::new(self.concatenate_segments(segments, count / 2, depth + 1)?);
+        let right =
+            ValueGuard::new(self.concatenate_segments(segments, count - count / 2, depth + 1)?);
+        let range = left.value().range.start..right.value().range.end;
+        self.node(
+            K::Binary {
+                operator: B::Concatenate,
+                left: Box::new(left.into_value()),
+                right: Box::new(right.into_value()),
+            },
+            range,
+        )
+    }
+
     fn atom(&mut self, depth: usize) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         self.reader.skip_trivia()?;
         let start = self.reader.position();
@@ -3186,6 +3321,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         }
         if first == '{' {
             return self.collection(depth, true);
+        }
+        if self.reader.remaining().starts_with("f\"") {
+            return self.f_string(depth);
         }
         if first == '"' {
             let string = self.string()?;
@@ -3423,6 +3561,15 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                             _ => U::ToString,
                         },
                         operand: Box::new(value.into_value()),
+                    }
+                } else if name.value == "format" {
+                    self.reader.expect(',')?;
+                    let specification = ValueGuard::new(self.expression(0, depth + 1)?);
+                    self.reader.expect(')')?;
+                    K::Binary {
+                        operator: B::Format,
+                        left: Box::new(value.into_value()),
+                        right: Box::new(specification.into_value()),
                     }
                 } else if matches!(name.value.as_str(), "lookup" | "has_key") {
                     self.reader.expect(',')?;
