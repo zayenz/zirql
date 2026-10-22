@@ -49,6 +49,11 @@ pub trait ValueReaderHost {
     fn is_constructed_binding(&self, _name: &str) -> bool {
         false
     }
+    /// Whether a declared function returns a constructed value. Native and
+    /// unknown results use native pipeline routing.
+    fn is_constructed_function(&self, _name: &str) -> bool {
+        false
+    }
     fn is_stage(&self, name: &str) -> bool;
     fn parse_stage(
         &mut self,
@@ -964,7 +969,8 @@ pub fn read_value_expression_in_scope<H: ValueReaderHost>(
 
 /// Read ordinary call arguments after the callee and opening `(` were consumed.
 /// Uses the same lexical scope, source ranges, parser and budget as value reading.
-/// Leaves any following pipeline suffix for the calling stage reader.
+/// Consumes common suffixes for a declared constructed result, leaving native
+/// pipeline continuations for the calling stage reader.
 ///
 /// # Errors
 /// Invalid arguments, separators and exhausted allowances retain their ranges.
@@ -986,7 +992,7 @@ pub fn read_function_call_in_scope<H: ValueReaderHost>(
         budget,
         locals,
     }
-    .call_arguments(name, 0)
+    .call_with_suffixes(name, 0)
 }
 
 /// Whether a name is one of the fixed common value calls. Native operation
@@ -3643,11 +3649,24 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         name: Located<String>,
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
-        let call = self.call_arguments(name, depth)?;
+        let call = self.call_with_suffixes(name, depth)?;
         if self.reader.consume('|') {
             return self.value_pipeline(call, depth);
         }
         Ok(call)
+    }
+    fn call_with_suffixes(
+        &mut self,
+        name: Located<String>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let constructed = self.host.is_constructed_function(&name.value);
+        let call = self.call_arguments(name, depth)?;
+        if constructed {
+            self.common_value_suffixes(call, depth)
+        } else {
+            Ok(call)
+        }
     }
     fn call_arguments(
         &mut self,
@@ -3689,12 +3708,20 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let value = ValueGuard::new(value);
         self.depth(depth)?;
+        let source = self.value_source(value.into_value())?;
+        self.native_tail(source, depth, true)
+    }
+    fn value_source(
+        &mut self,
+        value: ValueExpression<ReadExpression<H>>,
+    ) -> Result<ReadExpression<H>, QueryError> {
+        let value = ValueGuard::new(value);
         self.slots::<ReadExpression<H>>(2)?;
         self.slots::<Located<ExpressionStep<H::Stage, H::Emitter, H::SetOperator>>>(1)?;
         let range = value.value().range.clone();
         let start = range.start;
         let value = value.into_value();
-        let source = Located::new(
+        Ok(Located::new(
             ExpressionKind::Sequence {
                 input: Box::new(Located::new(ExpressionKind::Input, start..start)),
                 steps: vec![Located::new(
@@ -3703,8 +3730,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 )],
             },
             range,
-        );
-        self.native_tail(source, depth, true)
+        ))
     }
     fn update_fields(
         &mut self,
@@ -4651,7 +4677,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         } else {
             let mut probe = self.reader.at(start)?;
             let first = probe.word()?;
-            probe.skip_whitespace();
+            probe.skip_trivia()?;
             let projection_call = self.projection_call();
             let native_body_call = matches!(first.value, "fixpoint" | "where_exists")
                 && probe.remaining().starts_with('(');
@@ -4665,7 +4691,8 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                 && (binding
                     || (!self.host.is_stage(first.value)
                         && native_order(first.value).is_none()
-                        && first.value != "map_by"))
+                        && first.value != "map_by"
+                        && !probe.remaining().starts_with('(')))
             {
                 self.reader.advance(probe.position() - start)?;
                 self.budget
@@ -4890,6 +4917,9 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         let range = value.range.clone();
         match value.value {
             K::NativeQuery(query) | K::NativeValue(query) => Ok(*query),
+            kind if self.host.retains_native_values() => {
+                self.value_source(Located::new(kind, range))
+            }
             kind => {
                 dispose_native_value(Located::new(kind, range.clone()));
                 Err(QueryError::query(range, "expected a native expression"))
@@ -5130,13 +5160,39 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
         value: ValueExpression<ReadExpression<H>>,
         depth: usize,
     ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
+        let value = ValueGuard::new(self.common_value_suffixes(value, depth)?);
+        if self.reader.consume('|') {
+            let stage = self.name()?;
+            return Err(QueryError::query(
+                stage.range,
+                "unsupported constructed pipeline stage",
+            ));
+        }
+        Ok(value.into_value())
+    }
+    fn common_value_suffixes(
+        &mut self,
+        value: ValueExpression<ReadExpression<H>>,
+        depth: usize,
+    ) -> Result<ValueExpression<ReadExpression<H>>, QueryError> {
         let mut value = ValueGuard::new(value);
         let mut wrappers = 0;
-        while self.reader.consume('|') {
+        loop {
+            let mut probe = self.reader.at(self.reader.position())?;
+            if !probe.consume('|') {
+                break;
+            }
+            let Ok(stage) = probe.word() else {
+                break;
+            };
+            let Some(kind) = ValueSuffixKind::named(stage.value) else {
+                break;
+            };
+            self.reader.expect('|')?;
             self.depth(depth + wrappers + 1)?;
             let stage = self.name()?;
-            let suffix = match ValueSuffixKind::named(&stage.value) {
-                Some(ValueSuffixKind::Filter | ValueSuffixKind::Map | ValueSuffixKind::FlatMap) => {
+            let suffix = match kind {
+                ValueSuffixKind::Filter | ValueSuffixKind::Map | ValueSuffixKind::FlatMap => {
                     self.reader.expect('(')?;
                     let mut predicate = PredicateArgumentGuard(Some(
                         self.predicate_argument(depth + wrappers + 1)?,
@@ -5149,7 +5205,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         _ => ValueSuffix::Filter(argument),
                     }
                 }
-                Some(kind @ (ValueSuffixKind::Head | ValueSuffixKind::Tail)) => {
+                kind @ (ValueSuffixKind::Head | ValueSuffixKind::Tail) => {
                     self.reader.expect('(')?;
                     let count = ValueGuard::new(self.expression(0, depth + wrappers + 1)?);
                     self.reader.expect(')')?;
@@ -5160,7 +5216,7 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         ValueSuffix::Tail(Box::new(count.into_value()))
                     }
                 }
-                Some(ValueSuffixKind::Check) => {
+                ValueSuffixKind::Check => {
                     let mut operand = None;
                     let mut message = None;
                     if self.reader.consume('(') && !self.reader.consume(')') {
@@ -5179,26 +5235,20 @@ impl<'s: 'l, 'l, H: ValueReaderHost> Reader<'_, 's, '_, 'l, H> {
                         message: message.map(|v| Box::new(v.into_value())),
                     }
                 }
-                Some(ValueSuffixKind::Windows) => {
+                ValueSuffixKind::Windows => {
                     self.reader.expect('(')?;
                     let size = ValueGuard::new(self.expression(0, depth + wrappers + 1)?);
                     self.reader.expect(')')?;
                     self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
                     ValueSuffix::Windows(Box::new(size.into_value()))
                 }
-                Some(ValueSuffixKind::RunsBy) => {
+                ValueSuffixKind::RunsBy => {
                     self.reader.expect('(')?;
                     let field = self.string()?;
                     self.reader.expect(')')?;
                     ValueSuffix::RunsBy(field)
                 }
-                Some(kind) => kind.without_arguments().expect("argument-free suffix"),
-                None => {
-                    return Err(QueryError::query(
-                        stage.range,
-                        "unsupported constructed pipeline stage",
-                    ));
-                }
+                kind => kind.without_arguments().expect("argument-free suffix"),
             };
             self.slots::<ValueExpression<ReadExpression<H>>>(1)?;
             value = ValueGuard::new(lower_value_suffix(

@@ -13519,6 +13519,53 @@ fn constructed_programs_share_declared_bindings_parameters_patterns_and_current_
     .unwrap();
     assert_eq!(json, br#"{"first":3,"count":3}"#);
 
+    let program = ConstructedProgram::read(
+        r#"
+            fn mapped() -> sequence<int> { rows() | map(x => x + 1) }
+            fn rows() -> sequence<int> { [3, 1, 2] }
+            let saved = rows();
+            {
+                "direct": rows() | map(x => x + 1),
+                "literal": [3, 1, 2] | map(x => x + 1),
+                "bound": saved | map(x => x + 1),
+                "forward": mapped(),
+                "windows": rows() | windows(2) | flat_map(pair => pair)
+            }
+        "#,
+        &[],
+        &mut budget,
+        64,
+    )
+    .unwrap();
+    let result = program
+        .evaluate(
+            &[],
+            None,
+            ParameterInputs::Cli(&[]),
+            FunctionLimits { active_depth: 16 },
+            &mut budget,
+        )
+        .unwrap();
+    let V::Record(fields) = result.data() else {
+        panic!("constructed suffix report")
+    };
+    let mapped = V::Array(vec![V::Integer(4), V::Integer(2), V::Integer(3)]);
+    for (_, value) in &fields[..4] {
+        assert_eq!(value.data(), &mapped);
+    }
+    let V::Array(windows) = fields[4].1.data() else {
+        panic!("flattened windows")
+    };
+    assert_eq!(
+        windows.iter().map(V::data).collect::<Vec<_>>(),
+        [
+            &V::Integer(3),
+            &V::Integer(1),
+            &V::Integer(1),
+            &V::Integer(2)
+        ]
+    );
+
     // Function bodies have no entry input, even when the caller supplies one.
     let program = ConstructedProgram::read(
         "fn captured() -> int { count } captured()",

@@ -53,6 +53,16 @@ pub trait ProgramReaderHost: ValueReaderHost {
     ) -> Result<(), QueryError> {
         Ok(())
     }
+    /// Register a function's parsed result signature before any body is read.
+    /// Hosts classify native and constructed results from their own type names.
+    fn function_result(
+        &mut self,
+        _name: Located<&str>,
+        _result: &Located<SignatureType>,
+        _budget: &mut Budget,
+    ) -> Result<(), QueryError> {
+        Ok(())
+    }
     fn function_scope(&mut self, _active: bool) {}
     fn admit_functions(
         &mut self,
@@ -286,6 +296,7 @@ fn read_program_into<'s, H: ProgramReaderHost>(
         define_name(header.name.value, &header.name.range, &mut defined, budget)?;
         host.admit_name(header.name.clone(), false)?;
         host.function_name(header.name.clone(), budget)?;
+        host.function_result(header.name.clone(), &header.result, budget)?;
     }
     read_functions(
         source,
@@ -554,6 +565,7 @@ fn introduce_name<'a>(
 }
 struct FunctionHeader<'a> {
     name: Located<&'a str>,
+    result: Located<SignatureType>,
     range: Range<usize>,
 }
 fn function_headers<'s, H: ValueReaderHost>(
@@ -599,7 +611,7 @@ fn function_headers<'s, H: ValueReaderHost>(
                     nesting,
                     locals: Vec::new(),
                 };
-                let _signature = signature_reader.signature(0)?;
+                let result = signature_reader.signature(0)?;
                 probe.expect('{')?;
                 stack.push('}');
                 while !stack.is_empty() && !probe.remaining().is_empty() {
@@ -617,6 +629,7 @@ fn function_headers<'s, H: ValueReaderHost>(
                 reader.advance(probe.position() - start)?;
                 headers.push(FunctionHeader {
                     name,
+                    result,
                     range: start..reader.position(),
                 });
                 continue;

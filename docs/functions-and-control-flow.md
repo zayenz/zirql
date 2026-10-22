@@ -190,6 +190,17 @@ the word model. Arguments are positional and evaluated left-to-right. Every
 actual argument must meet its complete declared type before parameter patterns
 bind. The returned value must meet the result type.
 
+A call returning a constructed collection accepts the same common pipeline
+stages as a literal or saved collection:
+
+```zirql
+fn rows() -> sequence<int> { [3, 1, 2] }
+rows() | map(x => x + 1) | windows(2)
+```
+
+The result is `[[4, 2], [2, 3]]`. Forward calls inside function bodies use the
+same suffix grammar.
+
 | Type spelling | Contract |
 | --- | --- |
 | `int`, `float`, `bool`, `string` | The corresponding scalar kind |

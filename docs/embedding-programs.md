@@ -62,7 +62,14 @@ pattern functions, ordered parameters with their statement positions, located
 statements and the original program range. Reading runs no native operations.
 
 The reader first collects top-level function headers, skipping strings, comments
-and balanced bodies. It exposes all function names before reading any body.
+and balanced bodies. Before reading any body, it passes each name to
+`function_name` and each name and parsed result signature to `function_result`. The host's
+`ValueReaderHost::is_constructed_function` classifies declared constructed
+results so direct calls use the same common suffix reader as saved values.
+Native type names and result classification remain host decisions.
+`read_function_call_in_scope` also consumes those common suffixes and leaves
+native continuations for its calling stage reader.
+
 Function parameters and local lets form each body's scope; program parameters,
 bindings and current input are unavailable there. The reader then handles
 `param`, pattern `let`, `report`, separators and evaluations in written order.

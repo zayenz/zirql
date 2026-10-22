@@ -284,6 +284,9 @@ impl ValueReaderHost for Reader<'_> {
     fn is_constructed_binding(&self, name: &str) -> bool {
         self.is_binding(name)
     }
+    fn is_constructed_function(&self, _: &str) -> bool {
+        true
+    }
     fn is_stage(&self, _: &str) -> bool {
         false
     }
