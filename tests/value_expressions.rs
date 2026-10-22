@@ -8796,3 +8796,63 @@ fn structural_unique_and_tally_keep_first_representatives_and_compose() {
     };
     assert_eq!(entries[0].0, V::Record(vec![("x".into(), V::Integer(2))]));
 }
+
+#[test]
+fn field_sorting_and_grouping_keep_constructed_rows_and_empty_declarations() {
+    let row = |index| {
+        V::Record(vec![
+            (
+                "key".into(),
+                V::String(if index == 1 { "a" } else { "b" }.into()),
+            ),
+            ("subject".into(), V::Integer(index)),
+        ])
+    };
+    let rows = || V::Array(vec![row(0), row(1), row(2)]);
+    assert_eq!(
+        run_query(r#"sort_by(words, "key")"#, rows(), &mut ample()).unwrap(),
+        V::Array(vec![row(1), row(0), row(2)])
+    );
+    assert_eq!(
+        run_query(
+            r#"sort_by(words, "key", descending=true)"#,
+            rows(),
+            &mut ample()
+        )
+        .unwrap(),
+        V::Array(vec![row(0), row(2), row(1)])
+    );
+    assert_eq!(
+        run_query(r#"group_by(words, "key")"#, rows(), &mut ample()).unwrap(),
+        V::Array(vec![
+            V::Record(vec![
+                ("key".into(), V::String("b".into())),
+                ("items".into(), V::Array(vec![row(0), row(2)]))
+            ]),
+            V::Record(vec![
+                ("key".into(), V::String("a".into())),
+                ("items".into(), V::Array(vec![row(1)]))
+            ]),
+        ])
+    );
+    let empty = || V::Declared {
+        value: Box::new(V::Array(vec![])),
+        declaration: zirql::DeclaredType::Sequence(Box::new(zirql::DeclaredType::Record(vec![
+            ("key".into(), zirql::DeclaredType::String),
+            ("subject".into(), zirql::DeclaredType::Integer),
+        ]))),
+    };
+    assert_eq!(
+        run_query(r#"sort_by(words, "key")"#, empty(), &mut ample()).unwrap(),
+        empty()
+    );
+    let grouped = run_query(r#"group_by(words, "key")"#, empty(), &mut ample()).unwrap();
+    assert_eq!(grouped.data(), &V::Array(vec![]));
+    assert!(matches!(
+        grouped,
+        V::Declared {
+            declaration: zirql::DeclaredType::Sequence(_),
+            ..
+        }
+    ));
+}

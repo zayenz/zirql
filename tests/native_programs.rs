@@ -13586,3 +13586,143 @@ fn constructed_programs_share_declared_bindings_parameters_patterns_and_current_
     assert_eq!(error.error.location, Location::Query(23..28));
     assert!(error.error.message.contains("current input is unavailable"));
 }
+
+#[test]
+fn field_sorting_and_grouping_retain_native_rows_and_empty_contracts() {
+    use zirql::{
+        ConstructedValue as V, FunctionLimits, FunctionRequest, SortSelector,
+        ValueExpressionKind as K,
+    };
+    let source = String::from("ash apple birch");
+    let mut context = SourceContext {
+        source: &source,
+        prefix: "",
+        emissions: vec![],
+    };
+    let row_type = DeclaredType::Record(vec![
+        ("key".into(), DeclaredType::String),
+        ("subject".into(), DeclaredType::Native(SourceKind::Words)),
+    ]);
+    let rows = [("b", 0..3, 7), ("a", 4..9, 8), ("b", 10..15, 9)]
+        .into_iter()
+        .map(|(key, range, side)| {
+            SourceValue::Record(zirql::NativeCapture {
+                fields: vec![
+                    (
+                        "key".into(),
+                        SourceValue::Constructed(V::String(key.into())),
+                    ),
+                    ("subject".into(), word_at(&source, range, side)),
+                ],
+            })
+        })
+        .collect();
+    let bindings = Bindings::new([
+        (
+            at("rows".into(), 0),
+            SourceValue::Sequence {
+                values: rows,
+                element: row_type.clone(),
+            },
+        ),
+        (
+            at("empty".into(), 0),
+            SourceValue::Sequence {
+                values: vec![],
+                element: row_type.clone(),
+            },
+        ),
+    ])
+    .unwrap();
+    let input = |name: &str| {
+        worklist_value(K::NativeValue(Box::new(at(
+            ExpressionKind::Binding(name.into()),
+            0,
+        ))))
+    };
+    let sort = |name: &str, descending| {
+        worklist_value(K::Sort {
+            array: Box::new(input(name)),
+            selector: Some(at(SortSelector::Field("key".into()), 10)),
+            descending,
+        })
+    };
+    let group = |name: &str| {
+        worklist_value(K::GroupBy {
+            rows: Box::new(input(name)),
+            field: at("key".into(), 10),
+        })
+    };
+    let mut evaluate = |expression: &_| {
+        FunctionRequest::prepare(
+            &[],
+            &SourceHost,
+            &mut context,
+            &mut Budget::for_program(worklist_limits()),
+            FunctionLimits { active_depth: 1 },
+        )
+        .unwrap()
+        .evaluate(expression, &bindings)
+        .unwrap()
+    };
+    let check_row = |row: &SourceValue<'_>, index: usize| {
+        let SourceValue::Record(row) = row else {
+            panic!("original row")
+        };
+        assert_eq!(
+            row.fields[0].1,
+            SourceValue::Constructed(V::String(if index == 1 { "a" } else { "b" }.into()))
+        );
+        let SourceValue::Words(words) = &row.fields[1].1 else {
+            panic!("native subject")
+        };
+        let range = [0..3, 4..9, 10..15][index].clone();
+        assert_eq!(words[0].range, range.clone());
+        assert_eq!(words[0].side, index as u64 + 7);
+        assert_eq!(words[0].text.as_ptr(), source[range].as_ptr());
+    };
+    for (expression, expected) in [
+        (sort("rows", false), [1, 0, 2]),
+        (sort("rows", true), [0, 2, 1]),
+    ] {
+        let SourceValue::Sequence { values, .. } = evaluate(&expression) else {
+            panic!("sorted sequence")
+        };
+        assert_eq!(values.len(), 3);
+        for (row, index) in values.iter().zip(expected) {
+            check_row(row, index);
+        }
+    }
+    let SourceValue::Sequence { values: groups, .. } = evaluate(&group("rows")) else {
+        panic!("groups")
+    };
+    assert_eq!(groups.len(), 2);
+    for (group, (key, expected)) in groups.iter().zip([("b", vec![0, 2]), ("a", vec![1])]) {
+        let SourceValue::Record(group) = group else {
+            panic!("group record")
+        };
+        assert_eq!(
+            group.fields[0].1,
+            SourceValue::Constructed(V::String(key.into()))
+        );
+        let SourceValue::Sequence { values, .. } = &group.fields[1].1 else {
+            panic!("group items")
+        };
+        assert_eq!(values.len(), expected.len());
+        for (row, index) in values.iter().zip(expected) {
+            check_row(row, index);
+        }
+    }
+    let SourceValue::Sequence { values, element } = evaluate(&sort("empty", false)) else {
+        panic!("empty sorted sequence")
+    };
+    assert!(values.is_empty());
+    assert_eq!(element, row_type);
+    let SourceValue::Sequence { values, element } = evaluate(&group("empty")) else {
+        panic!("empty group sequence")
+    };
+    assert!(values.is_empty());
+    assert!(
+        matches!(element, DeclaredType::Record(ref fields) if fields[0].0 == "key" && fields[1].0 == "items")
+    );
+}

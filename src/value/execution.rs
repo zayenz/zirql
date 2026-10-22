@@ -6,11 +6,10 @@ use super::{
     QueryError, RuntimeValue, ValueBinaryOperator, ValueConstructor, ValueKey, ValueQueryHost,
     access_declaration, admit_container, admit_diagnostic, allocation, annotate, binary, boolean,
     constructed_value_type, copy_axes, copy_constructed_value, copy_declaration, entries,
-    equal_keys, error, expose, extremum_position, finish_keyed, group_by, insert_set, integer,
-    integer_range, key_positions, key_set_type, key_value, metadata_vec, optional_position,
-    push_metadata, record_declaration, reduce_ref, scalar, sort_value, source_axis,
-    string_match_ref, sum, take_one, take_position, tally_value, unary, underlying, unique_value,
-    value_keys, zip_exact,
+    equal_keys, error, expose, extremum_position, finish_keyed, insert_set, integer, integer_range,
+    key_positions, key_set_type, key_value, metadata_vec, optional_position, push_metadata,
+    record_declaration, reduce_ref, scalar, sort_value, source_axis, string_match_ref, sum,
+    take_one, take_position, tally_value, unary, underlying, unique_value, value_keys, zip_exact,
 };
 
 use super::identity::HashIndex;
@@ -546,7 +545,7 @@ pub(crate) trait Host<'a, Q> {
     fn finish_sequence(
         &mut self,
         values: Vec<Value<'a, Self::Native, Self::Kind>>,
-        element: &'a DeclaredType<Self::Kind>,
+        element: &DeclaredType<Self::Kind>,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<Value<'a, Self::Native, Self::Kind>, Self::Error> {
@@ -1236,6 +1235,8 @@ pub(crate) fn execute<'a, Q, H: Host<'a, Q>>(
                                             | PreparedKind::Tally { .. }
                                             | PreparedKind::Windows { .. }
                                             | PreparedKind::RunsBy { .. }
+                                            | PreparedKind::Sort { .. }
+                                            | PreparedKind::GroupBy { .. }
                                             | PreparedKind::Align { .. }
                                             | PreparedKind::Lookup { .. }
                                             | PreparedKind::HasKey { .. }
@@ -3628,6 +3629,7 @@ fn runs_by<'a, Q, H: Host<'a, Q> + ?Sized>(
             let run = finish_run(
                 key.take().expect("current run key"),
                 items,
+                None,
                 host,
                 budget,
                 location,
@@ -3645,12 +3647,204 @@ fn runs_by<'a, Q, H: Host<'a, Q> + ?Sized>(
         budget.charge_results(1, location.clone())?;
     }
     if let Some(key) = key {
-        let run = finish_run(key, items, host, budget, location)?;
+        let run = finish_run(key, items, None, host, budget, location)?;
         budget.check_items(sum(runs.len(), 1, location)?, location.clone())?;
         push_metadata(&mut runs, run, budget, location)?;
         budget.charge_results(1, location.clone())?;
     }
     host.finish_array(runs, budget, location)
+}
+
+pub(crate) fn sort_rows<'a, Q, H: Host<'a, Q> + ?Sized>(
+    mut rows: ResultValue<'a, H, Q>,
+    field: &Located<super::SortSelector>,
+    descending: bool,
+    element: Option<&DeclaredType<H::Kind>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let super::SortSelector::Field(label) = &field.value else {
+        unreachable!("row ordering selects a field")
+    };
+    let selector = Location::Query(field.range.clone());
+    let mut source = generator_source(rows.share(budget, location)?, true, host, budget, location)?;
+    if source.len() == 0 {
+        return Ok(rows);
+    }
+    let mut items = admit_container(source.len(), budget, location)?;
+    let mut keys = metadata_vec(source.len(), budget, location)?;
+    for index in 0..source.len() {
+        let mut row = source.child(index, budget, location)?;
+        let key = select_record_field(&mut row, label, host, budget, &selector)?;
+        keys.push(host.materialize(key, budget, &selector)?);
+        items.push(row);
+    }
+    super::admit_ordering_values(&keys, budget, &selector)?;
+    let order =
+        crate::ordering::sort_indices(items.len(), budget, location, |left, right, budget| {
+            let comparison =
+                super::identity::compare_admitted(&keys[left], &keys[right], budget, &selector)?;
+            Ok(if descending {
+                comparison.reverse()
+            } else {
+                comparison
+            })
+        })?;
+    crate::ordering::apply_order(&mut items, order, budget, location)?;
+    match element.or_else(|| {
+        rows.contract.and_then(|d| match d {
+            DeclaredType::Sequence(element) | DeclaredType::Array(element) => {
+                Some(element.as_ref())
+            }
+            _ => None,
+        })
+    }) {
+        Some(element) => host.finish_sequence(items, element, budget, location),
+        None => host.finish_array(items, budget, location),
+    }
+}
+
+struct RowGroup<V> {
+    key: ConstructedValue,
+    items: Vec<V>,
+}
+
+pub(crate) fn group_rows<'a, Q, H: Host<'a, Q> + ?Sized>(
+    rows: ResultValue<'a, H, Q>,
+    field: &Located<String>,
+    element: Option<&DeclaredType<H::Kind>>,
+    host: &mut H,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<ResultValue<'a, H, Q>, H::Error> {
+    let declaration = match rows.contract {
+        Some(contract) if !crate::runtime_types::contains_native(contract, budget, location)? => {
+            Some(crate::runtime_types::constructed_declaration(
+                contract, budget, location,
+            )?)
+        }
+        _ => host
+            .constructed(&rows, budget, location)?
+            .and_then(|data| data.declaration)
+            .map(|declaration| copy_declaration(declaration, budget, location))
+            .transpose()?,
+    };
+    let group_declaration = match declaration {
+        Some(DeclaredType::Sequence(row) | DeclaredType::Array(row)) => match row.as_ref() {
+            DeclaredType::Record(fields) => {
+                let key = record_declaration(
+                    fields,
+                    &field.value,
+                    budget,
+                    &Location::Query(field.range.clone()),
+                )?;
+                allocation::<(String, DeclaredType<()>)>(2, location)?;
+                budget.charge("key".len() + "items".len() + 2, location.clone())?;
+                budget.charge_results(2, location.clone())?;
+                Some(DeclaredType::Sequence(Box::new(DeclaredType::Record(
+                    vec![
+                        ("key".into(), copy_declaration(key, budget, location)?),
+                        ("items".into(), DeclaredType::Sequence(row)),
+                    ],
+                ))))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut source = generator_source(rows, true, host, budget, location)?;
+    let selector = Location::Query(field.range.clone());
+    let mut groups: Vec<RowGroup<ResultValue<'a, H, Q>>> = admit_container(0, budget, location)?;
+    let mut key_type = None;
+    for index in 0..source.len() {
+        budget.charge(1, location.clone())?;
+        let mut row = source.child(index, budget, location)?;
+        let key = select_record_field(&mut row, &field.value, host, budget, &selector)?;
+        let key = host.materialize(key, budget, &selector)?;
+        let ty = match key.data() {
+            ConstructedValue::Integer(_) => super::ValueType::Integer,
+            ConstructedValue::String(_) => super::ValueType::String,
+            ConstructedValue::Member(member) => super::ValueType::Member(member.type_id),
+            _ => {
+                return Err(error(
+                    &selector,
+                    "group_by keys need integers, strings or nominal members",
+                )
+                .into());
+            }
+        };
+        budget.charge(1, selector.clone())?;
+        if key_type.as_ref().is_some_and(|previous| previous != &ty) {
+            return Err(error(&selector, "group_by needs homogeneous key types").into());
+        }
+        key_type = Some(ty);
+        let mut matched = None;
+        for (index, group) in groups.iter().enumerate() {
+            if super::equal_values(&key, &group.key, budget, &selector)? {
+                matched = Some(index);
+                break;
+            }
+        }
+        let index = match matched {
+            Some(index) => index,
+            None => {
+                budget.check_items(sum(groups.len(), 1, location)?, location.clone())?;
+                let group = RowGroup {
+                    key,
+                    items: admit_container(0, budget, location)?,
+                };
+                push_metadata(&mut groups, group, budget, location)?;
+                budget.charge_results(1, location.clone())?;
+                groups.len() - 1
+            }
+        };
+        let items = &mut groups[index].items;
+        budget.check_items(sum(items.len(), 1, location)?, location.clone())?;
+        push_metadata(items, row, budget, location)?;
+        budget.charge_results(1, location.clone())?;
+    }
+    let item_element = element.and_then(|element| match element {
+        DeclaredType::Record(fields) => {
+            fields
+                .iter()
+                .find_map(|(label, declaration)| match (label.as_str(), declaration) {
+                    ("items", DeclaredType::Sequence(element)) => Some(element.as_ref()),
+                    _ => None,
+                })
+        }
+        _ => None,
+    });
+    let mut output = admit_container(groups.len(), budget, location)?;
+    for group in groups {
+        output.push(finish_run(
+            Value::constructed(RuntimeValue::Owned(group.key)),
+            group.items,
+            item_element,
+            host,
+            budget,
+            location,
+        )?);
+    }
+    match element {
+        Some(element) => host.finish_sequence(output, element, budget, location),
+        None => {
+            let mut result = host.finish_array(output, budget, location)?;
+            if let Some(declaration) = group_declaration {
+                match &mut result.data {
+                    Data::Constructed(value) => value.retain_declaration(
+                        &std::sync::Arc::new(declaration),
+                        budget,
+                        location,
+                    )?,
+                    Data::Native(_) => {
+                        unreachable!("constructed groups retain constructed declarations")
+                    }
+                }
+            }
+            Ok(result)
+        }
+    }
 }
 
 struct AlignmentRow<V> {
@@ -3750,13 +3944,15 @@ fn finish_alignment_row<'a, Q, H: Host<'a, Q> + ?Sized>(
 fn finish_run<'a, Q, H: Host<'a, Q> + ?Sized>(
     key: ResultValue<'a, H, Q>,
     items: Vec<ResultValue<'a, H, Q>>,
+    element: Option<&DeclaredType<H::Kind>>,
     host: &mut H,
     budget: &mut Budget,
     location: &Location,
 ) -> Result<ResultValue<'a, H, Q>, H::Error> {
     budget.within_evaluation(1, location.clone(), |budget| {
-        let items = budget.within_evaluation(1, location.clone(), |budget| {
-            host.finish_array(items, budget, location)
+        let items = budget.within_evaluation(1, location.clone(), |budget| match element {
+            Some(element) => host.finish_sequence(items, element, budget, location),
+            None => host.finish_array(items, budget, location),
         })?;
         let mut fields = admit_container(2, budget, location)?;
         for (label, value) in [("key", key), ("items", items)] {
@@ -3923,6 +4119,34 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             let right = values.pop().expect("right alignment input");
             let left = values.pop().expect("left alignment input");
             return align(left, right, field, host, budget, &location);
+        }
+        PreparedKind::GroupBy { field, .. } => {
+            return group_rows(
+                values.pop().expect("group input"),
+                field,
+                None,
+                host,
+                budget,
+                &location,
+            );
+        }
+        PreparedKind::Sort {
+            selector: Some(field),
+            descending,
+            ..
+        } if matches!(field.value, super::SortSelector::Field(_))
+            && host.constructed(&values[0], budget, &location)?.is_none()
+            && matches!(&values[0].data, Data::Native(view) if host.native_list(host.native_data(view, budget, &location)?).is_some()) =>
+        {
+            return sort_rows(
+                values.pop().expect("sort input"),
+                field,
+                *descending,
+                None,
+                host,
+                budget,
+                &location,
+            );
         }
         PreparedKind::RunsBy { field, .. } => {
             return runs_by(
@@ -4368,7 +4592,6 @@ pub(crate) fn apply<'a, Q, H: Host<'a, Q> + ?Sized>(
             ..
         } => tally_value(next(), *general_keys, *set_type, budget, &location)?,
         PreparedKind::ZipExact { .. } => zip_exact(next(), next(), budget, &location)?,
-        PreparedKind::GroupBy { field, .. } => group_by(next(), field, budget, &location)?,
         PreparedKind::Sort {
             selector,
             descending,

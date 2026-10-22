@@ -18,6 +18,13 @@ key order; members retain input order. Empty input gives `[]`. Missing fields,
 absence and incompatible key kinds fail. This is not consecutive grouping;
 use `runs_by` for that. See [stable groups](values.md#stable-record-groups).
 
+Rows can retain native subjects in other fields. For example,
+`group_by([{"key": "b", "subject": n1}, {"key": "a", "subject": n2}, {"key": "b", "subject": n3}], "key")`
+returns groups `b`, then `a`. The first group's items retain subjects `n1`, then
+`n3`, with their original native owners and source coordinates. Sorting retains
+declared empty row schemas. These schemas also determine the schema of an empty
+grouping result.
+
 ## runs_by
 
 `runs_by(rows, "field") -> array of {key, items}`; `rows | runs_by("field")`

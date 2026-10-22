@@ -1482,7 +1482,9 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                         Box::new(DeclaredType::Native(element)),
                     ))))
                 }
-                ValueExpressionKind::RunsBy { rows, field } => {
+                ValueExpressionKind::Sort { array, .. } => self.value_declaration(array, budget)?,
+                ValueExpressionKind::RunsBy { rows, field }
+                | ValueExpressionKind::GroupBy { rows, field } => {
                     let Some(kind) = self.local_kind(rows, budget)? else {
                         return Ok(None);
                     };
@@ -2054,6 +2056,8 @@ impl<C, H: FunctionHost<C>> Preflight<'_, '_, C, H> {
                 | ValueExpressionKind::FlatMap { .. }
                 | ValueExpressionKind::Windows { .. }
                 | ValueExpressionKind::RunsBy { .. }
+                | ValueExpressionKind::Sort { .. }
+                | ValueExpressionKind::GroupBy { .. }
                 | ValueExpressionKind::Align { .. }
                 | ValueExpressionKind::Tuple(_) => match self.value_declaration(value, budget)? {
                     Some(d)
@@ -3797,6 +3801,85 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
         self.host
             .lift_computational(value, self.context, budget, range)
     }
+    fn row_declaration(
+        &self,
+        rows: &HostValue<'a, C, H>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<DeclaredType<Kind<C, H>>, QueryError> {
+        if let Some(DeclaredType::Array(element) | DeclaredType::Sequence(element)) = rows.contract
+        {
+            return crate::runtime_types::copy_declaration(
+                element,
+                budget,
+                &Location::Query(range.clone()),
+            );
+        }
+        let Data::Native(view) = &rows.data else {
+            unreachable!("native rows")
+        };
+        let kind = self
+            .host
+            .kind(native_view::<C, H>(view, self.host), budget, range)?;
+        self.host
+            .positional_view_kind(&kind, budget, range)?
+            .map(DeclaredType::Native)
+            .ok_or_else(|| QueryError::query(range.clone(), "operation needs positional sequences"))
+    }
+    fn group_declaration(
+        &self,
+        rows: &HostValue<'a, C, H>,
+        field: &Located<String>,
+        budget: &mut Budget,
+        range: &Range<usize>,
+    ) -> Result<Option<DeclaredType<Kind<C, H>>>, QueryError> {
+        let location = Location::Query(range.clone());
+        let row = self.row_declaration(rows, budget, range)?;
+        let key = match &row {
+            DeclaredType::Native(kind) => self
+                .host
+                .capture_record_kind(kind)
+                .map(|record| record.get(field, budget).cloned())
+                .transpose()?
+                .map(DeclaredType::Native),
+            DeclaredType::Record(fields) => {
+                let index = execution::record_field_position(
+                    fields.iter().map(|(label, _)| label.as_str()),
+                    &field.value,
+                    budget,
+                    &Location::Query(field.range.clone()),
+                )?;
+                Some(crate::runtime_types::copy_declaration(
+                    &fields[index].1,
+                    budget,
+                    &location,
+                )?)
+            }
+            _ => None,
+        };
+        let key = match key {
+            Some(DeclaredType::Native(kind)) => {
+                match self.host.scalar_types(&kind, budget, &field.range)? {
+                    Some(types) if types.len() == 1 => {
+                        crate::worklists::fact_contract(&types[0], budget, &location)?
+                    }
+                    _ => Some(DeclaredType::Native(kind)),
+                }
+            }
+            key => key,
+        };
+        if key.is_some() {
+            crate::projection::admit_slots::<(String, DeclaredType<Kind<C, H>>)>(2, budget, range)?;
+            budget.charge("key".len() + "items".len(), location.clone())?;
+        }
+        let element = key.map(|key| {
+            DeclaredType::Record(vec![
+                ("key".into(), key),
+                ("items".into(), DeclaredType::Sequence(Box::new(row))),
+            ])
+        });
+        Ok(element)
+    }
     fn compute_collection(
         &mut self,
         expression: &'a PreparedValue<'a, Query<C, H>>,
@@ -3906,6 +3989,38 @@ impl<'a, C, H: FunctionHost<C>> Runtime<'_, 'a, C, H> {
                     }
                     None => Err(QueryError::query(range.clone(), "missing dictionary key").into()),
                 }
+                .map(Some);
+            }
+            PreparedKind::Sort {
+                selector: Some(field),
+                descending,
+                ..
+            } if matches!(field.value, crate::SortSelector::Field(_))
+                && matches!(&values[0].data, Data::Native(view) if self.host.positional_view(native_view::<C,H>(view, self.host)).is_some()) =>
+            {
+                let element = self.row_declaration(&values[0], budget, range)?;
+                return execution::sort_rows(
+                    values.pop().expect("sort input"),
+                    field,
+                    *descending,
+                    Some(&element),
+                    self,
+                    budget,
+                    &location,
+                )
+                .map(Some);
+            }
+            PreparedKind::GroupBy { field, .. } if matches!(&values[0].data, Data::Native(view) if self.host.positional_view(native_view::<C,H>(view, self.host)).is_some()) =>
+            {
+                let element = self.group_declaration(&values[0], field, budget, range)?;
+                return execution::group_rows(
+                    values.pop().expect("group input"),
+                    field,
+                    element.as_ref(),
+                    self,
+                    budget,
+                    &location,
+                )
                 .map(Some);
             }
             PreparedKind::Tally { .. } | PreparedKind::Unique(_) if matches!(&values[0].data, Data::Native(view) if self.host.positional_view(native_view::<C,H>(view, self.host)).is_some()) =>
@@ -5156,7 +5271,7 @@ impl<'a, C, H: FunctionHost<C>> execution::Host<'a, Query<C, H>> for Runtime<'_,
     fn finish_sequence(
         &mut self,
         values: Vec<HostValue<'a, C, H>>,
-        element: &'a DeclaredType<Kind<C, H>>,
+        element: &DeclaredType<Kind<C, H>>,
         budget: &mut Budget,
         location: &Location,
     ) -> Result<HostValue<'a, C, H>, Self::Error> {

@@ -50,6 +50,11 @@ Missing fields, invalid row shapes, invalid selector cardinality and incoherent
 nominal metadata fail.
 `descending` is a literal Boolean option on the function forms.
 
+Rows may contain native subjects alongside ordinary keys. For example,
+`sort_by([{"key": "b", "subject": n1}, {"key": "a", "subject": n2}], "key")`
+returns the second row first and retains each subject's native owner and source
+coordinates. Only the selected key needs a constructed value.
+
 For a native selection, the pipeline form runs a pure query against each
 singleton subject to obtain one admitted key. For example, if `name` projects
 one string, `input | sort_by(name)` orders the original subjects by that string.
