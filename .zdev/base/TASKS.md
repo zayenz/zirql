@@ -2,8 +2,8 @@
 
 # Tasks: base
 
-- Total: 142
-- Ready: 6
+- Total: 143
+- Ready: 7
 - Blocked: 1
 - Done: 135
 
@@ -151,3 +151,4 @@
 | [base-140](tasks/140-make-zirium-native-retention-depend-on-the-expression-contex.md) | Make Zirium native retention depend on the expression context | ready | — |
 | [base-141](tasks/141-sort-and-group-retained-rows-without-materializing-native-pa.md) | Sort and group retained rows without materializing native payloads | ready | — |
 | [base-142](tasks/142-use-the-common-program-reader-for-zirium-diff-reports.md) | Use the common program reader for Zirium diff reports | ready | — |
+| [base-143](tasks/143-keep-declared-string-tally-results-consistent.md) | Keep declared-string tally results consistent | ready | — |
