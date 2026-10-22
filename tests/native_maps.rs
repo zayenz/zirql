@@ -342,6 +342,7 @@ impl<'a> zirql::ProjectionHost<&'a str> for Words {
     fn construct_map(
         &self,
         entries: Vec<(String, Value<'a>)>,
+        _: Option<Kind>,
         _: &mut &'a str,
         _: &mut Budget,
         _: &Range<usize>,

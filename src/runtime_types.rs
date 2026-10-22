@@ -244,53 +244,87 @@ fn admit_dictionary_schema<C, H: FunctionHost<C>>(
     budget: &mut Budget,
     location: &Location,
 ) -> Result<(), QueryError> {
+    if &schema.0 == string_key_kind {
+        budget.charge_results(1, location.clone())?;
+        admit_type_facts(
+            &ValueType::String,
+            expected_key,
+            TypeFactPolicy::Deferred,
+            budget,
+            location,
+        )?;
+    } else {
+        admit_dictionary_member_kind(
+            host,
+            &schema.0,
+            expected_key,
+            string_key_kind,
+            budget,
+            location,
+        )?;
+    }
+    admit_dictionary_member_kind(
+        host,
+        &schema.1,
+        expected_value,
+        string_key_kind,
+        budget,
+        location,
+    )
+}
+
+fn admit_dictionary_member_kind<C, H: FunctionHost<C>>(
+    host: &H,
+    kind: &<H as ProjectionHost<C>>::Kind,
+    expected: &DeclaredType<<H as ProjectionHost<C>>::Kind>,
+    string_key_kind: &<H as ProjectionHost<C>>::Kind,
+    budget: &mut Budget,
+    location: &Location,
+) -> Result<(), QueryError> {
     budget.within_evaluation(1, location.clone(), |budget| {
         let range = match location {
             Location::Query(range) | Location::Source(range) => range,
         };
-        for (kind, expected, is_key) in [
-            (&schema.0, expected_key, true),
-            (&schema.1, expected_value, false),
-        ] {
-            let mut underlying = expected;
-            while let DeclaredType::Optional(inner) = underlying {
-                budget.charge(1, location.clone())?;
-                underlying = inner;
+        let mut underlying = expected;
+        while let DeclaredType::Optional(inner) = underlying {
+            budget.charge(1, location.clone())?;
+            underlying = inner;
+        }
+        if let (Some(schema), DeclaredType::Dictionary(key, value)) =
+            (host.dictionary_view_kind(kind), underlying)
+        {
+            return admit_dictionary_schema::<C, H>(
+                host,
+                schema,
+                key,
+                value,
+                string_key_kind,
+                budget,
+                location,
+            );
+        }
+        if let DeclaredType::Sequence(inner) | DeclaredType::Array(inner) = underlying
+            && let Some(element) = host.positional_view_kind(kind, budget, range)?
+        {
+            return admit_dictionary_member_kind(
+                host,
+                &element,
+                inner,
+                string_key_kind,
+                budget,
+                location,
+            );
+        }
+        if let Some(facts) = host.scalar_types(kind, budget, range)? {
+            for fact in facts {
+                admit_type_facts(&fact, expected, TypeFactPolicy::Deferred, budget, location)?;
             }
-            if let (Some(schema), DeclaredType::Dictionary(key, value)) =
-                (host.dictionary_view_kind(kind), underlying)
-            {
-                admit_dictionary_schema::<C, H>(
-                    host,
-                    schema,
-                    key,
-                    value,
-                    string_key_kind,
-                    budget,
-                    location,
-                )?;
-                continue;
-            }
-            if is_key && kind == string_key_kind {
-                budget.charge_results(1, location.clone())?;
-                admit_type_facts(
-                    &ValueType::String,
-                    expected,
-                    TypeFactPolicy::Deferred,
-                    budget,
-                    location,
-                )?;
-            } else if let Some(facts) = host.scalar_types(kind, budget, range)? {
-                for fact in facts {
-                    admit_type_facts(&fact, expected, TypeFactPolicy::Deferred, budget, location)?;
-                }
-            } else if *kind != host.declaration_kind(underlying, budget, range)? {
-                return Err(refusal(
-                    "dictionary schema does not satisfy its declaration",
-                    budget,
-                    location,
-                )?);
-            }
+        } else if *kind != host.declaration_kind(underlying, budget, range)? {
+            return Err(refusal(
+                "dictionary schema does not satisfy its declaration",
+                budget,
+                location,
+            )?);
         }
         Ok(())
     })

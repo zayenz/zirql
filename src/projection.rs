@@ -455,7 +455,7 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
         budget: &mut Budget,
         range: &Range<usize>,
     ) -> Result<Self::Value, EvaluationError<Self::Error>> {
-        self.construct_map(entries, context, budget, range)
+        self.construct_map(entries, None, context, budget, range)
     }
     fn collection_kind(
         &self,
@@ -578,6 +578,7 @@ pub trait ProjectionHost<C>: ProgramHost<C> {
     fn construct_map(
         &self,
         _entries: Vec<(String, Self::Value)>,
+        _value_kind: Option<Self::Kind>,
         _context: &mut C,
         _budget: &mut Budget,
         range: &Range<usize>,

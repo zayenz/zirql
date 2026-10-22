@@ -793,6 +793,7 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
             )
         }
         ExpressionStep::Mapping(mapping) => {
+            let value_kind = arguments.argument_kind(mapping.value.value());
             let items = host.selection_items(&input, arguments.parts().0, budget, range)?;
             let entries = map_native_by(
                 items,
@@ -808,7 +809,7 @@ pub(crate) fn run<C, H: ProjectionHost<C>>(
                     arguments.evaluate_body(&mapping.value, Some(item), None, budget)
                 },
             )?;
-            host.construct_map(entries, arguments.parts().0, budget, range)
+            host.construct_map(entries, value_kind, arguments.parts().0, budget, range)
         }
         ExpressionStep::MapSorting => {
             if host.dictionary_view(&input).is_some() {

@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-138"
 key = "zincite-dictionaries"
 area = "base"
-status = "open"
+status = "done"
 complexity = "advanced"
 afk = true
 priority = "normal"
@@ -25,12 +25,22 @@ With input `int:a=1; int:b=2;`, `let d=items | map_by(names,count); length(d)` a
 
 ## Done when
 
-- [ ] map_by results support length, lookup and the existing common dictionary operations with their actual entries.
-- [ ] Functions admit and return dict<Node,int> and dictionaries containing native sequences, including typed empty results.
-- [ ] Insertion order, retained owners, declared schemas and documented output shape are preserved; replaced map dispatch and storage are removed where no caller needs them.
-- [ ] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
+- [x] map_by results support length, lookup and the existing common dictionary operations with their actual entries.
+- [x] Functions admit and return dict<Node,int> and dictionaries containing native sequences, including typed empty results.
+- [x] Insertion order, retained owners, declared schemas and documented output shape are preserved; replaced map dispatch and storage are removed where no caller needs them.
+- [x] Update the affected API or language reference and host guide with current behavior and one useful example. Keep the shared reference and sidebar organized by purpose. All added explanatory prose receives the requested Astra medium copyedit using unslop and zayenz-writing-style.
 
 ## Validation
 
 - Run the affected repositories' required Rust checks from AGENTS.md, plus git diff --check. Use the existing offline dependency cache.
 - Extend existing public dictionary/function controls for map_by length/lookup and native-bearing function declarations; include an empty declared result.
+
+## Result
+
+Zincite map_by results support common dictionary operations. Functions accept and return dictionaries containing native values, and empty results retain their declared schemas.
+
+Validation:
+
+- Required offline locked Rust formatting, Clippy and tests passed in affected repositories; Zirium doctests and warnings-denied docs passed. Focused public controls passed.
+- Astra medium reviewed added prose using unslop and zayenz-writing-style. Both consumers use canonical Zirql e1b36d26adf2a509701ec85688aa0319ea4dc671.
+- Independent verifier passed; exact core snapshot and consumer states matched before completion.

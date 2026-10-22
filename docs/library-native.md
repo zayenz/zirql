@@ -51,8 +51,10 @@ Run independent key and value queries for each singleton input, key first.
 If `name` returns one string and `children` returns related subjects,
 `map_by(name, children | count)` maps names to child counts. Inputs establish
 entry order. Keys must be exactly one string; a duplicate fails before its value
-runs. Values keep native kind and owner. Empty input returns the admitted empty
-dictionary. Host purity, key/result kind and effect checks apply before execution.
+runs. Values keep native kind and owner. Saved results support dictionary
+length, access and the common collection operations when the host supplies
+retained dictionary views. Empty input retains the prepared value schema.
+Host purity, key/result kind and effect checks apply before execution.
 See [correlated dictionaries](native-programs.md#correlated-native-dictionaries).
 
 ## Native capture match

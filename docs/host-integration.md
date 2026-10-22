@@ -1077,9 +1077,12 @@ Kind, selector and effect preflight still runs on empty inputs.
 
 For `map_by(key_query, value_query)`, `mapping_kind` declares the dictionary
 kind, `mapping_keys` exposes the key strings, and `construct_map` wraps the
-ordered entries. The core evaluates the key before the value for each subject,
-requires exactly one string, and refuses duplicates before executing that
-entry's value. Native payloads retain their owners and coordinates.
+ordered entries. The `construct_map` argument `value_kind` carries the prepared
+value selector kind, including for an empty result. Use that kind to retain the dictionary's
+value schema; the default `restore_map` passes `None`. The core evaluates the
+key before the value for each subject, requires exactly one string, and refuses
+duplicates before executing that entry's value. Native payloads retain their
+owners and coordinates.
 
 `map_sort_kind`, `map_entries` and `restore_map` admit and rebuild native
 dictionaries. `sort_by(value)` uses the common value sort without treating
