@@ -3,9 +3,9 @@
 # Tasks: base
 
 - Total: 142
-- Ready: 8
+- Ready: 7
 - Blocked: 1
-- Done: 133
+- Done: 134
 
 | ID | Task | State | Blocked by |
 | --- | --- | --- | --- |
@@ -142,7 +142,7 @@
 | [base-131](tasks/131-align-collection-selection-and-cardinality-across-native-and.md) | Align collection selection and cardinality across native and value paths | done | base-125 |
 | [base-132](tasks/132-share-structural-unique-and-tally-semantics-across-value-and.md) | Share structural unique and tally semantics across value and native collections | done | base-125, base-131 |
 | [base-133](tasks/133-align-infix-comparison-admission-for-native-and-constructed.md) | Align infix comparison admission for native and constructed data | done | base-125 |
-| [base-134](tasks/134-distinguish-equality-from-legacy-assignment-in-zirium.md) | Distinguish equality from legacy assignment in Zirium | ready | — |
+| [base-134](tasks/134-distinguish-equality-from-legacy-assignment-in-zirium.md) | Distinguish equality from legacy assignment in Zirium | done | — |
 | [base-135](tasks/135-expose-unique-and-tally-on-zirium-report-builders.md) | Expose unique and tally on Zirium report builders | ready | — |
 | [base-136](tasks/136-share-dictionary-declaration-admission.md) | Share dictionary declaration admission | ready | — |
 | [base-137](tasks/137-admit-present-native-values-in-optional-sequences.md) | Admit present native values in optional sequences | ready | — |
