@@ -3,7 +3,7 @@ schema_version = 1
 id = "base-143"
 key = "declared-string-tally"
 area = "base"
-status = "open"
+status = "done"
 complexity = "standard"
 afk = true
 priority = "normal"
@@ -26,12 +26,22 @@ An independent check reproduced different JSON shapes for `fn echo(s:string)->st
 
 ## Done when
 
-- [ ] Literal and typed-function string tallies have matching dictionary behavior and ordinary JSON output.
-- [ ] General structural keys and declared empty results retain their existing behavior.
-- [ ] Update the tally/API reference and affected embedding or host guidance with one useful example. Added explanatory prose receives Astra medium copyediting with unslop and zayenz-writing-style.
+- [x] Literal and typed-function string tallies have matching dictionary behavior and ordinary JSON output.
+- [x] General structural keys and declared empty results retain their existing behavior.
+- [x] Update the tally/API reference and affected embedding or host guidance with one useful example. Added explanatory prose receives Astra medium copyediting with unslop and zayenz-writing-style.
 
 ## Validation
 
 - Add one focused public core control for declared string keys; reuse structural-key and empty-schema controls.
 - Exercise the equivalent typed-function string tally through CSV, Zincite and Zirium against the same reviewed core revision.
 - Run required Rust checks in the affected repositories and git diff --check. Use the existing offline dependency cache; do not add a benchmark or test matrix.
+
+## Result
+
+Literal and typed-function string tallies produce matching dictionaries and ordinary output. Tally results retain declared dictionary contracts, including empty results; general dictionary rendering is unchanged.
+
+Validation:
+
+- Required offline locked Rust formatting, Clippy and tests passed in affected repositories; Zirium doctests and warnings-denied docs passed. Focused public controls passed.
+- Astra medium reviewed added prose using unslop and zayenz-writing-style. Both consumers use canonical Zirql dd5927fb0e7ecea1a96bf0f9b43efbe951d64048.
+- Independent verifier passed; exact core snapshot and consumer states matched before completion.

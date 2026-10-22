@@ -117,7 +117,16 @@ Dictionary filter, count, length, bounds, check and `sort_by(value)` keep their
 ordinary contracts. Scalar counts refuse collection continuations. The small
 `Pipeline`/`parse_pipeline` API retains its terminal count/tally representation.
 
-String keys render as ordinary ordered objects. Other keys use the shared
+String keys render as ordinary ordered objects, including strings returned by
+typed functions:
+
+```zirql
+fn echo(s: string) -> string { s }
+[echo("ash"), echo("apple"), echo("ash")] | tally
+```
+
+This returns `{"ash": 2, "apple": 1}`, matching the literal string tally.
+Other keys use the shared
 [tagged entry encoding](library-rendering.md), with native leaves projected
 only for output. Names and rendered descriptors never determine identity.
 

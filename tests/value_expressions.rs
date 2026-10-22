@@ -4367,6 +4367,29 @@ fn scalar_pipelines_keep_stable_equality_declarations_and_nonpositional_facts() 
             ("apple".into(), V::Integer(2))
         ])
     );
+    let declared_tally = evaluate(&e(K::Tally(Box::new(literal(declared(
+        V::Array(vec![first_ash(), first_apple(), first_apple()]),
+        D::Sequence(Box::new(D::String)),
+    ))))))
+    .unwrap();
+    assert_eq!(
+        declared_tally,
+        declared(
+            copy_constructed_value(&value, &mut ample(), Location::Query(0..1)).unwrap(),
+            D::Dictionary(Box::new(D::String), Box::new(D::Integer)),
+        )
+    );
+    assert_eq!(
+        zirql::render_json(
+            &declared_tally,
+            zirql::JsonRepresentation::Ordinary,
+            zirql::JsonLayout::Compact,
+            &mut ample(),
+            Location::Query(0..1),
+        )
+        .unwrap(),
+        br#"{"ash":1,"apple":2}"#
+    );
     assert_eq!(
         copy_constructed_value(&value, &mut ample(), Location::Query(0..1)).unwrap(),
         value

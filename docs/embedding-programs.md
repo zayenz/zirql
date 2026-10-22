@@ -264,6 +264,12 @@ contract, ordered local bindings and one final value expression. Use
 position. Declarations register together before bodies are prepared, so direct
 and mutual recursion use the same path.
 
+String function results retain ordinary string dictionary behavior. For example,
+`fn echo(s: string) -> string { s } [echo("ash"), echo("ash")] | tally`
+evaluates to a string dictionary whose ordinary JSON is `{"ash":2}`. For a
+declared sequence input, the tally result retains the corresponding dictionary
+key and value contract, including when the result is empty.
+
 For constructed values, `evaluate_functions` takes declarations, an entry
 expression, explicit bindings, the active budget and `FunctionLimits`. The
 [compiled accumulator example in the API

@@ -24,6 +24,14 @@ Use repeated `--param name=value` arguments to supply required scalar inputs.
 input; with several inputs, choose a table by name. Header declarations remain
 available even when a CSV contains no data rows.
 
+A typed string function can supply tally keys directly:
+
+```sh
+cargo run --locked --example csv -- 'fn echo(s:string)->string {s} [echo("ash"),echo("ash")] | tally' examples/csv/people.csv
+```
+
+This writes `{"ash":2}`, the same JSON object as `["ash","ash"] | tally`.
+
 ## Select rows from one file
 
 Select active people and keep their names and notes. Switch to **CSV input** to

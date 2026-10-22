@@ -444,6 +444,13 @@ let groups = [{"team": t.label, "members": [p.name for p in selected if p.team =
     fn fixture_queries_keep_decoded_strings_saved_values_and_written_order() {
         assert_eq!(
             text(
+                r#"fn echo(s:string)->string {s} [echo("ash"),echo("ash")] | tally"#,
+                &people(),
+            ),
+            "{\"ash\":2}\n"
+        );
+        assert_eq!(
+            text(
                 r#"[{"ash", "apple"}, {"apple", "birch"}, {"birch", "apple"}] | tally"#,
                 &named(),
             ),

@@ -6810,8 +6810,7 @@ pub(crate) fn tally_value(
             )?;
         }
     }
-    let retain_keys = general || groups.iter().any(|(key, _)| declaration(key).is_some());
-    let value = if retain_keys {
+    let value = if general {
         ConstructedValue::Dictionary(groups.into())
     } else {
         finish_dictionary(groups, budget, location)?
