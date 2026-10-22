@@ -2110,3 +2110,22 @@ reference task presents each shared operation once, organized by purpose,
 with admitted input forms and necessary domain distinctions in that entry.
 Keep genuinely different contracts, such as native capture matching and value
 matching, distinct. Apply the existing Testing and Validation rules.
+## Finish native and constructed coherence (2026-10-22)
+
+The user authorized organizing and implementing the remaining review findings
+across Zirql, Zincite and Zirium. Common operations must use the admitted values
+and expression context. An unrelated function declaration, an obsolete map
+representation or an exact native-element declaration check must not change the
+meaning of an equivalent report.
+
+Use the existing core interfaces to share dictionary admission, constructed call
+suffixes and diff program reading. Preserve native ownership, declared empty
+schemas, diff-side facts, effects and source coordinates. Sort and group by the
+selected keys while retaining unrelated native row payloads. Handle the
+remaining Zirium equality-reader and report-builder gaps as separate tasks.
+
+Use the existing Testing and Validation rules. Each task covers the affected API
+and host documentation. All added explanatory prose receives an Astra medium
+copyedit using unslop and zayenz-writing-style. Keep the implementation small
+and remove the host code it replaces. Development pins, isolated worktrees,
+serial integration and independent verification remain the integration contract.
